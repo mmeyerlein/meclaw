@@ -1,0 +1,13 @@
+:root { color-scheme: light dark; }
+body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 1.5rem; max-width: 60rem; }
+h1 { font-size: 1.2rem; margin: 0 0 .25rem; }
+p.hint { margin: 0 0 1rem; padding: .5rem .75rem; border-left: 3px solid #c80; opacity: .85; }
+fieldset { border: 1px solid #8888; margin: 0 0 .75rem; padding: .5rem .75rem; }
+legend { padding: 0 .35rem; opacity: .7; }
+button { font: inherit; padding: .3rem .7rem; margin-right: .35rem; }
+button#talk { padding: .8rem 1.6rem; }
+button#talk.live { outline: 3px solid #2a2; }
+dl#facts { display: grid; grid-template-columns: max-content 1fr; gap: .1rem .75rem; margin: 0; }
+dl#facts dt { opacity: .6; }
+dl#facts dd { margin: 0; }
+pre#log { border: 1px solid #8888; padding: .5rem .75rem; height: 22rem; overflow: auto; white-space: pre-wrap; }

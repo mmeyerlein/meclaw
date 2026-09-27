@@ -1,4 +1,4 @@
-# `meclaw-os@1.10.0`
+# `meclaw-os@1.10.1`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -12,6 +12,11 @@ a global replacement, a replacement for one brain, a tier, all visible per cell.
 [The model registry](#the-model-registry) below. Since 1.10.0 it pins `llm-registry@2.3.0`
 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)): a cell may state in prose what it
 needs, and the registry's translator chooses from the catalogue once per change.
+Since 1.10.1 it pins `llm-registry@2.3.1` ([#863](https://github.com/mmeyerlein/meclaw/issues/863)): a push a brain refuses comes back to the registry
+on the mirror of the edge that carried it, and `show` names it. Since 1.10.1 it also pins `builder@1.15.1`
+([#867](https://github.com/mmeyerlein/meclaw/issues/867), [#863](https://github.com/mmeyerlein/meclaw/issues/863)),
+whose recipes grow a member's screen as the `display` that runs under a strict
+Content-Security-Policy and draw one way back per composite on the model road.
 
 Between 1.7.0 and 1.9.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it was
 four and not five. The **submitter** stopped being a hive of this level and became an occupant of the
@@ -27,15 +32,15 @@ mutation may draw at any scope (ADR-0015 § Amendment 2026-08-31).
 
 All four levels — `meclaw-os`, `org`, `member`, `assistant` — repeat that sentence in the
 same words, because it is the only test that decides what belongs at a level and what does
-not. Ask it of anything you are tempted to add here: do *all* organisations of this colony
+not. Ask it of anything you are tempted to add here: does *everything* this colony holds
 share it? A capability broker, yes — one broker means one answer to "may this actor do this
 thing", and two would mean two. A control loop, yes — one colony, one hand on the params.
 A memory, no: memory belongs to the **member** (GH #122), and a group is an audience, not a
 holder. A persona, a model, a channel: no, no, no. Each of those is owned further down, and
 a shell that grew one would have stopped being a boundary and become a participant.
 
-**And one thing more: the OS hands out what is system-near.** A colony carries many
-organisations and exactly **one** OS, so the OS is what allocates the resources that are
+**And one thing more: the OS hands out what is system-near.** A colony carries exactly
+**one** OS, so the OS is what allocates the resources that are
 scarce and colony-wide — a mount on the colony's one listener, a socket — where two
 holders of one is a collision rather than a disagreement. An organisation does not hold a
 band of names and does not assign one; it **asks the OS** for it
@@ -112,13 +117,13 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The fifty-nine edges
+## The sixty-two edges
 
 Forty-two of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Seventeen wire two occupants to each other, and that is what owning a baumeister, a
+**Twenty wire two occupants to each other, and that is what owning a baumeister, a
 front door and a model registry looks like.**
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
@@ -282,7 +287,7 @@ key -- and that stays its start value for life. What moves it at run time is the
 every op): it resolves each subscriber by **targeted > global > tier > start value** and
 pushes the whole model package as a params-only message, only when it changed.
 
-Ten edges of this level carry it, and four of them are between siblings:
+Thirteen edges of this level carry it, and seven of them are between siblings:
 
 ```json
 {"from": ".",              "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'in_hand'",
@@ -298,6 +303,12 @@ Ten edges of this level carry it, and four of them are between siblings:
  "modifier": {"set_hop": {"route": "'in_model'"}}},
 {"from": "./llm-registry", "to": "./builder",      "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber == '/os/builder/compose'",
  "modifier": {"set_hop": {"route": "'in_model'"}}},
+{"from": "./orgs",         "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'model_refused' && has(hop.refused_subscriber) && hop.refused_subscriber.startsWith('/os/orgs/')",
+ "modifier": {"set_hop": {"route": "'in_refused'"}, "delete_context": ["actor"]}},
+{"from": "./argus",        "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'model_refused' && has(hop.refused_subscriber) && hop.refused_subscriber == '/os/argus/judge'",
+ "modifier": {"set_hop": {"route": "'in_refused'"}, "delete_context": ["actor"]}},
+{"from": "./builder",      "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'model_refused' && has(hop.refused_subscriber) && hop.refused_subscriber == '/os/builder/compose'",
+ "modifier": {"set_hop": {"route": "'in_refused'"}, "delete_context": ["actor"]}},
 {"from": "./orgs",         "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'model_subscribe'",
  "modifier": {"set_hop": {"route": "'in_hand'"}, "set_context": {"model_announcer": "'meclaw-os'"},
               "delete_context": ["actor"]}},
@@ -348,8 +359,21 @@ before the `.env` start value they fall back to. Whoever sets `ARGUS_JUDGE_BASE_
 memory -- by unsetting `recipes.model_registry_scope` on the shell's builder ref (a setting of the
 whole colony: no member or assistant grown afterwards subscribes). Otherwise the cell refuses the push
 (`invalid_input`, answered as an error on the cell's own exit; the judge's exit is the loop's
-mutator), and a refused push is not reported back to the registry today: `show` names the
-refused model until the next change.
+mutator), and keeps what it runs. Since 1.10.1 the refusal comes back to the registry (*A refused
+push comes back*, below).
+
+**A refused push comes back** (since 1.10.1, [#863](https://github.com/mmeyerlein/meclaw/issues/863)). A brain that refuses a push addressed to
+it sends the refusal out of its composite as `model_refused`, with its own path in
+`hop.refused_subscriber`. Each push edge above has its mirror: the edge from the same sibling
+back to `./llm-registry`, on `model_refused` and the same address test on
+`hop.refused_subscriber`, restamped to the registry's `in_refused` lane, where the hand marks the
+row and `show` names it until the next push or a `reset` (`templates/llm-registry/README.md`
+§ A refused push). `./argus` and `./builder` send it out themselves (since `argus@1.2.1`
+and since `builder@1.15.1`); for a generation or a member the builder draws one way back per composite at
+`/os/orgs` beside its push edges. `builder/compose` has its way back although the shell does not
+announce it: its push road stands, and an operator who subscribes it gets its refusals too.
+Nothing of it crosses the rim -- `model_refused` and `in_refused` are consumed by a sibling --
+so this level declares no new lane.
 
 **The push goes into `./orgs` and no further from here.** `update` names its subscriber on
 `hop.subscriber`; this level restamps it `in_model` and hands it to the container, and the
@@ -369,15 +393,20 @@ brains subscribers, and a lost row comes back with the next receipt or the boot'
 organisations, where cells emit tool calls a model wrote, so the last edge stamps its own key,
 `context.model_announcer`, and drops any `actor` a chain still carries from upstream; the
 registry reads nothing arriving that way as a command, and takes only brains inside the
-generation the announcing edge stamped (`context.model_generation`). Both road edges at
-`/os/orgs` are forms the submit gate checks (`submit`, since its 2.3.2; `model_push_form`,
-`model_announcement_form`): a push edge carries only the pushes addressed to its own composite's
-brain, and an announcement edge is drawn only in the manifest that grows its generation. The
-gate also refuses any edge that writes the hop keys the road is addressed by or computes a
-route it cannot list (`model_road_key`, `model_route_computed`). An edge that leaves the road's
-keys and its route as they are (no modifier, other keys, `set_hop route "hop.route"`) is
-a broker question like any other, and the shipped default permits it at `/os/orgs`: it can copy
-pushes into a brain nobody addressed, as a `swap_nodes` there can replace that brain
+generation the announcing edge stamped (`context.model_generation`). All three road edges at
+`/os/orgs` are forms the submit gate checks (`submit`, since its 2.3.2 and, for the way back,
+its 2.3.4; `model_push_form`, `model_refusal_form`, `model_announcement_form`): a push edge
+carries only the pushes addressed to its own composite's brain, a return edge carries only
+what its own composite sends out as `model_refused`, and an announcement edge is drawn only in
+the manifest that grows its generation. The gate also refuses any edge that writes the hop keys
+the road is addressed by, including the two keys of a refusal, or computes a route it cannot
+list (`model_road_key`, `model_route_computed`). An edge that leaves the road's keys and its
+route as they are (no modifier, other keys, `set_hop route "hop.route"`) is a broker question
+like any other, and the shipped default permits it at `/os/orgs`: it can still copy pushes into
+a brain nobody addressed, but that brain applies none of them -- since 0.47.0 an `llm` cell
+applies a push only when `hop.subscriber` is its own path (GH #862) -- and refuses each copy
+loudly, without the keys of a refusal, so nothing of it travels back to the registry. What
+remains is the broker's scope, as for a `swap_nodes` there that replaces a brain outright
 (`templates/llm-registry/README.md` § How a brain becomes a subscriber).
 
 **Why the builder draws those edges at `/os/orgs` and not here.** A declaration that wrote a
@@ -444,6 +473,10 @@ off the tree and went red until this level moved with it.
   organisation draws edges to that organisation, and a sealed hive refuses exactly those
   endpoints with `hive_port_boundary`.
 - **Silent**, and that is the part worth explaining.
+
+**A colony hosts one organisation.** The `orgs` container can hold more, but the colony's
+API, message log and credentials know no organisation: a second one would share everything
+with the first and is not a supported deployment. Run one colony per organisation.
 
 ### Why the container declares nothing and the level declares everything
 
@@ -541,7 +574,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.10.0"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.10.1"}}
 ```
 
 ```bash
@@ -625,7 +658,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.10.0"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.10.1"}],
           "add_edges": []}}
 ```
 
@@ -641,8 +674,9 @@ control loop measures and reports and changes nothing, and where a submission en
 `no_route` in the dead-letter queue — loudly, and localising itself. That is the right
 default: a colony nobody privileged applies nothing.
 
-Then one organisation at a time, into the container, each with its transit edges in the
-**same** mutation — a hive is an island until an edge crosses into it:
+Then the organisation (one per colony, see [The container](#the-container)) into the
+container, with its transit edges in the **same** mutation — a hive is an island until an
+edge crosses into it:
 
 ```json
 {"scope": "/os",

@@ -25,9 +25,12 @@ HISTORY_HEAD = [
     "Regelsatz und Schwellen: [README.md](README.md). Ein Verstoss ist ein",
     "Befund, nie ein Blocker.",
     "",
-    "| Datum | Welle | Q1 | Q2 | Q3 | Q4 | Q5 | Q6 | Q7 | Q8 | Q9 | Q10 | Verstoesse |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| Datum | Welle | Q1 | Q2 | Q3 | Q4 | Q5 | Q6 | Q7 | Q8 | Q9 | Q10 | Q11 | Verstoesse |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
 ]
+
+#: Cells of a history line: the empty edges, date, wave, the metrics, breaches.
+HISTORY_CELLS = HISTORY_HEAD[-2].count("|") + 1
 
 
 def wave_date(wave: str) -> str:
@@ -108,6 +111,18 @@ def _same_wave(line: str, wave: str) -> bool:
     return len(cells) > 2 and cells[2].strip().startswith(wave)
 
 
+def _pad(line: str) -> str:
+    """A line written before a metric existed gets `n/a` in its place.
+
+    The new column goes in before the last one: without it the breaches of
+    an older wave would stand under the newest metric (GH #861, Q11).
+    """
+    cells = line.split("|")
+    while len(cells) < HISTORY_CELLS:
+        cells.insert(len(cells) - 2, " n/a ")
+    return "|".join(cells)
+
+
 def update_history(path: Path, wave: str, rows, note: str = "") -> None:
     """Replace this wave's line, or append it; never a second line.
 
@@ -122,7 +137,7 @@ def update_history(path: Path, wave: str, rows, note: str = "") -> None:
                 and not l.startswith("|---")]
     else:
         body = []
-    body = [l for l in body if not _same_wave(l, wave)]
+    body = [_pad(l) for l in body if not _same_wave(l, wave)]
     body.append(line)
     body.sort(key=lambda l: l.split("|")[1].strip())
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,13 +160,17 @@ def readme(spec: dict) -> str:
     ]
     for metric in spec["metrics"]:
         limit = metric["threshold"]
-        text = f"{limit:g}"
-        if "threshold_secondary" in metric:
-            text += f" / {metric['threshold_secondary']:g}"
-        # "<= 0" is a rule nobody reads twice; "= 0" is the rule.
-        sign = "=" if limit == 0 and "threshold_secondary" not in metric else metric["cmp"]
+        if limit is None:
+            rule = "— (finding, no threshold yet)"
+        else:
+            text = f"{limit:g}"
+            if "threshold_secondary" in metric:
+                text += f" / {metric['threshold_secondary']:g}"
+            # "<= 0" is a rule nobody reads twice; "= 0" is the rule.
+            sign = "=" if limit == 0 and "threshold_secondary" not in metric else metric["cmp"]
+            rule = f"{sign} {text}"
         out.append(f"| {metric['id']} | {metric['title']} | {metric['unit']} | "
-                   f"{sign} {text} | {metric['source']} |")
+                   f"{rule} | {metric['source']} |")
     out += [
         "",
         "## What the retro writes",

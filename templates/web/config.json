@@ -3,6 +3,7 @@
   "params": {
     "mount": "web",
     "identity_header": "",
+    "link_mounts": [],
     "external_timeout_ms": 5000
   },
   "contract": {
@@ -19,6 +20,12 @@
         "secret": false,
         "default": "",
         "description": "Request header a reverse proxy in front puts the viewer's identity in, e.g. X-Forwarded-User. When set, its value on a socket's upgrade request rides as hop.user_id on every semantic event of that connection. Empty by default: a header a client can set without a proxy is not an identity."
+      },
+      "link_mounts": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "The mounts a `voice:` or `page:` join on this display's socket may reach. Empty, the default, is every mount in the process; a list refuses a join to any other name, the kind's default included, and the refusal names the list. A change takes effect on the cell's next life."
       },
       "external_timeout_ms": {
         "type": "number",

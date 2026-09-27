@@ -10,13 +10,14 @@ Four readers and two writers, nothing else:
 * `reports`     -- the strands of a wave and the findings of their reviews.
 * `prompts`     -- repeated sentences across the dispatch prompts of a wave.
   Derived from the P0 tool `prompt_repeat.py`.
-* `metrics`     -- the ten numbers Q1..Q10 and their verdicts.
+* `cache`       -- the pauses after which a call found its cache expired (Q11).
+* `metrics`     -- the eleven numbers Q1..Q11 and their verdicts.
 * `render`      -- the wave's `retro.md` and its line in the history.
 
 The P0 tools stay where they are, unchanged, as the record of the measurement
 that produced the thresholds; only the functions the retro needs moved here.
 """
 
-from . import gates, metrics, prompts, render, reports, transcripts  # noqa: F401
+from . import cache, gates, metrics, prompts, render, reports, transcripts  # noqa: F401
 
-__all__ = ["gates", "metrics", "prompts", "render", "reports", "transcripts"]
+__all__ = ["cache", "gates", "metrics", "prompts", "render", "reports", "transcripts"]

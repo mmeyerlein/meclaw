@@ -388,12 +388,25 @@ async fn the_disclosed_pack_reaches_a_caller_that_can_only_read_messages() {
         "the receipt line survived the fix: {receipt}"
     );
 
-    // The pack below it is the SAME pack, parseable rather than prose.
+    // The pack below it is the SAME pack, parseable rather than prose -- its
+    // structure, without the per-slot `text` rendering: that rendering is for an
+    // `llm` cell that reads only `text` leaves, and beside the structure it put
+    // every released value into the tool result twice (GH #864).
     let pack: Value = meclaw_core::serde_json::from_str(payload)
         .unwrap_or_else(|e| panic!("the pack must be JSON a caller can parse ({e}): {payload}"));
+    let mut unrendered = system.clone();
+    for slot in unrendered
+        .as_object_mut()
+        .expect("system is an object")
+        .values_mut()
+    {
+        if let Some(doc) = slot.as_object_mut() {
+            doc.remove("text");
+        }
+    }
     assert_eq!(
-        pack, system,
-        "the tool lane and the push lane carry the same disclosure decision"
+        pack, unrendered,
+        "the same disclosure decision, the rendering stays on `system`"
     );
     assert_eq!(
         pack["identity"]["names"]["first"].as_str(),

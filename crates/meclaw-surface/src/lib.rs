@@ -4,8 +4,9 @@
 //! ([`frames`]), the signed session token and the container id derived from a
 //! cell path ([`session`]), and the two vendored client bundles compiled into
 //! the binary ([`bundle`]) together with the [`LIVEVIEW_VERSION`] reported on
-//! every join. It is protocol arithmetic — it binds no socket, opens no port
-//! and holds no colony handle.
+//! every join, plus the two small client files that are ours rather than
+//! vendored (`boot.js`, `display-mic-worklet.js`, GH #867). It is protocol
+//! arithmetic — it binds no socket, opens no port and holds no colony handle.
 //!
 //! # Who uses it
 //!
@@ -41,6 +42,12 @@ pub mod session;
 /// A closed list, not a lookup: the file name comes from a URL, and a list makes
 /// traversal impossible rather than guarded.
 ///
+/// Two of the entries are not vendored (`client/VERSIONS.md` says which): the
+/// shell's boot and the display microphone's capture worklet. Both used to be
+/// inline -- a `<script>` block and a `blob:` URL -- and a page that carries
+/// either does not run under `script-src 'self'` (GH #867). As files under
+/// `@client/` they come from the page's own origin like the bundles do.
+///
 /// `include_str!` rather than a directory next to the binary, because the
 /// installer puts **one** file in place (`scripts/install.sh`) — a client read
 /// from disk would be missing on every machine except the build host, and the
@@ -50,6 +57,8 @@ pub fn bundle(file: &str) -> Option<(&'static str, &'static str)> {
     Some(match file {
         "phoenix.min.js" => (JS, include_str!("client/phoenix.min.js")),
         "phoenix_live_view.min.js" => (JS, include_str!("client/phoenix_live_view.min.js")),
+        "boot.js" => (JS, include_str!("client/boot.js")),
+        "display-mic-worklet.js" => (JS, include_str!("client/display-mic-worklet.js")),
         _ => return None,
     })
 }

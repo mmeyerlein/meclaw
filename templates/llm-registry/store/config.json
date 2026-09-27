@@ -52,7 +52,9 @@
         "because": "text",
         "base_model": "text",
         "base_rank": "text",
-        "base_source": "text"
+        "base_source": "text",
+        "refused": "text",
+        "refused_at": "text"
       },
       "resolutions": {
         "id": "text",

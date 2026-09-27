@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""The retro of a wave: ten numbers, one table, one line of history (R-P3).
+"""The retro of a wave: eleven numbers, one table, one line of history (R-P3).
+
+Q1..Q10 carry a threshold; Q11 (the calls after a 5-60 minute pause and the
+cache writes they cost) is a finding without a threshold yet.
 
 Run it as the last step of a wave, before the receipt is committed:
 
@@ -57,7 +60,7 @@ def _default_root() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Wave retro: ten numbers over one wave (ruling R-P3).")
+        description="Wave retro: eleven numbers over one wave (ruling R-P3).")
     parser.add_argument("wave", nargs="?",
                         help="the wave directory under plans/, e.g. welle-h3-2026-09-18")
     parser.add_argument("--root", default=None,

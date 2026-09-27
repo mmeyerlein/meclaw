@@ -19,6 +19,11 @@
             "actor"
           ],
           "because": "a command: move a tier (`remap`), set or clear a replacement (`override_set`, `override_clear`), put one cell back on what it resolves to without its targeted replacements (`reset`), register a subscriber and what it states it needs (`subscribe`), keep the catalogue (`model_upsert`, `model_retire`), ask the translator what a failed round left unanswered (`retranslate`), or read the view per cell (`show`). The caller edge MUST promote the deciding identity to context.actor -- without one the command is refused with no_actor"
+        },
+        {
+          "route": "in_refused",
+          "context": [],
+          "because": "a push a subscriber's own llm cell refused (GH #863), carried back on the road the push came by: its path (`hop.refused_subscriber`), the model it refused (`hop.refused_model`) and why (`meta.error.detail`). The hand marks the subscriber row `refused` when the refused model is the one it holds, and journals it otherwise; it answers nothing. Never a command: the door stamps its own origin, and a body on this lane is never read as an op"
         }
       ],
       "emits": [
@@ -63,6 +68,24 @@
               "lr_carry",
               "lr_phase",
               "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./hand",
+          "condition": "has(hop.route) && hop.route == 'in_refused'",
+          "modifier": {
+            "set_context": {
+              "registry_origin": "'refusal'"
+            },
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "model_announcer",
+              "model_generation",
+              "model_announced",
+              "actor"
             ]
           }
         },

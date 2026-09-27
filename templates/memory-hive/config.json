@@ -86,6 +86,10 @@
           "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). Since 2.3.1 it also carries what this hive's OWN STORE would not do -- the transfer lane included, which since 3.3.0 names only `export_write_failed` and `import_failed` and puts the substrate's own transfer code (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, ...) on `hop.store_error` beside it, for exactly the reason this sentence gives: a lane whose read or write came back refused stops there and says so, with `hop.reject_reason` = 'store_refused', `hop.store_error` carrying the store's own `error_code` and `hop.store_operation` naming the op that was refused (GH #343) -- including the nightly consolidation, which has no caller of its own and reports on this lane rather than nowhere. The code rides in `store_error` rather than inside `reject_reason` on purpose: the store's code list is OPEN (`invalid_input`, `query_timeout`, `write_denied`, `unknown_table`, `unknown_column`, `constraint_violation`, `sql_error`, ...), and a reason enum that had to grow with it would turn the next new code into a failed emit. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes. A refusal on the RECALL lane carries `hop.recall_caller` home exactly as a bundle does (GH #532): the asker that cannot be told its question failed is the one that waits longest"
         },
         {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that one of the four llm cells refused (GH #863): its error, with that cell's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of reaching the glue or `./recall` as a verdict -- before 3.6.1 the four cells' out-edges carried no condition, so a refusal was read as the cell's answer. A push addressed to another cell (one a forward brought here) is refused as `invalid_input` without the two keys and still reaches the verdict edge -- the forward that caused it is the defect. The builder draws one edge from here to the registry's container, which carries it back to the registry's `in_refused` lane; without one the refusal dead-letters `no_route`, loudly"
+        },
+        {
           "route": "close_report",
           "because": "what the close pass did with one closed session (GH #300, ruling Q9): how many turns it read, what it sharpened and what it left alone. It is the ONLY positive signal the lane has -- the pass writes through the inline ingress, which answers nobody, so without this the caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Drain it: undrained, the pass costs one strong-model call per session and reaches nobody, which is the same disease as an undrained export"
         },
@@ -347,6 +351,7 @@
         {
           "from": "./dreamer",
           "to": "./dream-glue",
+          "condition": "!has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "store_origin": "'dream'",
@@ -362,6 +367,7 @@
         {
           "from": "./judge",
           "to": "./dream-glue",
+          "condition": "!has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "store_origin": "'dream'",
@@ -398,6 +404,7 @@
         {
           "from": "./closer",
           "to": "./close-glue",
+          "condition": "!has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "store_origin": "'close'",
@@ -504,6 +511,7 @@
         {
           "from": "./dialectic",
           "to": "./recall",
+          "condition": "!has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "mem_phase": "'answer'"
@@ -840,6 +848,114 @@
           "from": ".",
           "to": "./judge",
           "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/judge'))"
+        },
+        {
+          "from": "./closer",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./dialectic",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./dreamer",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./judge",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./tool",

@@ -466,7 +466,11 @@ fn a_push_edge_whose_path_breaks_its_literal_is_refused() {
 /// modifier, with one that writes other keys, or with `set_hop route
 /// "hop.route"`, which keeps the lane it found. Under the shipped default the
 /// broker permits each at `/os/orgs`, exactly as it permits a `swap_nodes` on a
-/// foreign brain.
+/// foreign brain. Since 0.47.0 such a forward moves nothing: the brain it
+/// reaches applies a push only when `hop.subscriber` is its own path (GH #862,
+/// `gh862_a_push_for_another_cell_moves_nothing.rs`
+/// `a_forward_into_another_brain_moves_nothing`) -- the gate still asks, and
+/// the cell is where the answer is enforced.
 #[test]
 fn a_bare_forward_stays_a_broker_question() {
     if !shipped() {

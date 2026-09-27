@@ -58,17 +58,19 @@ TOOLS = {
     "tap.mjs": "node",
     "markers.py": "python3",
     "duplex_proof.mjs": "node",
+    "worker_stalls.py": "python3",
 }
 
 # `callers/` holds TEMPLATES, not bound callers: a caller names one colony's
 # port, root and member path, and none of those three belong in a public tree.
 # The orchestrator substitutes the placeholders when it plants a caller.
 # `headers.py` reads a colony's database file, not its port.
-PLACEHOLDERS = {"headers.py": ("@LAB@", "@DB@")}
+# `worker_stalls.py` reads one process's `/proc`, not a port (GH #866).
+PLACEHOLDERS = {"headers.py": ("@LAB@", "@DB@"), "worker_stalls.py": ("@LAB@", "@PID@")}
 DEFAULT_PLACEHOLDERS = ("@LAB@", "@PORT@")
 
 # The one argument without which a tool refuses (exit 2); `--port` unless named.
-MANDATORY = {"headers.py": "--db"}
+MANDATORY = {"headers.py": "--db", "worker_stalls.py": "--pid"}
 
 # Every head says the same five things, whatever the comment syntax around them.
 HEAD_LINES = 60
@@ -809,6 +811,184 @@ class QueueTest(unittest.TestCase):
                 holder.wait(timeout=10)
                 if waiter is not None:
                     waiter.wait(timeout=30)
+
+
+class WorkerStallsTest(unittest.TestCase):
+    """`worker_stalls.py` samples one process's threads out of `/proc` (GH #866).
+
+    A `colony_loop` trip with `witness=kept` and no supervisor lag says the
+    colony task was runnable and not polled for 500 ms. The tool shows which
+    runtime worker stood in which kernel wait channel while that happened. It
+    is exercised against a fixture `/proc` (`--proc-root`), never against a
+    running colony: the contract is what it reads, what it calls a core
+    worker, how it classes a wait channel, and how it joins a trip.
+    """
+
+    PID = 4242
+    # tid -> (comm, state, starttime, wchan). Four workers started with the
+    # runtime; 4250 is a blocking-pool thread of the same name, born later.
+    THREADS = {
+        4242: ("meclaw", "S", 100, "futex_wait_queue"),
+        4243: ("tokio-rt-worker", "S", 101, "futex_wait_queue"),
+        4244: ("tokio-rt-worker", "D", 101, "jbd2_log_wait_commit"),
+        4245: ("tokio-rt-worker", "S", 101, "ep_poll"),
+        4246: ("tokio-rt-worker", "R", 101, "0"),
+        4250: ("tokio-rt-worker", "S", 900, "pipe_read"),
+    }
+
+    def setUp(self):
+        self.tool = load_tool("worker_stalls.py")
+
+    def proc(self, root):
+        for tid, (comm, state, start, wchan) in self.THREADS.items():
+            task = pathlib.Path(root) / str(self.PID) / "task" / str(tid)
+            task.mkdir(parents=True)
+            rest = [state] + ["0"] * 18 + [str(start)] + ["0"] * 5
+            (task / "stat").write_text("%d (%s) %s\n" % (tid, comm, " ".join(rest)))
+            (task / "wchan").write_text(wchan)
+        (pathlib.Path(root) / "pressure").mkdir()
+        (pathlib.Path(root) / "pressure" / "io").write_text(
+            "some avg10=1.50 avg60=0.20 avg300=0.00 total=1\n"
+            "full avg10=1.25 avg60=0.10 avg300=0.00 total=1\n")
+        (pathlib.Path(root) / "meminfo").write_text("MemTotal: 1 kB\nDirty:  840000 kB\n")
+        fds = pathlib.Path(root) / str(self.PID) / "fd"
+        fds.mkdir()
+        os.symlink("/srv/colony/main/board/cell.db-wal", str(fds / "7"))
+        os.symlink("/srv/colony/log.txt", str(fds / "8"))
+
+    def sample(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.proc(tmp)
+            before = sorted((p, p.read_bytes()) for p in pathlib.Path(tmp).rglob("*") if p.is_file())
+            done = subprocess.run(
+                ["python3", str(LAB / "worker_stalls.py"), "--pid", str(self.PID),
+                 "--proc-root", tmp, "--minutes", "1", "--no-align",
+                 "--window-before", "0", "--window-after", "0.05"],
+                capture_output=True, text=True, timeout=60)
+            after = sorted((p, p.read_bytes()) for p in pathlib.Path(tmp).rglob("*") if p.is_file())
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        self.assertEqual(before, after, "a reader writes nothing into /proc")
+        lines = done.stdout.splitlines()
+        self.assertEqual(1, len(lines), done.stdout)
+        return json.loads(lines[0])
+
+    def test_one_window_is_one_line_of_the_documented_shape(self):
+        row = self.sample()
+        self.assertEqual(self.PID, row["pid"])
+        self.assertRegex(row["minute"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual({"avg10": 1.25, "avg60": 0.1, "avg300": 0.0}, row["psi_io"]["full"])
+        self.assertEqual(840000, row["dirty_kb"])
+        self.assertEqual([], row["fd_events"], "an unchanged set of files is no event")
+        for th in row["threads"]:
+            for run in th["runs"]:
+                self.assertEqual({"wchan", "state", "from_ms", "to_ms"}, set(run))
+                self.assertLessEqual(run["from_ms"], run["to_ms"])
+
+    def test_core_workers_are_the_four_that_started_first(self):
+        core = {th["tid"]: th["core"] for th in self.sample()["threads"]}
+        self.assertEqual({4242: False, 4243: True, 4244: True, 4245: True, 4246: True,
+                          4250: False}, core)
+
+    def test_a_worker_in_a_journal_fsync_is_read_as_such(self):
+        runs = {th["tid"]: th["runs"] for th in self.sample()["threads"]}
+        self.assertEqual([("D", "jbd2_log_wait_commit")],
+                         [(r["state"], r["wchan"]) for r in runs[4244]])
+
+    def test_the_classes_of_the_plan(self):
+        cases = {("S", "futex_wait_queue"): "idle", ("S", "ep_poll"): "idle",
+                 ("S", "do_epoll_wait"): "idle", ("S", "hrtimer_nanosleep"): "idle",
+                 ("D", "jbd2_log_wait_commit"): "H1-fsync",
+                 ("D", "file_write_and_wait_range"): "H1-fsync",
+                 ("D", "folio_wait_writeback"): "H1-fsync",
+                 ("S", "pipe_read"): "H1-exec", ("S", "anon_pipe_read"): "H1-exec",
+                 ("D", "balance_dirty_pages"): "H1-dirty",
+                 ("D", "filemap_fault"): "H1-fault",
+                 ("R", "0"): "H1-cpu", ("S", "0"): "unknown", ("D", "0"): "unknown"}
+        for (state, wchan), want in cases.items():
+            with self.subTest(state=state, wchan=wchan):
+                self.assertEqual(want, self.tool.classify(state, wchan))
+
+    def test_marked_files_are_named_by_their_last_two_parts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.proc(tmp)
+            self.assertEqual({7: "board/cell.db-wal"}, self.tool.read_fds(tmp, self.PID))
+
+    def test_a_database_that_closes_is_an_event(self):
+        """A store that falls asleep closes its `cell.db`; the close is the
+        moment its connection checkpoints, and a trip beside it names it."""
+        snaps = [(0, {7: "board/cell.db-wal", 9: "x/orphan-journal.jsonl"}),
+                 (50, {7: "board/cell.db-wal"}),
+                 (100, {})]
+        self.assertEqual([{"ms": 50, "op": "close", "fd": 9, "file": "x/orphan-journal.jsonl"},
+                          {"ms": 100, "op": "close", "fd": 7, "file": "board/cell.db-wal"}],
+                         self.tool.fd_events(snaps))
+
+    def test_runs_fold_until_the_reading_changes(self):
+        a = {1: ("S", "tokio-rt-worker", 1, "futex_wait_queue")}
+        b = {1: ("D", "tokio-rt-worker", 1, "jbd2_log_wait_commit")}
+        runs = self.tool.fold([(0, a), (10, b), (20, b), (30, b), (40, a)])[1][1]
+        self.assertEqual([("futex_wait_queue", 0, 10), ("jbd2_log_wait_commit", 10, 40),
+                          ("futex_wait_queue", 40, 40)],
+                         [(r["wchan"], r["from_ms"], r["to_ms"]) for r in runs])
+
+    TRIP = ("2026-09-26T20:00:00.690000Z ERROR meclaw_cli: watchdog trip reason=colony "
+            "heartbeat lost for 5 consecutive supervisor periods of 100 ms [starved=colony_loop "
+            "silent_for=500ms nominal_window=500ms supervisor_lag=0ms in_flight_work=false "
+            "witness=kept armed_for=4131639ms work_item=none] on_trip=exit "
+            'starved="colony_loop" fatal=true work_item="none"')
+
+    def window_row(self, minute, block):
+        core = [{"tid": t, "comm": "tokio-rt-worker", "core": True,
+                 "runs": [{"wchan": "futex_wait_queue", "state": "S", "from_ms": -400,
+                           "to_ms": 1600}]} for t in (11, 12, 13)]
+        core.append({"tid": 14, "comm": "tokio-rt-worker", "core": True,
+                     "runs": [{"wchan": "futex_wait_queue", "state": "S", "from_ms": -400,
+                               "to_ms": block[0]},
+                              {"wchan": block[2], "state": "D", "from_ms": block[0],
+                               "to_ms": block[1]},
+                              {"wchan": "futex_wait_queue", "state": "S", "from_ms": block[1],
+                               "to_ms": 1600}]})
+        return {"minute": minute, "pid": 7, "samples": 200, "threads": core,
+                "psi_io": {"full": {"avg10": 2.5}}, "dirty_kb": 840000}
+
+    def report(self, rows, trips):
+        with tempfile.TemporaryDirectory() as tmp:
+            jsonl = pathlib.Path(tmp) / "m1.jsonl"
+            jsonl.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            journal = pathlib.Path(tmp) / "trips.raw"
+            journal.write_text("".join(t + "\n" for t in trips))
+            done = subprocess.run(["python3", str(LAB / "worker_stalls.py"), "--report",
+                                   str(jsonl), "--journal", str(journal)],
+                                  capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return done.stdout
+
+    def test_a_trip_is_joined_with_the_worker_that_blocked(self):
+        out = self.report([self.window_row("2026-09-26T20:00:00Z", (20, 780, "jbd2_log_wait_commit")),
+                           self.window_row("2026-09-26T20:01:00Z", (30, 530, "pipe_read"))],
+                          [self.TRIP])
+        self.assertIn("colony_loop True 7 14 H1-fsync jbd2_log_wait_commit D 20 780 760", out)
+        self.assertIn("trips_matched 1 h1_block_ge_400ms_from_0_600 1 free_workers 0", out)
+        self.assertIn("blocked_windows_without_trip 1/1", out)
+        self.assertIn("H1 confirmed=True", out)
+
+    def test_free_workers_during_a_trip_refute(self):
+        out = self.report([self.window_row("2026-09-26T20:00:00Z", (900, 950, "pipe_read"))],
+                          [self.TRIP])
+        self.assertIn("free_workers 1", out)
+        self.assertIn("refuted=True", out)
+
+    def test_it_never_signals_traces_or_opens_a_database(self):
+        text = (LAB / "worker_stalls.py").read_text(encoding="utf-8")
+        for word in ("os.kill", "import signal", "ptrace", "sqlite3", "strace", "gdb"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, text)
+
+    def test_report_without_journal_exits_two(self):
+        done = subprocess.run(["python3", str(LAB / "worker_stalls.py"), "--report", "x.jsonl"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(2, done.returncode)
+        self.assertIn("--journal", done.stderr)
 
 
 if __name__ == "__main__":

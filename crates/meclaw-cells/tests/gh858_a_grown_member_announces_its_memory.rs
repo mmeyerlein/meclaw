@@ -187,7 +187,33 @@ fn a_grown_member_brings_the_road_of_its_memory_only_where_a_registry_is() {
         );
     }
 
-    let announce: Vec<&Value> = edges.iter().filter(|e| e["to"] == ".").collect();
+    // GH #863: one way back for the member's memory -- its four cells share
+    // one composite -- drawn after the announcement.
+    let back: Vec<&Value> = edges
+        .iter()
+        .filter(|e| {
+            e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("'model_refused'"))
+        })
+        .collect();
+    assert_eq!(
+        back,
+        vec![
+            &json!({"from": "./acme/members/alex/memory-hive", "to": ".",
+                     "condition": "has(hop.route) && hop.route == 'model_refused'"})
+        ],
+        "{edges:?}"
+    );
+    let announce: Vec<&Value> = edges
+        .iter()
+        .filter(|e| {
+            e["to"] == "."
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("'mutation_committed'"))
+        })
+        .collect();
     assert_eq!(announce.len(), 1, "{edges:?}");
     assert_eq!(announce[0]["from"], "./acme/members/alex");
     assert_eq!(

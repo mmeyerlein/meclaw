@@ -1,5 +1,6 @@
 //! The three routes a `voice` cell serves: the socket, the declaration and the
-//! built-in test page (wave voice-cell).
+//! built-in test page (wave voice-cell) -- the page as four files since
+//! `voice@2.3.0` (GH #867).
 //!
 //! The protocol itself is `docs/voice-wire-protocol.en.md`; this module is only
 //! the door. There is no authentication and no TLS here — the listener binds
@@ -50,10 +51,19 @@ pub struct Negotiated {
     pub audio_out: Option<AudioFormat>,
 }
 
-/// The cell's router.
+/// The cell's router, at the root of whatever serves it.
+///
+/// Three routes of the protocol (the page, the declaration, the socket) and,
+/// since `voice@2.3.0` (GH #867), the page's three files beside it. They are
+/// the page split up, not new surface: the page used to carry them inline, and
+/// a page with inline script, an inline style and an object-URL worklet does
+/// not run behind a proxy that sets `script-src 'self'`.
 pub fn router(io: Arc<VoiceIoShared>) -> Router {
     Router::new()
         .route("/", get(page))
+        .route("/test.js", get(page_script))
+        .route("/test.css", get(page_style))
+        .route("/worklet.js", get(page_worklet))
         .route("/info", get(info))
         .route("/ws", get(ws_upgrade))
         .with_state(io)
@@ -62,19 +72,46 @@ pub fn router(io: Arc<VoiceIoShared>) -> Router {
 /// The cell's router under a mount's prefix.
 ///
 /// The one listener hands over a stream whose request line already carries
-/// `/<mount>/…`, so the paths a mounted cell answers are its own three routes
-/// with the mount in front of them. Nothing else differs: it is the same router,
-/// the same state, the same admission.
+/// `/<mount>/…`, so the paths a mounted cell answers are its own routes with
+/// the mount in front of them. Nothing else differs: the same handlers, the
+/// same state, the same admission.
 ///
-/// The extra route is axum's trailing slash: `nest("/voice", …)` answers
-/// `/voice` for the inner `/` and `/voice/info` for the inner `/info`, but
-/// **not** `/voice/` — the wildcard it registers does not match an empty rest.
-/// A person types the slash, and the page is the same page, so it is named
-/// rather than left as a 404 nobody can explain.
+/// Spelled out rather than `nest`ed, because of the one path where the two
+/// differ. `nest("/voice", …)` answers `/voice` with the inner `/` -- the page
+/// -- and not `/voice/`. Since the page links its files relatively
+/// (`test.js`, `test.css`, `worklet.js`), the page served at `/voice` would
+/// ask for `/test.js` and leave the mount. So `/<mount>/` is the page, and
+/// `/<mount>` answers `308` with the relative `Location: <mount>/`: relative,
+/// because behind a proxy that strips a prefix this cell does not know the
+/// path the browser used, and `<mount>/` resolved against `…/<mount>` is the
+/// same directory under any prefix. `308`, not `301`: the method is kept.
 pub fn mounted_router(io: Arc<VoiceIoShared>, mount: &str) -> Router {
+    let at = |rest: &str| format!("/{mount}{rest}");
+    let slash = format!("{mount}/");
     Router::new()
-        .nest(&format!("/{mount}"), router(Arc::clone(&io)))
-        .route(&format!("/{mount}/"), get(page).with_state(io))
+        .route(
+            &at(""),
+            get(move || {
+                let slash = slash.clone();
+                async move { to_directory(&slash) }
+            }),
+        )
+        .route(&at("/"), get(page))
+        .route(&at("/test.js"), get(page_script))
+        .route(&at("/test.css"), get(page_style))
+        .route(&at("/worklet.js"), get(page_worklet))
+        .route(&at("/info"), get(info))
+        .route(&at("/ws"), get(ws_upgrade))
+        .with_state(io)
+}
+
+/// `GET /<mount>` — the page's directory, as a permanent, relative redirect.
+fn to_directory(location: &str) -> Response {
+    (
+        StatusCode::PERMANENT_REDIRECT,
+        [(header::LOCATION, location.to_string())],
+    )
+        .into_response()
 }
 
 /// The format the client will be sent, if anything is ever sent.
@@ -223,9 +260,33 @@ pub(crate) fn audio_in(io: &VoiceIoShared) -> AudioFormat {
 
 /// `GET /` — the built-in browser test page (R-V9).
 async fn page() -> Response {
+    static_file("text/html; charset=utf-8", testpage::html())
+}
+
+/// `GET /test.js` — the test page's module script (GH #867).
+async fn page_script() -> Response {
+    static_file("text/javascript; charset=utf-8", testpage::script())
+}
+
+/// `GET /test.css` — the test page's stylesheet (GH #867).
+async fn page_style() -> Response {
+    static_file("text/css; charset=utf-8", testpage::style())
+}
+
+/// `GET /worklet.js` — the test page's capture worklet (GH #867).
+async fn page_worklet() -> Response {
+    static_file("text/javascript; charset=utf-8", testpage::worklet())
+}
+
+/// One file of the test page. `no-cache`: they are compiled into the binary,
+/// and a heuristically cached copy would outlive the binary that served it.
+fn static_file(content_type: &'static str, body: &'static str) -> Response {
     (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        testpage::html(),
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
     )
         .into_response()
 }

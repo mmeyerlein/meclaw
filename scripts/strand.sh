@@ -6,6 +6,7 @@
 #     scripts/strand.sh gate [<mode>] [gate.sh options]
 #     scripts/strand.sh report [--strand <name>]
 #     scripts/strand.sh close [--strand <name>] [--do]
+#     scripts/strand.sh token take|release|who|check|init|off [options]
 #
 # WHY THIS EXISTS
 # ===============
@@ -37,6 +38,40 @@
 #     lines in one wave, and the same summary line in up to three files
 #     (`befund/04-struktur.md` section 9.2 / 9.5). So the run is archived next
 #     to the wave and `report` fills the header block from the archive.
+#
+# THE CARGO TOKEN (`token`) limits how many strands of a wave are in their
+# cargo phase at once. The cargo lock serialises builds, but it does not say
+# how many builders wait behind it: in one wave eleven builders queued for
+# 20-90 minutes per single test and woke 103 times to a cold prompt cache in
+# three hours (the wave's lesson on pipeline pace, sections 1-2). So the
+# orchestrator arms N tokens (`token init --max N`, default 3), a strand
+# takes one after its rebase (`token take`; exit 3 = queued, first come
+# first served -- end the turn and wait to be woken), and `report` gives it
+# back at the end of the cargo phase. Once armed, `scripts/test-tier.sh`
+# and `strand.sh gate` refuse without a token (exit 3). Never checked: a
+# host without a token file (a public clone, CI, every test, any work
+# outside a wave), a tree whose branch has no `/` (the main tree, where the
+# orchestrator runs the pass), a tier run inside a gate, and
+# `MECLAW_STRAND_TOKEN_SKIP=<reason>` -- which is logged, not silent.
+#
+#     token init [--max N] [--ttl MIN] [--force]   arm the host (refuses over a queue)
+#     token take [--strand S]                      hold a token or join the queue
+#     token release [--strand S]                   give it back, name the next
+#     token who                                    holders, queue, last events
+#     token check [--pid P]                        what the gate and the tier call
+#     token off [--force]                          disarm (refuses over a queue; the log stays)
+#
+# The file lives next to the cargo lock: `${MECLAW_GATE_LOCK%.lock}.tokens`
+# (default /tmp/meclaw-w26-cargo.tokens), or `MECLAW_STRAND_TOKENS`, with
+# `.lock` (flock) and `.log` (append-only TSV) beside it. A holder is STALE
+# when its worktree is gone, or when it was last seen longer ago than the
+# TTL and no live process holds it -- a running gate keeps its token as long
+# as it runs. A waiter in its own worktree keeps its place as long as the
+# tree stands (`who` marks it once it waits beyond the TTL); one queued from
+# outside leaves after the TTL. `init` and `off` refuse while anybody holds
+# a token or waits for one, unless `--force`. A strand is
+# `<wave>/<name>`, its branch: `--strand <name>` takes the wave from the
+# branch or `--wave`, `--strand <wave>/<name>` is taken as it stands.
 #
 # THE HEADER BLOCK is the point of all of it. Every report starts with a YAML
 # block (strang, branch, issues, basis, gate, commits) and
@@ -92,15 +127,29 @@ main_root() {
 # The wave of the branch this tree is on: `<wave>/<name>` -> the one directory
 # under `plans/` whose name starts with `<wave>-`. A strand carries its wave in
 # its branch, so nothing has to be guessed for `gate`, `report` and `close`.
+#
+# A prefix can come back: on 2026-09-26 `plans/` held `welle-fix-2026-09-12`
+# and `welle-fix-2026-09-27`, the branch `welle-fix/V` matched both, and every
+# `gate`/`report`/`close` of the running wave without `--wave` ended in exit 2
+# on the live table (GH #861, the review of strand V). Of several hits, the
+# one directory that carries this strand's report `berichte/<name>.md` wins --
+# `new` wrote it there. Two or none with that report stay ambiguous.
 branch_wave_dir() {
-    local plans="$1" wave cand hits=()
-    wave=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
-    case "$wave" in */*) wave=${wave%%/*} ;; *) return 1 ;; esac
+    local plans="$1" branch wave cand hits=() owners=()
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+    case "$branch" in */*) wave=${branch%%/*} ;; *) return 1 ;; esac
     for cand in "$plans/$wave"-*/; do
-        [ -d "$cand" ] && hits+=("$(basename -- "${cand%/}")")
+        [ -d "$cand" ] || continue
+        hits+=("$(basename -- "${cand%/}")")
+        [ -f "${cand}berichte/${branch##*/}.md" ] && owners+=("${hits[-1]}")
     done
-    [ ${#hits[@]} -eq 1 ] || return 1
-    printf '%s\n' "${hits[0]}"
+    if [ ${#hits[@]} -eq 1 ]; then
+        printf '%s\n' "${hits[0]}"
+    elif [ ${#owners[@]} -eq 1 ]; then
+        printf '%s\n' "${owners[0]}"
+    else
+        return 1
+    fi
 }
 
 # The wave directory under `plans/`: `--wave` wins, then the branch, and only
@@ -278,26 +327,58 @@ strand_of_branch() {
 }
 
 cmd_gate() {
-    local mode="strand" strand_in="" wave_in="" args=() have_log_dir=0
+    local mode="strand" strand_in="" wave_in="" args=() have_log_dir=0 plan_only=0
     if [ $# -ge 1 ]; then
         case "$1" in strand|integration|release|ci) mode="$1"; shift ;; esac
     fi
     while [ $# -gt 0 ]; do
         case "$1" in
-            --strand)  need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
-            --wave)    need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
-            --log-dir) have_log_dir=1; args+=("$1"); shift ;;
-            *)         args+=("$1"); shift ;;
+            # A question, not a run. It used to reach the runner AFTER the
+            # kit had made a run directory and pointed `latest` at it -- a
+            # folder without a summary, and a `latest` through which `report`
+            # no longer found the green gate (GH #861).
+            -h|--help)
+                usage
+                echo "gate options pass through to scripts/gate.sh -- see scripts/gate.sh --help"
+                return 0 ;;
+            --strand)    need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
+            --wave)      need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
+            --log-dir)   have_log_dir=1; args+=("$1"); shift ;;
+            --plan-only) plan_only=1; args+=("$1"); shift ;;
+            *)           args+=("$1"); shift ;;
         esac
     done
 
     local root plans wdir name archive_root run_id archive runlog gate rc summary
+
+    # The gate of THIS tree, not of the main one and not of the tree the kit
+    # was called from: a strand gates the sources it is standing in. The wave
+    # that changes `gate.sh` is exactly the wave in which the difference shows.
+    gate="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/gate.sh"
+    [ -x "$gate" ] \
+        || gate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/gate.sh"
+    [ -x "$gate" ] || die "no gate runner at $gate"
+
+    # A plan runs nothing: it goes to the caller as the runner prints it,
+    # with no archive, no `latest` and no token -- it builds nothing.
+    if [ "$plan_only" = 1 ]; then
+        "$gate" "$mode" "${args[@]}"
+        return $?
+    fi
+
     root=$(main_root) || exit 2
     plans="$root/plans"
     wdir=$(wave_dir "$plans" "$wave_in") || exit 2
     name="$strand_in"
     [ -n "$name" ] || name=$(strand_of_branch) \
         || die "cannot tell the strand from the branch -- pass --strand"
+
+    # The cargo token, BEFORE anything is written: a refused gate leaves no
+    # run directory behind. The heartbeat names this shell, which blocks for
+    # the whole run, so a gate longer than the TTL keeps its token. The exit
+    # of the check goes on as it is, like in `test-tier.sh`: 3 is no token,
+    # 2 a broken token file that somebody has to look at (review M4).
+    cmd_token check --pid "$$" || return $?
 
     # ONE DIRECTORY PER RUN, and a `latest` pointer beside them.
     #
@@ -326,14 +407,6 @@ cmd_gate() {
         || printf '%s\n' "$run_id" >"$archive_root/latest.txt"
     runlog="$archive/run.log"
 
-    # The gate of THIS tree, not of the main one and not of the tree the kit
-    # was called from: a strand gates the sources it is standing in. The wave
-    # that changes `gate.sh` is exactly the wave in which the difference shows.
-    gate="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/gate.sh"
-    [ -x "$gate" ] \
-        || gate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/gate.sh"
-    [ -x "$gate" ] || die "no gate runner at $gate"
-
     # The archive is named twice on purpose: `--log-dir` is what the runner
     # understands today, `MECLAW_GATE_ARCHIVE` is the option the gate strand
     # of this wave adds. Both name the TARGET DIRECTORY ITSELF -- the runner
@@ -349,6 +422,10 @@ cmd_gate() {
     # older runner simply ignores it.
     MECLAW_GATE_ARCHIVE="$archive" "$gate" "$mode" "${args[@]}" >"$runlog" 2>&1
     rc=$?
+    # Seen after the run, and the pid of the finished run is gone from the
+    # entry: from here on the TTL counts. A token released during the run is
+    # no refusal (the check stays silent then).
+    cmd_token check --pid 0 >/dev/null 2>&1 || true
 
     # Red stations first, then the summary -- the two things a report needs.
     grep -E '^GATE [^ ]+ \[.*\] [0-9]+s RED' "$runlog" || true
@@ -447,10 +524,19 @@ tip = head.get("branch", "").strip()
 if not tip or not git("rev-parse", "--verify", "--quiet", "%s^{commit}" % tip):
     tip = "HEAD"
 
-# `basis` is the commit the strand branched from; it never changes, so an
-# entry that is already there wins over a fresh merge-base.
-if not head["basis"]:
-    head["basis"] = git("merge-base", "master", tip)[:8]
+# `basis` is where the strand stands on master NOW: the merge-base at the time
+# of the report. A strand rebases onto master before its cargo phase, and the
+# base of its skeleton is then a commit below the new master -- `basis..tip`
+# walked master's first-parent line down from there and listed every commit
+# and every merge of the other strands. Eight head blocks of one wave were
+# corrected by hand (wave Substrat, receipt section 9). Once the branch is in
+# master its merge-base IS its tip, and the head block's base is the one that
+# still says where the strand started.
+fresh = git("merge-base", "master", tip)
+if fresh and fresh != git("rev-parse", tip):
+    head["basis"] = fresh[:8]
+elif not head["basis"]:
+    head["basis"] = fresh[:8]
 
 # The commits ARE the branch -- retyping them is how a receipt grows a wrong
 # SHA. Oldest first, the order a reader walks them in, and FIRST PARENT only:
@@ -488,6 +574,19 @@ if head["gate"].rstrip('"').endswith("RED"):
     sys.exit("strand: the gate is RED -- fix it, run it again, then report")
 print("strand: %s -- header block complete, gate green" % report)
 PY
+    local rc=$? branch
+    [ "$rc" = 0 ] || return "$rc"
+    # The report ends the cargo phase (plans/PREAMBLE.md section 5), so it
+    # gives the token back: a forgotten `release` would block a place in the
+    # pipeline until the TTL runs out. The strand is the BRANCH of the head
+    # block, whichever tree this runs in.
+    if [ -f "$(token_file)" ]; then
+        branch=$(awk 'NR == 1 && /^---$/ { head = 1; next }
+                      head && /^---$/ { exit }
+                      head && sub(/^branch: */, "") { print; exit }' "$REPORT")
+        [ -n "$branch" ] && cmd_token release --strand "$branch"
+    fi
+    return 0
 }
 
 cmd_close() {
@@ -584,6 +683,397 @@ for issue in issues:
 PY
 }
 
+# --- token ------------------------------------------------------------------
+
+# The token file of this host: next to the cargo lock, so every test that
+# already points `MECLAW_GATE_LOCK` at a throw-away path runs UNARMED without
+# a word about tokens.
+token_file() {
+    local lock="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
+    printf '%s\n' "${MECLAW_STRAND_TOKENS:-${lock%.lock}.tokens}"
+}
+
+cmd_token() {
+    local verb="${1:-}"
+    [ $# -ge 1 ] && shift
+    case "$verb" in
+        take|release|who|check|init|off) ;;
+        *) die "token: expected take|release|who|check|init|off" ;;
+    esac
+    local strand_in="" wave_in="" max="3" ttl="90" pid="" force=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --strand) need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
+            --wave)   need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
+            --max)    need_value "$1" "$#"; max="$2"; shift 2 ;;
+            --ttl)    need_value "$1" "$#"; ttl="$2"; shift 2 ;;
+            --pid)    need_value "$1" "$#"; pid="$2"; shift 2 ;;
+            --force)  force=1; shift ;;
+            *) die "token $verb: unknown argument: $1" ;;
+        esac
+    done
+
+    local file branch tree key="" wave root
+    file=$(token_file)
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    tree=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    case "$strand_in" in
+        */*) key="$strand_in" ;;
+        "")  case "$branch" in */*) key="$branch" ;; esac ;;
+        *)
+            if [ -n "$wave_in" ]; then
+                root=$(main_root) || exit 2
+                wave=$(wave_dir "$root/plans" "$wave_in") || exit 2
+                wave=$(wave_name "$wave")
+            else
+                case "$branch" in
+                    */*) wave=${branch%%/*} ;;
+                    *) die "token: --strand $strand_in needs --wave, a strand branch, or the form <wave>/<name>" ;;
+                esac
+            fi
+            key="$wave/$strand_in" ;;
+    esac
+
+    if [ "$verb" = check ]; then
+        # Unarmed host, or a tree that is no strand (the main tree, a
+        # detached HEAD): nothing to check, and nothing to say.
+        [ -f "$file" ] || return 0
+        [ -n "$key" ] || return 0
+    fi
+    case "$verb" in
+        take|release)
+            [ -n "$key" ] || die "token $verb: cannot tell the strand from the branch -- pass --strand" ;;
+    esac
+
+    MECLAW_T_VERB="$verb" MECLAW_T_KEY="$key" MECLAW_T_BRANCH="$branch" \
+    MECLAW_T_TREE="$tree" MECLAW_T_FILE="$file" MECLAW_T_MAX="$max" \
+    MECLAW_T_TTL="$ttl" MECLAW_T_PID="$pid" MECLAW_T_FORCE="$force" \
+    MECLAW_T_SELF="$$" python3 - <<'PY'
+import fcntl, json, os, sys, time
+
+verb = os.environ["MECLAW_T_VERB"]
+key = os.environ["MECLAW_T_KEY"]
+branch = os.environ["MECLAW_T_BRANCH"]
+tree = os.environ["MECLAW_T_TREE"]
+path = os.environ["MECLAW_T_FILE"]
+force = os.environ["MECLAW_T_FORCE"] == "1"
+pid_arg = os.environ["MECLAW_T_PID"]
+caller = int(os.environ["MECLAW_T_SELF"])   # the kit process that asks
+LOG = path + ".log"
+now = int(os.environ.get("MECLAW_STRAND_NOW") or time.time())   # TEST HOOK
+
+REFUSED = ("no cargo token for %s -- run 'scripts/strand.sh token take' first. "
+           "Without a token: write code, tests and docs without cargo, then end "
+           "your turn and wait to be woken (plans/PREAMBLE.md section 5).")
+
+
+def say(msg):
+    print("strand: " + msg, file=sys.stderr)
+
+
+def fail(msg):
+    say(msg)
+    sys.exit(2)
+
+
+def whole(name, value):
+    try:
+        n = int(value)
+    except ValueError:
+        n = 0
+    if n < 1:
+        fail("token %s: %s must be a whole number of at least 1, not %r"
+             % (verb, name, value))
+    return n
+
+
+def iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def mins(t):
+    return max(0, (now - t) // 60)
+
+
+def log(event, strand, detail=""):
+    with open(LOG, "a") as fh:
+        fh.write("\t".join([iso(now), event, strand, branch or "-", detail]) + "\n")
+
+
+def load():
+    """The state, None for an unarmed host -- and never a silent new file
+    over a broken one: that would hand out tokens somebody already holds."""
+    try:
+        text = open(path).read()
+    except FileNotFoundError:
+        return None
+    try:
+        st = json.loads(text)
+        if not (isinstance(st["holders"], list) and isinstance(st["waiting"], list)):
+            raise ValueError
+        st["max"], st["ttl_min"] = int(st["max"]), int(st["ttl_min"])
+        for h in st["holders"]:
+            # The first form of the file kept one `pid` per holder.
+            old = h.pop("pid", 0)
+            h["pids"] = [int(p) for p in h.get("pids", [old] if old else [])]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        fail("the token file %s is broken -- look at it, then "
+             "'scripts/strand.sh token init --force'" % path)
+    return st
+
+
+def write(st):
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w") as fh:
+        json.dump(st, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stale(h, st):
+    if h.get("tree") and not os.path.isdir(h["tree"]):
+        return "its worktree is gone"
+    if now - h["seen"] <= st["ttl_min"] * 60 or any(alive(p) for p in h["pids"]):
+        return ""
+    return "last seen %d min ago, no live process" % mins(h["seen"])
+
+
+def stale_wait(w, st):
+    # A waiter in its own worktree is alive as long as the tree is: it waits
+    # on purpose, and with three tokens for eight strands a wait beyond the
+    # TTL is the normal case -- the drop landed at somebody else's `take`, so
+    # the strand that lost its place never heard of it (review I1). The TTL
+    # is for waiters queued from outside (`--strand`), which have no tree.
+    if w.get("tree"):
+        return "" if os.path.isdir(w["tree"]) else "its worktree is gone"
+    if now - w["since"] > st["ttl_min"] * 60:
+        return "waiting %d min, nobody took it up" % mins(w["since"])
+    return ""
+
+
+def holder(st, strand):
+    return next((h for h in st["holders"] if h["strand"] == strand), None)
+
+
+def refuse_over_a_queue(st, way_out):
+    """Exit 2 while anybody holds a token or waits for one -- the verbs that
+    throw the state away (`init`, `off`) never do it over a queue."""
+    if st and (st["holders"] or st["waiting"]):
+        who = ["%s holds a cargo token" % h["strand"] for h in st["holders"]]
+        who += ["%s waits in the queue" % w["strand"] for w in st["waiting"]]
+        fail("token %s: %s -- %s" % (verb, ", ".join(who), way_out))
+
+
+mine_tree = tree if branch == key else ""
+
+# Unarmed means without a trace: only `init` creates a file, the `.lock`
+# included -- a `take` on an unarmed host left an empty one behind (review
+# M1). Arming happens only through `init`, so the look outside the lock
+# cannot miss a file that another call is writing.
+if verb != "init" and not os.path.exists(path):
+    if verb == "who":
+        print("cargo tokens are not armed on this host (%s)" % path)
+    elif verb == "off":
+        say("cargo tokens are not armed on this host -- nothing to switch off")
+    elif verb in ("take", "release"):
+        say("cargo tokens are not armed on this host -- nothing to %s" % verb)
+    sys.exit(0)
+
+# One writer at a time, reader included: `who` must not see half a queue.
+with open(path + ".lock", "a") as guard:
+    fcntl.flock(guard, fcntl.LOCK_EX)
+
+    if verb == "init":
+        cap, ttl = whole("--max", os.environ["MECLAW_T_MAX"]), whole("--ttl", os.environ["MECLAW_T_TTL"])
+        if not force:
+            # Holders AND waiters: a re-init in the middle of a wave emptied
+            # the queue without a word (review M6).
+            refuse_over_a_queue(load(), "pass --force to start over")
+        write({"max": cap, "ttl_min": ttl, "armed": iso(now),
+               "holders": [], "waiting": []})
+        log("init --force" if force else "init", "-", "max %d ttl %d" % (cap, ttl))
+        say("cargo tokens armed: %d, ttl %d min (%s)" % (cap, ttl, path))
+        sys.exit(0)
+
+    if verb == "off":
+        if not force:
+            # The same check as `init`: `off` dropped the waiters without a
+            # word and only looked at the holders (review fix round 1, m3).
+            refuse_over_a_queue(load(), "release them or pass --force")
+        if not os.path.exists(path):
+            say("cargo tokens are not armed on this host -- nothing to switch off")
+            sys.exit(0)
+        os.remove(path)
+        log("off --force" if force else "off", "-")
+        say("cargo tokens switched off; the log stays (%s)" % LOG)
+        sys.exit(0)
+
+    st = load()
+
+    if verb == "who":
+        if st is None:
+            print("cargo tokens are not armed on this host (%s)" % path)
+            sys.exit(0)
+        print("cargo tokens: %d/%d held, ttl %d min, armed %s"
+              % (len(st["holders"]), st["max"], st["ttl_min"], st.get("armed", "?")))
+        for h in st["holders"]:
+            why = stale(h, st)
+            pids = ", ".join("%d (%s)" % (p, "alive" if alive(p) else "gone")
+                             for p in h["pids"])
+            print("  %s  held %d min, seen %d min ago, pid %s%s"
+                  % (h["strand"], mins(h["since"]), mins(h["seen"]), pids or "-",
+                     ("  STALE: " + why) if why else ""))
+        if st["waiting"]:
+            print("queue:")
+            for n, w in enumerate(st["waiting"], 1):
+                why = stale_wait(w, st)
+                if why:
+                    note = "  STALE: " + why
+                elif now - w["since"] > st["ttl_min"] * 60:
+                    # A waiter in a standing tree never expires (review I1),
+                    # so a builder that died while it waited blocks the
+                    # queue until `release --strand`. Say so -- a hint, the
+                    # entry stays (review fix round 1, m1).
+                    note = "  waiting beyond the ttl"
+                else:
+                    note = ""
+                print("  #%d %s  waiting %d min%s" % (n, w["strand"], mins(w["since"]), note))
+        else:
+            print("queue: empty")
+        try:
+            tail = open(LOG).read().splitlines()[-5:]
+        except FileNotFoundError:
+            tail = []
+        if tail:
+            print("last events:")
+            for line in tail:
+                print("  " + "  ".join(line.split("\t")))
+        sys.exit(0)
+
+    if st is None:
+        if verb in ("take", "release"):
+            say("cargo tokens are not armed on this host -- nothing to %s" % verb)
+        sys.exit(0)
+
+    if verb == "check":
+        skip = os.environ.get("MECLAW_STRAND_TOKEN_SKIP", "")
+        if skip:
+            log("skip", key, skip)
+            write(st)
+            say("token check skipped for %s: %s" % (key, skip))
+            sys.exit(0)
+        mine = holder(st, key)
+        if mine:
+            mine["seen"] = now
+            if pid_arg:
+                # Every live process of the strand holds the token, not the
+                # last one to say so: a single test beside a background gate
+                # wrote its pid over the gate's, and after the test the entry
+                # named a dead process -- a gate running past the TTL lost its
+                # token (review M2). `--pid 0` takes back the caller's own pid
+                # (the gate after its run); dead pids fall out on the way.
+                pids = [p for p in mine["pids"] if p != caller and alive(p)]
+                new_pid = int(pid_arg) if pid_arg.isdigit() else 0
+                if new_pid and new_pid not in pids:
+                    pids.append(new_pid)
+                mine["pids"] = pids
+            write(st)
+            sys.exit(0)
+        if pid_arg == "0":
+            # The heartbeat after a run: the token was released while it ran,
+            # by the orchestrator or by the station itself. Nothing is being
+            # refused -- the run is over (review M3).
+            sys.exit(3)
+        log("refused", key)
+        say(REFUSED % key)
+        sys.exit(3)
+
+    if verb == "release":
+        mine = holder(st, key)
+        queued = any(w["strand"] == key for w in st["waiting"])
+        if not mine and not queued:
+            say("%s holds no cargo token and is not in the queue -- nothing to release" % key)
+            sys.exit(0)
+        st["holders"] = [h for h in st["holders"] if h["strand"] != key]
+        st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
+        write(st)
+        by = "" if branch == key else " (released by %s)" % (branch or "a detached tree")
+        if not mine:
+            log("leave" if not by else "leave-by", key)
+            say("%s left the queue%s" % (key, by))
+            sys.exit(0)
+        log("release" if not by else "release-by", key, "held %d min" % mins(mine["since"]))
+        if st["waiting"]:
+            nxt = st["waiting"][0]
+            tail = "next in the queue: %s (waiting %d min)" % (nxt["strand"], mins(nxt["since"]))
+        else:
+            tail = "the queue is empty"
+        say("cargo token released by %s after %d min -- %d/%d held; %s%s"
+            % (key, mins(mine["since"]), len(st["holders"]), st["max"], tail, by))
+        sys.exit(0)
+
+    # take
+    for h in list(st["holders"]):
+        why = stale(h, st)
+        if why:
+            st["holders"].remove(h)
+            log("stale", h["strand"], why)
+            say("reclaimed the cargo token of %s -- %s (ttl %d min)"
+                % (h["strand"], why, st["ttl_min"]))
+    # A waiter nobody wakes any more would hold its place for everybody behind
+    # it. The caller's own entry is exempt: its `take` IS the sign of life.
+    for w in list(st["waiting"]):
+        why = "" if w["strand"] == key else stale_wait(w, st)
+        if why:
+            st["waiting"].remove(w)
+            log("stale-wait", w["strand"], why)
+            say("dropped %s from the queue -- %s (ttl %d min)"
+                % (w["strand"], why, st["ttl_min"]))
+    mine = holder(st, key)
+    if mine:
+        mine["seen"] = now
+        write(st)
+        say("cargo token already held by %s (%d/%d)" % (key, len(st["holders"]), st["max"]))
+        sys.exit(0)
+    names = [w["strand"] for w in st["waiting"]]
+    pos = names.index(key) if key in names else len(names)
+    free = st["max"] - len(st["holders"])
+    # FIFO: a token goes to the head of the queue -- a strand that just
+    # finished writing does not overtake one that has been waiting.
+    if pos < free:
+        st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
+        st["holders"].append({"strand": key, "since": now, "seen": now,
+                              "pids": [], "tree": mine_tree})
+        log("take", key)
+        write(st)
+        say("cargo token %d/%d taken by %s" % (len(st["holders"]), st["max"], key))
+        sys.exit(0)
+    if key not in names:
+        st["waiting"].append({"strand": key, "since": now, "tree": mine_tree})
+        log("wait", key)
+    write(st)
+    held = ", ".join("%s %d min" % (h["strand"], mins(h["since"])) for h in st["holders"])
+    if free <= 0:
+        head = "all %d cargo tokens are held (%s)" % (st["max"], held)
+    else:
+        head = ("%d of %d cargo tokens are held (%s) and the queue goes first"
+                % (len(st["holders"]), st["max"], held or "none"))
+    say("%s -- %s is #%d in the queue. End your turn; you are woken when a "
+        "token is free." % (head, key, pos + 1))
+    sys.exit(3)
+PY
+}
+
 # --- main -------------------------------------------------------------------
 
 if [ $# -lt 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
@@ -598,5 +1088,6 @@ case "$sub" in
     gate)   cmd_gate "$@" ;;
     report) cmd_report "$@" ;;
     close)  cmd_close "$@" ;;
-    *) die "unknown subcommand: $sub (expected new|gate|report|close)" ;;
+    token)  cmd_token "$@" ;;
+    *) die "unknown subcommand: $sub (expected new|gate|report|close|token)" ;;
 esac

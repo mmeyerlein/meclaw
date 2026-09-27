@@ -1,4 +1,4 @@
-# `memory-hive@3.6.0`
+# `memory-hive@3.6.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -369,6 +369,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `tool_call` | in → `./memory` | one `memory_recall` call a brain made (#552), split out by a dispatcher and carried here by the member the asker stands in. The body is the tool_call turn and nothing else; `hop.tool_call_id` is the correlation the asking round waits on, and the hive's own door promotes it to `context.memory_call_id`. **Plus the asking round**, exactly as on `in_query`: `audience_now` and `channel`, and `session_id` if the session leg is to be scoped. The tier is NOT on this lane — how deep a recall runs is `tool`'s own `params.tier`, because a model that could choose its own depth could ask for one the instance was tuned away from. Wire `tool_result` in the SAME mutation |
 | `in_schemas` | in → `./memory` | the names a collector declares it uses — `{"tools": ["memory_recall"]}` in the body, or `["*"]` for everything this hive declares, which is one schema. Nothing on the hop but the lane, nothing in the context. It is not a tool round and carries no `tool_name`. **The answer is not only about the names asked for** ([#606](https://github.com/mmeyerlein/meclaw/issues/606)): every answer of this lane also carries `sidecar[]`, what this memory asks of whoever talks to it. Wire `tool_schemas` in the SAME mutation |
 | `in_model` | in → `./memory` | a model package for ONE of the four llm cells, pushed by the colony's `llm-registry` ([#858](https://github.com/mmeyerlein/meclaw/issues/858)): a **params-only** body (an empty `system` slot, no `messages`), with `hop.subscriber` naming the cell's path. The door reads the last segment of that path and hands the push to `./closer`, `./dialectic`, `./dreamer` or `./judge`; a message with no `hop.subscriber` at all would reach all four (the permissive guard of GH #478), and only a hop set by hand -- `POST /messages` or an edge the owner applied -- can be one, since the registry always names the cell; the cell merges it into its live params and answers nothing. See [The model door](#the-model-door-and-what-each-cell-needs-858). Since 3.6.0 |
+| `model_refused` | out → the registry's road | a model push one of the four llm cells refused: its error, with `hop.refused_subscriber` (that cell's path) and `hop.refused_model`, instead of as a verdict inside the hive. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. Since 3.6.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory`. It carries `hop.recall_caller` back, off the `context.recall_caller` the question came in with and empty when it came with none — a caller with more than one asker routes the answer on it, and one with a single asker ignores it ([#532](https://github.com/mmeyerlein/meclaw/issues/532)) |
 | `close_report` | out → your drain | condition `hop.route == 'close_report'` on an edge FROM `./memory`. **Drain it.** It is the ONLY positive signal the close lane has — the pass writes through the inline ingress, which answers nobody, so without this drain a caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Eight numbers ride on the hop: `added`, `sharpened`, `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions` (the `pending` rows of this session the pass swept) and `truncated` (what the page bounds left behind). A pass that got no verdict leaves on `reject` instead, with `hop.reject_reason == 'closer_failed'` — nothing was written and the exception list was NOT swept |
 | `export_done` | out → your drain | condition `hop.route == 'export_done'` on an edge FROM `./memory`, PLAIN: this hive's store has written its whole seed set into `<fence>/<dir>/seed/`, marker and all, and says so itself ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). `hop.seed_dir` names the directory RELATIVE to the fence the store declares (`params.transfer.base_path`), `hop.export_hive` names the hive, `hop.export_of` how many tables travelled and `hop.rows_written` how many rows |
@@ -893,7 +894,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.6.0` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.6.1` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1248,8 +1249,35 @@ start value against every change not addressed at the cell), with a `target` rep
 catalogue row of that endpoint (`model_upsert` first), or by unsetting
 `recipes.model_registry_scope` on the shell's builder ref -- a setting of the whole colony: no
 member or assistant grown afterwards subscribes. Otherwise the cell refuses the push (`invalid_input`, answered as
-an error on the cell's own exit) and keeps what it runs, and the refusal is not reported back to the registry today: `show` names the
-refused model until the next change.
+an error on the cell's own exit) and keeps what it runs. Since 3.6.1 the refusal goes back to the registry (below), and `show` names
+the refused model beside `refused` -- why -- until the next push or a `reset`.
+
+**A refused push goes back** (since 3.6.1, [#863](https://github.com/mmeyerlein/meclaw/issues/863)). A push one of the four llm cells refuses -- a `base_url` outside its
+`base_url_allow`, a timeout its backstop does not clear -- is no verdict, and before 3.6.1 the four cells' out-edges carried no condition, so it reached the glue or `./recall` as one. The refusal of a push
+addressed to the cell itself carries two header keys of its own, `hop.refused_subscriber` (the
+cell's path) and `hop.refused_model` (the model the push named); every other out-edge of the
+cell excludes it, and one way back per cell leaves the hive with it as `model_refused`:
+
+```json
+{"from": "./closer", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}}}
+{"from": "./dialectic", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}}}
+{"from": "./dreamer", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}}}
+{"from": "./judge", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}}}
+```
+
+Each way back also clears the interior context keys every exit of this hive clears.
+
+In `meclaw-os` the builder draws the way back beside the push edge (`grow_level`, one edge from
+this hive to the container, one for all four cells), and the shell carries it on to its registry's `in_refused`
+lane, where `show` names the refusal until the next push or a `reset`
+(`templates/llm-registry/README.md` § A refused push). Without that edge the refusal dead-letters
+`no_route`, loudly. A refusal of anything else -- an operator's push without an address, a push
+addressed to another cell -- keeps the shape it had and the edge it always took: the forward that
+caused the second is the defect.
 
 ## Variables and params
 
@@ -1270,7 +1298,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@1.10.2",
+{"add_nodes": [{"name": "alex", "template": "member@1.10.3",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

@@ -1,4 +1,7 @@
-"""The ten numbers of ruling R-P3, and what they are measured from.
+"""The numbers of ruling R-P3, and what they are measured from.
+
+Q1..Q10 carry a threshold and a verdict; Q11 is a finding without one
+(`BEFUND`) until a wave has measured what the other cache lifetime saves.
 
 Every metric answers in one of three ways: a value with a verdict, or `n/a`
 with the reason its source is missing. A missing source is never an abort and
@@ -12,7 +15,7 @@ import json
 import statistics
 from pathlib import Path
 
-from . import gates, prompts, reports, transcripts
+from . import cache, gates, prompts, reports, transcripts
 
 HERE = Path(__file__).resolve().parent
 THRESHOLDS = HERE / "thresholds.json"
@@ -189,8 +192,21 @@ def _q10(e):
     return 100.0 * top / (top + below), None
 
 
+def _q11(e):
+    """Calls after a 5-60 minute pause, their share of the cache writes, and
+    the share written to the one-hour cache -- over every agent of the wave,
+    as the lesson measured it."""
+    got = cache.pauses(e.get("agents") or [])
+    if got is None:
+        return None, "keine Cache-Writes in den Transkripten der Agenten"
+    return (100.0 * got["late"] / got["calls"],
+            100.0 * got["late_writes"] / got["writes"],
+            100.0 * got["long_writes"] / got["writes"]), None
+
+
 RULES = {"Q1": _q1, "Q2": _q2, "Q3": _q3, "Q4": _q4, "Q5": _q5,
-         "Q6": _q6, "Q7": _q7, "Q8": _q8, "Q9": _q9, "Q10": _q10}
+         "Q6": _q6, "Q7": _q7, "Q8": _q8, "Q9": _q9, "Q10": _q10,
+         "Q11": _q11}
 
 
 def _value_text(spec, value) -> str:
@@ -203,11 +219,15 @@ def _value_text(spec, value) -> str:
         return str(int(value))
     if unit == "tokens / count":
         return f"{_k(value[0])} / {value[1]}"
+    if unit == "% / %":
+        return f"{_de(value[0])} % / {value[1]:.0f} % (1 h: {value[2]:.0f} %)"
     return _de(value)
 
 
 def _threshold_text(spec) -> str:
     unit, limit = spec["unit"], spec["threshold"]
+    if limit is None:
+        return "—"
     if unit == "%":
         return f"≤ {limit:.0f} %"
     if unit == "min":
@@ -220,6 +240,8 @@ def _threshold_text(spec) -> str:
 
 
 def _breached(spec, value) -> bool:
+    if spec["threshold"] is None:
+        return False
     if spec["unit"] == "tokens / count":
         return value[0] > spec["threshold"] or value[1] > spec["threshold_secondary"]
     return value > spec["threshold"]
@@ -255,12 +277,17 @@ def rows(evidence: dict, spec: dict) -> list[dict]:
         text = _value_text(metric, value)
         if _is_lower_bound(evidence, metric["id"]):
             text = "≥ " + text
+        # A metric without a threshold is a finding to read, never a breach.
+        if metric["threshold"] is None:
+            verdict = "BEFUND"
+        else:
+            verdict = "VERSTOSS" if breached else "OK"
         out.append({
             "id": metric["id"],
             "title": metric["title_de"],
             "value": text,
             "threshold": _threshold_text(metric),
-            "verdict": "VERSTOSS" if breached else "OK",
+            "verdict": verdict,
             "advice": metric["advice_de"] if breached else "—",
         })
     return out

@@ -29,7 +29,11 @@ retries = 0
 # not just the first one to trip.
 fail-fast = false
 failure-output = "immediate-final"
-status-level = "fail"
+# "retry", not "fail": a retried attempt prints `TRY n FAIL` with its output. It
+# costs nothing while nothing is retried, and on 24.09. a rescued attempt of a
+# quarantined browser proof left no trace of WHY it had failed -- the one output
+# the investigation needed (GH #714).
+status-level = "retry"
 final-status-level = "slow"
 # 30s -> marked slow; 8 periods (4 min) -> killed. A meclaw test that needs
 # four minutes is wedged, not busy.
@@ -93,43 +97,15 @@ path = "junit.xml"
 # one entry would silently retry the same helper everywhere.)
 #
 # --- current quarantine ----------------------------------------------------
-[[profile.default.overrides]]
-# GH #714 -- a stage rebuild loses one app write in ~1 of 5-12 runs (release-only lock).
-filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
-retries = 2
-
-[[profile.default.overrides]]
-# GH #763 -- the CDP driver of the display audio tests trips under parallel browser
-# load and passes on repetition; seven occurrences, every one of them isolated-green:
-#   strand c466abe 10/11 521s RED -> 11/11 329s GREEN, isolated 3/3
-#     (plans/kleinkram-2026-09-13/berichte/k1-report.md:69-74)
-#   hand-run 5/5 green with five browser colonies on 4 threads
-#     (plans/welle-h-2026-09-17/berichte/H2-report.md:266-268)
-#   a torn browser lock when a second gate ran in the same worktree
-#     (plans/welle-p-2026-09-19/befund/01-zeit.md:110)
-#   strand e0c235b 13/14 449s RED -> run 3 green, isolated green
-#     (plans/welle-h3-2026-09-18/berichte/taps-report.md:464,492-503)
-#   integration 0f95bae 20/22 1385s RED -> 043eb66 22/22 1170s GREEN
-#     (plans/welle-h3-2026-09-18/receipt.md:80,89-90)
-#   strand 9c9571d 12/13 1398s RED -> same rev 13/13 2076s GREEN, nothing edited
-#     (plans/welle-live-2026-09-20/berichte/hygiene-794.md:288-312)
-#   L4a run 2 red on the same driver error -> run 3 green, nothing edited
-#     (plans/welle-live-2026-09-20/berichte/L4a.md:143-152)
-# The last two entries name two further tests of this file, so the list grows from two
-# to four (wave Live integration pass): a docs-only diff and a template diff each tripped
-# a test neither of them can reach, with the same CDP message as the first two. The fifth,
-# `a_short_press_opens_the_dock_and_a_long_one_speaks`, has never been seen flaky and stays
-# strict -- the binary is still not quarantined as a whole. One retry, not two -- a second
-# trip in the same run is a driver that is broken, not a host that is busy.
-filter = 'binary_id(=meclaw-cells::gh643_audio_in_the_display_window_browser) & (test(=a_browser_holds_the_button_and_the_colony_answers) + test(=the_release_drains_before_it_lets_go) + test(=a_browser_rejoins_after_the_cell_closed_the_topic) + test(=the_ring_sends_what_it_kept_before_the_hold))'
-retries = 1
+# (empty -- GH #714 and GH #763 closed with their measurements; an entry comes
+# back only with a new issue behind it)
 
 # ---------------------------------------------------------------------------
-# LOUD WHEN GREEN -- the two tests that may decide not to measure.
+# LOUD WHEN GREEN -- the tests that may decide not to measure.
 # ---------------------------------------------------------------------------
 #
-# `failure-output` says nothing about a test that PASSES, and both tests below
-# pass by returning early on a host that cannot delegate a cgroup or unshare a
+# `failure-output` says nothing about a test that PASSES, and the two gh766 tests
+# below pass by returning early on a host that cannot delegate a cgroup or unshare a
 # network namespace. That made the only measurement behind R-G13 -- "a denied
 # network still bites without `no_new_privs`" -- able to be silently absent on
 # any host, with a green station either way (GH #766, review I13). They now
@@ -144,6 +120,32 @@ success-output = "immediate-final"
 filter = 'binary_id(=meclaw-cells::gh766_a_packaged_browser_needs_no_landlock) & (test(=the_cap_alone_sets_the_cap_and_no_flag) + test(=a_denied_network_still_bites_without_the_flag))'
 success-output = "immediate-final"
 
+# GH #867: the strict-CSP browser proof returns early -- `SKIP …` on stdout -- when
+# this host has no node, no browser, no template library or no python. A gate log
+# then read "1 passed" whether the page ran under `script-src 'self'` or nothing
+# ran at all (wave fix, H1a review I1). The same remedy as above: print its line
+# when green, in both profiles.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::gh867_a_display_runs_under_a_strict_csp_browser)'
+success-output = "immediate-final"
+
+[[profile.ci.overrides]]
+filter = 'binary_id(=meclaw-cells::gh867_a_display_runs_under_a_strict_csp_browser)'
+success-output = "immediate-final"
+
+# GH #703: the two proofs of the phone sheet in a real engine. The WebKit proof
+# said `SKIP ... missing dependencies` in every gate of this host -- it never
+# loaded the laboratory the 710 proofs load -- and the sheet proof SKIPs in a
+# linked worktree without `node_modules`; both read "passed" (wave fix, strand X,
+# OR-FX.X.3). Every way out without a measurement prints one `SKIP ` line.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser)'
+success-output = "immediate-final"
+
+[[profile.ci.overrides]]
+filter = 'binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser)'
+success-output = "immediate-final"
+
 # ---------------------------------------------------------------------------
 # SLOW BY DESIGN -- a longer leash, never a retry.
 # ---------------------------------------------------------------------------
@@ -152,12 +154,9 @@ success-output = "immediate-final"
 # four minutes is wedged, not busy". One test is busy: the colony half of the
 # B-proofs boots a throwaway colony once and then drives six real browser
 # sessions through it -- two engines on three exits, with gestures and page
-# loads in each. It is `#[ignore]`d and runs only in `release` (station
-# `browser:display`, scope `sheet+colony`); measured it takes three and a half
-# minutes on this host. The cap is raised for THIS test alone. (Its retries are
-# NOT zero any more -- see the quarantine entry above, GH #714; the two
-# overrides address the same test for two different reasons and nextest merges
-# them.)
+# loads in each. It is `#[ignore]`d and runs in `integration` and `release`
+# (GH #746; station `browser:display`, scope `sheet+colony`); measured it takes
+# three and a half minutes on this host. The cap is raised for THIS test alone.
 [[profile.default.overrides]]
 filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
 slow-timeout = { period = "60s", terminate-after = 10 }

@@ -71,13 +71,15 @@ client reads what it may ask for instead of provoking a refusal to find out.
 The colony's listener has no authentication and no TLS. Anything reachable off
 the host belongs behind a reverse proxy, the same stance the `web` cell takes.
 
-Three routes exist under the mount:
+Three routes exist under the mount, and the test page's three files beside them:
 
 | Route | Answer |
 |---|---|
 | `GET /<mount>/ws` | The WebSocket upgrade described here. A plain `GET` is a `400`. |
 | `GET /<mount>/` | The built-in browser test page (see below). |
 | `GET /<mount>/info` | The `hello` declaration as JSON, without a connection (see below). |
+| `GET /<mount>/test.js`, `test.css`, `worklet.js` | The test page's module script, style and capture worklet (since `voice@2.3.0`). |
+| `GET /<mount>` | `308` to the relative `<mount>/`, because the page links its files relatively. |
 
 Anything else is a `404`.
 
@@ -122,7 +124,7 @@ closed, is not one of the four.
 
 What a browser needs: a **secure context** for the microphone, which means an
 `https://` origin or `localhost` / `127.0.0.1`. On a plain `http://` LAN address
-there is no microphone to open, and `display@2.7.0` says so on the page.
+there is no microphone to open, and `display@2.8.0` says so on the page.
 
 ## Audio frames
 
@@ -336,12 +338,15 @@ describes the cell itself and a single synthesis does not change it.
 ## Built-in test page
 
 `GET /<mount>/` serves a self-contained browser test page on the same listener as the
-socket, with no build step, no CDN and no files on disk. Open it, choose `hold`
+socket, with no build step, no CDN and no files on disk: four files compiled into the
+binary, the page and its `test.js`, `test.css` and `worklet.js` beside it. It carries no
+inline script, no inline style and no `blob:` URL, so it runs behind a proxy that sets
+`script-src 'self'` (since `voice@2.3.0`, GH #867). Open it, choose `hold`
 or `auto`, press connect, and the `hello` frame's audio formats and provider
 names appear above the log.
 
-Holding the button, or the space bar, opens the microphone through an inline
-`AudioWorklet`, resamples it to the declared `audio_in` rate and sends 20 ms
+Holding the button, or the space bar, opens the microphone through the page's own
+`AudioWorklet` (`worklet.js`), resamples it to the declared `audio_in` rate and sends 20 ms
 PCM16 LE frames, bracketed by `hold` and `release` in hold mode. `partial`,
 `turn`, `speak_start`, `speak_end` and `error` are logged with timestamps
 relative to the connection, returned audio plays back gaplessly, and a `cancel`

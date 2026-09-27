@@ -163,7 +163,7 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
         }),
     );
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.1.0`, so the template it grows from has to be on
+    // The display refs `web@2.2.0`, so the template it grows from has to be on
     // disk before the boot resolves the ref (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {
@@ -328,7 +328,7 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.7.0",
+        template["version"], "2.8.0",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
@@ -359,7 +359,9 @@ fn the_template_says_it_carries_a_microphone() {
          which changes when every screen draws and is therefore the SECOND digit, \
          and to 2.7.0 because the curator keeps its state in memory and the store \
          only the app rows and one rest row (GH #809): a promise withdrawn and a new \
-         one given, the SECOND digit again"
+         one given, the SECOND digit again, and to 2.8.0 because the screen runs \
+         behind a strict Content-Security-Policy and publishes the policy it needs in \
+         `csp.json` (GH #867): a promise it never gave, the SECOND digit"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -374,7 +376,7 @@ fn the_template_says_it_carries_a_microphone() {
     // own.
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.7.0`"),
+        readme.starts_with("# `display@2.8.0`"),
         "the README heads with the version it describes"
     );
     assert!(

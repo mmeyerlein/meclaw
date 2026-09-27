@@ -1,4 +1,4 @@
-# `voice@2.2.2`
+# `voice@2.3.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -70,7 +70,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.2.2",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.3.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -214,7 +214,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -248,7 +248,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -412,14 +412,30 @@ in time gets the session taken back and the client a close `1013`
 is unchanged -- stop, then mailbox, then events -- because every long-running
 cell relies on it; the handshake is what moved.
 
+### Since 2.3.0 the test page runs under `script-src 'self'`
+
+The built-in test page at `/<mount>/` used to be one document with an inline
+module script, an inline style and a capture worklet installed from an object
+URL. Behind a proxy that sets a Content-Security-Policy of `script-src 'self'`
+without `'unsafe-inline'` or `blob:` it loaded and did nothing
+([#867](https://github.com/mmeyerlein/meclaw/issues/867)). Since 2.3.0 it is four
+files the cell serves itself: the page at `/<mount>/`, its module script at
+`/<mount>/test.js`, its style at `/<mount>/test.css` and the worklet at
+`/<mount>/worklet.js` -- the same bytes as before, split up. The page links them
+relatively, so `/<mount>` without the slash answers `308` with the relative
+`Location: <mount>/`, which resolves to the page's directory under any prefix a
+proxy stripped. Nothing of the protocol moved; the socket and `/info` are where
+they were.
+
 ## The door
 
 An instance is reached at `/<mount>/` on the colony's one listener. That is the
 whole of it: `params.mount` is required, and `port` and `bind` are gone.
 
-`params.mount` ships as `voice`, which puts the socket at `/voice/ws` and the
-declaration at `/voice/info` on whatever address the colony's `--api` listener
-holds. The grammar is `[a-z0-9-]{1,64}`, and the segments the API owns
+`params.mount` ships as `voice`, which puts the socket at `/voice/ws`, the
+declaration at `/voice/info` and the test page at `/voice/` (with `test.js`,
+`test.css` and `worklet.js` beside it) on whatever address the colony's `--api`
+listener holds. The grammar is `[a-z0-9-]{1,64}`, and the segments the API owns
 (`colony`, `messages`, `health`, `ui`, `live`, `@client`) are refused. **Two
 instances need two mounts**: the second one to register under a name another
 cell holds registers nothing and says so in the journal. The key is mutable, and
@@ -427,7 +443,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -492,7 +508,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -505,7 +521,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -569,7 +585,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "api_key": "${OPENAI_API_KEY}",
                                 "instructions": "<who the model is for this session>",
@@ -730,7 +746,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -745,7 +761,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.2",
+{"name": "channels/voice", "template": "voice@2.3.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

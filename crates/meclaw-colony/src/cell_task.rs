@@ -301,6 +301,41 @@ pub async fn cell_task<C: Cell + Send + 'static>(
     }
 }
 
+/// Drop a stateful cell and close its `cell.db` on a blocking-pool thread, and
+/// wait for it (GH #866).
+///
+/// `sqlite3_close` on the last connection of a WAL database checkpoints it:
+/// `fsync` of the WAL, then of the database file. Under write-back pressure
+/// each of those waits for the ext4 journal commit, hundreds of milliseconds.
+/// Run on the worker AFTER the `Sleep`/`Stopped` message went out, that wait
+/// held the colony task: the send had just put it into this worker's LIFO
+/// slot, which no other worker may steal. Measured on a throwaway colony
+/// (0.44.0, a `store` that sleeps 5 s after its answer, the two `fsync`s of
+/// its `cell.db` delayed by 700 ms in that process only): a `colony_loop`
+/// trip with `witness=kept` and `supervisor_lag=0` in 11 of 11 minutes, at the
+/// store's sleep; the same colony without the delay, 1 in 10 under host load.
+/// Closing first and telling the colony afterwards also means a wake never
+/// re-opens a database whose old connection is still checkpointing.
+///
+/// The close runs off the worker, so a panic in the `Drop` of the cell or of
+/// its `DbConn` comes back here as a `JoinError` instead of unwinding the task
+/// (before GH #866 it did, and the supervisor saw it). Swallowed, it left no
+/// trace at all (GH #866 review M-2), so it is logged with the cell's path.
+async fn close_off_worker<C: Send + 'static>(path: &Path, cell: C, db: crate::DbConn) {
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        drop(cell);
+        drop(db);
+    })
+    .await
+    {
+        tracing::warn!(
+            cell = path.as_str(),
+            error = %e,
+            "closing the cell and its cell.db panicked"
+        );
+    }
+}
+
 /// Phase-6.5: stateful cell task variant.
 ///
 /// Owns the `cell.db` `DbConn` in its stack frame and passes
@@ -340,7 +375,7 @@ pub async fn cell_task<C: Cell + Send + 'static>(
 /// `consumes`: pre-compiled required-`consumes` views, enforced at the
 /// delivery boundary via `enforce_consumes_for_delivery` (Slice 2, Task 2.4).
 #[allow(clippy::too_many_arguments)]
-pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
+pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell + 'static>(
     own_path: Path,
     mailbox: mpsc::Receiver<Message>,
     outputs_tx: mpsc::Sender<CellEmission>,
@@ -404,6 +439,9 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
             // processed (remainder → DLQ cell_inactive via Task 4).
             biased;
             _ = &mut stop_fut => {
+                // GH #866: close `cell.db` off the worker BEFORE the colony hears
+                // of it -- see `close_off_worker`.
+                close_off_worker(&own_path, cell, db).await;
                 // Peace before task-end → watcher sees Ok → NO CellDied →
                 // handle_cell_died never fires.
                 if let Some(p) = peace_tx.take() {
@@ -502,6 +540,8 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                 if cell_timeout > 0 {
                     // Phase-13 13-M-1: One-Shot — despawn after this message.
                     // peace + sleep send analogous to the idle arm.
+                    // GH #866: `cell.db` closes off the worker first.
+                    close_off_worker(&own_path, cell, db).await;
                     if let Some(p) = peace_tx.take() {
                         let _ = p.send(());
                     }
@@ -519,6 +559,8 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
             }
             _ = idle_fut => {
                 if mailbox.is_empty() {
+                    // GH #866: `cell.db` closes off the worker first.
+                    close_off_worker(&own_path, cell, db).await;
                     if let Some(p) = peace_tx.take() {
                         let _ = p.send(());
                     }
@@ -1594,6 +1636,117 @@ mod tests {
             Ok(Some(crate::ColonyMsg::Sleep { .. }))
         ));
         join.await.unwrap();
+    }
+
+    /// GH #866 review M-2: the close section runs in `spawn_blocking`, so a
+    /// panic in the `Drop` of a cell (or of its `DbConn`) comes back as a
+    /// `JoinError` instead of unwinding the task. Swallowed with `let _ =`, it
+    /// vanished without a trace; before GH #866 the same panic unwound the
+    /// cell task and the supervisor saw it. The close must name the cell and
+    /// the error at WARN, and the cell must still go to sleep.
+    #[tokio::test]
+    async fn a_panic_while_closing_a_cell_is_logged_with_its_path() {
+        use crate::stateful_cell::StatefulCell;
+        use meclaw_core::Path;
+        use tracing::instrument::WithSubscriber;
+
+        struct PanicsOnDrop;
+        impl StatefulCell for PanicsOnDrop {
+            #[allow(clippy::manual_async_fn)]
+            fn handle<'a>(
+                &'a mut self,
+                _msg: meclaw_core::Message,
+                _sink: &'a meclaw_core::OutputSink,
+                _db: &'a mut crate::DbConn,
+            ) -> impl std::future::Future<Output = ()> + Send + 'a {
+                async move {}
+            }
+        }
+        impl Drop for PanicsOnDrop {
+            fn drop(&mut self) {
+                panic!("drop of the probe cell panics");
+            }
+        }
+
+        /// Records level and every field of each event as one line.
+        #[derive(Clone, Default)]
+        struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={v:?} ", f.name()));
+            }
+        }
+        impl tracing::Subscriber for Recorder {
+            fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _f: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut v = Fields(String::new());
+                event.record(&mut v);
+                self.0
+                    .lock()
+                    .expect("recorder")
+                    .push((*event.metadata().level(), v.0));
+            }
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        let rec = Recorder::default();
+        let (_mb_tx, mb_rx) = mpsc::channel::<meclaw_core::Message>(8);
+        let (out_tx, _out_rx) = mpsc::channel::<meclaw_core::CellEmission>(8);
+        let (inbox_tx, mut inbox_rx) = mpsc::channel::<crate::ColonyMsg>(8);
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let db = crate::DbConn::wrap(conn, None);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            cell_task_stateful(
+                Path::new("/probe"),
+                mb_rx,
+                out_tx,
+                PanicsOnDrop,
+                db,
+                Some(std::time::Duration::from_millis(20)),
+                None, // message_timeout
+                None, // peace_tx
+                None, // backstop_tx
+                Some(inbox_tx),
+                0,
+                None, // stop_rx
+                None, // death_ack
+                None, // blob_store
+                None,
+                Default::default(),
+            )
+            .with_subscriber(rec.clone()),
+        )
+        .await
+        .expect("the idle arm ends the task");
+
+        assert!(
+            matches!(inbox_rx.try_recv(), Ok(crate::ColonyMsg::Sleep { .. })),
+            "the cell still goes to sleep after a failed close"
+        );
+        let warns: Vec<String> = rec
+            .0
+            .lock()
+            .expect("recorder")
+            .iter()
+            .filter(|(l, _)| *l == tracing::Level::WARN)
+            .map(|(_, m)| m.clone())
+            .collect();
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("/probe") && w.contains("panic")),
+            "a WARN naming the cell and the panic, got {warns:?}"
+        );
     }
 
     /// Phase-13 step 13-D-1: regression test that `cell_task_stateful` with

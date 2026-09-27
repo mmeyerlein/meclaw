@@ -29,6 +29,7 @@ pub mod cell;
 pub mod db;
 pub mod factory;
 pub mod io;
+pub mod markup;
 pub mod ops;
 pub mod output;
 pub mod params;

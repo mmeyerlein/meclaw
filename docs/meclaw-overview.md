@@ -366,7 +366,11 @@ form at boot is the `ref` marker.
 Cross-colony federation (several `meclaw` instances with different colonies talking to each other)
 is post-roadmap. The architecture will not prevent it.
 
-A colony carries many organisations and exactly one OS, and the OS hands out what is system-near
+A colony hosts one organisation. The `orgs` container can hold more, but the colony's API, message
+log and credentials know no organisation: a second one would share everything with the first and
+is not a supported deployment. Run one colony per organisation.
+
+A colony carries exactly one OS, and the OS hands out what is system-near
 (ADR-0022, GH #543). An organisation is a namespace: no port band, no port assignment, no
 configuration surface of its own; it asks the OS. System-near means scarce, colony-wide, and such
 that two holders of one is a collision: a TCP port, a bind address, a socket, a mount name. How an
@@ -4012,7 +4016,7 @@ declared phase and `supervisor_lag`.
 | `slow_work_item` | The loop had declared a work item and is still inside it, below `work_item_budget`. An operation is taking long, which is not a defect. A `/colony/*` read is such a work item and declares itself as `colony-read <endpoint>`. |
 | `stuck_work_item` | The same declared work item outlived `work_item_budget` too. An operation that never returns is a wedge whatever its name. |
 | `process_scheduling` | The supervisor's own periods came in at least twice as slow as configured: the whole process was off CPU, and this observation says nothing against the colony loop. |
-| `colony_loop` | Every control held: the supervisor kept its schedule, the witness kept finishing work, and the loop was parked with nothing in flight, and it still went quiet. This is the only silence that implicates the colony. |
+| `colony_loop` | Every control held: the supervisor kept its schedule, the witness kept finishing work, and the loop was parked with nothing in flight, and it still went quiet. This is the only silence that implicates the colony. The verdict has one limit: a cell that blocks its runtime worker synchronously can hold the colony task in that worker's LIFO slot, which no other worker may steal — the witness keeps running on another worker and does not cover it (GH #866). That is why neither the spawn path of `code` and `bash` nor a cell falling asleep blocks a worker: the sandbox, the `fork` and the orphan journal's records run in `spawn_blocking`, and a stateful cell closes its `cell.db` (the WAL checkpoint) there before it tells the colony it sleeps. The other stdio children (`StdioChild::spawn`) still spawn and journal on the worker (`docs/defer-register.md`, `reg:stdio-child-spawn-off-worker`). |
 
 `cells_at_boot` is deliberately the boot count rather than "active cells now": the registry belongs
 to the colony, and at trip time the colony by definition is not answering.

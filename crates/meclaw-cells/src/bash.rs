@@ -125,40 +125,52 @@ impl meclaw_colony::StatelessCell for BashCell {
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
 
-            // S4 (GH #35): the sandbox is installed on the command, not around
-            // it. A profile that cannot be applied fails HERE, before a child
-            // exists — a `restricted` cell never falls back to unsandboxed.
-            //
-            // GH #85: the returned scope owns the child's cgroup and must stay
-            // alive until the child is reaped, so it is bound rather than
-            // dropped on the spot.
-            let _sandbox_scope = match &self.sandbox {
-                None => crate::sandbox::SandboxScope::empty(),
-                Some(profile) => match crate::sandbox::apply(profile, &mut cmd) {
-                    Ok(scope) => scope,
-                    Err(e) => {
-                        self.emit_error(
-                            sink,
-                            reply_target,
-                            ERR_IO_ERROR,
-                            format!("sandbox not applied: {e}"),
-                            id,
-                            started,
-                        )
+            // GH #866: sandbox, `fork` and the journal's `spawned` record are
+            // blocking syscalls; under write-back pressure the record's `fsync`
+            // alone waited hundreds of milliseconds on a live colony, on a
+            // runtime worker that polled nothing else meanwhile. One blocking
+            // section, awaited -- the record is durable before this path goes
+            // on (ruling B-R2) and is read on the thread that forked.
+            let profile = self.sandbox.clone();
+            let journal_path = msg.target.as_str().to_string();
+            let spawned = tokio::task::spawn_blocking(move || {
+                // S4 (GH #35): the sandbox is installed on the command, not
+                // around it. A profile that cannot be applied fails HERE,
+                // before a child exists — a `restricted` cell never falls back
+                // to unsandboxed.
+                //
+                // GH #85: the returned scope owns the child's cgroup and must
+                // stay alive until the child is reaped, so it travels back with
+                // the child.
+                let scope = match &profile {
+                    None => crate::sandbox::SandboxScope::empty(),
+                    Some(profile) => crate::sandbox::apply(profile, &mut cmd)
+                        .map_err(|e| format!("sandbox not applied: {e}"))?,
+                };
+                let child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+                // GH #116: crash-durable record of this child. The note retires
+                // the entry on EVERY path that still runs code — `retire` below
+                // on the ordinary one, `Drop` on task abort and panic unwind. The
+                // one path it does not cover is the one it exists for: a
+                // `SIGKILL`ed daemon, where the entry survives in the journal and
+                // the next boot reaps what it names.
+                let note = crate::orphan_journal::note_spawn(child.id(), None, &journal_path);
+                Ok::<_, String>((child, scope, note))
+            })
+            .await;
+            let (child, _sandbox_scope, journal_note) = match spawned {
+                Ok(Ok(spawned)) => spawned,
+                Ok(Err(e)) => {
+                    self.emit_error(sink, reply_target, ERR_IO_ERROR, e, id, started)
                         .await;
-                        return;
-                    }
-                },
-            };
-
-            let child = match cmd.spawn() {
-                Ok(c) => c,
+                    return;
+                }
                 Err(e) => {
                     self.emit_error(
                         sink,
                         reply_target,
                         ERR_IO_ERROR,
-                        format!("spawn failed: {e}"),
+                        format!("spawn did not complete: {e}"),
                         id,
                         started,
                     )
@@ -167,16 +179,16 @@ impl meclaw_colony::StatelessCell for BashCell {
                 }
             };
 
-            // GH #116: crash-durable record of this child. The note retires the
-            // entry on EVERY path that still runs code — return, timeout kill,
-            // task abort, panic unwind. The one path it does not cover is the
-            // one it exists for: a `SIGKILL`ed daemon, where the entry survives
-            // in the journal and the next boot reaps what it names.
-            let _journal_note =
-                crate::orphan_journal::note_spawn(child.id(), None, msg.target.as_str());
-
             let result = with_killing_timeout(child, self.external_timeout).await;
+            // Taken before `retire`: `duration_ms` reports the run, not the
+            // journal's `fsync` after it, which under write-back pressure
+            // waits hundreds of milliseconds on the ext4 commit (GH #866).
             let duration_ms = started.elapsed().as_millis() as u64;
+            // GH #866: the `exited` record off the workers, and BEFORE the
+            // answer -- the order of GH #134 (answer first, exit record in the
+            // `Drop` after it) turns round: a reader of the answer now finds
+            // the journal already settled.
+            journal_note.retire().await;
 
             match result {
                 Ok(out) => {

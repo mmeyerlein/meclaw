@@ -36,3 +36,20 @@ The byte counts above are asserted by
 which parses this table. A drifted count means somebody edited a bundle. The test
 does not check the SHA-256, because no crate in the workspace provides a hash and
 this feature adds none; the sums are here for a human to verify with `sha256sum`.
+
+## Not vendored: the two files that are ours
+
+Two files in this directory are **not** copies of anything upstream and are not
+covered by the rule above. They are ours, edited like any other source file, and
+they sit here only because `bundle()` serves this directory's closed list under
+`@client/`:
+
+| File | What it is |
+|---|---|
+| `boot.js` | The page shell's boot: reads the socket path from `<meta name="meclaw-live">`, builds the `LiveSocket` with `window.SurfaceHooks`, sets `window.SurfaceSocket`. |
+| `display-mic-worklet.js` | The display microphone's capture worklet (processor `mic`, 20 ms PCM16 frames, a `flush` message), loaded with `audioWorklet.addModule`. |
+
+Both used to be inline -- the boot a `<script>` block in the shell, the worklet a
+string turned into a `blob:` URL -- and a page that carries either does not run
+under a Content-Security-Policy of `script-src 'self'` (GH #867). They have no
+row in the table above and no byte-count check: nothing forbids editing them.

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meclaw voice test page</title>
+<link rel="stylesheet" href="test.css">
+</head>
+<body>
+
+<h1>meclaw voice &mdash; built-in test page</h1>
+<p class="hint">
+  The microphone needs a secure context: localhost or a TLS proxy in front; a LAN IP will not work.
+  Playback and the socket work anywhere; only capture is gated by the browser.
+</p>
+
+<fieldset>
+  <legend>connection</legend>
+  <label><input type="radio" name="mode" value="hold" checked> hold</label>
+  <label><input type="radio" name="mode" value="auto"> auto</label>
+  <label>session <input id="session" size="14" placeholder="(server picks one)"></label>
+  <button id="connect">connect</button>
+  <button id="disconnect" disabled>disconnect</button>
+</fieldset>
+
+<fieldset>
+  <legend>hello</legend>
+  <dl id="facts">
+    <dt>protocol</dt><dd id="f-protocol">&ndash;</dd>
+    <dt>session_id</dt><dd id="f-session">&ndash;</dd>
+    <dt>mode</dt><dd id="f-mode">&ndash;</dd>
+    <dt>audio_in</dt><dd id="f-in">&ndash;</dd>
+    <dt>audio_out</dt><dd id="f-out">&ndash;</dd>
+    <dt>stt</dt><dd id="f-stt">&ndash;</dd>
+    <dt>tts</dt><dd id="f-tts">&ndash;</dd>
+  </dl>
+</fieldset>
+
+<fieldset>
+  <legend>talk</legend>
+  <button id="talk" disabled>hold to talk (or hold the space bar)</button>
+  <button id="cancel" disabled>cancel</button>
+  <button id="clear">clear log</button>
+</fieldset>
+
+<pre id="log"></pre>
+
+<script type="module" src="test.js"></script>
+</body>
+</html>

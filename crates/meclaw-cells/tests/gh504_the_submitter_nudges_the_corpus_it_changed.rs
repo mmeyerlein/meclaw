@@ -421,16 +421,18 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // 1.12.1 since GH #809 pins the member's screen at `display@2.7.0`;
         // 1.12.2 since GH #599 installs an app from its declaration;
         // 1.13.0 since GH #835 grows an assistant as its member's door;
-        // 1.14.0 carries the wave's recipe and pins (dispatcher@1.2.1, GH #842).
-        "builder@1.15.0"
+        // 1.14.0 carries the wave's recipe and pins (dispatcher@1.2.1, GH #842);
+        // 1.15.1 pins the member's screen at `display@2.8.0` (GH #867) and draws
+        // one way back per composite on the model road (GH #863).
+        "builder@1.15.1"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],
-        "operator@1.2.2"
+        "operator@1.2.3"
     );
     assert_eq!(
         read("templates/operator/submit/config.json")["cell"]["template"],
-        "submit@2.3.3"
+        "submit@2.3.4"
     );
 }
 

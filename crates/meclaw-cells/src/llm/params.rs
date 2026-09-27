@@ -379,6 +379,45 @@ pub(crate) fn listable_origin(raw: &str) -> Option<String> {
     Some(url.origin().ascii_serialization())
 }
 
+/// GH #863 (OR-SN.L2.4): two base URLs name the same endpoint when scheme,
+/// host and port are equal in normal form (`Url` lowercases both and drops a
+/// default port, the origin [`listable_origin`] compares) and the paths differ
+/// at most by a trailing `/`, with the same query and fragment. A URL with
+/// userinfo, or one that is no http(s) URL, is the same only as its exact
+/// self: the byte comparison this replaces stays the floor, so the start value
+/// always comes back.
+///
+/// Before, the run-time guard compared the start value byte for byte, so a
+/// package naming `…/v1` was refused by a cell born on `…/v1/` although both
+/// reach one provider. Public for the shipped-template lock
+/// (`gh858_every_llm_cell_states_its_need.rs`), which asks this function
+/// instead of keeping a second copy of the rule.
+#[doc(hidden)]
+pub fn same_endpoint(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let (Some(origin_a), Some(origin_b)) = (listable_origin(a), listable_origin(b)) else {
+        return false;
+    };
+    let (Ok(url_a), Ok(url_b)) = (reqwest::Url::parse(a), reqwest::Url::parse(b)) else {
+        return false;
+    };
+    origin_a == origin_b
+        && url_a.path().trim_end_matches('/') == url_b.path().trim_end_matches('/')
+        && url_a.query() == url_b.query()
+        && url_a.fragment() == url_b.fragment()
+}
+
+/// The request URL: `base` without its trailing `/`, then the wire `path`
+/// (which starts with one) -- never `//`. For every shipped `base_url`, none of
+/// which ends on `/`, this is the bare concatenation it replaces, byte for
+/// byte (OR-FX-R6); a `…/v1/` start value called `…/v1//chat/completions`
+/// before (OR-SN.L2.4).
+pub(crate) fn endpoint_url(base: &str, path: &str) -> String {
+    format!("{}{path}", base.trim_end_matches('/'))
+}
+
 impl LlmParams {
     /// Implementation detail — production entry point is `LlmCellFactory`;
     /// direct construction is `pub` only so tests/integration tests can
@@ -545,7 +584,8 @@ impl LlmParams {
     ///
     /// - `base_url` moves only to an origin in `base_url_allow`; without a list
     ///   it is fixed. Its own start value is always allowed back (a package
-    ///   that repeats the start endpoint is no change), and `null` is refused:
+    ///   that repeats the start endpoint is no change), compared as an
+    ///   endpoint ([`same_endpoint`], GH #863), and `null` is refused:
     ///   it falls back to the provider default silently and takes the bearer
     ///   with it (`cell.rs`, `wire::OPENAI_DEFAULT_BASE_URL`). Before the list
     ///   a message could send the bearer to any host while `api_key` itself
@@ -561,7 +601,7 @@ impl LlmParams {
     ) -> Result<(), String> {
         match update.get("base_url") {
             None => {}
-            Some(Value::String(url)) if Some(url.as_str()) == start_base_url => {}
+            Some(Value::String(url)) if start_base_url.is_some_and(|s| same_endpoint(url, s)) => {}
             Some(Value::String(url)) => {
                 let origin = listable_origin(url).ok_or_else(|| {
                     "params update rejected: 'base_url' must be an http(s) URL without userinfo"
@@ -1251,6 +1291,87 @@ mod tests {
         let err = fixed
             .check_run_time_update(None, &upd, &merged, None)
             .unwrap_err();
+        assert!(err.contains("fixed at run time"), "{err}");
+    }
+
+    /// GH #863 (OR-SN.L2.4): the start value comes back as an endpoint -- the
+    /// case of scheme and host, a default port and a trailing `/` do not
+    /// count; another path, another query and userinfo do.
+    #[test]
+    fn the_start_endpoint_is_compared_as_an_endpoint() {
+        for (a, b) in [
+            ("http://127.0.0.1:9/v1", "http://127.0.0.1:9/v1/"),
+            ("http://127.0.0.1:9/v1/", "http://127.0.0.1:9/v1"),
+            ("HTTPS://Host.example:443/v1", "https://host.example/v1"),
+            ("http://host.example:80/v1", "http://HOST.example/v1/"),
+            ("https://host.example", "https://host.example/"),
+            (
+                "https://host.example/v1?a=1",
+                "https://host.example/v1/?a=1",
+            ),
+        ] {
+            assert!(same_endpoint(a, b), "{a} and {b} are one endpoint");
+            assert!(same_endpoint(b, a), "{b} and {a} are one endpoint");
+        }
+        for (a, b) in [
+            ("https://host.example/v1", "https://host.example/v2"),
+            ("https://host.example/v1", "https://host.example/v1?a=1"),
+            ("https://host.example/v1?a=1", "https://host.example/v1?a=2"),
+            ("https://host.example/v1", "http://host.example/v1"),
+            ("https://host.example/v1", "https://host.example:8443/v1"),
+            ("https://host.example/v1", "https://other.example/v1"),
+            ("https://user:pw@host.example/v1", "https://host.example/v1"),
+            ("https://host.example/v1", "https://user@host.example/v1"),
+            ("not a url", "https://host.example/v1"),
+        ] {
+            assert!(!same_endpoint(a, b), "{a} and {b} are two endpoints");
+            assert!(!same_endpoint(b, a), "{b} and {a} are two endpoints");
+        }
+        // The floor: a value is always its own endpoint -- the old byte
+        // comparison is never stricter than the new one.
+        for a in ["not a url", "https://user:pw@host.example/v1"] {
+            assert!(same_endpoint(a, a), "{a}");
+        }
+    }
+
+    /// GH #863 (OR-SN.L2.4): `…/v1/` + `/chat/completions` was `…/v1//chat/…`.
+    /// Every shipped `base_url` ends without `/`, and for those the join is
+    /// the bare concatenation it replaces, byte for byte (OR-FX-R6).
+    #[test]
+    fn a_request_path_is_joined_without_a_double_slash() {
+        assert_eq!(
+            endpoint_url("http://127.0.0.1:9/v1/", "/chat/completions"),
+            "http://127.0.0.1:9/v1/chat/completions"
+        );
+        assert_eq!(
+            endpoint_url("http://127.0.0.1:9/v1", "/chat/completions"),
+            "http://127.0.0.1:9/v1/chat/completions"
+        );
+        assert_eq!(
+            endpoint_url("https://chatgpt.com/backend-api/codex", "/responses"),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            endpoint_url("https://api.openai.com/v1//", "/responses"),
+            "https://api.openai.com/v1/responses"
+        );
+    }
+
+    /// The run-time guard takes the start endpoint back in any spelling of it,
+    /// and still refuses another endpoint when no list exists.
+    #[test]
+    fn the_run_time_guard_takes_the_start_endpoint_back_in_another_spelling() {
+        let mut raw = api_key_raw();
+        raw["base_url"] = json!("http://127.0.0.1:1/v1/");
+        let p = LlmParams::parse(&raw).unwrap();
+        let check = |upd: Value| {
+            let upd = upd.as_object().unwrap().clone();
+            let (merged, _) = p.apply_update(&upd).map_err(|e| e.detail())?;
+            p.check_run_time_update(Some("http://127.0.0.1:1/v1/"), &upd, &merged, None)
+        };
+        assert!(check(json!({"base_url": "http://127.0.0.1:1/v1"})).is_ok());
+        assert!(check(json!({"base_url": "HTTP://127.0.0.1:1/v1/"})).is_ok());
+        let err = check(json!({"base_url": "http://127.0.0.1:1/v2"})).unwrap_err();
         assert!(err.contains("fixed at run time"), "{err}");
     }
 

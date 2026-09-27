@@ -1,4 +1,4 @@
-# `cogny@5.1.1`
+# `cogny@5.1.2`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -497,7 +497,8 @@ collector  --(pack_ack)---------> .
 collector  --(schemas)----------> .
 schemas    --(operation == schemas)--> .  route := 'tool_schemas'
 dispatcher ==(tool, DEFAULT)==============> .
-brain      --(error|content_filter)--> .  route := 'error'
+brain      --(error|content_filter, !refused_subscriber)--> .  route := 'error'
+brain      --(has(refused_subscriber))--> .  route := 'model_refused'  <- a refused push, #863
 ```
 
 **The seam is one edge again since 4.4.0.** Until then it was two complementary
@@ -602,7 +603,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.1.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.1.2", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
@@ -845,6 +846,7 @@ rides on `hop.route`.
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
 | `pack_ack` | out | the receipt `in_pack` answers with -- ONE per pack, not one per brain: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.2.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it. Since 5.1.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
+| `model_refused` | out | a model push the brain refused: its error, with `hop.refused_subscriber` (the brain's path) and `hop.refused_model`, instead of on `error`. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. Since 5.1.2 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `schemas` | out | the tool names this core declares it uses (`{"tools": ["*"]}` as shipped), for a tools hive's `in_schemas` door. It leaves on a TICK, not per turn. **Paired**: see `in_menu`. Since 4.3.0 |
 | `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. They are written into the brain as durable `system.tools`. Since 4.3.0 |
 | `in_schemas` | in | somebody asking what THIS core's errand looks like: `{"tools": ["consult_cogny"]}` or `["*"]`. **Paired**: see `tool_schemas`. Since 4.4.0 |
@@ -885,6 +887,25 @@ several steps, needs a long context and dependable tool calling, may take a minu
 called far less often than the voice, so a higher price per call is acceptable -- and no model
 name. A registry translates it against its catalogue once per change and keeps the result; the
 param is immutable and inert without a registry.
+
+**A refused push goes back** (since 5.1.2, [#863](https://github.com/mmeyerlein/meclaw/issues/863)). A push the brain refuses -- a `base_url` outside its
+`base_url_allow`, a timeout its backstop does not clear -- is no consultation's failure, and before 5.1.2 it left as `route error`. The refusal of a push
+addressed to the cell itself carries two header keys of its own, `hop.refused_subscriber` (the
+cell's path) and `hop.refused_model` (the model the push named); every other out-edge of the
+cell excludes it, and one way back per cell leaves the hive with it as `model_refused`:
+
+```json
+{"from": "./brain", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}, "delete_context": ["col_phase"]}}
+```
+
+In `meclaw-os` the builder draws the way back beside the push edge (`grow_level`, one edge from
+this composite to the container), and the shell carries it on to its registry's `in_refused`
+lane, where `show` names the refusal until the next push or a `reset`
+(`templates/llm-registry/README.md` § A refused push). Without that edge the refusal dead-letters
+`no_route`, loudly. A refusal of anything else -- an operator's push without an address, a push
+addressed to another cell -- keeps the shape it had and the edge it always took: the forward that
+caused the second is the defect.
 
 **The menu is asked for, not typed (`schemas` / `in_menu`, GH #464).** Since 4.3.0 this core
 does not carry a tool menu either. `./collector`'s `params.tools` names what it uses and the

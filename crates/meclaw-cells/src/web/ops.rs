@@ -233,6 +233,30 @@ pub fn check_glass_layer(name: &str, template: &str, layer: &str) -> Result<(), 
     ))
 }
 
+/// The definition rules on a component's markup and on what a browser may
+/// write into it (GH #869): no event-handler attribute and no `javascript:`
+/// in the template's static text, and no `editable` prop typed `"html"`.
+///
+/// One function, two callers, for the reason [`check_glass_layer`] gives:
+/// `component.define` and the seed reader. A component that ships as seed data
+/// never passes through an op, and a rule the shipped path walks past is no
+/// rule. The checks themselves live in [`crate::web::markup`].
+///
+/// Those rules read the template's own text, so they hold only for a template
+/// whose `{{…}}` all stand where that text cannot run on through them (review
+/// I1 of #868/#869): the parser refuses the others, and is asked first — for
+/// the seed too, which until then left the syntax to the shipped-template suite.
+pub fn check_definition(
+    name: &str,
+    template: &str,
+    prop_schema: &Value,
+    editable: &Value,
+) -> Result<(), String> {
+    parse_template(template).map_err(|e| format!("component {name:?}: {e}"))?;
+    crate::web::markup::check_template_markup(name, template)?;
+    crate::web::markup::check_editable(name, prop_schema, editable)
+}
+
 /// Whether a component is navigation glass.
 ///
 /// Both halves matter: a navigation-layer component that is not glass — a bare
@@ -678,6 +702,11 @@ fn component_define(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
         }
     }
 
+    // GH #869: what the markup may carry, and what a browser may write.
+    if let Err(why) = check_definition(name, template, &prop_schema, &editable) {
+        return refuse_define("component.define", "invalid_input", why);
+    }
+
     let layer = args
         .get("layer")
         .and_then(Value::as_str)
@@ -938,6 +967,12 @@ fn query(conn: &Connection, args: &Value) -> OpOutcome {
 /// drag flooded the viewer channels until frames dropped). Nothing is written
 /// on a refusal — not a partial prop, not an audit row — and the touched set
 /// is empty.
+///
+/// A prop typed `"html"` is never written, whatever `editable` says (review
+/// M2 of #869): define and the seed refuse such a declaration since
+/// `web@2.2.0`, but a component stored before keeps its row, and what one
+/// viewer types would reach every other viewer as markup. The verdict is the
+/// same `not_editable` a prop outside the list gets.
 pub fn set_editable(
     conn: &Connection,
     id: &str,
@@ -946,8 +981,8 @@ pub fn set_editable(
 ) -> (crate::web::cell::EventReply, Touched) {
     use crate::web::cell::EventReply;
 
-    let row: Result<(String, String, String), _> = conn.query_row(
-        "SELECT o.component, o.props, c.editable
+    let row: Result<(String, String, String, String), _> = conn.query_row(
+        "SELECT o.component, o.props, c.editable, c.prop_schema
            FROM objects o JOIN components c ON c.name = o.component
           WHERE o.id = ?1",
         [id],
@@ -956,10 +991,11 @@ pub fn set_editable(
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
             ))
         },
     );
-    let Ok((component, props_raw, editable_raw)) = row else {
+    let Ok((component, props_raw, editable_raw, schema_raw)) = row else {
         return (
             EventReply::Error(format!("no object {id:?}")),
             Touched::default(),
@@ -968,7 +1004,9 @@ pub fn set_editable(
 
     let editable: Vec<String> =
         meclaw_core::serde_json::from_str(&editable_raw).unwrap_or_default();
-    if !editable.iter().any(|e| e == prop) {
+    let schema: Value = meclaw_core::serde_json::from_str(&schema_raw).unwrap_or_default();
+    let raw = schema.get(prop).and_then(Value::as_str) == Some("html");
+    if raw || !editable.iter().any(|e| e == prop) {
         return (
             EventReply::Error("not_editable".to_string()),
             Touched::default(),
@@ -993,5 +1031,114 @@ pub fn set_editable(
                 Touched::default(),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn conn() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        crate::web::db::setup_web_schema(&c).unwrap();
+        c
+    }
+
+    fn define(c: &Connection, template: &str, schema: Value, editable: Value) -> OpOutcome {
+        apply(
+            c,
+            &json!({"op": "component.define", "name": "c", "template": template,
+                    "prop_schema": schema, "editable": editable}),
+        )
+        .0
+    }
+
+    /// GH #869: a component's markup reaches the cell through a binding, never
+    /// through an event-handler attribute, and a link never runs code. rev-3
+    /// I-3: the rule is anchored at the start of a name, so the display's own
+    /// `data-front`, `data-tone`, `data-cond` and `aria-controls` pass.
+    #[test]
+    fn define_refuses_handlers_and_script_urls_and_keeps_names_that_end_in_on() {
+        let c = conn();
+        for ok in [
+            r#"<b data-front="{{f}}" data-tone="x" data-cond="y" aria-controls="z">{{f}}</b>"#,
+            r#"<button phx-click="{{f}}">{{f}}</button>"#,
+            r#"<script>{{&f}}</script>"#,
+        ] {
+            let out = define(&c, ok, json!({"f": "text"}), json!([]));
+            assert_eq!(out.error_code, None, "{ok}: {out:?}");
+        }
+        for bad in [
+            r#"<a onclick="x()">{{f}}</a>"#,
+            r#"<svg onload=x()></svg>"#,
+            r#"<a href="javascript:x()">{{f}}</a>"#,
+        ] {
+            let out = define(&c, bad, json!({"f": "text"}), json!([]));
+            assert_eq!(
+                out.error_code.as_deref(),
+                Some("invalid_input"),
+                "{bad}: {out:?}"
+            );
+        }
+    }
+
+    /// Review I1 (#868/#869): the rules above read the template's own text,
+    /// so a value standing inside a NAME would join that text into a name the
+    /// rules never saw. Each of these renders a script, a handler, a script URL
+    /// or a frame with an empty or chosen value; define refuses the place.
+    #[test]
+    fn define_refuses_a_value_that_stands_in_a_name() {
+        let c = conn();
+        for bad in [
+            "<scr{{f}}ipt>window.__pwned=1</scr{{f}}ipt>",
+            r#"<a on{{f}}click="window.__pwned=1">x</a>"#,
+            r#"<a href="java{{f}}script:window.__pwned=1">x</a>"#,
+            r#"<ifr{{f}}ame src="https://example.org"></iframe>"#,
+            r#"<a h{{f}}="{{f}}">x</a>"#,
+        ] {
+            let out = define(&c, bad, json!({"f": "text"}), json!([]));
+            assert_eq!(
+                out.error_code.as_deref(),
+                Some("invalid_input"),
+                "{bad}: {out:?}"
+            );
+        }
+    }
+
+    /// GH #869: what one viewer types is never markup for the next one.
+    #[test]
+    fn define_refuses_an_editable_html_prop() {
+        let c = conn();
+        let out = define(&c, "<p>{{&b}}</p>", json!({"b": "html"}), json!(["b"]));
+        assert_eq!(out.error_code.as_deref(), Some("invalid_input"), "{out:?}");
+        let out = define(&c, "<p>{{b}}</p>", json!({"b": "text"}), json!(["b"]));
+        assert_eq!(out.error_code, None, "{out:?}");
+    }
+
+    /// Review M2 (#869): define and the seed refuse `editable` on an `"html"`
+    /// prop, but a component stored before that rule keeps its row. The write
+    /// asks the type too, so what a browser sends never lands in a prop the
+    /// template renders raw.
+    #[test]
+    fn a_browser_never_writes_an_html_prop_whatever_the_stored_row_says() {
+        use crate::web::cell::EventReply;
+        let c = conn();
+        c.execute_batch(
+            r#"INSERT INTO components (name, template, prop_schema, editable)
+                 VALUES ('old', '<p>{{&b}}{{t}}</p>', '{"b":"html","t":"text"}', '["b","t"]');
+               INSERT INTO objects (id, parent, component, ord, props)
+                 VALUES ('o', NULL, 'old', 0, '{"b":"kept","t":"x"}');"#,
+        )
+        .unwrap();
+        let (reply, touched) = set_editable(&c, "o", "b", &json!("<img src=x onerror=alert(1)>"));
+        assert_eq!(reply, EventReply::Error("not_editable".to_string()));
+        assert_eq!(touched, Touched::default());
+        let props: String = c
+            .query_row("SELECT props FROM objects WHERE id = 'o'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(props, r#"{"b":"kept","t":"x"}"#);
+        // The text prop beside it stays writable.
+        let (reply, _) = set_editable(&c, "o", "t", &json!("y"));
+        assert_eq!(reply, EventReply::Ok);
     }
 }

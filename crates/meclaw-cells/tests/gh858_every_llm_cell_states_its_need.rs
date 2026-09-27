@@ -597,7 +597,11 @@ fn push_refusals(rows: &[Value]) -> Vec<String> {
                 })
                 .unwrap_or_default();
             for endpoint in &endpoints {
-                if !(*endpoint == start || allow.contains(&origin(endpoint))) {
+                // GH #863 (OR-SN.L2.4): the cell compares its start value as an
+                // endpoint, so this mirror asks the cell's own function.
+                if !(meclaw_cells::llm::params::same_endpoint(endpoint, &start)
+                    || allow.contains(&origin(endpoint)))
+                {
                     refused.push(format!(
                         "{who} is announced as a subscriber, and a catalogue push to `{endpoint}` \
                          cannot land in `{at}`: it runs on `base_url` {start:?} with \

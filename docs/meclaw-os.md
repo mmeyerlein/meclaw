@@ -19,13 +19,17 @@ One rule decides what sits where: **a level owns what its siblings must share**.
 at the member, so replacing an assistant does not take the history with it. Screening sits
 outside the assistant, so a new generation meets the same attacker record and the same rate
 window. The capability broker sits at the shell, because two brokers are two answers to one
-question. The members of one organisation share a name and a boundary and nothing else, so
-that level owns nothing else.
+question. The members of one organisation share a name and a routing boundary and nothing
+else, so that level owns nothing else: the boundary routes lanes, it does not isolate.
+
+A colony hosts one organisation. The `orgs` container can hold more, but the colony's API,
+message log and credentials know no organisation: a second one would share everything with the
+first and is not a supported deployment. Run one colony per organisation.
 
 ```
 /os                          meclaw-os    access  argus  builder  operator (holds submit)
  └── orgs                    (container)
-     └── acme                org          a name and a boundary, no cell of its own
+     └── acme                org          a name and a routing boundary, no cell of its own
          └── members         (container)
              └── alex        member       memory-hive  affinity  firewall  access
                  ├── channels    (container)  telegram-connector  display  freeswitch

@@ -385,9 +385,13 @@ async fn the_readme_example_strips_the_prefix_it_announces() {
         body.contains(&format!("<base href=\"{prefix}/{mount}/\">")),
         "the shell's base is the announced prefix plus the mount; body was:\n{body}"
     );
+    // Since `web@2.2.0` the socket URL is a `<meta>` the boot file reads, not
+    // text inside an inline script (GH #867).
     let socket_url = format!("{prefix}/{mount}/live");
     assert!(
-        body.contains(&format!("new LiveView.LiveSocket(\"{socket_url}\"")),
+        body.contains(&format!(
+            "<meta name=\"meclaw-live\" content=\"{socket_url}\">"
+        )),
         "and so is the socket URL the shell hands the LiveView client; body was:\n{body}"
     );
 

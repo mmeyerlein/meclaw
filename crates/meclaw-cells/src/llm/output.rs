@@ -147,6 +147,47 @@ pub(crate) async fn emit_error(
     response_id: Option<&str>,
     extra_error_meta: Option<Map<String, Value>>,
 ) {
+    emit_error_with_hop(
+        sink,
+        target,
+        error_code,
+        detail,
+        error_source,
+        input_messages,
+        started_at_unix_ms,
+        latency_ms,
+        response_model,
+        response_id,
+        extra_error_meta,
+        None,
+    )
+    .await;
+}
+
+/// [`emit_error`] with header keys of the caller's own beside the fixed ones.
+///
+/// GH #863: the refusal of a params push addressed to THIS cell names the push
+/// on two keys (`refused_subscriber`, `refused_model`), so the composite can
+/// route it apart from a conversation's errors and the sender's road can carry
+/// it back to the registry. `None` is byte-identical to [`emit_error`] -- every
+/// other error keeps the shape it had. A key the fixed header already carries
+/// (`finish_reason`, `error_code`, `latency_ms`) is never overwritten: an error
+/// stays an error whatever the caller adds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn emit_error_with_hop(
+    sink: &OutputSink,
+    target: Path,
+    error_code: &str,
+    detail: &str,
+    error_source: &str,
+    input_messages: Vec<Value>,
+    started_at_unix_ms: i64,
+    latency_ms: u64,
+    response_model: Option<&str>,
+    response_id: Option<&str>,
+    extra_error_meta: Option<Map<String, Value>>,
+    extra_hop: Option<Map<String, Value>>,
+) {
     let mut header = Map::new();
     header.insert("finish_reason".into(), Value::String("error".into()));
     header.insert("error_code".into(), Value::String(error_code.to_string()));
@@ -154,6 +195,11 @@ pub(crate) async fn emit_error(
     // latency an operator most wants summed. The error path carries no usage
     // block — a call that failed reports no tokens and no cost.
     header.insert("latency_ms".into(), Value::from(latency_ms));
+    if let Some(extra) = extra_hop {
+        for (k, v) in extra {
+            header.entry(k).or_insert(v);
+        }
+    }
 
     let mut error_obj = Map::new();
     error_obj.insert("source".into(), Value::String(error_source.to_string()));
@@ -357,6 +403,86 @@ mod tests {
             "model omitted when None"
         );
         assert!(em.content["meta"].get("response_id").is_none());
+    }
+
+    /// GH #863: `emit_error` is `emit_error_with_hop` without extra keys, and
+    /// that is byte for byte the body it always emitted -- every error that is
+    /// not the refusal of an own push keeps its shape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emit_error_without_extra_hop_is_byte_identical() {
+        let (sink, mut rx) = mk_sink();
+        let input = vec![json!({"origin":"user","type":"text","text":"Hi"})];
+        emit_error(
+            &sink,
+            Path::new("/sink"),
+            "invalid_input",
+            "base_url outside the allow list",
+            "parse",
+            input.clone(),
+            7,
+            3,
+            None,
+            None,
+            None,
+        )
+        .await;
+        let plain = rx.recv().await.unwrap().content;
+        emit_error_with_hop(
+            &sink,
+            Path::new("/sink"),
+            "invalid_input",
+            "base_url outside the allow list",
+            "parse",
+            input,
+            7,
+            3,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        let with_none = rx.recv().await.unwrap().content;
+        assert_eq!(
+            meclaw_core::serde_json::to_string(&plain).unwrap(),
+            meclaw_core::serde_json::to_string(&with_none).unwrap(),
+            "no extra hop keys, no difference"
+        );
+        assert_eq!(
+            plain["header"],
+            json!({"finish_reason": "error", "error_code": "invalid_input", "latency_ms": 3})
+        );
+    }
+
+    /// GH #863: the extra keys ride beside the fixed ones and never replace
+    /// one of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emit_error_with_hop_adds_keys_and_keeps_the_fixed_ones() {
+        let (sink, mut rx) = mk_sink();
+        let mut extra = Map::new();
+        extra.insert("refused_subscriber".into(), json!("/a/talky/brain"));
+        extra.insert("refused_model".into(), json!("m2"));
+        extra.insert("finish_reason".into(), json!("stop"));
+        emit_error_with_hop(
+            &sink,
+            Path::new("/sink"),
+            "invalid_input",
+            "refused",
+            "parse",
+            vec![],
+            1,
+            0,
+            None,
+            None,
+            None,
+            Some(extra),
+        )
+        .await;
+        let h = rx.recv().await.unwrap().content["header"].clone();
+        assert_eq!(h["refused_subscriber"], "/a/talky/brain");
+        assert_eq!(h["refused_model"], "m2");
+        assert_eq!(h["finish_reason"], "error", "an error stays an error");
+        assert_eq!(h["error_code"], "invalid_input");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

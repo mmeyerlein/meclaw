@@ -1,6 +1,6 @@
 //! W8 (GH #380): the `web` cell's params.
 //!
-//! Four keys, and none of them is immutable.
+//! Five keys, and none of them is immutable.
 //!
 //! # A named removal
 //!
@@ -56,6 +56,12 @@ pub struct WebParams {
     /// every connection as before (OR-AG-6): the display's public path depends
     /// on it, and its grammar is what keeps it harmless.
     pub trusted_proxies: Option<Vec<String>>,
+    /// GH #869: the mounts a `voice:` or `page:` join on this display's socket
+    /// may reach. Empty (the default, the key absent) is every mount, which is
+    /// how the socket behaved before the key existed; a list refuses a join to
+    /// any other name, the kind's default included. Every entry is a mount
+    /// name by `meclaw_colony::surfaces::mount_is_valid`.
+    pub link_mounts: Vec<String>,
     /// Operation-timeout (hard rule 12, A) for I/O this cell initiates.
     pub external_timeout_ms: u64,
 }
@@ -136,6 +142,29 @@ impl WebParams {
             }
         };
 
+        // `null` reads as absent, like `trusted_proxies`.
+        let link_mounts = match obj.get("link_mounts") {
+            None | Some(JsonValue::Null) => Vec::new(),
+            Some(JsonValue::Array(items)) => {
+                let mut list = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let name = item
+                        .as_str()
+                        .filter(|m| meclaw_colony::surfaces::mount_is_valid(m))
+                        .ok_or_else(|| {
+                            format!("link_mounts[{i}]: must be a mount name ([a-z0-9-]{{1,64}}, not reserved), got {item}")
+                        })?;
+                    list.push(name.to_string());
+                }
+                list
+            }
+            Some(other) => {
+                return Err(format!(
+                    "link_mounts: must be a list of mount names, got {other}"
+                ));
+            }
+        };
+
         let external_timeout_ms = obj
             .get("external_timeout_ms")
             .map(|t| {
@@ -150,6 +179,7 @@ impl WebParams {
             mount: mount.to_string(),
             identity_header,
             trusted_proxies,
+            link_mounts,
             external_timeout_ms,
         })
     }
@@ -168,7 +198,7 @@ impl WebParams {
 
 /// The runtime params-update overlay of a `web` cell.
 ///
-/// It carries all four keys, because `apply_update` merges the update over the
+/// It carries all five keys, because `apply_update` merges the update over the
 /// **serialised current params**: a key that is not serialised here is missing
 /// from the merge base, so an update naming only `identity_header` would be
 /// re-parsed against a document with no `mount` in it and refused with
@@ -191,6 +221,12 @@ pub struct WebOverlay {
     /// "absent" (the default) apart from "empty" (nobody).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trusted_proxies: Option<Vec<String>>,
+    /// GH #869: the mounts a link topic may reach; empty is every mount.
+    /// Mutable; effect on the next life, read when the I/O half starts. Not
+    /// serialised when empty, so an overlay written before the key existed
+    /// and one that never named it read the same.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub link_mounts: Vec<String>,
     /// Operation-timeout for I/O this cell initiates. Mutable.
     pub external_timeout_ms: u64,
 }
@@ -201,6 +237,7 @@ impl OverlayParams for WebOverlay {
         "mount",
         "identity_header",
         "trusted_proxies",
+        "link_mounts",
         "external_timeout_ms",
     ];
 
@@ -218,6 +255,7 @@ impl OverlayParams for WebOverlay {
             mount: p.mount,
             identity_header: p.identity_header,
             trusted_proxies: p.trusted_proxies,
+            link_mounts: p.link_mounts,
             external_timeout_ms: p.external_timeout_ms,
         })
     }
@@ -296,6 +334,7 @@ mod tests {
             "mount",
             "identity_header",
             "trusted_proxies",
+            "link_mounts",
             "external_timeout_ms",
         ] {
             assert!(WebOverlay::KNOWN_KEYS.contains(&key), "{key} must be known");
@@ -412,6 +451,53 @@ mod tests {
         assert_eq!(
             (again.mount.as_str(), again.identity_header.as_str()),
             ("screen", "X-User")
+        );
+    }
+
+    /// GH #869: `link_mounts` defaults to empty (every mount, the old
+    /// behaviour), takes mount names only, and round-trips through the overlay
+    /// -- absent when empty, so an overlay from before the key reads the same.
+    #[test]
+    fn link_mounts_default_to_every_mount_and_take_mount_names_only() {
+        let p = WebParams::parse(&json!({"mount": "web"})).unwrap();
+        assert!(p.link_mounts.is_empty());
+        let p = WebParams::parse(&json!({"mount": "web", "link_mounts": null})).unwrap();
+        assert!(p.link_mounts.is_empty());
+        let p = WebParams::parse(&json!({"mount": "web", "link_mounts": ["voice", "browser"]}))
+            .unwrap();
+        assert_eq!(
+            p.link_mounts,
+            vec!["voice".to_string(), "browser".to_string()]
+        );
+        for bad in [
+            json!("voice"),
+            json!(["voice", "Phone"]),
+            json!([7]),
+            json!(["colony"]),
+        ] {
+            let err = WebParams::parse(&json!({"mount": "web", "link_mounts": bad})).unwrap_err();
+            assert!(err.starts_with("link_mounts"), "{bad}: {err}");
+        }
+        let err = WebParams::parse(&json!({"mount": "web", "link_mounts": ["voice", "a/b"]}))
+            .unwrap_err();
+        assert!(
+            err.starts_with("link_mounts[1]"),
+            "the index is named: {err}"
+        );
+
+        let none = <WebOverlay as OverlayParams>::parse(&json!({"mount": "web"})).unwrap();
+        let s = meclaw_core::serde_json::to_string(&none).unwrap();
+        assert!(!s.contains("link_mounts"), "empty is not serialised: {s}");
+        let some = <WebOverlay as OverlayParams>::parse(
+            &json!({"mount": "web", "link_mounts": ["voice"]}),
+        )
+        .unwrap();
+        let back: JsonValue =
+            meclaw_core::serde_json::from_str(&meclaw_core::serde_json::to_string(&some).unwrap())
+                .unwrap();
+        assert_eq!(
+            WebParams::parse(&back).unwrap().link_mounts,
+            vec!["voice".to_string()]
         );
     }
 }

@@ -145,7 +145,7 @@ const NOT_RE_EMITTED: &str = "connect";
 ///
 /// GH #556 SHORTENED this list by two rather than lengthening it. `in_apply`
 /// and `apply` were the `./operator -> ./submit` edge, and that edge is now an
-/// interior edge of `operator@1.2.2`. Neither name is shipped by any occupant
+/// interior edge of `operator@1.2.3`. Neither name is shipped by any occupant
 /// of this level any more, so subtracting them would be subtracting nothing —
 /// and a subtraction with no subject is how a list starts agreeing with itself.
 /// Three names took their place, and all three are the SAME shape: `ask`,
@@ -232,6 +232,14 @@ const CONSUMED_INSIDE: &[&str] = &[
     // edges are the only ones that stamp it for them: the registry is a
     // sibling, so the lane never reaches the rim.
     "in_model",
+    // GH #863 -- the way back of a refused push. `./argus` and `./builder`
+    // emit `model_refused` when their llm cell refused a push addressed to
+    // it, and this level's own `./argus -> ./llm-registry` and
+    // `./builder -> ./llm-registry` edges (and the one from `./orgs`, for the
+    // brains a generation brings) re-stamp it `in_refused` for the registry.
+    // Producer and consumer are siblings here, so neither name reaches the rim.
+    "model_refused",
+    "in_refused",
 ];
 /// The template an organisation is grown from. Its lanes are read off the tree,
 /// never listed here — see `the_org_lanes_cross_this_level_unchanged`.
@@ -544,7 +552,7 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
 
     // GH #556 — the submitter's contract is deliberately NOT read here, and
     // that is the whole of what the union rule says. It is not an occupant of
-    // this level, so its lanes reach the shell only as far as `operator@1.2.2`
+    // this level, so its lanes reach the shell only as far as `operator@1.2.3`
     // re-declares them: `ask`, `mutate` and `sub_receipt` out, `in_verdict` in.
     // Reading `submit` here as well would produce a union that agrees with the
     // rim by accident, and would go on agreeing with it after the front door

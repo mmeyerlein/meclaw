@@ -39,6 +39,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+/// The output the proofs drive. The root `/<mount>/` is the switch (display-hive.md § 6.5) and
+/// replaces itself on load; the switch is proved by `708_the_root_is_a_switch.rs` and B15.
+///
+/// GH #763: handed the root, the driver had CDP calls in flight while the page replaced
+/// itself, and under load one of them came back `-32000 Inspected target navigated or
+/// closed` -- measured 3 of 100 runs under browser load, and `nav=2` in 5 of 5 once the
+/// driver counted navigations.
+const EXIT: &str = "monitor";
+
+/// The URL of the output the proofs drive (never the switch).
+fn page_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/{SCREEN_MOUNT}/{EXIT}")
+}
+
 /// The failure-marker window (30 s convention), never a budget.
 const MARKER: Duration = Duration::from_secs(30);
 /// 640 bytes = 20 ms of 16 kHz mono PCM16, the frame length the wire recommends.
@@ -54,6 +68,11 @@ const ANSWER: &str = "It is noon.";
 const DRIVER_LIMIT: Duration = Duration::from_secs(90);
 /// The context key that opens the colony's egress door for this file's listener.
 const MARK: &str = "voice_out";
+/// The page's threshold between a tap and a hold, in ms: `--hold-ms` in the display's
+/// sheet and its fallback in the hook (`templates/display/compose/compose.py`). The
+/// driver carries its own copy as `TAP_LIMIT_MS`; `the_tap_threshold_is_one_number`
+/// holds the three against this one (wave fix, strand X review M6).
+const THRESHOLD_MS: u64 = 250;
 
 /// Every template this file reads, spelled out so the export's R2b check sees
 /// the names (GH #9).
@@ -216,7 +235,7 @@ async fn boot_gated_on(bytes: usize, grace_ms: u64) -> Live {
     );
 
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.1.0`, and a ref resolves against the templates
+    // The display refs `web@2.2.0`, and a ref resolves against the templates
     // table, which is empty until somebody fills it (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {
@@ -338,7 +357,7 @@ fn hop(m: &Message, key: &str) -> Option<String> {
 /// that page has no microphone: the button is an object the compose cell writes,
 /// so the screen has to have composed once. One `in_view` is what makes it.
 async fn wait_for_the_microphone(port: u16) {
-    let url = format!("http://127.0.0.1:{port}/{SCREEN_MOUNT}/");
+    let url = page_url(port);
     let deadline = Instant::now() + MARKER;
     loop {
         if let Ok(r) = reqwest::get(&url).await
@@ -460,10 +479,7 @@ async fn drive_with(live: &mut Live, mode: Option<&str>, env: &[(&str, &str)]) -
     let speaking = tokio::spawn(answer_when_the_turn_lands(inbox, egress));
 
     let mut command = tokio::process::Command::new("node");
-    command
-        .arg(&script)
-        .arg(format!("http://127.0.0.1:{}/{SCREEN_MOUNT}/", live.port))
-        .arg(SAID);
+    command.arg(&script).arg(page_url(live.port)).arg(SAID);
     if let Some(mode) = mode {
         command.arg(mode);
     }
@@ -506,6 +522,14 @@ async fn drive_with(live: &mut Live, mode: Option<&str>, env: &[(&str, &str)]) -
         .unwrap_or_else(|| panic!("the driver printed no counters:\n{stdout}\n{stderr}"))
         .to_string();
     println!("{line}");
+    // GH #763: every CDP call in flight when the page navigates is answered -32000, and the
+    // switch at `/<mount>/` navigates on every load (display-hive.md § 6.5). One navigation
+    // -- the load itself -- is the only one a proof may see.
+    assert_eq!(
+        counter(&line, "nav="),
+        1,
+        "the page navigated after it had loaded: {line}"
+    );
     Some(line)
 }
 
@@ -678,6 +702,16 @@ async fn a_short_press_opens_the_dock_and_a_long_one_speaks() {
         return;
     };
     // `drive_with` already printed the line; one copy is the record.
+    // The stimulus before the verdict (GH #763): the page timed the short press, and a
+    // host that held the release back past the threshold did not tap at all. Belt and
+    // braces: the driver measures the same `tap_ms` against its own `TAP_LIMIT_MS` and
+    // leaves with exit 1 before this line is reached (wave fix, strand X, OR-FX.X.2) --
+    // so this assert cannot go red on its own; it names the rule, and
+    // `the_tap_threshold_is_one_number` keeps the two numbers the page's.
+    assert!(
+        counter(&line, "tap_ms=") < THRESHOLD_MS,
+        "the stimulus was not a tap: the host held the release back: {line}"
+    );
     assert_eq!(
         counter(&line, "taps="),
         1,
@@ -688,7 +722,7 @@ async fn a_short_press_opens_the_dock_and_a_long_one_speaks() {
         "and it touched the chat (R-23-5): {line}"
     );
     assert!(
-        counter(&line, "hold_ms=") >= 250,
+        counter(&line, "hold_ms=") >= THRESHOLD_MS,
         "the take started at the threshold, not before it: {line}"
     );
     assert_eq!(
@@ -757,4 +791,88 @@ async fn the_ring_sends_what_it_kept_before_the_hold() {
         "more audio reached the colony than the press itself is worth: \
          {seen} B for {HOLD_MS} ms"
     );
+}
+
+/// Every number after `prefix` in `text`, one per occurrence: the digits that follow it.
+fn numbers_after(text: &str, prefix: &str) -> Vec<u64> {
+    text.match_indices(prefix)
+        .filter_map(|(at, _)| {
+            let rest = &text[at + prefix.len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            rest[..end].parse().ok()
+        })
+        .collect()
+}
+
+/// Where the tap threshold of the driver and of the page part from `THRESHOLD_MS`, one
+/// line per place. A place that is not found at all is a finding too: a renamed anchor
+/// would otherwise hold the lock green over nothing.
+fn threshold_drift(driver: &str, compose: &str) -> Vec<String> {
+    let places = [
+        ("driver `TAP_LIMIT_MS`", driver, "const TAP_LIMIT_MS = "),
+        ("sheet `--hold-ms`", compose, "--hold-ms: "),
+        ("hook fallback of `--hold-ms`", compose, "\"--hold-ms\\\", "),
+    ];
+    let mut out = Vec::new();
+    for (name, text, prefix) in places {
+        let found = numbers_after(text, prefix);
+        if found.is_empty() {
+            out.push(format!("{name}: `{prefix}` is not there any more"));
+        }
+        for n in found {
+            if n != THRESHOLD_MS {
+                out.push(format!("{name} is {n}, the proofs assert {THRESHOLD_MS}"));
+            }
+        }
+    }
+    out
+}
+
+/// Wave fix, strand X review M6: the driver decides "not a tap" with its own
+/// `TAP_LIMIT_MS`, the page with `--hold-ms`, and the asserts above with
+/// `THRESHOLD_MS`. Three copies of one number, and a change to the page's alone would
+/// have let the driver call a hold a tap -- with every proof here still green. No
+/// browser: it reads the two files.
+#[test]
+fn the_tap_threshold_is_one_number() {
+    if !library_ships() {
+        println!("SKIP the template library does not ship in this tree");
+        return;
+    }
+    let script = repo("workshop/tools/display-mic-browser.mjs");
+    if !script.is_file() {
+        println!("SKIP the driver does not ship in this tree");
+        return;
+    }
+    let driver = std::fs::read_to_string(&script).expect("the driver reads");
+    let compose = std::fs::read_to_string(repo("templates/display/compose/compose.py"))
+        .expect("compose.py reads");
+    let drift = threshold_drift(&driver, &compose);
+    assert!(
+        drift.is_empty(),
+        "the tap threshold is not one number:\n{}",
+        drift.join("\n")
+    );
+}
+
+/// The lock above bites: a moved number and a renamed anchor are both findings.
+#[test]
+fn the_threshold_lock_bites() {
+    let driver = "const TAP_LIMIT_MS = 250;\n";
+    let compose =
+        "  --hold-ms: 250ms;\n\"  var HOLD_MS = dur(cols || el, \\\"--hold-ms\\\", 250);\"\n";
+    assert_eq!(threshold_drift(driver, compose), Vec::<String>::new());
+    let moved = compose.replace("--hold-ms: 250ms", "--hold-ms: 300ms");
+    assert_eq!(
+        threshold_drift(driver, &moved),
+        vec!["sheet `--hold-ms` is 300, the proofs assert 250".to_string()]
+    );
+    let driver_moved = driver.replace("250", "400");
+    assert_eq!(
+        threshold_drift(&driver_moved, compose),
+        vec!["driver `TAP_LIMIT_MS` is 400, the proofs assert 250".to_string()]
+    );
+    assert_eq!(threshold_drift("const TAP_LIMIT = 250;", compose).len(), 1);
 }

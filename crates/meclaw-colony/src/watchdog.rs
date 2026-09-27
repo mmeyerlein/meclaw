@@ -352,7 +352,13 @@ impl WatchdogTrip {
     /// * `colony_loop` — every control held: the supervisor kept its schedule, the
     ///   witness kept finishing work, and the loop was parked with nothing in
     ///   flight when it stopped answering. This is the only silence that
-    ///   implicates the colony.
+    ///   implicates the colony. Its limit: a cell that blocks its runtime worker
+    ///   synchronously can hold the colony task in that worker's LIFO slot,
+    ///   which no other worker may steal, while the witness runs on another
+    ///   worker (GH #866) -- which is why neither the spawn path of `code` and
+    ///   `bash` nor a cell's `cell.db` close runs on a worker. The other stdio
+    ///   children (`StdioChild::spawn`) still spawn and journal on the worker
+    ///   (`reg:stdio-child-spawn-off-worker` in `docs/defer-register.md`).
     ///
     /// The witness outranks `supervisor_lag` because it is the stronger claim:
     /// `supervisor_lag` says a sleeper woke on time, the witness says a worker

@@ -1,4 +1,4 @@
-# `builder@1.15.0`
+# `builder@1.15.1`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -73,6 +73,7 @@ address them.
 | out | `error` | a wish this hive did not turn into a manifest, named in `hop.error_code` |
 | in | `in_ingest` | a nudge to reconcile the corpus behind this hive against the colony's own template registry. The body is not read: the message IS the nudge |
 | in | `in_model` | a model package for `./compose`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 1.15.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
+| out | `model_refused` | a model push `./compose` refused: its error, with `hop.refused_subscriber` and `hop.refused_model`, instead of on `error` as `composer_failed`. `meclaw-os` carries it back to its registry. Since 1.15.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | out | `catalogue` | what that reconciliation did — `hop.catalogue_known`, `hop.catalogue_ingested` and the names it wrote |
 
 A build that stops says so on a lane. Never as silence, and never as an empty
@@ -131,6 +132,27 @@ would be refused at the cell while the registry booked it. An operator whose
 `LOCAL_LLM_BASE_URL` is the endpoint of a catalogue row makes it a subscriber by hand: `in_hand`
 `{"op": "subscribe", "cell_path": "/os/builder/compose", "start_model": "<MODEL_BUILDER>",
 "requirement": "<the cell's params.requirement>"}`.
+
+**A refused push goes back** (since 1.15.1, [#863](https://github.com/mmeyerlein/meclaw/issues/863)). A push `./compose` refuses -- a `base_url` outside its
+`base_url_allow`, a timeout its backstop does not clear -- is no build's failure, and before 1.15.1 it left on `error` as `composer_failed`. The refusal of a push
+addressed to the cell itself carries two header keys of its own, `hop.refused_subscriber` (the
+cell's path) and `hop.refused_model` (the model the push named); every other out-edge of the
+cell excludes it, and one way back per cell leaves the hive with it as `model_refused`:
+
+```json
+{"from": "./compose", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}}}
+```
+
+Each way back also clears the interior context keys every exit of this hive clears.
+
+In `meclaw-os` the shell mirrors its push edge: `./builder -> ./llm-registry` on `model_refused`, with
+the same address test on `hop.refused_subscriber`, restamped to the registry's `in_refused`
+lane, where `show` names the refusal until the next push or a `reset`
+(`templates/llm-registry/README.md` § A refused push). A parent without that edge dead-letters
+it `no_route`, loudly. A push addressed to another cell is refused as `invalid_input` without the
+two keys and leaves on `error` as `composer_failed`, like any composition that failed -- the
+forward that caused it is the defect.
 
 ## The two classes
 
@@ -424,7 +446,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.7.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.8.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.4"}], "…": "…"}}]}
@@ -436,6 +458,11 @@ second question, and whether they exist is not one at all. A `screen: false`
 would not even be expressible — `classify` drops a falsy key, so *set to false*
 and *never mentioned* are the same wish — and there is no third state to
 express.
+
+Since `1.15.1` the screen is `display@2.8.0`, which runs behind a strict
+Content-Security-Policy ([#867](https://github.com/mmeyerlein/meclaw/issues/867));
+for the screen only the pin moved (the same version draws the ways back of
+[#863](https://github.com/mmeyerlein/meclaw/issues/863), *Every composite gets a way back*).
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,
@@ -449,8 +476,8 @@ no per-org surface at all (an org is a namespace, `HiveParams` is
 
 **The name is the OS's to hand out.** `screen_mount` with `{member}` filled in
 — `alex-display` for the member `alex` — written as `override_params` on the
-screen's own node. A colony carries many organisations and **one** OS, and the
-OS is what allocates what is system-near: since `web@2.0.0` that is a name on
+screen's own node. A colony carries exactly **one** OS, and the OS is what
+allocates what is system-near: since `web@2.0.0` that is a name on
 the colony's one listener rather than a port. The allocation in this builder is
 the first form of that responsibility, because the builder is part of the OS
 (ADR-0022).
@@ -467,7 +494,9 @@ the builder has no knob for the organisation today.** `{member}` is the only
 substitution, and `recipes` is one cell in the one builder a colony has, so a
 richer pattern renders the same string for both organisations. The second
 registration answers `MountFailed`, the cell keeps its task and its page is not
-reachable; the diagnosis is that event in the journal, not a boot failure. Two
+reachable; the diagnosis is that event in the journal, not a boot failure. A
+colony hosts one organisation, so this only happens where the `orgs` container
+was made to hold a second one, which is not a supported deployment. Two
 things get a colony out of it: a member name that is distinct colony-wide, or a
 hand-written manifest that gives the second screen its own
 `override_params.web.mount`.
@@ -872,18 +901,23 @@ entry would still not be a plain CEL literal (a `'`, or a `"` in its start value
 escapes with a backslash) is left out of the road, and the recipe says so on stderr and in its
 answer -- that brain keeps its start value until it is registered by hand.
 
-**Both forms are checked at the submit gate** (`submit`, since its 2.3.2): an edge that names the road --
-`in_model`, `model_subscribe`, `context.model_announcer`, `context.model_generation`,
-`context.model_announced` -- must be
-one of these two, byte for byte. A push edge starts at the declaration's container and carries
-only the pushes addressed to one cell standing directly in its composite; an announcement edge starts at a
-generation the same manifest instantiates. Anything else is refused as `model_push_form` or
+**The push, the way back and the announcement are checked at the submit gate** (`submit`, since
+its 2.3.2; the way back since its 2.3.4): an edge that names the road -- `in_model`,
+`model_subscribe`, `model_refused`, `in_refused`, `context.model_announcer`,
+`context.model_generation`, `context.model_announced` -- must be one of these three, byte for
+byte. A push edge starts at the declaration's container and carries only the pushes addressed
+to one cell standing directly in its composite; a return edge runs from one composite under the
+container to the container itself; an announcement edge starts at a generation the same
+manifest instantiates. Anything else is refused as `model_push_form`, `model_refusal_form` or
 `model_announcement_form` before the broker is asked, and so is any edge that writes the hop keys
-the road is addressed by (`model_road_key`) or computes a route the gate cannot list
-(`model_route_computed`). An edge drawn later at `/os/orgs` therefore cannot readdress a push or
-carry a tool call onto the announcement lane. One that leaves the road's keys and its route as
-they are (no modifier, other keys, `set_hop route "hop.route"`) stays a broker question
-and can copy pushes into a foreign brain -- `templates/submit/README.md` says what that costs
+the road is addressed by, the two keys of a refusal among them (`model_road_key`), or computes a
+route the gate cannot list (`model_route_computed`). An edge drawn later at `/os/orgs` therefore
+cannot readdress a push or carry a tool call onto the announcement lane. One that leaves the
+road's keys and its route as they are (no modifier, other keys, `set_hop route "hop.route"`)
+stays a broker question and can still copy pushes into a foreign brain, which applies none of
+them: since 0.47.0 an `llm` cell applies a push only when `hop.subscriber` is its own path
+([#862](https://github.com/mmeyerlein/meclaw/issues/862)), and it refuses each copy loudly,
+without the keys of a refusal -- `templates/submit/README.md` says what remains
 (`crates/meclaw-cells/tests/gh855_the_model_road_is_a_form_at_the_gate.rs`).
 
 **Why a second declaration, and why the rows are not in it.** The edges live in the graph of the
@@ -907,6 +941,24 @@ announces -- `talky/brain` for both talkies, `cogny/brain`, the member's four me
 and `gh858_every_llm_cell_states_its_need.rs` holds every copy byte-equal to the template it
 was taken from. The gate takes the key as optional, a non-empty string within the 2 KiB the
 llm cell holds it to.
+
+**Every composite gets a way back** (since `1.15.1`, [#863](https://github.com/mmeyerlein/meclaw/issues/863)).
+Behind the announcement the second declaration carries one more edge per composite that holds a
+subscribed brain -- `talky`, `talky-chat` and `cogny` for an assistant, the memory hive once for a
+member, whatever number of its cells subscribed:
+
+```json
+{"from": "./<org>/members/<member>/assistants/<name>/talky", "to": ".",
+ "condition": "has(hop.route) && hop.route == 'model_refused'"}
+```
+
+A brain that refuses a push addressed to it leaves its composite on `model_refused`
+(`templates/talky/README.md` § The model door), this edge brings the refusal to the container,
+and the shell carries it on to the registry's `in_refused`, where `show` names it. No modifier:
+the submit gate lets exactly this form through (`model_refusal_form`, since `submit@2.3.4`), from
+any one composite under the container to the container itself. It is not bound to a generation
+the same manifest grows, so a generation grown before 1.15.1 gets its ways back by a manifest of
+these edges alone. Without one a refusal dead-letters `no_route` at the composite's parent.
 
 **A member is grown as a subscriber too** (since `1.15.0`). For a member of the shipped
 `member` template under the scope, `grow_level member` renders the same second declaration for

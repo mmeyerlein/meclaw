@@ -1,4 +1,4 @@
-# `member@1.10.2`
+# `member@1.10.3`
 
 One person, as a level. **Four holders, three open containers and no cell of
 its own** — seven nodes and sixty-six edges.
@@ -841,7 +841,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.10.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.10.3` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1076,7 +1076,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.10.2"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.10.3"}]
 }}
 ```
 
@@ -1085,7 +1085,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.2"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.3"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1669,6 +1669,14 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`1.10.3` takes the **third** digit ([#864](https://github.com/mmeyerlein/meclaw/issues/864),
+[#863](https://github.com/mmeyerlein/meclaw/issues/863)): no lane and no declaration of this level moved. It pins
+[`affinity`](../affinity/) at 3.6.1, whose brief carries every released value once on the tool lane -- the pack's
+structure as JSON, without the per-slot `text` rendering the `system` slots keep for an `llm` cell -- and
+[`memory-hive`](../memory-hive/) at 3.6.1, whose four llm cells send a model push they refuse out of the hive as
+`model_refused` instead of as a verdict; the level does not declare that lane (the builder draws the way back at the
+container, beside the push edges, like `in_model`).
 
 `1.10.2` takes the **third** digit ([#858](https://github.com/mmeyerlein/meclaw/issues/858)): no lane and no
 declaration of this level moved. It pins [`memory-hive`](../memory-hive/) at 3.6.0, whose four llm cells state

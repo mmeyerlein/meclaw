@@ -20,17 +20,21 @@ What is pinned here is the CONTRACT the wave process leans on:
     person's name or a private host.
 """
 
+import json
 import os
 import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+import uuid
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 STRAND_SH = REPO / "scripts" / "strand.sh"
 GATE_SH = REPO / "scripts" / "gate.sh"
+TIER_SH = REPO / "scripts" / "test-tier.sh"
 GATE_PLAN = REPO / "scripts" / "gate_plan.py"
 
 WAVE_DIR = "welle-x-2026-09-19"
@@ -83,7 +87,7 @@ def make_repo(root):
     """A one-commit repo with the kit, the gate runner and a plans tree."""
     repo = pathlib.Path(root) / "repo"
     (repo / "scripts" / "tests").mkdir(parents=True, exist_ok=True)
-    for src in (STRAND_SH, GATE_SH):
+    for src in (STRAND_SH, GATE_SH, TIER_SH):
         shutil.copy(src, repo / "scripts" / src.name)
         (repo / "scripts" / src.name).chmod(0o755)
     shutil.copy(GATE_PLAN, repo / "scripts" / "gate_plan.py")
@@ -103,17 +107,50 @@ def make_repo(root):
     return repo
 
 
-def run_strand(repo, *args, cwd=None, extra_env=None, timeout_s=120):
+# The host's own token file -- the one a running wave arms. No case may ever
+# reach it: the default path is derived from the default cargo lock.
+HOST_TOKENS = pathlib.Path("/tmp/meclaw-w26-cargo.tokens")
+
+
+def kit_env(repo, extra_env=None):
+    """The environment of every kit and tier call in this module.
+
+    The token file and the cargo lock are SET, never defaulted: a developer
+    shell -- or a wave -- may carry either, and a case that inherited the
+    host's armed token file would take a real token. `CI` and
+    `MECLAW_CARGO_LOCK_HELD` are the two exemptions of the tier's token check
+    and GitHub sets the first one, so both go; the one case that checks the
+    exemption puts them back through `extra_env`.
+    """
     env = dict(os.environ)
     env.update(GIT_ENV)
     env.pop("CARGO_TARGET_DIR", None)
-    env.setdefault("MECLAW_GATE_LOCK", str(repo.parent / "cargo.lock.test"))
+    for var in ("MECLAW_STRAND_TOKEN_SKIP", "CI", "MECLAW_CARGO_LOCK_HELD",
+                "MECLAW_STRAND_NOW", "MECLAW_TIER_DRY"):
+        env.pop(var, None)
+    env["MECLAW_STRAND_TOKENS"] = str(repo.parent / "tokens")
+    env["MECLAW_GATE_LOCK"] = str(repo.parent / "cargo.lock")
     env.setdefault("MECLAW_GATE_MIN_FREE_G", "0")
     if extra_env:
         env.update(extra_env)
+    return env
+
+
+def run_strand(repo, *args, cwd=None, extra_env=None, timeout_s=120):
     return subprocess.run(
         [str(repo / "scripts" / "strand.sh")] + list(args),
-        cwd=str(cwd or repo), env=env, capture_output=True, text=True,
+        cwd=str(cwd or repo), env=kit_env(repo, extra_env),
+        capture_output=True, text=True, timeout=timeout_s)
+
+
+def run_tier(repo, tree, extra_env=None, timeout_s=120):
+    """`scripts/test-tier.sh t0` of a tree in dry mode: it locks, checks and
+    prints the nextest argv, and never compiles anything."""
+    env = kit_env(repo, extra_env)
+    env["MECLAW_TIER_DRY"] = "1"
+    return subprocess.run(
+        [str(pathlib.Path(tree) / "scripts" / "test-tier.sh"), "t0"],
+        cwd=str(tree), env=env, capture_output=True, text=True,
         timeout=timeout_s)
 
 
@@ -217,6 +254,20 @@ OTHER_README = """# Plans
 """ % (OTHER_WAVE_DIR, WAVE_DIR)
 
 
+# A second wave of the SAME branch prefix, newer by name, on top of the live
+# table: the branch alone no longer names one directory.
+SAME_PREFIX_WAVE_DIR = "welle-x-2026-09-30"
+SAME_PREFIX_README = """# Plans
+
+## Live
+
+| Path | What it is |
+|---|---|
+| `%s/` | Another wave of the same prefix. |
+| `%s/` | The wave under test. |
+""" % (SAME_PREFIX_WAVE_DIR, WAVE_DIR)
+
+
 class TestWaveDetection(StrandShTestCase):
     """Which wave the kit writes into -- never the wrong one in silence.
 
@@ -253,6 +304,39 @@ class TestWaveDetection(StrandShTestCase):
         self.assertFalse(
             (self.repo / "plans" / OTHER_WAVE_DIR / "receipts").exists(),
             "the gate archive landed in the top row's wave")
+
+    def _second_wave_of_the_prefix(self, with_report):
+        """A second `plans/<wave>-*` directory beside the wave under test, as
+        on the build host on 2026-09-26: `welle-fix-2026-09-12` and
+        `welle-fix-2026-09-27` both match the branch prefix `welle-fix`."""
+        res = run_strand(self.repo, "new", "kit", "--issue", "756",
+                         "--wave", WAVE_DIR)
+        self.assertEqual(0, res.returncode, res.stderr)
+        other = self.repo / "plans" / SAME_PREFIX_WAVE_DIR / "berichte"
+        other.mkdir(parents=True)
+        if with_report:
+            (other / "kit.md").write_text("# an older strand of the same name\n")
+        (self.repo / "plans" / "README.md").write_text(SAME_PREFIX_README)
+        plan = pathlib.Path(self._tmp.name) / "plan.tsv"
+        plan.write_text(PLAN_GREEN)
+        return run_strand(self.repo, "gate", cwd=self.worktree("kit"),
+                          extra_env={"MECLAW_GATE_PLAN": str(plan)})
+
+    def test_two_waves_of_one_prefix_the_one_with_the_strands_report_wins(self):
+        res = self._second_wave_of_the_prefix(with_report=False)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand: wave %s (from the branch)" % WAVE_DIR, res.stderr)
+        self.assertTrue(
+            (self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+             / "latest" / "summary.txt").is_file(),
+            "the gate archive did not land in the wave with the report")
+        self.assertFalse(
+            (self.repo / "plans" / SAME_PREFIX_WAVE_DIR / "receipts").exists(),
+            "the gate archive landed in the other wave of the prefix")
+
+    def test_two_waves_of_one_prefix_that_both_carry_the_report_stay_open(self):
+        res = self._second_wave_of_the_prefix(with_report=True)
+        self.assertNotIn("(from the branch)", res.stderr)
 
     def test_every_run_names_the_wave_it_writes_into(self):
         res = run_strand(self.repo, "new", "kit", "--issue", "756")
@@ -373,6 +457,31 @@ class TestGate(StrandShTestCase):
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertTrue(marker.exists(),
                         "the runner of the main tree ran, not this tree's")
+
+    def test_gate_help_writes_no_archive_and_keeps_latest(self):
+        """`--help` is a question, not a run.
+
+        It used to go through to the runner: the kit made a run directory,
+        pointed `latest` at it, and the runner printed its help into the run
+        log -- a folder without a summary, and a `latest` that `report` could
+        no longer read the green gate through (V-kit section 1.4).
+        """
+        self.assertEqual(0, self.run_in_tree(self.plan_file(PLAN_GREEN)).returncode)
+        before = self.runs()
+        latest = self.archive().resolve()
+        res = run_strand(self.repo, "gate", "--help", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("gate options pass through to scripts/gate.sh", res.stdout)
+        self.assertEqual(before, self.runs(), "--help made a run directory")
+        self.assertEqual(latest, self.archive().resolve(), "--help moved latest")
+
+    def test_gate_plan_only_prints_the_plan_and_writes_no_archive(self):
+        res = self.run_in_tree(self.plan_file(PLAN_GREEN), "--plan-only")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("scope-ok", res.stdout)
+        self.assertIn("tests=", res.stdout)
+        self.assertFalse(self.archive_root().exists(),
+                         "--plan-only archived a run that never ran")
 
     def test_gate_names_the_red_stations_and_fails(self):
         res = self.run_in_tree(self.plan_file(PLAN_RED))
@@ -516,6 +625,48 @@ class TestReportAndClose(StrandShTestCase):
         self.assertEqual("[%s, %s]" % (mine, merge), head["commits"])
         self.assertNotIn(foreign, head["commits"])
 
+    def test_report_after_a_rebase_takes_the_new_base_and_only_own_commits(self):
+        """A strand rebases onto master before its cargo phase (PREAMBLE
+        section 5), and the base of its skeleton is then a commit below the
+        new master. `basis..tip --first-parent` walked master's first-parent
+        line down from there and listed every commit and merge of the other
+        strands: eight head blocks of one wave were corrected by hand."""
+        self.commit()
+        foreign = self.foreign_master_commit()
+        _git(self.repo, "checkout", "-q", "-b", "%s/other" % WAVE)
+        other = self.foreign_master_commit(rel="other/second.txt")
+        _git(self.repo, "checkout", "-q", "master")
+        _git(self.repo, "merge", "-q", "--no-ff", "-m",
+             "Merge branch '%s/other'" % WAVE, "%s/other" % WAVE)
+        tip = _git(self.repo, "rev-parse", "--short=8", "master").stdout.strip()
+        _git(self.tree, "rebase", "-q", "master")
+        mine = _git(self.tree, "rev-parse", "--short=8", "HEAD").stdout.strip()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        head = header_block(self.report("kit"))
+        self.assertEqual(tip, head["basis"])
+        self.assertEqual("[%s]" % mine, head["commits"])
+        for sha in (foreign, other, tip):
+            self.assertNotIn(sha, head["commits"])
+
+    def test_report_after_the_merge_keeps_the_basis(self):
+        """Once the branch is in master, its merge-base IS its tip -- the base
+        of the head block is the one that still says where it started."""
+        sha = self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        self.assertEqual(0, run_strand(self.repo, "report",
+                                       cwd=self.tree).returncode)
+        basis = header_block(self.report("kit"))["basis"]
+        _git(self.repo, "merge", "-q", "--no-ff", "-m",
+             "Merge branch '%s/kit'" % WAVE, "%s/kit" % WAVE)
+        self.foreign_master_commit()
+        res = run_strand(self.repo, "report", "--strand", "kit", cwd=self.repo)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        head = header_block(self.report("kit"))
+        self.assertEqual(basis, head["basis"])
+        self.assertEqual("[%s]" % sha, head["commits"])
+
     def test_close_reads_the_branch_not_the_calling_trees_head(self):
         self.commit()
         self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
@@ -561,6 +712,524 @@ class TestReportAndClose(StrandShTestCase):
         self.assertFalse(marker.exists(), "close ran gh without --do")
 
 
+REFUSED = "no cargo token for"
+
+
+class TokenTestCase(StrandShTestCase):
+    """A throw-away token file next to a throw-away cargo lock.
+
+    Nothing here reaches the host's file: `kit_env` SETS the path for every
+    call, and `test_no_case_touches_the_hosts_token_file` proves it.
+    """
+
+    T0 = 1_800_000_000
+
+    def setUp(self):
+        super().setUp()
+        res = run_strand(self.repo, "new", "kit", "--issue", "861")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.tree = self.worktree("kit")
+
+    def token(self, *args, cwd=None, minutes=0, env=None):
+        extra = {"MECLAW_STRAND_NOW": str(self.T0 + 60 * minutes)}
+        if env:
+            extra.update(env)
+        return run_strand(self.repo, "token", *args, cwd=cwd, extra_env=extra)
+
+    def arm(self, *args):
+        res = self.token("init", *args)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    def take(self, strand, minutes=0, cwd=None):
+        args = ("take",) if strand is None else ("take", "--strand", strand)
+        return self.token(*args, cwd=cwd, minutes=minutes)
+
+    def state(self):
+        return json.loads((self.repo.parent / "tokens").read_text())
+
+    def holders(self):
+        return [h["strand"] for h in self.state()["holders"]]
+
+    def waiting(self):
+        return [w["strand"] for w in self.state()["waiting"]]
+
+    def log(self):
+        path = self.repo.parent / "tokens.log"
+        return path.read_text() if path.exists() else ""
+
+    def plan_file(self, text=PLAN_GREEN, name="plan.tsv"):
+        path = pathlib.Path(self._tmp.name) / name
+        path.write_text(text)
+        return path
+
+    def gate(self, cwd=None, *args):
+        return run_strand(self.repo, "gate", *args, cwd=cwd or self.tree,
+                          extra_env={"MECLAW_GATE_PLAN": str(self.plan_file())})
+
+
+class TestToken(TokenTestCase):
+    """The cargo token of a wave (`scripts/strand.sh token`, GH #861).
+
+    Measured in the wave before it: eleven builders queued on the cargo lock
+    for 20-90 minutes per single test, and 103 of them woke to a cold cache
+    in three hours -- the lock serialises builds, it does not limit how many
+    wait. The token is the limit, written down where every tree reads it.
+    """
+
+    def test_an_unarmed_host_needs_no_token(self):
+        res = self.gate()
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(1, len([l for l in res.stdout.splitlines() if l.strip()]))
+        self.assertNotIn("token", res.stderr)
+        res = run_tier(self.repo, self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("token", res.stderr)
+        self.assertFalse((self.repo.parent / "tokens").exists())
+
+    def test_take_grants_up_to_max_and_queues_the_rest(self):
+        self.arm("--max", "2")
+        self.assertEqual(0, self.take("welle-x/a").returncode)
+        self.assertEqual(0, self.take("welle-x/b").returncode)
+        res = self.take("welle-x/c")
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("all 2 cargo tokens are held", res.stderr)
+        self.assertIn("welle-x/c is #1 in the queue", res.stderr)
+        self.assertIn("End your turn", res.stderr)
+        self.assertEqual(["welle-x/a", "welle-x/b"], self.holders())
+        self.assertEqual(["welle-x/c"], self.waiting())
+
+    def test_release_names_the_next_in_the_queue(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.take("welle-x/b", minutes=2)
+        res = self.token("release", "--strand", "welle-x/a", minutes=23)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: cargo token released by welle-x/a after 23 min "
+                      "-- 0/1 held; next in the queue: welle-x/b (waiting 21 min)",
+                      res.stderr)
+        self.assertIn("(released by master)", res.stderr)
+        self.assertIn("\trelease-by\t", self.log())
+
+    def test_the_queue_is_first_come_first_served(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.assertEqual(3, self.take("welle-x/b").returncode)
+        self.assertEqual(3, self.take("welle-x/c").returncode)
+        self.token("release", "--strand", "welle-x/a")
+        res = self.take("welle-x/c")
+        self.assertEqual(3, res.returncode, "a later strand overtook the queue")
+        self.assertIn("welle-x/c is #2 in the queue", res.stderr)
+        self.assertEqual(0, self.take("welle-x/b").returncode)
+        self.assertEqual(["welle-x/b"], self.holders())
+
+    def test_concurrent_takes_never_exceed_max(self):
+        """Eight takes at once against three tokens: exactly three win."""
+        self.arm("--max", "3")
+        env = kit_env(self.repo, {"MECLAW_STRAND_NOW": str(self.T0)})
+        procs = [subprocess.Popen(
+            [str(self.repo / "scripts" / "strand.sh"), "token", "take",
+             "--strand", "welle-x/s%d" % i],
+            cwd=str(self.repo), env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE) for i in range(8)]
+        codes = sorted(p.wait(timeout=120) for p in procs)
+        for p in procs:
+            p.stdout.close()
+            p.stderr.close()
+        self.assertEqual([0, 0, 0, 3, 3, 3, 3, 3], codes)
+        self.assertEqual(3, len(self.holders()))
+        self.assertEqual(5, len(self.waiting()))
+
+    def test_a_stale_holder_is_reclaimed(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        res = self.take("welle-x/b", minutes=91)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("reclaimed the cargo token of welle-x/a -- last seen 91 min "
+                      "ago, no live process (ttl 90 min)", res.stderr)
+        self.assertEqual(["welle-x/b"], self.holders())
+        self.assertIn("\tstale\twelle-x/a", self.log())
+
+    def test_a_holder_with_a_live_process_is_not_stale(self):
+        """A gate that runs longer than the TTL keeps its token."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        res = self.token("check", "--strand", "welle-x/a", "--pid",
+                         str(os.getpid()))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(3, self.take("welle-x/b", minutes=120).returncode)
+        self.assertEqual(["welle-x/a"], self.holders())
+
+    def test_a_holder_whose_worktree_is_gone_is_stale(self):
+        self.arm("--max", "1")
+        res = self.take(None, cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["%s/kit" % WAVE], self.holders())
+        _git(self.repo, "worktree", "remove", "--force", str(self.tree))
+        res = self.take("welle-x/b")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("its worktree is gone", res.stderr)
+
+    def test_a_dead_waiter_does_not_block_the_queue(self):
+        """A waiter nobody wakes any more held place 1 for everybody behind
+        it (review rev-1 I3): waiters expire like holders."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.assertEqual(3, self.take("welle-x/w").returncode)
+        self.token("check", "--strand", "welle-x/a", minutes=94)
+        self.token("release", "--strand", "welle-x/a", minutes=95)
+        res = self.take("welle-x/c", minutes=95)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual([], self.waiting())
+        self.assertIn("\tstale-wait\twelle-x/w", self.log())
+
+    def test_a_waiter_with_a_live_worktree_never_expires(self):
+        """A strand that waits in its own worktree is alive as long as the
+        tree is: the TTL is for waiters queued from outside (review I1). With
+        three tokens for eight strands a wait over 90 min is the normal case,
+        and the drop landed at another strand's `take`, unseen by the one
+        that lost its place."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
+        res = self.take(None, cwd=self.tree)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("%s/kit is #1 in the queue" % WAVE, res.stderr)
+        self.assertEqual(3, self.take("welle-x/x", minutes=10).returncode)
+        res = self.take("welle-x/x", minutes=95)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertNotIn("dropped", res.stderr)
+        self.assertEqual(["%s/kit" % WAVE, "welle-x/x"], self.waiting())
+        res = self.token("release", "--strand", "welle-x/a", minutes=96)
+        self.assertIn("next in the queue: %s/kit" % WAVE, res.stderr)
+        res = self.take(None, cwd=self.tree, minutes=97)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["%s/kit" % WAVE], self.holders())
+
+    def test_an_unarmed_host_gets_no_lock_file(self):
+        """Unarmed is without a trace: no verb but `init` creates a file."""
+        for args in (("take", "--strand", "welle-x/a"),
+                     ("release", "--strand", "welle-x/a"),
+                     ("check", "--strand", "welle-x/a", "--pid", "0"),
+                     ("who",), ("off",)):
+            res = self.token(*args)
+            self.assertEqual(0, res.returncode, "%s: %s" % (args, res.stderr))
+        self.assertEqual([], sorted(p.name for p in self.repo.parent.iterdir()
+                                    if p.name.startswith("tokens")))
+
+    def _gate_and_tier(self, first, second):
+        """Two heartbeats of one strand, then the first process lives on and
+        the second one is gone."""
+        self.token("init", "--max", "1", "--force")
+        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
+        for pid in (first, second):
+            res = self.token("check", "--strand", "%s/kit" % WAVE, "--pid", str(pid))
+            self.assertEqual(0, res.returncode, res.stderr)
+
+    def test_a_single_test_beside_a_running_gate_keeps_the_gates_pid(self):
+        """A tier started beside a background gate wrote its own pid over the
+        gate's; after the tier the entry named a dead process, and a gate
+        running on past the TTL lost its token (review M2)."""
+        gate = os.getpid()
+        for order in ("tier after the gate", "gate after the tier"):
+            with self.subTest(order=order):
+                tier = subprocess.Popen([sys.executable, "-c",
+                                         "import time; time.sleep(120)"])
+                try:
+                    pair = (gate, tier.pid) if order.startswith("tier") else (tier.pid, gate)
+                    self._gate_and_tier(*pair)
+                finally:
+                    tier.kill()
+                    tier.wait()
+                res = self.take("welle-x/b", minutes=120)
+                self.assertEqual(3, res.returncode, res.stderr)
+                self.assertEqual(["%s/kit" % WAVE], self.holders())
+
+    def test_the_heartbeat_after_a_foreign_release_logs_no_refusal(self):
+        """The orchestrator released the token while the gate ran; the
+        heartbeat after the run is no refusal of anything (review M3)."""
+        self.arm()
+        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
+        # The one station of this gate is the release, from the side.
+        release = "%s token release --strand %s/kit" % (
+            self.repo / "scripts" / "strand.sh", WAVE)
+        plan = self.plan_file("released\tscope-rel\t0\t%s\t\n" % release,
+                              name="release.tsv")
+        res = run_strand(self.repo, "gate", cwd=self.tree,
+                         extra_env={"MECLAW_GATE_PLAN": str(plan)})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([], self.holders())
+        self.assertNotIn("\trefused\t", self.log())
+
+    def test_init_refuses_over_waiters_without_force(self):
+        """A re-init in the middle of a wave emptied the queue without a word
+        (review M6)."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        self.token("release", "--strand", "welle-x/a")
+        res = self.token("init")
+        self.assertEqual(2, res.returncode, res.stderr)
+        self.assertIn("welle-x/b", res.stderr)
+        self.assertIn("--force", res.stderr)
+        self.assertEqual(["welle-x/b"], self.waiting())
+
+    def test_off_refuses_over_waiters_without_force(self):
+        """`off` dropped the queue without a word -- the counterpart of the
+        re-init of review M6 (review fix round 1, m3)."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        self.token("release", "--strand", "welle-x/a")
+        res = self.token("off")
+        self.assertEqual(2, res.returncode, res.stderr)
+        self.assertIn("welle-x/b waits in the queue", res.stderr)
+        self.assertIn("--force", res.stderr)
+        self.assertEqual(["welle-x/b"], self.waiting())
+        res = self.token("off", "--force")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertFalse((self.repo.parent / "tokens").exists())
+        self.assertIn("\toff --force\t", self.log())
+
+    def test_off_names_holders_and_waiters_together(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        res = self.token("off")
+        self.assertEqual(2, res.returncode, res.stderr)
+        self.assertIn("welle-x/a holds a cargo token", res.stderr)
+        self.assertIn("welle-x/b waits in the queue", res.stderr)
+        self.assertEqual(["welle-x/a"], self.holders())
+
+    def test_who_marks_a_waiter_beyond_the_ttl_and_keeps_it(self):
+        """A builder that dies while it waits leaves its tree standing, and
+        its entry blocks everybody behind it until `release --strand` (the
+        other side of review I1). `who` says so after the TTL -- a hint only,
+        the entry stays (review fix round 1, m1)."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
+        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
+        res = self.token("who", minutes=90)
+        self.assertNotIn("beyond the ttl", res.stdout)
+        res = self.token("who", minutes=95)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("#1 %s/kit  waiting 95 min  waiting beyond the ttl" % WAVE,
+                      res.stdout)
+        self.assertNotIn("STALE", res.stdout)
+        self.assertEqual(["%s/kit" % WAVE], self.waiting())
+
+    def test_a_waiter_whose_worktree_is_gone_leaves_the_queue(self):
+        """The one automatic exit of a waiter with a tree (review I1): the
+        tree is gone, the entry goes at the next `take`, and the one behind
+        it moves up (review fix round 1, m2a)."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
+        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
+        self.assertEqual(3, self.take("welle-x/x", minutes=1).returncode)
+        _git(self.repo, "worktree", "remove", "--force", str(self.tree))
+        res = self.take("welle-x/x", minutes=300)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("dropped %s/kit from the queue -- its worktree is gone" % WAVE,
+                      res.stderr)
+        self.assertIn("welle-x/x is #1 in the queue", res.stderr)
+        self.assertEqual(["welle-x/x"], self.waiting())
+        self.assertIn("\tstale-wait\t%s/kit" % WAVE, self.log())
+
+    def _old_form(self, holders):
+        """A token file of the first form: one `pid` per holder."""
+        (self.repo.parent / "tokens").write_text(json.dumps({
+            "max": 3, "ttl_min": 90, "armed": "2027-01-15T08:00:00Z",
+            "holders": holders, "waiting": []}))
+
+    def test_load_turns_the_old_pid_field_into_the_list(self):
+        """The first form of the file kept one `pid` per holder; `load` reads
+        it as `pids` (review fix round 1, m2b)."""
+        self.arm()
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        old = lambda s, pid: {"strand": s, "since": self.T0, "seen": self.T0,
+                              "pid": pid, "tree": ""}
+        self._old_form([old("welle-x/live", os.getpid()),
+                        old("welle-x/dead", dead.pid),
+                        old("welle-x/none", None)])
+        res = self.token("check", "--strand", "welle-x/none", minutes=120)
+        self.assertEqual(0, res.returncode, res.stderr)
+        res = self.take("welle-x/c", minutes=120)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("reclaimed the cargo token of welle-x/dead -- last seen "
+                      "120 min ago, no live process", res.stderr)
+        by = {h["strand"]: h for h in self.state()["holders"]}
+        self.assertEqual(["welle-x/live", "welle-x/none", "welle-x/c"], list(by))
+        self.assertEqual([os.getpid()], by["welle-x/live"]["pids"])
+        self.assertEqual([], by["welle-x/none"]["pids"])
+        self.assertNotIn("pid", by["welle-x/live"])
+
+    def test_load_refuses_a_broken_old_pid_field(self):
+        for name, holder in (
+                ("a pid that is no number", {"strand": "welle-x/a", "since": 0,
+                                             "seen": 0, "pid": "abc"}),
+                ("pids that are no list", {"strand": "welle-x/a", "since": 0,
+                                           "seen": 0, "pids": 5}),
+                ("a holder that is a string", "welle-x/a")):
+            with self.subTest(form=name):
+                self.arm("--force")
+                self._old_form([holder])
+                before = (self.repo.parent / "tokens").read_text()
+                res = self.take("welle-x/b")
+                self.assertEqual(2, res.returncode, res.stderr)
+                self.assertIn("is broken", res.stderr)
+                self.assertEqual(before, (self.repo.parent / "tokens").read_text())
+
+    def test_release_also_leaves_the_queue(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        res = self.token("release", "--strand", "welle-x/b")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual([], self.waiting())
+        self.assertEqual(["welle-x/a"], self.holders())
+
+    def test_the_skip_variable_is_logged(self):
+        self.arm()
+        res = self.token("check", cwd=self.tree,
+                         env={"MECLAW_STRAND_TOKEN_SKIP": "a review reruns one test"})
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: token check skipped for %s/kit: a review reruns "
+                      "one test" % WAVE, res.stderr)
+        self.assertIn("\tskip\t%s/kit" % WAVE, self.log())
+
+    def test_init_refuses_over_holders_without_force(self):
+        self.arm()
+        self.take("welle-x/a")
+        res = self.token("init")
+        self.assertEqual(2, res.returncode, res.stderr)
+        self.assertEqual(["welle-x/a"], self.holders())
+        self.assertEqual(0, self.token("init", "--force").returncode)
+        self.assertEqual([], self.holders())
+
+    def test_who_names_holders_the_queue_and_the_last_events(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.take("welle-x/b", minutes=3)
+        res = self.token("who", minutes=12)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("welle-x/a", res.stdout)
+        self.assertIn("12 min", res.stdout)
+        self.assertIn("#1 welle-x/b", res.stdout)
+        self.assertIn("wait", res.stdout)
+
+    def test_a_broken_token_file_is_never_rewritten_in_silence(self):
+        self.arm()
+        (self.repo.parent / "tokens").write_text("{not json")
+        res = self.take("welle-x/a")
+        self.assertEqual(2, res.returncode, res.stderr)
+        self.assertIn(str(self.repo.parent / "tokens"), res.stderr)
+        self.assertEqual("{not json", (self.repo.parent / "tokens").read_text())
+
+    def test_off_disarms_and_keeps_the_log(self):
+        self.arm()
+        self.assertEqual(0, self.token("off").returncode)
+        self.assertFalse((self.repo.parent / "tokens").exists())
+        self.assertIn("\toff\t", self.log())
+        res = self.take("welle-x/a")
+        self.assertEqual(0, res.returncode)
+        self.assertIn("not armed", res.stderr)
+
+    def test_no_case_touches_the_hosts_token_file(self):
+        """Every verb, through the same environment as every other case, and
+        not a trace of it in the host's file or log."""
+        probe = "hostprobe-%s/probe" % uuid.uuid4().hex[:12]
+        self.arm()
+        for args in (("take", "--strand", probe),
+                     ("check", "--strand", probe, "--pid", "0"),
+                     ("who",),
+                     ("release", "--strand", probe),
+                     ("off",)):
+            res = self.token(*args)
+            self.assertEqual(0, res.returncode, "%s: %s" % (args, res.stderr))
+        self.assertIn(probe, self.log())
+        for host in (HOST_TOKENS, pathlib.Path(str(HOST_TOKENS) + ".log")):
+            if host.is_file():
+                self.assertNotIn(probe, host.read_text(errors="replace"),
+                                 "a test reached %s" % host)
+
+
+class TestTokenGuards(TokenTestCase):
+    """Where the token is checked: `strand.sh gate` and `test-tier.sh`."""
+
+    def test_gate_refuses_without_a_token_and_writes_no_archive(self):
+        self.arm()
+        res = self.gate()
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(REFUSED, res.stderr)
+        self.assertIn("scripts/strand.sh token take", res.stderr)
+        self.assertEqual("", res.stdout)
+        self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
+
+    def test_gate_runs_with_a_token_and_prints_one_summary_line(self):
+        self.arm()
+        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
+        res = self.gate()
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        lines = [l for l in res.stdout.splitlines() if l.strip()]
+        self.assertEqual(1, len(lines), res.stdout)
+        self.assertTrue(SUMMARY_LINE.match(lines[0]), lines[0])
+        # The heartbeat after the run: seen is fresh, and the pid of the
+        # finished gate is gone from the entry.
+        self.assertEqual([], self.state()["holders"][0]["pids"])
+
+    def test_tier_refuses_without_a_token(self):
+        self.arm()
+        res = run_tier(self.repo, self.tree)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(REFUSED, res.stderr)
+        self.assertNotIn("tier-dry:", res.stdout)
+
+    def test_tier_inside_the_gate_needs_no_token(self):
+        self.arm()
+        for var in ("MECLAW_CARGO_LOCK_HELD", "CI"):
+            with self.subTest(var=var):
+                res = run_tier(self.repo, self.tree, {var: "1"})
+                self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+                self.assertIn("tier-dry:", res.stdout)
+                self.assertNotIn(REFUSED, res.stderr)
+
+    def test_a_broken_token_file_is_exit_2_at_the_gate_and_the_tier(self):
+        """A broken file is a call to look at it, not a missing token: the
+        gate passes the exit of `token check` on like the tier (review M4)."""
+        self.arm()
+        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
+        (self.repo.parent / "tokens").write_text("{not json")
+        res = self.gate()
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("is broken", res.stderr)
+        self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
+        res = run_tier(self.repo, self.tree)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+
+    def test_the_main_tree_needs_no_token(self):
+        self.arm()
+        res = self.gate(self.repo, "--strand", "kit")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        res = run_tier(self.repo, self.repo)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("tier-dry:", res.stdout)
+
+    def test_report_releases_the_token(self):
+        self.arm()
+        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
+        target = self.tree / "scripts" / "kit_change.txt"
+        target.write_text("a change\n")
+        _git(self.tree, "add", "scripts/kit_change.txt")
+        _git(self.tree, "commit", "-q", "-m", "welle-x kit (#861): eine Änderung")
+        self.assertEqual(0, self.gate().returncode)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand: cargo token released by %s/kit" % WAVE, res.stderr)
+        self.assertEqual([], self.holders())
+
+
 class TestPreamble(unittest.TestCase):
     """`plans/PREAMBLE.md` is now the ONLY place the machine rules stand.
 
@@ -578,6 +1247,8 @@ class TestPreamble(unittest.TestCase):
         "per Manifest bauen": ("Manifest", "Hand-Edit"),
         "die Welle raeumt ihre Issues": ("eigenen Issues",),
         "Runner-Hygiene last_run.json": ("last_run.json",),
+        "Unter-Agenten im Vordergrund": ("run_in_background: false",),
+        "Token per Kit": ("strand.sh token",),
     }
 
     def setUp(self):
@@ -618,6 +1289,13 @@ class TestPublicHygiene(unittest.TestCase):
             found = {a for a in self.ADDRESS.findall(path.read_text())
                      if a not in self.ALLOWED}
             self.assertEqual(set(), found, "%s names %s" % (path.name, found))
+
+    def test_the_retro_writes_english_decimal_points(self):
+        """`scripts/` is English, numbers included: `2.2 %`, not `2,2 %`
+        (review M5)."""
+        path = REPO / "scripts" / "retro" / "cache.py"
+        found = re.findall(r"\b\d+,\d+ ?%", path.read_text())
+        self.assertEqual([], found, "%s writes %s" % (path.name, found))
 
     def test_the_kit_never_stages_the_whole_tree(self):
         for path in self.FILES:

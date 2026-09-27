@@ -37,16 +37,19 @@ CLASSES (a path can carry several)
                      templates/), so it pulls the template stations with it.
                      The class of its own exists so the station is planned
                      when only the driver changes
-    display_browser  workshop/tools/display-*, and the two Rust locks that
-                  run the layout driver (BROWSER_LOCKS). Never `template`:
-                  the driver lies under workshop/, which does not travel
+    display_browser  workshop/tools/display-*, and the Rust locks that run
+                  a browser driver of the station (BROWSER_LOCKS). Never
+                  `template`: the driver lies under workshop/, which does
+                  not travel
     display_lab   workshop/tools/display-lab/**, scripts/tests/test_display_lab.py
                   -- the measuring library. Its prefix is the longer one and
                      wins: a tool that READS a screen is not the driver that
                      lays one out, and must not pull `browser:display`
     gate_infra    scripts/gate.sh, scripts/gate_plan.py, scripts/precheck.py,
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
-                  scripts/retro/**, scripts/display_sync.py, .config/nextest.toml
+                  scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
+                  scripts/wave_receipt.py (the strand kit and the receipt
+                  builder carry their tests in `gate-selftest`), .config/nextest.toml
                   (the profile that decides what may be retried is gate
                   infrastructure too)
     unwrap_infra  .github/gates/unwrap_budget.{py,txt}
@@ -60,8 +63,10 @@ STATIONS (S strand, I integration, R release, C ci)
                     cargo lock: `rustfmt --check` on the changed sources, the
                     sheet's byte ceiling, an ADR's anchor line, a `scripts/`
                     path a test reads without an export entry, a docs page
-                    changed without its twin -- plus five findings that are
-                    notes rather than judgements (`scripts/precheck.py`).
+                    changed without its twin, an eval call to the local model
+                    lane without its thinking depth (private tree only) --
+                    plus five findings that are notes rather than judgements
+                    (`scripts/precheck.py`).
                     A RED stops the cargo stations: the runner skips every
                     station that needs a build, takes no lock, and runs the
                     cheap rest on (`gate.sh --no-precheck-stop` overrides).
@@ -118,7 +123,11 @@ STATIONS (S strand, I integration, R release, C ci)
                     I and R run that AND the COLONY half (scope
                     `sheet+colony`), six boots against three exits in two
                     engines, 4-6 min, behind `#[ignore]` and
-                    `--run-ignored all`. The colony half was release-only
+                    `--run-ignored all`. In EVERY mode it also runs the CSP
+                    lock (GH #867): one colony, one page under a strict
+                    policy in Chromium, ~30 s, `#[ignore]`d so the `tests`
+                    station never builds a browser run into its own budget
+                    (the lesson of GH #763). The colony half was release-only
                     until 0.39.0, and the first gate that ever ran it found it
                     red on three proofs (GH #746): a proof only the release
                     night reaches is a proof nobody sees, and the pass that
@@ -283,15 +292,24 @@ STATION_ORDER = (
 )
 
 
-# The two Rust locks the station `browser:display` runs. They are named here and
+# The Rust locks the station `browser:display` runs. They are named here and
 # nowhere else: `gate_plan.py` is THE place a station trigger may be written down,
 # and a test that changes the way a browser proof is driven must plan the station
 # that drives it -- the `tests` filter would build the binary without ever saying
-# which station owns it.
+# which station owns it. The third is the CSP lock of GH #867: a display page under
+# `script-src 'self'` plus the hashes `templates/display/csp.json` publishes.
 BROWSER_LOCKS = frozenset({
     "crates/meclaw-cells/tests/710_the_sheet_holds_in_both_engines_browser.rs",
     "crates/meclaw-cells/tests/710_the_colony_holds_in_both_engines_browser.rs",
+    "crates/meclaw-cells/tests/gh867_a_display_runs_under_a_strict_csp_browser.rs",
 })
+
+# The CSP lock's command. `#[ignore]`d in the tree, like the colony half, so the
+# `tests` station never runs a browser; unlike the colony half it costs one boot and
+# one page, so a strand pays for it too.
+CSP_LOCK_CMD = ["scripts/test-tier.sh", "filter",
+                "binary(/gh867_a_display_runs_under_a_strict_csp/)",
+                "--run-ignored", "all"]
 
 # The empty-diff floor. `plan()` turns it into `scripts/test-tier.sh t0`
 # rather than a `filter` run: the tier passes `--lib --bins` and builds only the
@@ -466,9 +484,13 @@ def _classes_of_path(path):
     # it decides which test may be retried, and `test_nextest_quarantine.py`
     # is the lock that keeps an entry from reaching nothing. It keeps
     # `workspace` as well -- a changed profile changes every test run.
+    # The strand kit and the receipt builder as well: their tests run in
+    # `gate-selftest`, and a diff that touched only `strand.sh` planned
+    # `shellcheck` and nothing else -- an under-selection (GH #861).
     if (path in ("scripts/gate.sh", "scripts/gate_plan.py", "scripts/precheck.py",
                  "scripts/test-tier.sh", "scripts/wave_retro.py",
-                 "scripts/display_sync.py", ".config/nextest.toml")
+                 "scripts/display_sync.py", "scripts/strand.sh",
+                 "scripts/wave_receipt.py", ".config/nextest.toml")
             or path.startswith("scripts/tests/")
             or path.startswith("scripts/retro/")):
         cls.add("gate_infra")
@@ -1261,6 +1283,7 @@ def plan(paths, mode, repo=None):
         if colony:
             cmds.append(["scripts/test-tier.sh", "filter",
                          "binary(/710_the_colony_holds/)", "--run-ignored", "all"])
+        cmds.append(list(CSP_LOCK_CMD))
         out["browser:display"] = station(
             "browser:display", "sheet+colony" if colony else "sheet", True, cmds)
 

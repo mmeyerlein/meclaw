@@ -1,4 +1,4 @@
-# `talky@5.4.1`
+# `talky@5.4.2`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Three referenced units under one h
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- thirty-six edges,
+dispatcher for the fan-out, the close batch out to the write port -- thirty-seven edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -68,7 +68,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.4.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@5.4.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -138,6 +138,7 @@ The rest, each optional and each still at the same address:
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.4.0 |
 | `pack_ack` | out | the receipt `in_pack` answers with, accepted and refused alike: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.4.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it. See "The model door". Since 5.4.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
+| `model_refused` | out | a model push the brain refused: its error, with `hop.refused_subscriber` (the brain's path) and `hop.refused_model`, instead of on `error`. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. See "The model door". Since 5.4.2 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `schemas` | out | the tool names this agent declares it uses (`{"tools": [...]}`), for a tools hive's `in_schemas` door. It leaves on a TICK, not per turn. **Paired**: see `in_menu`. Since 4.5.0 |
 | `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. Since 4.5.0 |
 | `in_export` | in | a demand for the session ledger as a versioned document. It crosses to `./session-keeper` unchanged and the keeper's own walk answers it. **Paired**: see `dump`. Since 4.5.0 |
@@ -489,9 +490,9 @@ downstream as well.
 
 ## The internal wiring, edge by edge
 
-Fifteen edges of round in this hive's `params.graph` -- plus the twenty-one that ARE the
-boundary (eight door edges from `.`, thirteen leaving towards it, and those are the lanes
-above; the thirteenth is the brief leg's request, GH #834; the sixth door is the mutation receipt, GH #553, the seventh is the `in_menu`
+Fifteen edges of round in this hive's `params.graph` -- plus the twenty-two that ARE the
+boundary (eight door edges from `.`, fourteen leaving towards it, and those are the lanes
+above; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model push, GH #863; the sixth door is the mutation receipt, GH #553, the seventh is the `in_menu`
 fan that reaches `./schemas` beside the collector, GH #783, and the eighth is the model door straight into `./brain`, GH #855). The two halves are the whole of this file, counted from it. Every one of the
 fifteen names a sub-unit **by its path**: two of the seven nodes below are sealed hives, so
 the address is the hive and the lane in the third column is what the door behind it
@@ -511,7 +512,8 @@ brain --(stop | tool_calls | length)--> splitter  <- the sidecar cut, GH #379; l
 splitter --(stop | tool_calls)---> dispatcher
 splitter --(length)--------------> collector    in_answer   <- a cut answer, its sidecar cut too
 splitter --(sidecar)------------->  .        <- one per section, out of the sidecar port
-brain --(error | content_filter)-> errors
+brain --(error | content_filter, !refused_subscriber)-> errors
+brain --(has(refused_subscriber))--> .   route := 'model_refused'  <- a refused push, GH #863
 session-keeper --(reject)--------> errors    <- the session store refused a step
 
 dispatcher --(calls)---> collector   in_calls    dispatcher ==(tool, DEFAULT)==> [your tools]
@@ -690,6 +692,25 @@ call stays low -- and no model name. A registry translates it against its catalo
 change and keeps the result; the builder's `grow_level assistant` announces it with the brain.
 The param is immutable and inert without a registry: the brain runs its start value.
 
+**A refused push goes back** (since 5.4.2, [#863](https://github.com/mmeyerlein/meclaw/issues/863)). A push the brain refuses -- a `base_url` outside its
+`base_url_allow`, a timeout its backstop does not clear -- is no conversation's error, and before 5.4.2 it reached `./errors` as one. The refusal of a push
+addressed to the cell itself carries two header keys of its own, `hop.refused_subscriber` (the
+cell's path) and `hop.refused_model` (the model the push named); every other out-edge of the
+cell excludes it, and one way back per cell leaves the hive with it as `model_refused`:
+
+```json
+{"from": "./brain", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}, "delete_context": ["tool_answerer"]}}
+```
+
+In `meclaw-os` the builder draws the way back beside the push edge (`grow_level`, one edge from
+this composite to the container), and the shell carries it on to its registry's `in_refused`
+lane, where `show` names the refusal until the next push or a `reset`
+(`templates/llm-registry/README.md` § A refused push). Without that edge the refusal dead-letters
+`no_route`, loudly. A refusal of anything else -- an operator's push without an address, a push
+addressed to another cell -- keeps the shape it had and the edge it always took: the forward that
+caused the second is the defect.
+
 ### The menu is asked for, not typed (`schemas` / `in_menu`, GH #464)
 
 Until 4.5.0 a talky's tool declarations were a list somebody had written into its brain's
@@ -702,7 +723,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.4.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.4.2",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

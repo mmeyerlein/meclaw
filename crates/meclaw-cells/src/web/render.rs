@@ -28,6 +28,21 @@
 //! escapes rather than refuses: rendering markup that no schema promised was
 //! markup is the worse of the two failures.
 //!
+//! # Where a value stands (GH #869)
+//!
+//! Escaping keeps a value inside the element or attribute it was put in; it
+//! says nothing about what the value means there. So the parser records, for
+//! every substitution, the place it stands in ([`Slot`]: text, a named
+//! attribute value, the inside of a tag, the body of a `<script>`/`<style>`),
+//! and the walk asks each value to fit its place — an event name in a
+//! LiveView binding, a relative or `http(s)`/`mailto`/`tel` URL in a URL
+//! attribute, a plain CSS value in `style`, a token inside a tag. A prop typed
+//! `"int"` renders an integer and nothing else. What does not fit renders
+//! **empty**, for the reason above: a missing word is the harmless failure.
+//! A raw value is raw only between tags or in a script/style body; in an
+//! attribute it is escaped and fitted like any other. The grammars live in
+//! [`crate::web::markup`].
+//!
 //! # What "materialised" means
 //!
 //! [`materialize`] renders a whole page once and keeps the result. A GET then
@@ -41,6 +56,7 @@
 //! Finer granularity would mean tracking a slot per object and a much larger
 //! static table; coarser would mean re-rendering the page on every keystroke.
 
+use crate::web::markup::{Contexts, Slot, Sub, fits, int_text};
 use meclaw_core::serde_json::{Map, Value, json};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -273,10 +289,21 @@ fn prop_truthy(props: &Value, key: &str) -> bool {
 pub enum Piece {
     /// Literal text.
     Text(String),
-    /// `{{prop}}` — escaped substitution.
-    Prop(String),
-    /// `{{&prop}}` — raw substitution, honoured only for `"html"` props.
-    Raw(String),
+    /// `{{prop}}` — escaped substitution, fitted to the place it stands in.
+    Prop {
+        /// The prop's name.
+        name: String,
+        /// Where in the markup it stands (GH #869).
+        slot: Slot,
+    },
+    /// `{{&prop}}` — raw substitution, honoured only for `"html"` props and
+    /// only where markup may stand ([`Slot::takes_markup`]).
+    Raw {
+        /// The prop's name.
+        name: String,
+        /// Where in the markup it stands (GH #869).
+        slot: Slot,
+    },
     /// `{{children}}`.
     Children,
     /// `{{#if prop}}…{{/if}}`, already parsed.
@@ -300,31 +327,45 @@ impl std::fmt::Display for TemplateError {
 /// `{{…}}` — so an unknown form is answered to whoever wrote it, at the moment
 /// they write it.
 pub fn parse_template(src: &str) -> Result<Vec<Piece>, TemplateError> {
-    let (pieces, rest) = parse_until_end(src)?;
+    let (pieces, rest, ctx) = parse_until_end(src, Contexts::start())?;
     if !rest.is_empty() {
         return Err(TemplateError(
             "unexpected {{/if}} without a matching {{#if …}}".to_string(),
         ));
+    }
+    // Review I2: what the page puts after a template is read on from where the
+    // template ends, so it ends between tags (see `Contexts::unfinished`).
+    if let Some(why) = ctx.refused().or_else(|| ctx.unfinished()) {
+        return Err(TemplateError(why.to_string()));
     }
     Ok(pieces)
 }
 
 /// Parse pieces until end of input or an unconsumed `{{/if}}`.
 ///
-/// Returns the pieces and whatever remains after a closing tag, so the `#if`
-/// arm can pick up where its body ended.
-fn parse_until_end(src: &str) -> Result<(Vec<Piece>, &str), TemplateError> {
+/// Returns the pieces, whatever remains after a closing tag (so the `#if` arm
+/// can pick up where its body ended), and the readings of the markup at that
+/// point (GH #869): `ctx` is where the template stands when this call starts,
+/// fed with every piece of the template's own text.
+fn parse_until_end(
+    src: &str,
+    mut ctx: Contexts,
+) -> Result<(Vec<Piece>, &str, Contexts), TemplateError> {
     let mut out = Vec::new();
     let mut rest = src;
 
     loop {
         let Some(open) = rest.find("{{") else {
             if !rest.is_empty() {
+                ctx.feed(rest);
+                refuse_text(&ctx)?;
                 out.push(Piece::Text(rest.to_string()));
             }
-            return Ok((out, ""));
+            return Ok((out, "", ctx));
         };
         if open > 0 {
+            ctx.feed(&rest[..open]);
+            refuse_text(&ctx)?;
             out.push(Piece::Text(rest[..open].to_string()));
         }
         let after = &rest[open + 2..];
@@ -338,11 +379,16 @@ fn parse_until_end(src: &str) -> Result<(Vec<Piece>, &str), TemplateError> {
         let tail = &after[close + 2..];
 
         if tag == "/if" {
-            return Ok((out, tail));
+            ctx.place(Sub::Branch).map_err(|why| misplaced(tag, why))?;
+            return Ok((out, tail, ctx));
         } else if let Some(prop) = tag.strip_prefix("#if ") {
             let prop = prop.trim();
             check_name(prop)?;
-            let (body, after_body) = parse_until_end(tail)?;
+            ctx.place(Sub::Branch).map_err(|why| misplaced(tag, why))?;
+            let (body, after_body, body_ctx) = parse_until_end(tail, ctx.clone())?;
+            // After the conditional the markup is where it was (the body did
+            // not render) or where the body left it (it did).
+            ctx.join(body_ctx);
             out.push(Piece::If {
                 prop: prop.to_string(),
                 body,
@@ -354,16 +400,51 @@ fn parse_until_end(src: &str) -> Result<(Vec<Piece>, &str), TemplateError> {
             }
             continue;
         } else if tag == "children" {
+            ctx.place(Sub::Children)
+                .map_err(|why| misplaced(tag, why))?;
             out.push(Piece::Children);
         } else if let Some(name) = tag.strip_prefix('&') {
             let name = name.trim();
             check_name(name)?;
-            out.push(Piece::Raw(name.to_string()));
+            let slot = ctx.place(Sub::Value).map_err(|why| misplaced(tag, why))?;
+            out.push(Piece::Raw {
+                name: name.to_string(),
+                slot,
+            });
         } else {
             check_name(tag)?;
-            out.push(Piece::Prop(tag.to_string()));
+            let slot = ctx.place(Sub::Value).map_err(|why| misplaced(tag, why))?;
+            out.push(Piece::Prop {
+                name: tag.to_string(),
+                slot,
+            });
         }
         rest = tail;
+    }
+}
+
+/// A `{{…}}` at a place where the template's own text would run on through it
+/// (review I1 of #868/#869; the places are [`Contexts::place`]'s).
+///
+/// The definition rules read the template's text with every `{{…}}` blanked;
+/// the renderer puts the value, or nothing, in its place. Where that joins the
+/// text on either side into a name — `<scr{{x}}ipt>`, `on{{x}}click=`,
+/// `h{{n}}="…"` — or into a scheme — `href="java{{x}}script:…"` — the rules
+/// judged a different page than the one that renders. Refused here, every
+/// caller of the parser refuses it: `component.define`, the seed, the renderer.
+fn misplaced(tag: &str, why: &str) -> TemplateError {
+    TemplateError(format!(
+        "{{{{{tag}}}}} stands in {why} — a value fills the text between tags or a quoted \
+         attribute value, never a name, and a URL attribute takes one whole value or \
+         starts with the template's own `/`, `?`, `#` or scheme"
+    ))
+}
+
+/// The template's own text refused after it was read (see [`misplaced`]).
+fn refuse_text(ctx: &Contexts) -> Result<(), TemplateError> {
+    match ctx.refused() {
+        Some(why) => Err(TemplateError(why.to_string())),
+        None => Ok(()),
     }
 }
 
@@ -388,6 +469,24 @@ fn check_name(name: &str) -> Result<(), TemplateError> {
 /// Whether `prop_schema` types this prop as raw HTML.
 fn is_html_prop(schema: &Value, name: &str) -> bool {
     schema.get(name).and_then(Value::as_str) == Some("html")
+}
+
+/// A prop's value as the text its place may hold, or empty (GH #869).
+///
+/// Typed first: an `"int"` prop is an integer or nothing, wherever it stands.
+/// Then placed: the text has to fit the [`Slot`] the parser found for it.
+/// Escaping happens after this, at the caller, as before.
+fn fitted_text(props: &Value, schema: &Value, name: &str, slot: &Slot) -> String {
+    let text = if schema.get(name).and_then(Value::as_str) == Some("int") {
+        int_text(props.get(name)).unwrap_or_default()
+    } else {
+        prop_text(props, name)
+    };
+    if fits(slot, &text) {
+        text
+    } else {
+        String::new()
+    }
 }
 
 /// Render one object and everything below it.
@@ -464,15 +563,18 @@ fn render_pieces_with(
     for piece in pieces {
         match piece {
             Piece::Text(t) => out.push_str(t),
-            Piece::Prop(name) => out.push_str(&escape(&prop_text(props, name))),
-            Piece::Raw(name) => {
-                let text = prop_text(props, name);
-                if is_html_prop(schema, name) {
-                    out.push_str(&text);
+            Piece::Prop { name, slot } => {
+                out.push_str(&escape(&fitted_text(props, schema, name, slot)))
+            }
+            Piece::Raw { name, slot } => {
+                if is_html_prop(schema, name) && slot.takes_markup() {
+                    out.push_str(&prop_text(props, name));
                 } else {
-                    // Undeclared: escape. Emitting markup a schema never
-                    // promised was markup is the worse failure.
-                    out.push_str(&escape(&text));
+                    // Undeclared, or standing where markup cannot: escape and
+                    // fit. Emitting markup a schema never promised was markup
+                    // is the worse failure, and a raw value inside quotes is
+                    // a way out of them.
+                    out.push_str(&escape(&fitted_text(props, schema, name, slot)));
                 }
             }
             Piece::Children => children(out)?,
@@ -573,9 +675,15 @@ mod tests {
             p,
             vec![
                 Piece::Text("a".into()),
-                Piece::Prop("x".into()),
+                Piece::Prop {
+                    name: "x".into(),
+                    slot: Slot::Text
+                },
                 Piece::Text("b".into()),
-                Piece::Raw("y".into()),
+                Piece::Raw {
+                    name: "y".into(),
+                    slot: Slot::Text
+                },
                 Piece::Text("c".into()),
                 Piece::Children,
                 Piece::Text("d".into()),
@@ -637,5 +745,166 @@ mod tests {
         .unwrap();
         assert_eq!(out, "D<i>&lt;b&gt;");
         assert!(render_pieces_plain("{{user.name}}", &json!({}), &json!({})).is_err());
+    }
+
+    fn plain(t: &str, props: Value, schema: Value) -> String {
+        render_pieces_plain(t, &props, &schema).unwrap()
+    }
+
+    /// GH #869: a binding carries an event name; a JSON command list renders
+    /// empty. `phx-value-*` stays escaped text, because the client executes
+    /// nothing there and the display writes object ids into it.
+    #[test]
+    fn a_binding_renders_an_event_name_and_never_a_command_list() {
+        let t = r#"<button phx-click="{{e}}" phx-value-for="{{v}}">{{e}}</button>"#;
+        assert_eq!(
+            plain(t, json!({"e": "save", "v": "w/0"}), json!({})),
+            r#"<button phx-click="save" phx-value-for="w/0">save</button>"#
+        );
+        let cmd = r#"[["exec",{"attr":"onclick"}]]"#;
+        let out = plain(t, json!({"e": cmd, "v": cmd}), json!({}));
+        assert!(
+            out.starts_with(r#"<button phx-click="" phx-value-for="[[&quot;exec"#),
+            "{out}"
+        );
+        assert!(
+            out.ends_with(">[[&quot;exec&quot;,{&quot;attr&quot;:&quot;onclick&quot;}]]</button>"),
+            "{out}"
+        );
+        // Inside a conditional, the way the display writes its bindings.
+        let t = r#"<b type="button"{{#if e}} phx-keyup="{{e}}"{{/if}}>"#;
+        assert_eq!(
+            plain(t, json!({"e": cmd}), json!({})),
+            r#"<b type="button" phx-keyup="">"#
+        );
+    }
+
+    /// GH #869: a URL attribute takes a relative URL or an allowed scheme.
+    #[test]
+    fn a_url_attribute_renders_no_script_scheme() {
+        let t = r#"<img src="{{src}}" alt="{{src}}">"#;
+        assert_eq!(
+            plain(t, json!({"src": "https://example.org/a.png"}), json!({})),
+            r#"<img src="https://example.org/a.png" alt="https://example.org/a.png">"#
+        );
+        assert_eq!(
+            plain(t, json!({"src": "javascript:window.__pwned=1"}), json!({})),
+            r#"<img src="" alt="javascript:window.__pwned=1">"#
+        );
+    }
+
+    /// GH #869: a value inside `style` cannot open a declaration, and an
+    /// `int` prop renders an integer or nothing at all.
+    #[test]
+    fn a_style_value_and_an_int_stay_what_they_are() {
+        let t = r#"<div style="--v: {{v}}; --n: {{n}}" data-n="{{n}}">{{n}}</div>"#;
+        let schema = json!({"v": "text", "n": "int"});
+        assert_eq!(
+            plain(t, json!({"v": "c.p", "n": 42}), schema.clone()),
+            r#"<div style="--v: c.p; --n: 42" data-n="42">42</div>"#
+        );
+        assert_eq!(
+            plain(
+                t,
+                json!({"v": "0;background:url(//x)", "n": "0;background:url(//x)"}),
+                schema.clone()
+            ),
+            r#"<div style="--v: ; --n: " data-n=""></div>"#
+        );
+        assert_eq!(
+            plain(t, json!({"v": "1", "n": "-12"}), schema.clone()),
+            r#"<div style="--v: 1; --n: -12" data-n="-12">-12</div>"#
+        );
+        assert_eq!(
+            plain(t, json!({"n": 1.5}), schema),
+            r#"<div style="--v: ; --n: " data-n=""></div>"#
+        );
+    }
+
+    /// GH #869: a raw prop stands as markup only where markup may stand. In an
+    /// attribute it is escaped and fitted like any other value.
+    #[test]
+    fn a_raw_prop_is_raw_only_between_tags_and_in_a_script_body() {
+        let schema = json!({"h": "html"});
+        assert_eq!(
+            plain(
+                "<p>{{&h}}</p><script>{{&h}}</script>",
+                json!({"h": "<i>a</i>"}),
+                schema.clone()
+            ),
+            "<p><i>a</i></p><script><i>a</i></script>"
+        );
+        assert_eq!(
+            plain(
+                r#"<a title="{{&h}}" href="{{&h}}">"#,
+                json!({"h": "\"><script>x</script>"}),
+                schema.clone()
+            ),
+            r#"<a title="&quot;&gt;&lt;script&gt;x&lt;/script&gt;" href="&quot;&gt;&lt;script&gt;x&lt;/script&gt;">"#
+        );
+        assert_eq!(
+            plain(r#"<a href="{{&h}}">"#, json!({"h": "javascript:x"}), schema),
+            r#"<a href="">"#
+        );
+    }
+
+    /// GH #869: a value never stands inside a tag outside quotes -- there it
+    /// would be an attribute name (review I1). And a conditional whose branches
+    /// leave the markup in two different places puts the value under the
+    /// narrowest grammar, a token.
+    #[test]
+    fn a_value_inside_a_tag_is_refused_and_one_in_doubt_is_a_token() {
+        assert!(parse_template("<div {{a}}>").is_err());
+        assert!(parse_template("<div a={{a}}>").is_err());
+        // The template closes its quote and tag in both readings: it ends between
+        // tags, as every template does (review I2).
+        let t = r#"<b>{{#if x}}<a title="{{/if}}{{u}}">"#;
+        let pieces = parse_template(t).unwrap();
+        assert!(
+            pieces.contains(&Piece::Prop {
+                name: "u".into(),
+                slot: Slot::Tag
+            }),
+            "{pieces:?}"
+        );
+        assert_eq!(
+            plain(t, json!({"x": true, "u": "javascript:x"}), json!({})),
+            r#"<b><a title="">"#
+        );
+        assert_eq!(
+            plain(t, json!({"x": true, "u": "a-1"}), json!({})),
+            r#"<b><a title="a-1">"#
+        );
+    }
+
+    /// The parser reads the markup across conditionals and out of raw text:
+    /// the display's own shell, a style block and a script block before its
+    /// attributes, lands every value in the right place.
+    #[test]
+    fn the_parser_finds_the_place_of_every_value() {
+        let t = concat!(
+            r#"{{#if s}}<link rel="stylesheet" href="vision.css">{{/if}}"#,
+            r#"<style>a[x="y"]>b{c:d}{{&faces}}</style>"#,
+            r#"<div class="stack{{#if t}} thin{{/if}}" id="{{id}}" style="--scale: {{scale}}">"#,
+            r#"{{children}}</div><script>{{&js}}</script><p>{{body}}</p>"#
+        );
+        let slots: Vec<(String, Slot)> = parse_template(t)
+            .unwrap()
+            .into_iter()
+            .filter_map(|p| match p {
+                Piece::Prop { name, slot } | Piece::Raw { name, slot } => Some((name, slot)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            slots,
+            vec![
+                ("faces".to_string(), Slot::RawText),
+                ("id".to_string(), Slot::Attr("id".into())),
+                ("scale".to_string(), Slot::Attr("style".into())),
+                ("js".to_string(), Slot::RawText),
+                ("body".to_string(), Slot::Text),
+            ]
+        );
     }
 }

@@ -23,8 +23,8 @@
 //! **Why `#[ignore]`.** Six boots, six pages, six sets of gestures: four to six minutes,
 //! a fifth of the integration pass's whole budget, for proofs that change between two
 //! strands about as often as the sheet does. The station `browser:display` plans this
-//! with scope `colony` in `release` only and runs it with `--run-ignored`; the sheet half
-//! carries the gate.
+//! with scope `colony` in `integration` and `release` (GH #746) and runs it with
+//! `--run-ignored`; the sheet half carries the strand gate.
 //!
 //! **Where the evidence lands.** Screenshots and one report per run under
 //! `target/beweis/display-browser/<engine>-<viewport>/`, so a red B-number can be looked
@@ -339,10 +339,10 @@ fn evidence_dir(engine: &str, viewport: &str) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-// release-only: 4-6 min. Six boots, six pages, six sets of gestures -- a fifth of the
-// integration pass's budget. The station `browser:display` plans it with scope `colony`
-// in `release` and runs it with `--run-ignored`.
-#[ignore = "release-only: 4-6 min"]
+// integration + release: 4-6 min. Six boots, six pages, six sets of gestures -- a fifth
+// of the integration pass's budget. The station `browser:display` plans it with scope
+// `colony` in `integration` and `release` (GH #746) and runs it with `--run-ignored`.
+#[ignore = "integration + release: 4-6 min"]
 async fn the_colony_holds_in_both_engines() {
     if !library_ships() || !have_python() {
         println!("SKIP no template library or no python3 on this host");

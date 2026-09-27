@@ -154,14 +154,6 @@ impl CodeCell {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        // S4 (GH #35): the sandbox is installed on the command, not around
-        // it. A profile that cannot be applied fails HERE, before a child
-        // exists — a `restricted` cell never falls back to unsandboxed.
-        //
-        // GH #85: the returned scope owns the child's cgroup and must stay
-        // alive until the child is reaped, so it is bound rather than
-        // dropped on the spot.
-        //
         // GH #349: when the script was materialised, the profile gets one
         // extra read grant — the script file itself. `cell-types.md` §
         // `code` promises a `script_inline` needs no declaration of its own,
@@ -172,29 +164,49 @@ impl CodeCell {
             (Some(profile), Some(path)) => Some(profile.with_readable_file(path)),
             _ => None,
         };
-        let profile_in_force = effective_profile.as_ref().or(self.params.sandbox.as_ref());
-        let _sandbox_scope = match profile_in_force {
-            None => crate::sandbox::SandboxScope::empty(),
-            Some(profile) => match crate::sandbox::apply(profile, &mut command) {
-                Ok(scope) => scope,
-                Err(e) => {
-                    emit_spawn_error(sink, reply_target, format!("sandbox not applied: {e}")).await;
-                    return None;
-                }
-            },
-        };
-        let mut child = match command.spawn() {
-            Ok(c) => c,
+        let profile_in_force = effective_profile.or_else(|| self.params.sandbox.clone());
+        // GH #866: the sandbox, the `fork` (with its `pre_exec` and the wait for
+        // `exec`) and the journal's `spawned` record are blocking syscalls, and
+        // under write-back pressure the record's `fsync` alone waited hundreds of
+        // milliseconds on a live colony -- on a runtime worker, which then polled
+        // nothing else, the colony task included. They run in ONE blocking
+        // section, awaited: the record is durable before this path goes on
+        // (ruling B-R2), and it is taken on the thread that forked, which the
+        // settle loop of `read_settled_identity` needs. The runtime context a
+        // `tokio::process::Command` needs is there on a blocking-pool thread too.
+        //
+        // GH #116: the crash-durable record is taken before the pipes are moved
+        // out, because `Child::id()` is only meaningful while the child is
+        // unreaped.
+        let journal_path = cell_path.as_str().to_string();
+        let spawned = tokio::task::spawn_blocking(move || {
+            // S4 (GH #35): the sandbox is installed on the command, not around
+            // it. A profile that cannot be applied fails HERE, before a child
+            // exists -- a `restricted` cell never falls back to unsandboxed.
+            //
+            // GH #85: the returned scope owns the child's cgroup and must stay
+            // alive until the child is reaped, so it travels back with the child.
+            let scope = match &profile_in_force {
+                None => crate::sandbox::SandboxScope::empty(),
+                Some(profile) => crate::sandbox::apply(profile, &mut command)
+                    .map_err(|e| format!("sandbox not applied: {e}"))?,
+            };
+            let child = command.spawn().map_err(|e| e.to_string())?;
+            let note = crate::orphan_journal::note_spawn(child.id(), None, &journal_path);
+            Ok::<_, String>((child, scope, note))
+        })
+        .await;
+        let (mut child, _sandbox_scope, journal_note) = match spawned {
+            Ok(Ok(spawned)) => spawned,
+            Ok(Err(e)) => {
+                emit_spawn_error(sink, reply_target, e).await;
+                return None;
+            }
             Err(e) => {
-                emit_spawn_error(sink, reply_target, e.to_string()).await;
+                emit_spawn_error(sink, reply_target, format!("spawn did not complete: {e}")).await;
                 return None;
             }
         };
-
-        // GH #116: same crash-durable record as `bash` — see the note at
-        // that spawn site. Taken before the pipes are moved out, because
-        // `Child::id()` is only meaningful while the child is unreaped.
-        let _journal_note = crate::orphan_journal::note_spawn(child.id(), None, cell_path.as_str());
 
         // Concurrent stdin write: avoids a pipe deadlock with large
         // stdin/stdout — the stdin pipe buffer fills up and the script waits
@@ -214,7 +226,15 @@ impl CodeCell {
             }
         });
 
-        match with_killing_timeout(child, timeout).await {
+        let ran = with_killing_timeout(child, timeout).await;
+        // GH #866: the `exited` record off the workers too, and before the
+        // answer leaves -- the child is reaped by now on every arm below.
+        journal_note.retire().await;
+        // GH #349 + #866: the materialised script's unlink, same reason.
+        if let Some(m) = materialised {
+            let _ = tokio::task::spawn_blocking(move || drop(m)).await;
+        }
+        match ran {
             Ok(o) => Some(o),
             Err(KillingTimeoutErr::Elapsed) => {
                 emit_script_timeout(sink, reply_target, started).await;

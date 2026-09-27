@@ -36,6 +36,10 @@
           "because": "a wish this hive did not turn into a manifest, named. Drafting is not an enhancement that may degrade quietly: a build that stops must say so on a lane, never as silence and never as an empty manifest"
         },
         {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that `./compose` refused (GH #863): its error, with the composer's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of on `error` as `composer_failed` -- a refused push is no build's failure, and no requester waits on it. `meclaw-os` carries it back to its registry's `in_refused` lane; a parent without that edge dead-letters it `no_route`, loudly"
+        },
+        {
           "route": "catalogue",
           "because": "the reconciliation's own report, on its way back out: how many templates the registry holds, how many the corpus already carried, how many rows were written and which names. It leaves because a report nobody can subscribe to is a dead letter -- measured as one, twice, in a built colony -- and because a caller that drives `in_ingest` and is told nothing cannot tell a corpus that was already current from a nudge that never ran"
         }
@@ -110,11 +114,30 @@
         {
           "from": "./compose",
           "to": ".",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)",
           "modifier": {
             "set_hop": {
               "route": "'error'",
               "error_code": "'composer_failed'"
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./compose",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
             },
             "delete_context": [
               "agent",

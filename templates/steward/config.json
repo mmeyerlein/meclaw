@@ -23,6 +23,10 @@
         {
           "route": "error",
           "because": "a step of the cycle could not complete; which step it was is this hive business, that it failed is the caller business"
+        },
+        {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that `./judge` refused (GH #863): its error, with the cell's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of reaching `./mutator` as a verdict -- before this repair the judge's out-edge was unconditional, so a refusal was read as a decision. A push addressed to another cell is refused as `invalid_input` without the two keys and still reaches the verdict edge -- the forward that caused it is the defect -- a refused push is nobody's request failing. Whoever draws this hive's push road draws one edge from here back to the registry's `in_refused` lane beside it; without one the refusal dead-letters `no_route`, loudly"
         }
       ]
     },
@@ -100,7 +104,25 @@
         {
           "from": "./judge",
           "to": "./mutator",
-          "condition": "true"
+          "condition": "!has(hop.refused_subscriber)"
+        },
+        {
+          "from": "./judge",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
         },
         {
           "from": "./meter",

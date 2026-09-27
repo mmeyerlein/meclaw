@@ -11,7 +11,7 @@ use crate::llm::{
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
 use meclaw_core::serde_json::Value;
-use meclaw_core::{Body, Message, OutputSink};
+use meclaw_core::{Body, Message, OutputSink, Path};
 
 /// GH #457: the `credential_pending` receipt's wording. One constant because
 /// three code paths hand it out — the deadline, a broken delivery, and the
@@ -190,10 +190,9 @@ fn responses_url(params: &LlmParams) -> String {
         AuthMode::OauthSubscription => auth::DEFAULT_SUBSCRIPTION_BASE_URL,
         AuthMode::ApiKey => wire::OPENAI_DEFAULT_BASE_URL,
     };
-    format!(
-        "{}{}",
+    crate::llm::params::endpoint_url(
         params.base_url.as_deref().unwrap_or(default_base),
-        wire::OPENAI_RESPONSES_PATH
+        wire::OPENAI_RESPONSES_PATH,
     )
 }
 
@@ -966,6 +965,82 @@ impl StatefulCell for LlmCell {
     }
 }
 
+/// GH #862 (R-SN-9): who a `params` slot is for. The registry addresses a
+/// push by `hop.subscriber`; the operator's `POST /messages`, `argus`/`steward`
+/// and a memory-hive broadcast carry none. The own address is the one the
+/// substrate stamps on the sink (`OutputSink::sender_path`, GH #132) -- never
+/// message data.
+enum PushFor {
+    /// No `hop.subscriber`: the operator's message, applied as before.
+    Operator,
+    /// `hop.subscriber` is this cell's own path.
+    Me,
+    /// Any other value -- the empty string and a non-string included, so the
+    /// rule fails closed: another cell's push. Carries the address as one
+    /// line for the detail and the warning.
+    Other(String),
+}
+
+/// At most this many characters of a foreign address reach a detail or a log
+/// line: the value is message data, and a detail is no place for a document.
+const PUSH_ADDRESS_MAX_CHARS: usize = 256;
+
+fn push_for(hop: &meclaw_core::serde_json::Map<String, Value>, own: &Path) -> PushFor {
+    match hop.get("subscriber") {
+        None => PushFor::Operator,
+        Some(Value::String(s)) if s == own.as_str() => PushFor::Me,
+        Some(v) => PushFor::Other(one_line(v, PUSH_ADDRESS_MAX_CHARS)),
+    }
+}
+
+/// `v` as one line of at most `max` characters: a string as it is, anything
+/// else as its JSON text; a line break or any other control character becomes a
+/// space, so a forged address cannot start a second log line.
+fn one_line(v: &Value, max: usize) -> String {
+    let raw = match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    raw.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max)
+        .collect()
+}
+
+/// The registry's bound on a model id (`MODEL_ID_MAX_CHARS` in
+/// `templates/llm-registry/hand`): a longer `model` in a refused slot is named
+/// as none rather than carried back cut.
+const REFUSED_MODEL_MAX_CHARS: usize = 128;
+
+/// GH #863: a slot this cell did not apply. Addressed to THIS cell, the error names the push on two
+/// header keys of its own, so the composite routes it apart from a conversation's errors and the
+/// sender's road carries it back; every other refusal keeps the shape it had, byte for byte.
+///
+/// Measured before the fix (plan R-registry § 1.7-9): a refused push left talky as a conversation
+/// error on `./errors`, cogny as `route error`, the memory hive's four llm cells and argus' judge on
+/// unconditional edges as a VERDICT, and the registry's `show` kept naming a model the cell did not
+/// run. The two keys are new ones rather than a `route` value because the memory-hive cells and
+/// `builder/compose` declare `finish_reason` and the brains declare `route` with a closed value list
+/// (`meclaw-core/src/contract.rs:258-262` allows an undeclared hop key).
+fn refusal_hop(
+    push_for: &PushFor,
+    own: &Path,
+    update: Option<&meclaw_core::serde_json::Map<String, Value>>,
+) -> Option<meclaw_core::serde_json::Map<String, Value>> {
+    let PushFor::Me = push_for else {
+        return None;
+    };
+    let model = update
+        .and_then(|u| u.get("model"))
+        .and_then(Value::as_str)
+        .filter(|m| m.chars().count() <= REFUSED_MODEL_MAX_CHARS)
+        .unwrap_or("");
+    Some(meclaw_core::serde_json::Map::from_iter([
+        ("refused_subscriber".to_string(), Value::from(own.as_str())),
+        ("refused_model".to_string(), Value::from(model)),
+    ]))
+}
+
 impl LlmCell {
     /// One message, start to finish. The Reihenfolge this doc-comment describes
     /// lives here; [`StatefulCell::handle`] wraps it with the GH #457 drain.
@@ -1066,11 +1141,53 @@ impl LlmCell {
             // cannot change the model it talks to).
             let has_params = content_obj.contains_key("params");
             let is_turn = content_obj.contains_key("messages");
-            if let Some(params_val) = content_obj.get("params") {
+            // GH #862 (R-SN-9): the registry addresses a push by
+            // `hop.subscriber`, and any edge that forwarded its road into
+            // another composite's `in_model` door moved that brain too
+            // (OR-SN.L2a.14; lock `gh862_a_push_for_another_cell_moves_nothing`
+            // `a_forward_into_another_brain_moves_nothing`). A slot addressed
+            // to another cell is not applied: a params-only message is refused
+            // loudly, and on a turn the slot is skipped whole and the turn
+            // runs on (the GH #853 rule). Only the `params` slot is bound; a
+            // message without the key is byte-identical to before.
+            let push_for = push_for(&msg.headers.hop, sink.sender_path());
+            if has_params && let PushFor::Other(to) = &push_for {
+                tracing::warn!(
+                    target: package::PARAMS_LOG_TARGET,
+                    "llm: params {} not applied: a push addressed to '{to}' is not for this cell",
+                    sink.sender_path().as_str()
+                );
+                if !is_turn {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        "invalid_input",
+                        &format!(
+                            "a params push addressed to '{to}' is not for this cell; \
+                             nothing applied"
+                        ),
+                        "parse",
+                        vec![],
+                        started_at_unix_ms,
+                        0,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            }
+            if let Some(params_val) = content_obj
+                .get("params")
+                .filter(|_| !matches!(push_for, PushFor::Other(_)))
+            {
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
                     None => {
-                        output::emit_error(
+                        // GH #863: an own push refused names itself (no model:
+                        // the slot is no object).
+                        output::emit_error_with_hop(
                             sink,
                             reply_target,
                             "invalid_input",
@@ -1082,6 +1199,7 @@ impl LlmCell {
                             None,
                             None,
                             None,
+                            refusal_hop(&push_for, sink.sender_path(), None),
                         )
                         .await;
                         return;
@@ -1109,7 +1227,7 @@ impl LlmCell {
                                 })
                                 .await;
                             if let Err(e) = persist_result {
-                                output::emit_error(
+                                output::emit_error_with_hop(
                                     sink,
                                     reply_target,
                                     "provider_error",
@@ -1121,6 +1239,7 @@ impl LlmCell {
                                     None,
                                     None,
                                     None,
+                                    refusal_hop(&push_for, sink.sender_path(), Some(&update_obj)),
                                 )
                                 .await;
                                 return;
@@ -1140,7 +1259,10 @@ impl LlmCell {
                             );
                         }
                         Err(detail) => {
-                            output::emit_error(
+                            // GH #863: the guard or the immutable rule said no. Addressed
+                            // to this cell, the refusal names the push and the model it
+                            // named, so the registry learns what this cell does NOT run.
+                            output::emit_error_with_hop(
                                 sink,
                                 reply_target,
                                 "invalid_input",
@@ -1152,6 +1274,7 @@ impl LlmCell {
                                 None,
                                 None,
                                 None,
+                                refusal_hop(&push_for, sink.sender_path(), Some(&update_obj)),
                             )
                             .await;
                             return;
@@ -1724,13 +1847,12 @@ impl LlmCell {
 
             // Step 6: HTTP call (async, A timeout via call_openai's
             // internal tokio::time::timeout wrapper).
-            let url = format!(
-                "{}{}",
+            let url = crate::llm::params::endpoint_url(
                 self.params
                     .base_url
                     .as_deref()
                     .unwrap_or(wire::OPENAI_DEFAULT_BASE_URL),
-                wire::OPENAI_CHAT_COMPLETIONS_PATH
+                wire::OPENAI_CHAT_COMPLETIONS_PATH,
             );
             let timeout = std::time::Duration::from_millis(self.params.external_timeout_ms);
             // A4: the Translate boundary decides each param's wire destination —

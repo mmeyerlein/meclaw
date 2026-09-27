@@ -679,7 +679,14 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// Moved 203 -> 204 with GH #858: `argus@1.2.0` carries the model door
 /// (`. -> ./judge` on `in_model`), and `grow-argus.json` grows one argus, so
 /// that is 1 x 1. talky and cogny moved only prose.
-const EDGES: usize = 204;
+///
+/// Moved 204 -> 208 with GH #863: `talky@5.4.2`, `cogny@5.1.2` and
+/// `argus@1.2.1` each carry one way back (`./brain -> .` resp. `./judge -> .`
+/// on `has(hop.refused_subscriber)`, stamped `model_refused`), and the
+/// declarations grow two talkies, one cogny and one argus, so that is
+/// 2 x 1 + 1 x 1 + 1 x 1. The exclusion on the error and verdict edges is a
+/// condition and costs no edge.
+const EDGES: usize = 208;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

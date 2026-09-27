@@ -2077,6 +2077,22 @@ fn every_declared_out_lane_has_an_emitter_and_an_edge() {
     );
     for lane in out_lanes {
         let route = lane["route"].as_str().expect("a lane names a route");
+        // GH #863: `model_refused` is the one lane no script raises. Its
+        // emitter is `./judge` itself -- the llm cell's refusal of a model push
+        // addressed to it, told apart by `hop.refused_subscriber` -- and the
+        // exit edge STAMPS the lane rather than carrying it, so both halves of
+        // the rule are asked of that edge: it leaves the llm cell and it
+        // writes the lane.
+        if route == "model_refused" {
+            assert!(
+                edges.iter().any(|e| e["from"] == "./judge"
+                    && e["to"] == "."
+                    && e["condition"] == "has(hop.refused_subscriber)"
+                    && e["modifier"]["set_hop"]["route"] == "'model_refused'"),
+                "no edge stamps `model_refused` on a refusal of `./judge` off the hive path"
+            );
+            continue;
+        }
         assert!(
             edges.iter().any(|e| e["to"] == "."
                 && e["condition"]

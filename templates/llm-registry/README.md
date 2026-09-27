@@ -1,4 +1,4 @@
-# `llm-registry@2.3.0`
+# `llm-registry@2.3.1`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -35,6 +35,10 @@ registry chooses a model for it from the catalogue (*Prose in, a model out -- on
 below). The catalogue ships real rows of a hosted provider, and the operator keeps it on
 `in_hand`.
 
+Since 2.3.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) a push the addressed cell refuses comes back: on the road the push came by,
+to a third door, `in_refused`, and the subscriber row says `refused` and why until the next push
+or a `reset` (*A refused push*, below).
+
 **Upgrading to 2.3.0: the shell's judge and every member's memory now follow this hive.** In
 `meclaw-os` `argus/judge` and the four llm cells of a member's memory hive run what the registry
 resolves for their need, before the `.env` start value they fall back to. A push carries the
@@ -44,10 +48,19 @@ cells have no list. Whoever points a cell at an endpoint of their own (`ARGUS_JU
 `MEMORY_LLM_BASE_URL`) keeps it there with `pinned: 1`, with a `target` replacement onto a
 catalogue row of that endpoint, or by not subscribing it -- `builder/compose`, born on
 `LOCAL_LLM_BASE_URL`, is not announced for exactly this reason. Otherwise the cell refuses the
-push (`invalid_input`, answered as an error on the cell's own exit), and a refused push is not
-reported back to this hive today: `show` names the refused model until the next change. A lock
+push (`invalid_input`), keeps what it runs, and -- since 2.3.1 -- the refusal comes back to this
+hive: `show` names the refused model beside `refused` until the next change. A lock
 (`gh858_every_llm_cell_states_its_need`) holds every subscriber the shipped tree announces to an
 endpoint the shipped catalogue's pushes can land on, in the default environment.
+
+**Upgrading to 2.3.1: a refusal needs its way back.** The store grows two columns of
+`subscribers`, `refused` and `refused_at`, at the next spawn (additive, every row kept). The
+refusal travels on edges this hive does not draw: in `meclaw-os` the shell's three mirror edges
+(since `meclaw-os@1.10.1`) and, for a generation or a member grown by the builder, one way back
+per composite beside its push edges (since `builder@1.15.1`). A generation grown before that has
+none; draw one per composite at `/os/orgs` -- `{"from": "./<…>/talky", "to": ".", "condition":
+"has(hop.route) && hop.route == 'model_refused'"}` -- or its refusals dead-letter `no_route`, as
+loudly as before and still not in `show`. No op and no command changed.
 
 ## Two layers: the start value and the registry
 
@@ -153,13 +166,55 @@ remapping a tier onto the model it carries already costs no message at all. The 
 slot is what makes the body a valid message at all (`ubf-body.json` wants `system`,
 `messages` or `attachments`); a body carrying only `params` would be dead-lettered on the way.
 
+## A refused push
+
+A brain that refuses a push addressed to it -- a `base_url` outside its `base_url_allow`, an
+`external_timeout_ms` its backstop does not clear -- keeps its previous params and says so on its
+error, which carries two header keys of its own: `hop.refused_subscriber` (its own path, the one
+the substrate stamps on its output, never a value from the message) and `hop.refused_model` (the
+`model` the push named, empty for a `$reset`). Its composite sends that error out as
+`model_refused` instead of on a conversation's or a verdict's edge, the way back the builder
+draws beside the push edge brings it to the container, and the shell's mirror of the push edge
+restamps it `in_refused` into this hive:
+
+```json
+{"from": "./orgs", "to": "./llm-registry",
+ "condition": "has(hop.route) && hop.route == 'model_refused' && has(hop.refused_subscriber) && hop.refused_subscriber.startsWith('/os/orgs/')",
+ "modifier": {"set_hop": {"route": "'in_refused'"}, "delete_context": ["actor"]}}
+```
+
+The door edge `. -> ./hand` on `in_refused` stamps `context.registry_origin 'refusal'`, the one
+edge that writes it; the door of `in_hand` clears it, so no command can pose as a refusal and
+a refusal is never read as a command -- a tool call on this lane is not looked at, and nothing is
+acknowledged. The hand reads the subscriber row of `refused_subscriber` once and decides against
+the row as it stands:
+
+- **the model the row holds** (`refused_model` equal to its `model_id`, or empty while the row is on
+  its start value -- the refusal of a `$reset`): the row gets `refused`, the error's own detail on
+  one line, at most 400 characters, and `refused_at`; journal `hand_refused_by_cell`;
+- **an older push** (the registry has sent another package since): nothing is marked, journal
+  `hand_refusal_stale`;
+- **no row for that path**: `hand_refusal_unknown`; **no path at all**: `hand_refusal_unaddressed`.
+
+**The next push clears it**, whatever moved it; nothing else does. Since the package did not
+change, an announcement or any other op leaves a refused row as it is and sends nothing -- no
+push and refusal in a loop per mutation receipt. **`reset` sends it again**: on a refused row a
+`reset` pushes the package even when its bytes are the ones last sent, which is how an operator
+asks a cell to try once more after fixing its allow list.
+
+**What it does not prove.** An empty `refused` means no refusal came back, not that the cell
+confirmed -- a cell answers an applied push with nothing, and a road without its way back
+dead-letters the refusal before it gets here. And the mark is only as good as the road: with
+`code.author` granted, an `add_templates` can register a class whose inner edges stamp both keys,
+so a refusal can be forged. It moves nothing but the view, and the next push heals it.
+
 ## The view per cell: `show`
 
 `{"op": "show"}` answers on `answer` with one entry per subscriber -- `cell_path`, `model_id`,
-`rank`, `reason`, `since`, `pinned`, `tier`, `start_model`, and since 2.3.0 `requirement` and
+`rank`, `reason`, `since`, `pinned`, `tier`, `start_model`, since 2.3.0 `requirement` and
 `because` (the translator's one sentence, when the rank is `prose`; while a changed requirement
 holds the prose model of the old one, `held until the new requirement is answered` instead of
-the old sentence) -- plus the active overrides
+the old sentence), and since 2.3.1 `refused` and `refused_at` (*A refused push*) -- plus the active overrides
 and the precedence literal. `{"op": "show", "cell_path": "<prefix>"}` narrows it to one cell or one
 generation. The view is the subscriber rows themselves: every op that resolves a subscriber
 writes what it resolved to, so the answer is one read and never a second resolution that could
@@ -167,12 +222,12 @@ disagree with the push. It is ONE page of `subscriber_rows` (see *Settings*), an
 `truncated: true` when the bound cut it -- narrow it with `cell_path`, or raise the bound.
 `show` reads and changes nothing, so it is the one op that needs no actor.
 
-**`show` says what was sent, not what runs.** A brain answers a push with nothing, so the
-registry never learns what it runs. A push the brain refuses -- a package whose `base_url` is
-outside the brain's `base_url_allow`, an `external_timeout_ms` its backstop does not clear --
-leaves as an error on the brain's own lane (in a `talky`, its `./errors` collector), and the
-brain keeps its previous params, while `show` still names the package it was sent. The answer
-carries that sentence in its `view` field, so no reader of the JSON has to know it from here.
+**`show` says what was sent, and what came back refused.** A brain answers an applied push
+with nothing, so the registry never learns what it runs. `model_id` is what the registry
+resolved and last sent; `refused` says why the cell refused it -- it keeps running its previous
+params until the next push or a `reset` -- and an empty `refused` means no refusal came back, not
+that the cell confirmed. The answer carries that sentence in its `view` field, so no reader of
+the JSON has to know it from here.
 
 ## The ops on `in_hand`
 
@@ -313,20 +368,21 @@ announcement's way back, and until 2.2.0's last fix it was where the brains rode
 refusals are journalled, never acknowledged.
 
 **What a push can and cannot be made to do.** A push is a params-only message addressed by
-`hop.subscriber`, and the brain that receives it does not compare that address with its own
-path. What keeps a push in its brain is the road: the push edge carries only the pushes
-addressed to one cell directly in its composite, and the submit gate refuses any edge that writes
-`hop.subscriber` or `hop.subscribe`, removes `hop.route`, or stamps a route it cannot list
+`hop.subscriber`, and since 0.47.0 the brain that receives it compares that address with its own
+path -- the one the substrate stamps on its output -- and applies the push only when they are
+equal ([#862](https://github.com/mmeyerlein/meclaw/issues/862)). The road keeps a push where it
+was sent: the push edge carries only the pushes addressed to one cell directly in its composite,
+and the submit gate refuses any edge that writes `hop.subscriber`, `hop.subscribe` or the two
+keys of a refusal, removes `hop.route`, or stamps a route it cannot list
 (`templates/submit/README.md` § The model registry's road is a form too). An edge that leaves
 the road's keys and its route as they are -- no modifier, one that writes other keys, or
 `set_hop route "hop.route"` -- drawn at the container onto somebody else's composite, or onward
-from an addressed one, is not stopped there: it copies pushes into a brain nobody addressed,
-and under the shipped broker default it is permitted at `/os/orgs` exactly as a `swap_nodes` on
-that brain is. Binding the push at the receiver is an `llm`-cell change; until it exists a
-policy that narrows `colony.mutate` is the place this is held. With `code.author` granted (off
-by default) the road is not held at the gate at all: an `add_templates` registers a class whose
-inner edges may write `model_generation`, `model_announced` or `set_hop subscriber`, and the
-gate reads `add_edges` only.
+from an addressed one, still copies pushes; the brain it reaches applies none of them and
+refuses each copy loudly (`invalid_input`, a warning naming the address), without the two keys
+of a refusal, so nothing of it comes back here. With `code.author` granted (off by default) the
+road is not held at the gate at all: an `add_templates` registers a class whose inner edges may
+write `model_generation`, `model_announced` or `set_hop subscriber`, and the gate reads
+`add_edges` only.
 
 **By command, anywhere.** `subscribe` on `in_hand` writes the same row. It is the upgrade step for
 a brain grown before 2.2.0, together with its push edge (an announcement edge is drawn only in the
@@ -361,7 +417,9 @@ from outside can pose as a translation either.
 
 Because those context keys ARE the lane's memory, nothing from outside may carry them in. Since
 2.2.1 the two doors (`. -> ./select` on `in_select`, `. -> ./hand` on `in_hand`) delete
-`lr_phase`, `lr_carry` and `registry_origin` on the way in. Until then a sender at the rim
+`lr_phase`, `lr_carry` and `registry_origin` on the way in. The third door, `. -> ./hand` on
+`in_refused` (since 2.3.1), deletes the same two and the announcement's keys and `actor`, and
+stamps `registry_origin 'refusal'` itself. Until then a sender at the rim
 could set `hop.operation` and, on the edge it draws, `context.lr_phase` -- and the hand ran a
 command from `context.lr_carry` against a world the sender wrote itself, with no `context.actor`
 behind it, while `select` answered and journalled a resolution of the sender's own. Now such a
@@ -377,6 +435,7 @@ caller wants rides on `hop.route`.
 | `in_hand` | in | a command (the ops above); the edge **MUST** promote the deciding identity to `context.actor`. Or an announcement from the tree, over an edge that stamps `context.model_announcer` and `context.model_generation` instead |
 | `ack` | out | `accepted` or `rejected` plus a `reason_code`, and the counts: `pushed`, `unchanged`, `skipped_pinned` (and `subscribers`, `pages` for the ops that page) |
 | `update` | out | one model package for one subscriber -- `hop.subscriber` names which, `hop.rank` says why |
+| `in_refused` | in | a push a subscriber's own llm cell refused, carried back on the road the push came by: `hop.refused_subscriber`, `hop.refused_model`, the reason in `meta.error.detail`. Marks the row; answers nothing. Since 2.3.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `error` | out | the lane could not be served. The parent MUST wire it |
 
 `incidents` has no writer among these lanes, and `models` had none until 2.3.0 brought
@@ -405,8 +464,9 @@ None of these is a bug, and none of them is fixable inside this template.
 1. **The registry has to push, so consistency is eventual.** A cell cannot resolve anything
    itself -- cells cannot read the colony. A change reaches its subscribers one message at a
    time, and a call already in flight finishes on the old model. The registry knows what it
-   **sent**; it never knows what a cell **runs** -- a push a brain refused (a `base_url` outside
-   its `base_url_allow`) is an error on the brain's lane, not a row here.
+   **sent**, and since 2.3.1 what came back **refused** (a `base_url` outside the cell's
+   `base_url_allow`); it never knows what a cell **runs** -- an applied push is answered with
+   nothing, and an empty `refused` is no confirmation.
 2. **A subscriber needs a road.** A row without an edge is a push that dead-letters. In
    `meclaw-os` the builder draws both halves with the generation; anywhere else, and for a
    brain grown before 2.2.0, somebody draws them, and a push for a path with no edge
@@ -435,10 +495,10 @@ pins this: an incident row changes no other table and emits nothing.
 | `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads) | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
 | `tiers` | the index: `tier -> model_id`, with `since`, `decided_by`, `active` | `seed/tiers.jsonl` at instantiation, then `hand` (`remap`) |
 | `overrides` | the replacements: `id`, `scope` (`global` \| `target`), `match`, `model_id`, `since`, `decided_by`, `active`. Since 2.2.0 | `hand` (`override_set`, `override_clear`, `reset`) |
-| `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, and the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`) | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
+| `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
 | `translations` | since 2.3.0: one row per answered `(requirement_hash, catalogue_hash)` -- `model_id`, `reason`, `at` | `hand`, after checking the translator's answer |
 | `open_questions` | since 2.3.0: the questions asked and not yet answered -- `requirement_hash`, `catalogue_hash`, `claim`, `at`; a row counts as open until its answer, refusal or failure, 120 s at most; an expired row stays until the next claim of its pair removes it | `hand` |
-| `resolutions` | the journal: every lookup and every push, granted, refused or skipped -- with `rank` and `source_id` (the override id, `tier:<name>` or `translation:<requirement_hash>`) since 2.2.0; since 2.3.0 also every translation stored, refused or failed | `select`, `hand` |
+| `resolutions` | the journal: every lookup and every push, granted, refused or skipped -- with `rank` and `source_id` (the override id, `tier:<name>` or `translation:<requirement_hash>`) since 2.2.0; since 2.3.0 also every translation stored, refused or failed; since 2.3.1 every refusal a cell sent back (`hand_refused_by_cell`, `hand_refusal_stale`, `hand_refusal_unknown`, `hand_refusal_unaddressed`) | `select`, `hand` |
 | `incidents` | the field log: `model_id`, `kind` (`rate_limit`, `outage`, `slow`), `at`, `detail` | **boot-graph edge only** |
 
 The new columns and the `overrides`, `translations` and `open_questions` tables are added to an existing `cell.db`

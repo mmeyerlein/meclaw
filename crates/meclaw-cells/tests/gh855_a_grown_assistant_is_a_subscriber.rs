@@ -186,7 +186,37 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
             "{cond}"
         );
     }
-    let announce: Vec<&Value> = edges.iter().filter(|e| e["to"] == ".").collect();
+    // GH #863: the road has a way back too, one edge per composite, drawn
+    // after the announcement -- so the announcement is the edge on the receipt.
+    let back: Vec<Value> = edges
+        .iter()
+        .filter(|e| {
+            e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("'model_refused'"))
+        })
+        .cloned()
+        .collect();
+    let want: Vec<Value> = ["cogny", "talky", "talky-chat"]
+        .iter()
+        .map(|rim| {
+            json!({"from": format!("./acme/members/alex/assistants/scribe/{rim}"), "to": ".",
+                   "condition": "has(hop.route) && hop.route == 'model_refused'"})
+        })
+        .collect();
+    assert_eq!(
+        back, want,
+        "one way back per composite, and nothing else on it: {edges:?}"
+    );
+    let announce: Vec<&Value> = edges
+        .iter()
+        .filter(|e| {
+            e["to"] == "."
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("'mutation_committed'"))
+        })
+        .collect();
     assert_eq!(announce.len(), 1, "{edges:?}");
     assert_eq!(announce[0]["from"], "./acme/members/alex/assistants/scribe");
     assert!(
@@ -234,7 +264,7 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
 
     // A template that is not the shipped generation names its own brains, and
     // the recipe does not guess them.
-    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.0");
+    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.1");
     assert_eq!(other.len(), 1, "{other:?}");
     // And a scope the generation does not lie under renders nothing either.
     let elsewhere = render(json!({"model_registry_scope": "/elsewhere"}), &template);
@@ -565,7 +595,63 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
          subscribers, with the start values the substitution resolved, beside the shell's own \
          judge"
     );
+    // GH #863: and each composite has its way back in the edge table -- three
+    // for the generation, one for the member's memory -- at the container the
+    // pushes arrive at.
+    let mut back = ways_back_persisted(root);
+    back.sort();
+    let mut want_back: Vec<(String, String)> = [
+        format!("{GEN}/cogny"),
+        format!("{GEN}/talky"),
+        format!("{GEN}/talky-chat"),
+        format!("{MEMBER}/memory-hive"),
+    ]
+    .into_iter()
+    .map(|from| (from, SCOPE.to_string()))
+    .collect();
+    want_back.sort();
+    assert_eq!(back, want_back, "one way back per composite, and no other");
     h.shutdown().await;
+}
+
+/// The committed edges into the container that name the refusal lane,
+/// `(from, to)`, out of `colony.db` -- what survives a restart, so the road is
+/// real rather than merely un-refused. Matched on the lane's NAME anywhere in
+/// the condition or the modifier, not on the one rendered condition: "and no
+/// other" has to see a way back in any other form too (review R2 M-6; the form
+/// itself is `gh863_every_model_door_has_a_way_back.rs`'s to hold).
+fn ways_back_persisted(root: &std::path::Path) -> Vec<(String, String)> {
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        root.join("colony.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT from_path, to_path FROM edges WHERE to_path = ?1 \
+         AND (COALESCE(condition, '') LIKE '%model_refused%' \
+              OR COALESCE(modifier, '') LIKE '%model_refused%')",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([SCOPE], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+/// `(model_id, refused)` of one subscriber row, read out of the registry
+/// store's own `cell.db`; `None` while the row, or the column, is not there.
+fn refusal_of(db: &std::path::Path, cell_path: &str) -> Option<(String, String)> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    conn.query_row(
+        "SELECT COALESCE(model_id, ''), COALESCE(refused, '') FROM subscribers \
+         WHERE cell_path = ?1",
+        [cell_path],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
 }
 
 // ─────────────────────────────────────────── a push on the shipped road (M-5)
@@ -825,6 +911,163 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
         system_text(&last).starts_with(PROMPT),
         "the model's prompt block is the FIRST thing in the system part: {:?}",
         system_text(&last)
+    );
+    h.shutdown().await;
+}
+
+/// GH #863 (rev-2 I-1): a push the grown brain REFUSES, on the road the tree
+/// ships. The operator sets a replacement onto a catalogue row whose endpoint
+/// the brain has no `base_url_allow` for; the registry resolves it and pushes
+/// it down the same road as above, and the brain refuses it. The refusal leaves
+/// `talky` as `model_refused`, the way back `grow_level assistant` drew carries
+/// it to `/os/orgs`, the shell's mirror of the push edge restamps it
+/// `in_refused`, and the registry marks the row -- the row `show` reads, read
+/// here where it lands, in the registry store's own `cell.db`, because the
+/// shell's rim has no reader in this tree. Nothing of it dead-letters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_push_on_the_shipped_road_reaches_show() {
+    if !shipped() {
+        return;
+    }
+    const M2: &str = "test/m2";
+    let brain = format!("{GEN}/talky/brain");
+    let mock = MockOpenAI::start(vec![]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    let root = td.path();
+    copy_tree(&repo("examples/organism/seed"), root);
+    copy_tree(&repo("templates"), &root.join("templates"));
+    // The catalogue row the replacement points at: an endpoint of its own,
+    // which the brain was not born on and has no allow list for.
+    let seed = root.join("templates/llm-registry/store/seed/models.jsonl");
+    let mut rows = std::fs::read_to_string(&seed).unwrap();
+    if !rows.ends_with('\n') {
+        rows.push('\n');
+    }
+    rows.push_str(
+        &json!({"model_id": M2, "provider": "gateway",
+                "base_url": "https://elsewhere.example/v1", "wire_dialect": "",
+                "context_window": 32000, "cost_in": 1, "cost_out": 1, "caps": {},
+                "traits": {}, "status": "active", "note": "TEST ROW", "package": {},
+                "prompt": ""})
+        .to_string(),
+    );
+    rows.push('\n');
+    std::fs::write(&seed, rows).unwrap();
+    std::fs::write(
+        root.join(".env"),
+        "OPENROUTER_API_KEY=test-key\n\
+         MODEL_CORE=m-core\n\
+         MODEL_CORE_FAST=m-core-fast\n\
+         MODEL_SURFACE=m-surface\n\
+         MODEL_CLOSER=m\nMODEL_DIALECTIC=m\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
+    )
+    .unwrap();
+    let real: Arc<dyn CellFactory> = Arc::new(OneRealBrain {
+        path: brain.clone(),
+        base_url: format!("{}/v1", mock.base_url),
+    });
+    let fs: Vec<(String, Arc<dyn CellFactory>)> = factories(root)
+        .into_iter()
+        .map(|(t, f)| {
+            if t == "llm" {
+                (t, real.clone())
+            } else {
+                (t, f)
+            }
+        })
+        .collect();
+    let h = ColonyHandle::new_with_factories_at(&td, fs.clone());
+    let mut registry = CellFactoryRegistry::new();
+    for (name, f) in fs {
+        registry.insert(name, f);
+    }
+    bootstrap_from_filesystem(root, &registry, &h.runtime())
+        .await
+        .expect("the empty seed boots");
+    let (ack_tx, ack_rx) = oneshot::channel();
+    h.inbox_tx
+        .send(ColonyMsg::RescanTemplates {
+            templates_root: root.join("templates"),
+            ack: ack_tx,
+        })
+        .await
+        .expect("rescan");
+    ack_rx.await.expect("rescan ack").expect("rescan ran");
+    for file in GROW {
+        let outcome = mutate(&h, read_json(&repo(file))).await;
+        assert!(
+            matches!(outcome, MutationOutcome::Committed { .. }),
+            "{file}: {outcome:?}"
+        );
+    }
+    for decl in render(
+        json!({"model_registry_scope": SCOPE}),
+        &assistant_template(),
+    ) {
+        let outcome = mutate(&h, decl).await;
+        assert!(
+            matches!(outcome, MutationOutcome::Committed { .. }),
+            "{outcome:?}"
+        );
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if find_store_db(root).is_some_and(|db| subscriber_rows(&db).len() >= 3) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // The operator, at the shell's rim.
+    let cmd = json!({"op": "override_set", "scope": "target", "match": brain, "model_id": M2});
+    h.send(
+        MessageBuilder::new(Path::new("/os"))
+            .hop(json!({"route": "in_hand"}).as_object().cloned().unwrap())
+            .body(Body::Inline(json!({"messages": [
+                {"origin": "assistant", "type": "tool_call", "id": "op1",
+                 "text": cmd.to_string()}]})))
+            .ttl(200)
+            .build(),
+    )
+    .await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut seen = None;
+    while std::time::Instant::now() < deadline {
+        seen = find_store_db(root).and_then(|db| refusal_of(&db, &brain));
+        if seen.as_ref().is_some_and(|(_, r)| !r.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let dead: Vec<String> = h
+        .drain_dead_letters()
+        .await
+        .iter()
+        .filter(|d| d.message.headers.hop.contains_key("refused_subscriber"))
+        .map(|d| {
+            format!(
+                "{} -> {}: {:?} hop={:?}",
+                d.sender_path.as_str(),
+                d.resolved_target.as_str(),
+                d.reason,
+                d.message.headers.hop
+            )
+        })
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "the refusal dead-lettered on its way back: {dead:#?}"
+    );
+    let (model, refused) = seen.expect("the brain's subscriber row");
+    assert_eq!(model, M2, "the row names what was resolved and sent");
+    assert!(
+        refused.contains("base_url"),
+        "and why the brain refused it, which `show` hands out: {refused:?}"
+    );
+    assert!(
+        mock.recorded_requests().await.is_empty(),
+        "no push reached the provider"
     );
     h.shutdown().await;
 }

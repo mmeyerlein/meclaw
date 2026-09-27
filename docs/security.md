@@ -101,8 +101,12 @@ may send is `egress`: it posts a frame, and the credential with it, only to an o
 `params.egress` lists, and without the list it sends nothing. A blob reference from another
 colony never crosses the peer mount, so it is never resolved against this colony's store.
 `POST /messages` is operator trust: whoever can reach it can write any `hop`, `peer_url`
-included, and `egress` is what still holds then. The binary opens no port unless you pass
-`--api`.
+included, and `egress` is what still holds then. What a model or a browser writes into a `web`
+page reaches it as text in the place it stands: a value that would be a command list in an
+event binding, a script URL in a link or a second declaration in a `style` renders empty, and
+a component carrying an event-handler attribute or a `javascript:` URL is refused at
+definition. Which cells a page's socket reaches is `link_mounts`; the display names its two.
+The binary opens no port unless you pass `--api`.
 
 ## See it refuse
 

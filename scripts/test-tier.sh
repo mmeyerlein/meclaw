@@ -46,6 +46,17 @@
 #                                 the runner reads, so both serialise on one
 #                                 file -- and the tests can point both at a
 #                                 throw-away one.
+#     MECLAW_STRAND_TOKENS=<path> the cargo token file of a wave (default: the
+#                                 lock path with `.tokens` for `.lock`). Armed
+#                                 by `scripts/strand.sh token init`; while it
+#                                 exists, a run from a strand branch
+#                                 (`<wave>/<name>`) needs a token and exits 3
+#                                 without one. Not checked in CI, inside the
+#                                 gate (MECLAW_CARGO_LOCK_HELD) or in a tree
+#                                 whose branch has no `/` (the main tree).
+#     MECLAW_STRAND_TOKEN_SKIP=<reason>
+#                                 run without a token anyway -- logged, and
+#                                 `strand.sh token who` shows it.
 #
 # TEST HOOK (part of the interface, used by scripts/tests/test_gate_sh.py)
 # =======================================================================
@@ -57,7 +68,8 @@
 #                                 invalidated the whole build would be a
 #                                 footgun for the sake of a test.
 #
-# Exit 0 = tier green.
+# Exit 0 = tier green. Exit 3 = refused: the host's cargo tokens are armed
+# and this strand holds none (`scripts/strand.sh token take`).
 #
 # NOTE: t2 runs the TESTS only. The gates around them (corridor bytes, unwrap
 # ratchet, cargo-deny, scenario suites) are stations of `scripts/gate.sh`;
@@ -128,6 +140,18 @@ run_nextest() {
     shift
     echo "=== nextest [profile=$profile]"
     echo "=== filter: $filter"
+
+    # The cargo token of a wave, before the lock. The lock serialises builds
+    # but not how many builders queue behind it: eleven of them waited 20-90
+    # minutes per single test and woke 103 times to a cold prompt cache in
+    # three hours (the pipeline lesson of the wave that measured it). Checked
+    # in dry mode as well, or the refusal could not be tested; skipped in CI
+    # and inside a gate, which checked for itself or belongs to the
+    # orchestrator; and a throw-away repo without the kit has nothing to ask.
+    if [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
+       && [ -x "$root/scripts/strand.sh" ]; then
+        "$root/scripts/strand.sh" token check --pid $$ || return $?
+    fi
 
     # Who owns the cargo lock for this call.
     local own_lock=1

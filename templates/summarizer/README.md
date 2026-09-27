@@ -1,4 +1,4 @@
-# `summarizer@2.2.0`
+# `summarizer@2.2.1`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -83,6 +83,7 @@ inside picks up -- every `in_` lane but one: `in_model` goes past `./prep` strai
 |---|---|---|
 | `in_batch` | the collector's close lane (route `write`) | shapes the day into the prompt, asks the writer |
 | `in_model` | the colony's `llm-registry` (its `update` lane, restamped) | a model package for `./writer`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 2.2.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
+| `model_refused` | a model push `./writer` refused (out, on the registry's road) | its error, with `hop.refused_subscriber` and `hop.refused_model`, instead of reaching `./prep` as `in_error`. Since 2.2.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 
 Exits leave **from the hive path** on `hop.route` -- `./prep -> .` is the out-door, so a
 parent drains `<summarizer>` and never the cell behind it. **Where they lead is the parent's wiring,
@@ -119,6 +120,23 @@ the context, the depth of reasoning and the price the cell can bear, and never a
 registry translates it against its catalogue once per change and keeps the result
 (`templates/llm-registry/README.md`). Without a registry the door stays unused and the
 cell runs its start value.
+
+**A refused push goes back** (since 2.2.1, [#863](https://github.com/mmeyerlein/meclaw/issues/863)). A push `./writer` refuses -- a `base_url` outside its
+`base_url_allow`, a timeout its backstop does not clear -- is no failed summary, and before 2.2.1 it reached `./prep` as `in_error`. The refusal of a push
+addressed to the cell itself carries two header keys of its own, `hop.refused_subscriber` (the
+cell's path) and `hop.refused_model` (the model the push named); every other out-edge of the
+cell excludes it, and one way back per cell leaves the hive with it as `model_refused`:
+
+```json
+{"from": "./writer", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}}}
+```
+
+Whoever draws this hive's push road draws the way back beside it, onto the registry's
+`in_refused` lane, where `show` names the refusal until the next push or a `reset`
+(`templates/llm-registry/README.md` § A refused push); without it the refusal dead-letters
+`no_route`, loudly. A refusal of anything else -- an operator's push without an address, a push
+addressed to another cell -- keeps the shape it had and the edge it always took.
 
 ## Knobs
 

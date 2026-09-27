@@ -12,6 +12,115 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-09-27
+
+A surface runs behind a strict Content-Security-Policy, and what an app writes to it stays text; a model push works only
+in the cell it names, and a refusal reaches the registry; a long-running colony no longer strands on a runtime worker
+that waits for the disk; the affinity brief carries each persona once; the strand kit meters the cargo queue.
+
+### Breaking
+
+- **An `llm` cell applies a model push only when it is addressed to it** ([#862](https://github.com/mmeyerlein/meclaw/issues/862)).
+  A `params` slot whose `hop.subscriber` names another cell is not applied: a params-only message is refused as
+  `invalid_input` with a warning on `meclaw::llm::params`, and on a turn the slot is skipped and the turn runs on. The cell
+  compares the address with the path the substrate stamps on its output sink, never with a value from the message.
+  **Migration: a registry subscriber row names the llm cell itself (`…/talky/brain`), as the builder renders it.**
+  Messages without `hop.subscriber` (the operator, `argus`, `steward`, a broadcast) are applied as before.
+
+### Upgrade
+
+- **A generation grown before 0.47.0 draws one return edge per composite beside its push edges**
+  ([#863](https://github.com/mmeyerlein/meclaw/issues/863)): lift its composites and add
+  `{"from": "./<…>/talky", "to": ".", "condition": "has(hop.route) && hop.route == 'model_refused'"}` at `/os/orgs`;
+  until then a refusal dead-letters `no_route`. The registry store grows `subscribers.refused`/`refused_at` at its next
+  spawn.
+- **A proxy in front of `web` may now set `script-src 'self'`** plus the hashes in `templates/display/csp.json`
+  ([#867](https://github.com/mmeyerlein/meclaw/issues/867)); `style-src` still needs `'unsafe-inline'`. The cell sets no
+  header itself.
+
+### Added
+
+- **`display@2.8.0` publishes the policy fragment it needs** in `templates/display/csp.json`, with the hashes of its two
+  inline hook scripts ([#867](https://github.com/mmeyerlein/meclaw/issues/867)).
+- **`web@2.2.0` takes a `link_mounts` param** that limits which mounts a `voice:`/`page:` join may reach; empty, the
+  default, keeps the old behaviour ([#869](https://github.com/mmeyerlein/meclaw/issues/869)). The display sets
+  `["voice", "browser"]`.
+- **The strand kit meters the cargo queue** ([#861](https://github.com/mmeyerlein/meclaw/issues/861)):
+  `scripts/strand.sh token init|take|release|who|check|off` holds at most N builders in the cargo phase, first come
+  first served; once armed, `scripts/test-tier.sh` and `strand.sh gate` refuse without a token. The wave retro reports
+  a cache-pause metric (Q11), `strand.sh report` takes its base from master after a rebase, and `strand.sh gate --help`
+  writes no archive.
+
+### Changed
+
+- **Surfaces run behind a strict Content-Security-Policy** ([#867](https://github.com/mmeyerlein/meclaw/issues/867)).
+  The `web` shell carries no inline script: it writes the socket path into `<meta name="meclaw-live">` and boots from
+  `@client/boot.js`. The display microphone loads its capture worklet from `@client/display-mic-worklet.js` instead of a
+  `blob:` URL; the voice test page is four files (`/<mount>/`, `test.js`, `test.css`, `worklet.js`), and `/<mount>`
+  answers `308` to `<mount>/`. `web@2.2.0`, `display@2.8.0`, `voice@2.3.0`, `freeswitch@2.1.4`, `canvy@2.3.3`.
+- **`web` fits every value to the place it stands in** ([#869](https://github.com/mmeyerlein/meclaw/issues/869)). A
+  LiveView binding takes an event name (a JSON command list no longer reaches the client), a URL attribute a relative or
+  `http`/`https`/`mailto`/`tel` URL, `style` a plain CSS value, an `int` prop an integer; a value that does not fit
+  renders empty. A raw prop is raw only between tags and in a script or style body. `component.define` and the seed
+  refuse an event-handler attribute, a `javascript:` URL, `editable` on an `"html"` prop and a substitution at a place
+  where it would name a tag or attribute (`invalid_input`); the template scanner reads markup the way a browser's
+  tokenizer does and refuses what it cannot read that way.
+- **`display` checks what an application writes as markup** ([#868](https://github.com/mmeyerlein/meclaw/issues/868)).
+  The four raw props an application fills (`head`/`rows` of `display-table`, `figure` of `display-media` and
+  `display-chart`, `body` of `display-document`) pass an allowlist on their way to the object, text kept. An
+  application's own component may declare no `"html"` prop and carry no script, style, frame, embed, base, meta or link
+  element, event handler or `javascript:` URL (`invalid_view`), except for the views listed in the new setting
+  `code_views` (shipped: `colony-view`).
+- The `precheck` gate station grades eval calls to a locally served reasoning model for an explicit reasoning effort
+  ([#865](https://github.com/mmeyerlein/meclaw/issues/865)); the rules live in the private tree and the check is silent
+  without them.
+- The test profile prints every retried attempt (`status-level = "retry"`), and the quarantine list is empty.
+
+- **The documentation states that a colony hosts one organisation.** The `orgs` container can hold more, but the colony's API,
+  message log and credentials know no organisation, so a second one would share everything with the first and is not a
+  supported deployment. Run one colony per organisation.
+- `builder-librarian@2.2.4` carries the corpus regenerated over this release's templates and docs; `builder@1.15.1` pins it.
+- `scripts/strand.sh token off` refuses while a strand holds a cargo token or waits for one, like `token init` (pass
+  `--force`), and `token who` marks a queued strand that has waited beyond the TTL.
+
+### Fixed
+
+- **A push the cell refuses reaches the registry, and `show` says so** ([#863](https://github.com/mmeyerlein/meclaw/issues/863)).
+  A refusal of a params push addressed to the cell carries `refused_subscriber` and `refused_model`; every composite
+  with an `in_model` door sends it out as `model_refused` instead of as a conversation error or a verdict, back on the
+  mirror of the push road to the registry's new `in_refused` lane; the subscriber row shows `refused` until the next push
+  or a `reset`, and a `reset` sends a refused package again. The submit gate takes the way back as a third form
+  (`model_refusal_form`). `llm-registry@2.3.1`, `talky@5.4.2`, `cogny@5.1.2`, `memory-hive@3.6.1`, `argus@1.2.1`,
+  `steward@2.1.1`, `summarizer@2.2.1`, `coder-pipeline@2.2.1`, `egon@2.1.1`, `slack-agent@2.1.1`,
+  `research-assistant@2.1.1`, `assistant@2.9.3`, `builder@1.15.1`, `submit@2.3.4`, `operator@1.2.3`, `meclaw-os@1.10.1`.
+- **A start `base_url` is compared as an endpoint** ([#863](https://github.com/mmeyerlein/meclaw/issues/863)): the case
+  of scheme and host, a default port and a trailing `/` do not count, and the request path is appended without `//`.
+- **affinity's brief carries every released value once on the tool lane** — `affinity@3.6.1`
+  ([#864](https://github.com/mmeyerlein/meclaw/issues/864)). The `tool_result` serialises the pack's structure without the
+  per-slot `text` rendering and with non-ASCII characters unescaped; the `system` slots, the push lane and `mx.brain`
+  families are unchanged. A brief with a 1,600-character persona shrinks from about 4,300 to about 2,170 characters and
+  fits under the collector's `tool_chars` again. `member@1.10.3` pins it.
+- **Two blocking disk waits no longer run on a runtime worker** ([#866](https://github.com/mmeyerlein/meclaw/issues/866)),
+  where they could hold the colony task in that worker's unstealable LIFO slot and trip the watchdog on the full minute
+  under disk pressure: a cell that fell asleep closed its `cell.db` just after telling the colony so, and the `code`/`bash`
+  spawn path did its `fork` and crash-journal `fsync`s inline. Both now run off the workers, and a sleeping cell closes its
+  database before the colony hears it sleeps. Shown in a lab colony with injected `fsync` latency (fatal trips in 10 of
+  10 minutes before, 0 of 10 after); a measurement on a long-running deployment follows the upgrade.
+- **The display audio proofs drive an output, not the switch** ([#763](https://github.com/mmeyerlein/meclaw/issues/763)).
+  The root of a display mount replaces itself on load, and the driver had calls in flight when it did; the proofs drive
+  the explicit exit, the driver counts navigations and names one, and the short press is timed inside the page.
+- **The colony browser proof carries no retry** ([#714](https://github.com/mmeyerlein/meclaw/issues/714)): 0 lost writes
+  in 180 stage rebuilds with retries off; a lost write now names the hop where it stopped.
+- **`web` and `display` refuse the last places where a value could load or run unread**
+  ([#868](https://github.com/mmeyerlein/meclaw/issues/868), [#869](https://github.com/mmeyerlein/meclaw/issues/869)).
+  `component.define`, the seed and the display door refuse the SVG animation elements (`animate`, `set`, `animateMotion`,
+  `animateTransform`), a `srcdoc` attribute and `<!--` in the text of a `<script>`; `data` is a URL attribute; named
+  character references are read case-sensitively on both sides; and a browser can no longer write an `editable` prop typed
+  `"html"` that a component stored before 2.2.0 still lists (`not_editable`).
+- A panic while a stateful cell closes its `cell.db` on the way to sleep is logged at WARN with the cell's path
+  ([#866](https://github.com/mmeyerlein/meclaw/issues/866)); `bash` reports `duration_ms` for the command itself again,
+  without the crash journal's `fsync` after it.
+
 ## [0.46.0] — 2026-09-26
 
 A turn always ends — with an answer, with the reason it was cut, or with an error, never in silence; the other side's

@@ -36,7 +36,8 @@ def entry_comment(body: str) -> str:
 
     A block body reaches to the next `[[`, so it carries whatever stands between
     the entry's last key and that header -- in this file a section head, not an
-    entry comment (`LOUD WHEN GREEN` travels inside the #763 block). Reading all
+    entry comment (`LOUD WHEN GREEN` travelled inside the #763 block until GH #763
+    closed, and the next entry above a section head carries it). Reading all
     `#` lines of a body therefore lets a neighbour's `GH #<n>` answer for an
     entry that has none. The format of this file puts the comment above the keys
     ("Format per entry"), so the first key is the end of it.
@@ -172,8 +173,8 @@ class TheFilterGrammar(unittest.TestCase):
 
         A block body reaches to the next `[[`, so everything between the last
         key and that header travels with the entry above it -- and in this file
-        that is a section head, not an entry comment (`LOUD WHEN GREEN` sits in
-        the #763 block today). An entry whose own comment lost its number would
+        that is a section head, not an entry comment (`LOUD WHEN GREEN` sat in
+        the #763 block until GH #763 closed). An entry whose own comment lost its number would
         be rescued by the number of a neighbour. The fixture below is exactly
         that shape: one entry with retries and no issue, followed by a foreign
         comment block that carries one."""
@@ -285,30 +286,50 @@ class TheFilterGrammar(unittest.TestCase):
         found = retry_entries_missing_an_issue(stripped)
         self.assertEqual([entry_name(b) for b in found], [entry_name(entry)])
 
-    def test_the_measured_display_audio_tests_are_the_whole_entry(self):
-        """GH #763 quarantines the tests that were MEASURED flaky, not the binary.
+    def test_the_display_audio_tests_carry_no_retry(self):
+        """GH #763 is closed, and its entry went with it (rule 3).
 
-        Four of the five tests of that file have now tripped with the same CDP
-        message and passed on repetition with nothing edited; each occurrence is
-        cited in the entry's comment. The fifth,
-        `a_short_press_opens_the_dock_and_a_long_one_speaks`, has never been seen
-        flaky and stays strict -- that is what keeps the entry from quietly
-        becoming a leash on the whole binary, which is the shape this file exists
-        to prevent. A sixth name belongs here only with a measurement beside it."""
-        entries = [e for e in self.overrides()
-                   if "gh643_audio_in_the_display_window_browser" in e["filter"]]
-        self.assertEqual(len(entries), 1)
-        expr = entries[0]["filter"]
-        self.assertIn(
-            "binary_id(=meclaw-cells::gh643_audio_in_the_display_window_browser)", expr)
-        self.assertEqual(
-            sorted(TEST_TERM.findall(expr)),
-            ["=a_browser_holds_the_button_and_the_colony_answers",
-             "=a_browser_rejoins_after_the_cell_closed_the_topic",
-             "=the_release_drains_before_it_lets_go",
-             "=the_ring_sends_what_it_kept_before_the_hold"])
-        self.assertNotIn("a_short_press_opens_the_dock_and_a_long_one_speaks", expr)
-        self.assertEqual(entries[0]["retries"], 1)
+        The CDP driver of the display audio proofs was handed the root of the
+        mount, which is the switch (display-hive.md § 6.5): it replaces itself on
+        every load, and a call in flight at that moment came back `-32000
+        Inspected target navigated or closed` -- 3 of 100 runs under browser
+        load, `nav=2` in 5 of 5 once the driver counted navigations. The proofs
+        now drive an explicit output and assert `nav=1`: 0 of 100 afterwards.
+        So no override may buy these tests a retry again; a new flake of this
+        file is a new issue with its own measurement, not this entry back."""
+        for profile in ("default", "ci"):
+            for entry in self.config["profile"][profile].get("overrides", []):
+                with self.subTest(profile=profile, filter=entry["filter"]):
+                    if "gh643_audio_in_the_display_window_browser" in entry["filter"]:
+                        self.assertEqual(entry.get("retries", 0), 0, entry)
+
+    def test_the_proofs_that_may_skip_print_their_line_when_green(self):
+        """LOUD WHEN GREEN: a proof that returns early on a host that cannot run it
+        prints its SKIP or its measurement, and the gate log has to carry that line.
+
+        `failure-output` says nothing about a test that passes, so without
+        `success-output` a skipped proof and a measured one read the same "passed"
+        (GH #766 review I13; GH #867, wave fix H1a review I1). Held in BOTH
+        profiles: the local gate and the CI read different ones.
+
+        The two browser proofs of the phone sheet are the same case, measured:
+        `gh703_the_phone_holds_in_webkit_browser` said `SKIP ... missing
+        dependencies` in every gate of this host, and
+        `710_the_sheet_holds_in_both_engines_browser` SKIPs in a linked
+        worktree without `node_modules` -- green both times, and no gate log
+        showed it (wave fix, strand X, OR-FX.X.3)."""
+        loud = ["gh766_a_packaged_browser_needs_no_landlock",
+                "gh867_a_display_runs_under_a_strict_csp_browser",
+                "gh703_the_phone_holds_in_webkit_browser",
+                "710_the_sheet_holds_in_both_engines_browser"]
+        for profile in ("default", "ci"):
+            entries = self.config["profile"][profile]["overrides"]
+            for binary in loud:
+                with self.subTest(profile=profile, binary=binary):
+                    hits = [e for e in entries
+                            if f"binary_id(=meclaw-cells::{binary})" in e["filter"]
+                            and e.get("success-output") == "immediate-final"]
+                    self.assertEqual(len(hits), 1, entries)
 
 
 if __name__ == "__main__":

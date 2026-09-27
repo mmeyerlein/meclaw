@@ -142,3 +142,10 @@ adr	status	anchor_home	target
 0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	test:a_restart_dead_letters_the_overflow_no_cell_can_take
 0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	test:gh850_new_post_after_a_lift_reaches_the_new_cell_and_the_old_overflow_is_dead_lettered
 0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	code:fn routed_like_the_corridor
+0046-a-model-push-works-only-in-the-cell-it-names.md	accepted	self	test:a_push_addressed_to_another_cell_is_not_applied
+0046-a-model-push-works-only-in-the-cell-it-names.md	accepted	self	test:a_forward_into_another_brain_moves_nothing
+0046-a-model-push-works-only-in-the-cell-it-names.md	accepted	self	test:the_start_endpoint_is_compared_as_an_endpoint
+0046-a-model-push-works-only-in-the-cell-it-names.md	accepted	self	code:fn push_for(
+0046-a-model-push-works-only-in-the-cell-it-names.md	accepted	self	test:a_refused_own_push_carries_its_address_and_model
+0046-a-model-push-works-only-in-the-cell-it-names.md	accepted	self	test:every_composite_with_a_model_door_sends_refusals_back
+0046-a-model-push-works-only-in-the-cell-it-names.md	accepted	self	code:fn refusal_hop(

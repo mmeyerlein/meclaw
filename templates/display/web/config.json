@@ -1,11 +1,15 @@
 {
   "cell": {
     "type": "ref",
-    "template": "web@2.1.0"
+    "template": "web@2.2.0"
   },
   "override_params": {
     "": {
-      "mount": "display"
+      "mount": "display",
+      "link_mounts": [
+        "voice",
+        "browser"
+      ]
     }
   }
 }

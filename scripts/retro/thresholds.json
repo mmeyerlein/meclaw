@@ -1,8 +1,8 @@
 {
   "ruling": "R-P3",
   "decided": "2026-09-19",
-  "title": "Wave retro -- the ten numbers",
-  "title_de": "Wellen-Retro — die zehn Kennzahlen",
+  "title": "Wave retro -- the eleven numbers",
+  "title_de": "Wellen-Retro — die elf Kennzahlen",
   "note": "A breach is a finding, never a blocker. Thresholds change by ruling only, and the ruling carries a date.",
   "note_de": "Ein Verstoß ist ein Befund, nie ein Blocker. Schwellen ändern sich nur per Ruling, und das Ruling trägt ein Datum.",
   "metrics": [
@@ -126,6 +126,18 @@
       "source_de": "gelesener Kontext der Orchestrator-Sitzung über dem gelesenen Kontext der ganzen Welle",
       "advice": "An orchestrator that reads a sixth of the wave is doing strand work: delegate the reading, keep the decision.",
       "advice_de": "Ein Orchestrator, der ein Sechstel der Welle liest, macht Strang-Arbeit: das Lesen delegieren, die Entscheidung behalten."
+    },
+    {
+      "id": "Q11",
+      "title": "calls after a 5-60 minute pause / their share of cache writes",
+      "title_de": "Calls nach 5–60 min Pause / ihr Anteil an den Cache-Writes",
+      "unit": "% / %",
+      "cmp": "<=",
+      "threshold": null,
+      "source": "calls of every agent, de-duplicated by requestId, whose start came 5-60 minutes after the start of the agent's previous call to the same model; writes are cache_creation_input_tokens, the one-hour share is ephemeral_1h_input_tokens of all writes",
+      "source_de": "Calls aller Agenten, dedupliziert über requestId, deren Start 5–60 min nach dem Start des vorigen Calls desselben Agenten an dasselbe Modell lag; Writes = cache_creation_input_tokens, 1-h-Anteil = ephemeral_1h_input_tokens an allen Writes",
+      "advice": "Calls that come back after the five-minute cache expired rewrite the whole context: keep the waiting agents on the one-hour cache, or wake them sooner.",
+      "advice_de": "Calls nach abgelaufenem 5-min-Cache schreiben den ganzen Kontext neu: wartende Agenten auf den 1-h-Cache legen oder früher wecken."
     }
   ]
 }

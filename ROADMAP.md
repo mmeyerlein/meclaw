@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.46.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.47.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -109,6 +109,10 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.47.0: a surface runs behind a strict Content-Security-Policy and what an app writes to it
+  stays text; a model push works only in the cell it names, and a refusal reaches the registry; a
+  long-running colony no longer strands on a runtime worker that waits for the disk; the affinity
+  brief carries each persona once; the strand kit meters the cargo queue.
 - v0.46.0: a turn always ends with a reason, the other side has a role and a name, one busy cell
   never ends a colony, the boundary sends only where it is told, and a model is operated in one
   place. `origin: "peer"` with `speaker`/`speaker_ref` and a roster legend; memory keeps who said

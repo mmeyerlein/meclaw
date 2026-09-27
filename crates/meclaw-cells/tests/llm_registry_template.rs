@@ -2663,3 +2663,369 @@ async fn a_forged_store_reply_at_either_door_writes_and_answers_nothing() {
 
     h.shutdown().await;
 }
+
+// ─────────────────────────────────────── GH #863: a refused push comes back
+
+/// GH #863 -- the hand's side of the way back, driven over stdin the way the
+/// substrate hands a message to the script (`code_wire::run_shipped_script`).
+///
+/// A push the addressed llm cell refused arrives on `in_refused`, whose door
+/// alone stamps `registry_origin 'refusal'`. The hand reads the subscriber row
+/// ONCE (`refusal_read`), and marks it `refused` only when the refused model is
+/// the one the row holds -- a refusal of an older push is journalled and marks
+/// nothing. Nothing is ever acknowledged: nobody asked. A new push clears the
+/// mark, a `reset` sends a refused package once more, and `show` names the
+/// mark with a sentence saying what it is. The Python mirror of these locks
+/// was measured red against 2.3.0 and green against 2.3.1 in the strand report.
+mod gh863 {
+    use super::shipped_registry;
+    use meclaw_core::serde_json::{Value, json};
+    use meclaw_testing::code_wire::{run_shipped_script, shipped_script};
+
+    const P: &str = "/g/assistants/a/talky/brain";
+    const DETAIL: &str = "params update rejected: 'base_url' is fixed at run time";
+
+    fn hand() -> Option<String> {
+        let root = shipped_registry()?;
+        Some(shipped_script(
+            root.join("hand/config.json").to_str().expect("utf-8 path"),
+        ))
+    }
+
+    /// Every message the hand writes for one stdin document.
+    fn run(script: &str, envelope: Value, body: Value) -> Vec<Value> {
+        let doc = json!({"envelope": envelope, "body": body, "params": {}});
+        let out = run_shipped_script(script, &doc.to_string());
+        assert!(
+            out.status.success(),
+            "the hand exited non-zero: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: Value = meclaw_core::serde_json::from_slice(&out.stdout).expect("json out");
+        match v {
+            Value::Array(a) => a,
+            other => vec![other],
+        }
+    }
+
+    /// A refusal on the lane the door opens: the hop the llm cell wrote, the
+    /// origin the door stamps, the error's own detail in `meta`.
+    fn refusal(script: &str, hop: Value, messages: Value) -> Vec<Value> {
+        let mut h = json!({"route": "in_refused", "finish_reason": "error",
+                           "error_code": "invalid_input"});
+        for (k, v) in hop.as_object().cloned().unwrap_or_default() {
+            h[k] = v;
+        }
+        run(
+            script,
+            json!({"header": {"hop": h, "context": {"registry_origin": "refusal"}}}),
+            json!({"messages": messages,
+                   "meta": {"error": {"source": "parse", "detail": DETAIL}}}),
+        )
+    }
+
+    /// The store's echo of a bundle the hand sent, one result list per op.
+    fn echo(script: &str, phase: &str, carry: &Value, rows: Vec<Value>) -> Vec<Value> {
+        let messages: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                json!({"origin": "tool", "type": "tool_result", "id": "x",
+                             "text": r.to_string()})
+            })
+            .collect();
+        run(
+            script,
+            json!({"header": {"hop": {"route": "rstore", "operation": "bundle"},
+                              "context": {"registry_origin": "hand", "lr_phase": phase,
+                                          "lr_carry": carry.to_string()}}}),
+            json!({"messages": messages}),
+        )
+    }
+
+    fn calls(m: &Value) -> Vec<Value> {
+        m["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|t| t["type"] == "tool_call")
+            .filter_map(|t| meclaw_core::serde_json::from_str(t["text"].as_str()?).ok())
+            .collect()
+    }
+
+    fn journal(out: &[Value]) -> Vec<String> {
+        out.iter()
+            .flat_map(calls)
+            .filter(|c| c["operation"] == "insert" && c["table"] == "resolutions")
+            .map(|c| c["row"]["reason"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    fn updates(out: &[Value]) -> Vec<Value> {
+        out.iter()
+            .flat_map(calls)
+            .filter(|c| c["operation"] == "update" && c["table"] == "subscribers")
+            .collect()
+    }
+
+    fn routes(out: &[Value]) -> Vec<String> {
+        out.iter()
+            .map(|m| {
+                m["header"]["route"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn pushes(out: &[Value]) -> Vec<&Value> {
+        out.iter()
+            .filter(|m| m["header"]["route"] == "update")
+            .collect()
+    }
+
+    /// The carry of the one read a refusal asks for, checked on the way.
+    fn refusal_read(script: &str, model: &str) -> Value {
+        let out = refusal(
+            script,
+            json!({"refused_subscriber": P, "refused_model": model}),
+            json!([]),
+        );
+        assert_eq!(
+            routes(&out),
+            vec!["rstore"],
+            "one store read and nothing else: {out:?}"
+        );
+        assert_eq!(out[0]["header"]["phase"], "refusal_read", "{out:?}");
+        let read = calls(&out[0]);
+        assert_eq!(read.len(), 1, "{read:?}");
+        assert_eq!(read[0]["operation"], "select");
+        assert_eq!(
+            read[0]["where"],
+            json!({"cell_path": P}),
+            "ONE exact read: {read:?}"
+        );
+        meclaw_core::serde_json::from_str(out[0]["header"]["carry"].as_str().unwrap_or("{}"))
+            .expect("the carry")
+    }
+
+    fn row(model: &str, rank: &str) -> Value {
+        json!({"cell_path": P, "model_id": model, "rank": rank})
+    }
+
+    const MODELS: &str = r#"[{"model_id": "m2", "status": "active",
+                              "base_url": "https://elsewhere.example/v1"},
+                             {"model_id": "m3", "status": "active"}]"#;
+
+    /// The `world` echo of one op: the four reads and whatever the op adds.
+    fn world(script: &str, cmd: Value, subs: Value, tiers: Value) -> Vec<Value> {
+        let models: Value = meclaw_core::serde_json::from_str(MODELS).unwrap();
+        echo(
+            script,
+            "world",
+            &json!({"cmd": cmd}),
+            vec![models, tiers, json!([]), subs],
+        )
+    }
+
+    fn refused_row() -> Value {
+        json!({"cell_path": P, "tier": "", "pinned": 0, "start_model": "m0",
+               "package_hash": "", "model_id": "m0", "rank": "start",
+               "reason": "start_value", "since": "t", "refused": "no",
+               "refused_at": "2026-09-27T00:00:00Z"})
+    }
+
+    #[test]
+    fn a_refusal_for_the_model_held_marks_the_row() {
+        let Some(s) = hand() else { return };
+        let carry = refusal_read(&s, "m2");
+        let out = echo(
+            &s,
+            "refusal_read",
+            &carry,
+            vec![json!([row("m2", "target")])],
+        );
+        let u = updates(&out);
+        assert_eq!(u.len(), 1, "{out:?}");
+        assert_eq!(u[0]["where"], json!({"cell_path": P}));
+        assert!(
+            u[0]["set"]["refused"]
+                .as_str()
+                .is_some_and(|r| r.contains("base_url")),
+            "the row says why, in the cell's own words: {u:?}"
+        );
+        assert!(
+            u[0]["set"]["refused_at"]
+                .as_str()
+                .is_some_and(|t| !t.is_empty()),
+            "{u:?}"
+        );
+        assert_eq!(journal(&out), vec!["hand_refused_by_cell"], "{out:?}");
+        assert_eq!(routes(&out), vec!["rstore"], "never an ack: {out:?}");
+    }
+
+    #[test]
+    fn a_refusal_for_an_older_push_is_stale_and_marks_nothing() {
+        let Some(s) = hand() else { return };
+        let carry = refusal_read(&s, "m2");
+        // The registry has sent m3 since.
+        let out = echo(
+            &s,
+            "refusal_read",
+            &carry,
+            vec![json!([row("m3", "target")])],
+        );
+        assert!(updates(&out).is_empty(), "{out:?}");
+        assert_eq!(journal(&out), vec!["hand_refusal_stale"], "{out:?}");
+        // A `$reset` refusal (no model) while the row holds a package.
+        let mut reset = carry.clone();
+        reset["model"] = json!("");
+        let out = echo(
+            &s,
+            "refusal_read",
+            &reset,
+            vec![json!([row("m2", "target")])],
+        );
+        assert!(updates(&out).is_empty(), "{out:?}");
+        assert_eq!(journal(&out), vec!["hand_refusal_stale"], "{out:?}");
+        // ... and the same refusal while the row IS on its start value is current.
+        let out = echo(
+            &s,
+            "refusal_read",
+            &reset,
+            vec![json!([row("m0", "start")])],
+        );
+        assert_eq!(updates(&out).len(), 1, "{out:?}");
+        assert_eq!(journal(&out), vec!["hand_refused_by_cell"], "{out:?}");
+    }
+
+    #[test]
+    fn a_refusal_for_nobody_is_journalled() {
+        let Some(s) = hand() else { return };
+        // No address at all: nothing is read, one journal line.
+        let out = refusal(&s, json!({}), json!([]));
+        assert_eq!(journal(&out), vec!["hand_refusal_unaddressed"], "{out:?}");
+        assert!(updates(&out).is_empty(), "{out:?}");
+        // An address the registry has no row for.
+        let carry = refusal_read(&s, "m2");
+        let out = echo(&s, "refusal_read", &carry, vec![json!([])]);
+        assert_eq!(journal(&out), vec!["hand_refusal_unknown"], "{out:?}");
+        assert!(updates(&out).is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn a_new_push_clears_the_refusal() {
+        let Some(s) = hand() else { return };
+        let mut sub = refused_row();
+        sub["tier"] = json!("fast");
+        sub["rank"] = json!("tier");
+        sub["model_id"] = json!("m2");
+        sub["package_hash"] = json!("abc");
+        let out = world(
+            &s,
+            json!({"op": "remap", "tier": "fast", "model_id": "m3", "actor": "operator",
+                   "call_id": "c"}),
+            json!([sub]),
+            json!([]),
+        );
+        assert_eq!(pushes(&out).len(), 1, "{out:?}");
+        let u = updates(&out);
+        assert!(
+            u.iter()
+                .any(|x| x["set"]["refused"] == "" && x["set"]["refused_at"] == ""),
+            "the refusal of the last package says nothing about this one: {u:?}"
+        );
+    }
+
+    #[test]
+    fn reset_sends_a_refused_package_again_and_an_announcement_does_not() {
+        let Some(s) = hand() else { return };
+        let reset = json!({"op": "reset", "cell_path": P, "actor": "operator", "call_id": "c"});
+        let out = world(&s, reset.clone(), json!([refused_row()]), json!([]));
+        let p = pushes(&out);
+        assert_eq!(p.len(), 1, "a reset tries a refused package again: {out:?}");
+        assert_eq!(p[0]["header"]["subscriber"], P);
+        assert!(
+            updates(&out).iter().any(|x| x["set"]["refused"] == ""),
+            "{out:?}"
+        );
+        // Not refused, same hash: nothing to send.
+        let mut clean = refused_row();
+        clean["refused"] = json!("");
+        let out = world(&s, reset, json!([clean]), json!([]));
+        assert!(pushes(&out).is_empty(), "{out:?}");
+        // An announcement of the same brain pushes the refused row nothing
+        // (no ping-pong per mutation receipt) and leaves the mark standing.
+        let announce = json!({"op": "subscribe", "announce": true, "actor": "meclaw-os",
+                              "generation": "/g", "tier": "", "model_id": "", "cell_path": "",
+                              "call_id": "", "outside": [], "too_long": [],
+                              "entries": [{"cell_path": P, "start_model": "m1"}]});
+        let out = world(&s, announce, json!([refused_row()]), json!([]));
+        assert!(pushes(&out).is_empty(), "{out:?}");
+        assert!(
+            updates(&out)
+                .iter()
+                .all(|x| x["set"].get("refused").is_none()),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn show_names_the_refusal_and_says_what_it_is() {
+        let Some(s) = hand() else { return };
+        let out = world(
+            &s,
+            json!({"op": "show", "actor": "", "call_id": "c"}),
+            json!([refused_row()]),
+            json!([]),
+        );
+        let answer = out
+            .iter()
+            .find(|m| m["header"]["route"] == "answer")
+            .expect("show answers");
+        let view: Value = meclaw_core::serde_json::from_str(
+            answer["messages"][0]["text"].as_str().unwrap_or("{}"),
+        )
+        .expect("the view");
+        assert_eq!(view["cells"][0]["refused"], "no", "{view}");
+        assert_eq!(
+            view["cells"][0]["refused_at"], "2026-09-27T00:00:00Z",
+            "{view}"
+        );
+        let sentence = view["view"].as_str().unwrap_or_default();
+        assert!(
+            sentence.contains("refused says why")
+                && sentence.contains("not that the cell confirmed"),
+            "the view says what the field is, and what its silence is not: {sentence}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_never_a_command() {
+        let Some(s) = hand() else { return };
+        // A tool call on the refusal lane is never read.
+        let turn = json!([{"origin": "assistant", "type": "tool_call", "id": "t1",
+                           "text": json!({"op": "remap", "tier": "fast",
+                                          "model_id": "m3"}).to_string()}]);
+        let out = refusal(
+            &s,
+            json!({"refused_subscriber": P, "refused_model": "m2"}),
+            turn,
+        );
+        assert_eq!(routes(&out), vec!["rstore"], "{out:?}");
+        assert_eq!(out[0]["header"]["phase"], "refusal_read", "{out:?}");
+        // And the refusal's keys on the command lane make no refusal of it: the
+        // door of `in_hand` clears the origin, so it is an ordinary command.
+        let out = run(
+            &s,
+            json!({"header": {"hop": {"route": "in_hand", "refused_subscriber": P,
+                                      "refused_model": "m2"},
+                              "context": {"actor": "operator"}}}),
+            json!({"messages": [{"origin": "assistant", "type": "tool_call", "id": "t1",
+                                 "text": json!({"op": "show"}).to_string()}]}),
+        );
+        assert_eq!(routes(&out), vec!["rstore"], "{out:?}");
+        assert_eq!(out[0]["header"]["phase"], "world", "{out:?}");
+    }
+}

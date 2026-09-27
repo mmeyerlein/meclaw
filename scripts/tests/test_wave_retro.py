@@ -30,21 +30,30 @@ WAVE = "welle-t-2026-01-01"
 SESSION = "11111111-2222-3333-4444-555555555555"
 
 
-def _turn(ts, request_id, inp, cc, cr, out, blocks=None):
-    """One assistant line of a transcript, in the shape Claude Code writes."""
+def _turn(ts, request_id, inp, cc, cr, out, blocks=None, model=None, cc1h=0):
+    """One assistant line of a transcript, in the shape Claude Code writes.
+
+    `cache_creation` splits the write into its two lifetimes, as the API
+    reports it; `cc1h` of the `cc` tokens went into the one-hour cache.
+    """
+    message = {
+        "usage": {
+            "input_tokens": inp,
+            "cache_creation_input_tokens": cc,
+            "cache_read_input_tokens": cr,
+            "output_tokens": out,
+            "cache_creation": {"ephemeral_5m_input_tokens": cc - cc1h,
+                               "ephemeral_1h_input_tokens": cc1h},
+        },
+        "content": blocks or [],
+    }
+    if model:
+        message["model"] = model
     return json.dumps({
         "type": "assistant",
         "timestamp": ts,
         "requestId": request_id,
-        "message": {
-            "usage": {
-                "input_tokens": inp,
-                "cache_creation_input_tokens": cc,
-                "cache_read_input_tokens": cr,
-                "output_tokens": out,
-            },
-            "content": blocks or [],
-        },
+        "message": message,
     })
 
 
@@ -181,10 +190,10 @@ def run_retro(case, root, troot, *extra):
 
 class ThresholdTests(unittest.TestCase):
     def test_every_metric_has_a_threshold_from_the_one_file(self):
-        """Ten metrics, one file, and the file is what the code reads."""
+        """Eleven metrics, one file, and the file is what the code reads."""
         spec = wr.load_thresholds()
         ids = [m["id"] for m in spec["metrics"]]
-        self.assertEqual(ids, [f"Q{n}" for n in range(1, 11)])
+        self.assertEqual(ids, [f"Q{n}" for n in range(1, 12)])
         for m in spec["metrics"]:
             self.assertIn("threshold", m)
             self.assertIn("title", m)
@@ -511,8 +520,8 @@ class MetricTests(unittest.TestCase):
         self.retro = (self.root / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
         self.verlauf = (self.root / "plans" / "retro" / "RETRO.md").read_text(encoding="utf-8")
 
-    def test_all_ten_metrics_are_in_the_report(self):
-        for n in range(1, 11):
+    def test_all_eleven_metrics_are_in_the_report(self):
+        for n in range(1, 12):
             self.assertRegex(self.retro, rf"\|\s*Q{n}\s*\|")
 
     def test_report_stays_under_forty_lines(self):
@@ -598,10 +607,10 @@ class MetricTests(unittest.TestCase):
         q = wr.metric_row(self.retro, "Q10")
         self.assertTrue(q["wert"].endswith("%"))
 
-    def test_verlauf_line_carries_the_wave_and_all_ten_columns(self):
+    def test_verlauf_line_carries_the_wave_and_all_eleven_columns(self):
         row = [l for l in self.verlauf.splitlines() if WAVE in l]
         self.assertEqual(len(row), 1)
-        self.assertEqual(row[0].count("|"), 14)
+        self.assertEqual(row[0].count("|"), 15)
 
     def test_verlauf_line_is_idempotent(self):
         run_retro(self, self.root, self.troot)
@@ -789,6 +798,129 @@ class MessartefaktTests(unittest.TestCase):
         self.assertEqual(wr.metric_row(text, "Q7")["wert"], "7")
 
 
+def _agent(calls):
+    """An agent as `transcripts.scan` returns it, reduced to its calls."""
+    from datetime import datetime
+    return {"calls": [
+        {"t0": datetime.fromisoformat(ts.replace("Z", "+00:00")),
+         "model": model, "inp": 1, "cc": cc, "cc5": cc - cc1h, "cc1h": cc1h,
+         "cr": 0, "out": 1}
+        for ts, model, cc, cc1h in calls]}
+
+
+class CacheTests(unittest.TestCase):
+    """Q11: calls that came back after the 5-minute cache expired (GH #861).
+
+    Measured over the 87 agents of wave Substrat: 2,2 % of the calls came
+    after a 5-60 minute pause and wrote 57,7 % of all cache tokens, and not
+    one token went into the one-hour cache. A finding without a threshold
+    until a wave has measured the other lifetime.
+    """
+
+    OPUS = "claude-opus-x"
+
+    def _one_agent(self):
+        return _agent([
+            ("2026-01-01T10:00:00Z", self.OPUS, 40_000, 0),
+            ("2026-01-01T10:01:00Z", self.OPUS, 10_000, 0),
+            ("2026-01-01T10:11:00Z", self.OPUS, 100_000, 0),
+            ("2026-01-01T12:11:00Z", self.OPUS, 50_000, 0),
+        ])
+
+    def test_q11_counts_the_calls_after_a_five_to_sixty_minute_pause_and_their_writes(self):
+        from retro import cache
+        got = cache.pauses([self._one_agent()])
+        self.assertEqual(got, {"calls": 4, "late": 1, "writes": 200_000,
+                               "late_writes": 100_000, "long_writes": 0})
+        rows = wr.metrics.rows({"agents": [self._one_agent()]},
+                               {"metrics": [m for m in wr.load_thresholds()["metrics"]
+                                            if m["id"] == "Q11"]})
+        self.assertEqual(rows[0]["value"], "25,0 % / 50 % (1 h: 0 %)")
+
+    def test_q11_keeps_one_chain_per_model(self):
+        """Each model keeps its own cache. A small model called every two
+        minutes does not keep the big one's cache warm."""
+        from retro import cache
+        agent = _agent([
+            ("2026-01-01T10:00:00Z", self.OPUS, 50_000, 0),
+            ("2026-01-01T10:02:00Z", "claude-haiku-x", 1_000, 0),
+            ("2026-01-01T10:04:00Z", "claude-haiku-x", 1_000, 0),
+            ("2026-01-01T10:06:00Z", "claude-haiku-x", 1_000, 0),
+            ("2026-01-01T10:08:00Z", "claude-haiku-x", 1_000, 0),
+            ("2026-01-01T10:10:00Z", self.OPUS, 50_000, 0),
+        ])
+        got = cache.pauses([agent])
+        self.assertEqual(got["late"], 1)
+        self.assertEqual(got["late_writes"], 50_000)
+
+    def test_q11_reports_the_one_hour_share(self):
+        from retro import cache
+        agent = _agent([
+            ("2026-01-01T10:00:00Z", self.OPUS, 40_000, 40_000),
+            ("2026-01-01T10:20:00Z", self.OPUS, 60_000, 0),
+        ])
+        got = cache.pauses([agent])
+        self.assertEqual(got["long_writes"], 40_000)
+        rows = wr.metrics.rows({"agents": [agent]},
+                               {"metrics": [m for m in wr.load_thresholds()["metrics"]
+                                            if m["id"] == "Q11"]})
+        self.assertEqual(rows[0]["value"], "50,0 % / 60 % (1 h: 40 %)")
+
+    def test_q11_is_a_finding_without_threshold(self):
+        root, troot = fixture_wave(self)
+        subs = troot / SESSION / "subagents"
+        (subs / "agent-fff1.jsonl").write_text("\n".join([
+            _user("2026-01-01T10:00:00Z", "Du bist der Bauer des Strangs zeta."),
+            _turn("2026-01-01T10:00:00Z", "req_f1", 1, 40_000, 0, 1, model=self.OPUS),
+            _turn("2026-01-01T10:20:00Z", "req_f2", 1, 400_000, 0, 1, model=self.OPUS),
+        ]) + "\n", encoding="utf-8")
+        run_retro(self, root, troot)
+        text = (root / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
+        q = wr.metric_row(text, "Q11")
+        self.assertEqual(q["verdikt"], "BEFUND")
+        self.assertEqual(q["schwelle"], "—")
+        self.assertEqual(q["vorschlag"], "—")
+        verstoss = [l for l in text.splitlines() if l.startswith("Verstöße")][0]
+        self.assertNotIn("Q11", verstoss)
+        self.assertLessEqual(len(text.splitlines()), 40)
+
+    def test_scan_lists_every_call_once_with_its_start_and_model(self):
+        """The duplicate-usage trap of Q6 holds for Q11 as well: one request,
+        one call, at the time its first line was written."""
+        from retro import transcripts
+        root, troot = fixture_wave(self)
+        agent = transcripts.scan(troot / SESSION / "subagents" / "agent-aaa1.jsonl")
+        self.assertEqual(len(agent["calls"]), 4)
+        first = agent["calls"][0]
+        self.assertEqual(first["t0"].isoformat(), "2026-01-01T10:00:30+00:00")
+        self.assertEqual(first["cc"], 120_000)
+        self.assertEqual(sorted(first), sorted(
+            ["t0", "model", "inp", "cc", "cc5", "cc1h", "cr", "out"]))
+
+    def test_an_old_history_line_is_padded_for_q11(self):
+        """A line written before Q11 has one cell fewer; without padding its
+        breaches would stand under Q11."""
+        from retro import render
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = pathlib.Path(tmp.name) / "RETRO.md"
+        old = ("| 2025-12-01 | welle-alt-2025-12-01 | 1,0 | 0 % | 5 % | 0,5 | 10 % "
+               "| 100k / 0 | 0 | 2 % | 10 min | 5 % | Q7 |")
+        path.write_text("\n".join(render.HISTORY_HEAD[:-2] + [
+            "| Datum | Welle | Q1 | Q2 | Q3 | Q4 | Q5 | Q6 | Q7 | Q8 | Q9 | Q10 | Verstoesse |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|", old]) + "\n",
+            encoding="utf-8")
+        root, troot = fixture_wave(self)
+        rows = wr.metrics.rows(wr.metrics.collect(
+            root / "plans" / WAVE, troot, [SESSION]), wr.load_thresholds())
+        render.update_history(path, WAVE, rows)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertIn("| Q10 | Q11 | Verstoesse |", "\n".join(lines))
+        padded = [l for l in lines if "welle-alt" in l][0]
+        self.assertEqual(padded.count("|"), 15)
+        self.assertTrue(padded.endswith("| n/a | Q7 |"), padded)
+
+
 class MissingSourceTests(unittest.TestCase):
     def test_a_wave_without_transcripts_still_produces_a_report(self):
         """No transcript is a `n/a` with a reason, never a crash."""
@@ -798,7 +930,7 @@ class MissingSourceTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         text = (root / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
         self.assertIn("n/a", text)
-        for n in (6, 7, 9, 10):
+        for n in (6, 7, 9, 10, 11):
             self.assertEqual(wr.metric_row(text, f"Q{n}")["wert"], "n/a")
 
     def test_an_empty_wave_directory_is_not_an_error(self):

@@ -42,6 +42,14 @@ station would grade it anyway:
     docs-twin       `docs/X.md` changed without `docs/X.en.md`, or the other
                     way round, where both faces exist. The export compares
                     them for structural equality; half a change is a red gate.
+    reasoning-effort
+                    an eval call to the local model lane under `workshop/`
+                    that names no thinking depth, or a forbidden one. The
+                    server reads the effort only as a top-level
+                    `reasoning_effort` and drops a nested one without a word,
+                    so a caller that says nothing measures the server's
+                    default (GH #865). The rules are private to the tree that
+                    has the evals: `workshop/tools/check_reasoning_effort.py`.
 
 NOTE -- read, do not stop. These are the review findings that repeat, and a
 note before the review is a fix round saved:
@@ -80,7 +88,9 @@ queue, so a form finding is a fix and not a run.
 
 A check whose input is missing says nothing. The published tree has no
 `plans/`, so `root-files` and `name-pattern` -- both of which read the
-export's own lists -- fall silent there rather than inventing a verdict.
+export's own lists -- fall silent there rather than inventing a verdict. The
+same holds for `reasoning-effort`: it has no `workshop/` there, neither the
+rules nor anything they grade.
 
 USAGE
 =====
@@ -133,6 +143,10 @@ EDITION_FALLBACK = "2021"
 
 # Where the export keeps the two lists this module borrows.
 MAKE_EXPORT = os.path.join("plans", "export-fixtures", "make_export.py")
+
+# The private rules of the `reasoning-effort` check. `workshop/` never travels,
+# so the published tree has neither the module nor anything it would grade.
+REASONING_EFFORT_RULES = os.path.join("workshop", "tools", "check_reasoning_effort.py")
 
 # Roots that never travel (the export's FORBIDDEN_PREFIX). A file under one of
 # them may carry anything: R5 is about the tree that is published.
@@ -332,6 +346,35 @@ def _twin(path):
     if path.endswith(".en.md"):
         return path[:-len(".en.md")] + ".md"
     return path[:-len(".md")] + ".en.md"
+
+
+def check_reasoning_effort(files, repo):
+    """An eval call to the local model lane names its thinking depth (GH #865).
+
+    The rules and the reasons for its two exemptions live in the module this
+    borrows, beside the evals they grade; this is only the door into the
+    station, so a new caller without the field is red before the build queue
+    instead of a measurement taken at the server's default. Silent where the
+    module does not exist.
+    """
+    rules = _reasoning_effort_rules(repo)
+    if rules is None:
+        return
+    for line in rules.scan(files, repo):
+        yield Finding("RED", "reasoning-effort", line)
+
+
+@functools.lru_cache(maxsize=4)
+def _reasoning_effort_rules(repo):
+    """The private rules module, or None where the tree has none."""
+    path = os.path.join(repo, REASONING_EFFORT_RULES)
+    if not os.path.isfile(path):
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("meclaw_check_reasoning_effort", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def check_changelog_mark(files, repo):
@@ -681,9 +724,9 @@ def _tests_reading(repo, path):
 
 
 CHECKS = (check_fmt, check_sheet_cap, check_adr_pinned_by, check_root_files,
-          check_docs_twin, check_changelog_mark, check_since_sentence,
-          check_since_doc, check_run_artefact, check_plan_cap,
-          check_name_pattern)
+          check_docs_twin, check_reasoning_effort, check_changelog_mark,
+          check_since_sentence, check_since_doc, check_run_artefact,
+          check_plan_cap, check_name_pattern)
 
 
 def run(paths, repo=None):

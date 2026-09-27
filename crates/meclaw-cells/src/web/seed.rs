@@ -103,10 +103,13 @@ fn parse_seed_file(
 
 /// The semantic checks one seeded `components` row has to pass.
 ///
-/// Today that is the material rule and nothing else: the template's own syntax
-/// is pinned by the shipped-template suite, and a `layer` value outside the
-/// vocabulary is treated here as what it is — not navigation, therefore not
-/// allowed to wear glass.
+/// The material rule, and since GH #869 the definition rules on markup and
+/// `editable` ([`crate::web::ops::check_definition`]) — the same function
+/// `component.define` calls — the template's syntax included since review I1
+/// of #868/#869, because the markup rules hold only for a template the parser
+/// accepts. A `layer` value outside the vocabulary is
+/// treated here as what it is — not navigation, therefore not allowed to wear
+/// glass.
 fn check_component_row(row: &Map<String, Value>) -> Result<(), String> {
     let name = row.get("name").and_then(Value::as_str).unwrap_or_default();
     let template = row
@@ -117,7 +120,27 @@ fn check_component_row(row: &Map<String, Value>) -> Result<(), String> {
         .get("layer")
         .and_then(Value::as_str)
         .unwrap_or("content");
-    crate::web::ops::check_glass_layer(name, template, layer)
+    crate::web::ops::check_glass_layer(name, template, layer)?;
+    crate::web::ops::check_definition(
+        name,
+        template,
+        &json_column(row.get("prop_schema")),
+        &json_column(row.get("editable")),
+    )
+}
+
+/// A JSON column of a seed row, as the structure it holds.
+///
+/// A seed may write `prop_schema` and `editable` either as the structure or
+/// as its JSON text (see [`json_to_sql`]); both have to reach the same check.
+/// Text that does not parse reads as `null`, which no rule refuses — the load
+/// then stores it as it always did.
+fn json_column(v: Option<&Value>) -> Value {
+    match v {
+        Some(Value::String(text)) => meclaw_core::serde_json::from_str(text).unwrap_or(Value::Null),
+        Some(other) => other.clone(),
+        None => Value::Null,
+    }
 }
 
 /// Static, database-free check of every seed file in `cell_dir`.
@@ -272,6 +295,46 @@ mod tests {
         let td = dir_with(&[("widgets.jsonl", "{\"schema\":{\"a\":\"text\"}}\n")]);
         let err = check_seed_files(td.path()).unwrap_err();
         assert!(err.contains("widgets"), "the typo must be named: {err}");
+    }
+
+    /// GH #869: a seeded component meets the rules `component.define` does,
+    /// with `prop_schema`/`editable` written as text or as structure.
+    #[test]
+    fn a_seeded_component_meets_the_definition_rules() {
+        let header = r#"{"schema":{"name":"text","template":"text","prop_schema":"text","editable":"text","layer":"text"}}"#;
+        for (row, needle) in [
+            (
+                r#"{"name":"a","template":"<a onclick=\"x()\">","prop_schema":"{}","editable":"[]","layer":"content"}"#,
+                "event-handler",
+            ),
+            (
+                r#"{"name":"b","template":"<a href=\"javascript:x()\">","prop_schema":{},"editable":[],"layer":"content"}"#,
+                "javascript",
+            ),
+            (
+                r#"{"name":"c","template":"<p>{{&b}}</p>","prop_schema":"{\"b\":\"html\"}","editable":"[\"b\"]","layer":"content"}"#,
+                "editable",
+            ),
+            (
+                r#"{"name":"d","template":"<p>{{&b}}</p>","prop_schema":{"b":"html"},"editable":["b"],"layer":"content"}"#,
+                "editable",
+            ),
+            (
+                r#"{"name":"f","template":"<scr{{x}}ipt>x</scr{{x}}ipt>","prop_schema":{},"editable":[],"layer":"content"}"#,
+                "stands",
+            ),
+        ] {
+            let body = format!("{header}\n{row}\n");
+            let td = dir_with(&[("components.jsonl", body.as_str())]);
+            let err = check_seed_files(td.path()).unwrap_err();
+            assert!(err.contains(needle), "{row}: {err}");
+        }
+        let body = format!(
+            "{header}\n{}\n",
+            r#"{"name":"e","template":"<b data-tone=\"{{t}}\" phx-click=\"{{t}}\">{{t}}</b>","prop_schema":"{\"t\":\"text\"}","editable":"[\"t\"]","layer":"content"}"#
+        );
+        let td = dir_with(&[("components.jsonl", body.as_str())]);
+        check_seed_files(td.path()).unwrap();
     }
 
     #[test]

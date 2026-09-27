@@ -5,7 +5,13 @@ The namespace, and nothing else.
 **A level owns what its siblings must share.** The members of one organisation share a
 name and a boundary. They do not share a memory, an identity, a broker or a firewall --
 so this level owns a name and a boundary, and it owns them by being a hive with one
-open container and nothing but transit edges.
+open container and nothing but transit edges. The boundary routes lanes; it does not
+isolate.
+
+**A colony hosts one organisation.** The `orgs` container can hold more, but the colony's
+API, message log and credentials know no organisation: a second one would share
+everything with the first and is not a supported deployment. Run one colony per
+organisation.
 
 That is the whole template. **Its value is the namespace, not the contents; it should
 not be padded to look substantial.**
@@ -119,8 +125,8 @@ seems to need is either one member's or the shell's.
 **And the mount is the shell's.** The same test answers the question GH #543 asked: a
 screen answers under a name on the colony's one listener, every member grows a screen, and
 that name cannot come from here. A mount is **system-near** — scarce, colony-wide, and two
-holders of one is a collision rather than a disagreement — and a colony carries many
-organisations and exactly one OS. So an organisation holds no band of names and assigns
+holders of one is a collision rather than a disagreement — and a colony carries exactly
+one OS. So an organisation holds no band of names and assigns
 none; it **asks the OS**
 (ADR-0022). Today that ask
 is implicit: the `builder` at the shell level gives every member it grows a
@@ -173,10 +179,6 @@ Two mutations, in this order.
    edges -- one per accepted lane onto the org's own path, and one per emitted lane
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor. The inbound edges carry
-   the organisation's own name beside the lane
-   (`... && (!has(context.org) || context.org == 'acme')`): `Edge.to` is a static
-   path, so a second organisation in the same container is a second ADDRESS, and a
-   lane guarded on `hop.route` alone would be delivered to both of them (#478). The inbound edges carry
    the organisation's own name beside the lane
    (`... && (!has(context.org) || context.org == 'acme')`): `Edge.to` is a static
    path, so a second organisation in the same container is a second ADDRESS, and a

@@ -1,4 +1,4 @@
-# `submit@2.3.3`
+# `submit@2.3.4`
 
 Two occupants behind one door, and the only reach onto the mutation door in the
 whole tree. It asks who may submit — and, when the diff itself asks for it, whether
@@ -385,9 +385,9 @@ a cell that emits tool calls, restamped `model_subscribe`, so a model-written tu
 reaches the registry's hand on the lane the tree announces its brains on.
 
 So every `add_edges` entry whose condition or modifier names the road -- the lanes
-`in_model` and `model_subscribe`, or the context keys `model_announcer`,
-`model_generation` and `model_announced` -- must be one of the two forms the builder
-renders, byte for byte:
+`in_model`, `model_subscribe` and, since 2.3.4, `model_refused` and `in_refused`, or
+the context keys `model_announcer`, `model_generation` and `model_announced` -- must
+be one of the three forms the builder renders, byte for byte:
 
 - **push:** `from` is the declaration's own scope (`.`), `to` is a node under it
   whose path is a plain CEL literal (no quote, no backslash), the condition is
@@ -409,15 +409,31 @@ renders, byte for byte:
   `cell_path` and `start_model`, and since 2.3.3 may carry `requirement` -- the
   prose its template cell states, a non-empty string of at most 2 KiB -- and no
   other key. Violation → `model_announcement_form`.
+- **way back** (since 2.3.4, [#863](https://github.com/mmeyerlein/meclaw/issues/863)): `from` is one node under the declaration's own
+  scope whose path is a plain CEL literal, `to` is `.` itself, the condition is
+  exactly `has(hop.route) && hop.route == 'model_refused'`, and there is **no
+  modifier** -- the shell restamps it for the registry, and a way back that wrote
+  anything could stamp the registry's lane. It carries only the refusals of its
+  own composite, and the registry checks the path and the model against its own
+  row, so it is not bound to a generation the same manifest brings: a way back
+  drawn beside the push edge of an older generation is the upgrade road. Violation
+  (an edge that names `model_refused` or `in_refused` and is not this form) →
+  `model_refusal_form`.
+
+The code names the form an edge was closest to, in a fixed order: an edge that
+names `in_model` is `model_push_form`, one that names the way back and not the
+push is `model_refusal_form`, and the rest is `model_announcement_form`.
 
 A spelling alone does not hold the road, because the pushes arrive at the container
 **already** stamped, a hive transit carries `hop` unchanged, and `set_hop` is CEL
 (`'in_' + 'model'` stamps the lane without spelling it). So two more questions are
 asked of **every** edge, whatever it names:
 
-- **the road's keys:** `set_hop` may not write `subscriber` or `subscribe`, and
-  `delete_hop` may not remove those two or `route`. A push is addressed by
-  `hop.subscriber`, and a JSON key has no second spelling. The builder renders
+- **the road's keys:** `set_hop` may not write `subscriber`, `subscribe`,
+  `refused_subscriber` or `refused_model`, and `delete_hop` may not remove those
+  four or `route`. A push is addressed by `hop.subscriber`, a refusal by the two
+  keys the refusing cell writes (since 2.3.4), and a JSON key has no second
+  spelling. The builder renders
   none of these; its announcement carries the brains in the context of the same
   edge, which nothing but an edge can write. Violation → `model_road_key`.
 - **a computed route:** a `set_hop.route` that is not a plain literal passes only
@@ -439,13 +455,13 @@ they are -- no modifier, one that writes other keys, or `set_hop route
 "hop.route"` -- names nothing this gate reads. Drawn at the container onto somebody else's
 composite (`{"from": ".", "to": "./<other>/talky", "condition":
 "has(hop.subscriber)"}`), or from an addressed composite onward, it copies every
-push it sees into a brain nobody addressed, the way any forward copies messages.
-That is a broker question like any other edge, and under the shipped default
-(`colony.mutate.default`, every identity at `/os/orgs`) the broker says yes -- as
-it does to a `swap_nodes` on a foreign brain, which is the same power. Closing it
-means binding the push at the receiver (the brain comparing `hop.subscriber` with
-its own path), which is a change to the `llm` cell and not to this gate; until
-then a policy that narrows `colony.mutate` is where it is held. Nor does the gate
+push it sees, the way any forward copies messages, and it stays a broker question
+like any other edge -- under the shipped default (`colony.mutate.default`, every
+identity at `/os/orgs`) the broker says yes. The brain it reaches applies none of
+the copies: since 0.47.0 an `llm` cell applies a push only when `hop.subscriber` is
+its own path ([#862](https://github.com/mmeyerlein/meclaw/issues/862)), and refuses
+each copy loudly, without the keys of a refusal, so nothing of it travels back to
+the registry either. Nor does the gate
 read inside a class: with `code.author` granted (off by default), an
 `add_templates` registers a class whose inner edges may write any context and
 `set_hop subscriber`, and this gate checks `add_edges` only -- in such a colony
@@ -453,7 +469,8 @@ the road is not held here.
 
 Pinned in `crates/meclaw-cells/tests/gh855_the_model_road_is_a_form_at_the_gate.rs`,
 which drives the renderer's own output into this gate and pins the forward above as
-a broker question.
+a broker question, and in `crates/meclaw-cells/tests/gh863_every_model_door_has_a_way_back.rs`
+for the way back.
 
 ## Where the policy lives
 
@@ -515,7 +532,8 @@ would be a colony with no way back.
 | `subscribe_source_not_affinity` | an `in_pack` edge whose `from` is not an affinity hive. Likewise a form refusal, likewise unasked |
 | `model_push_form` | an edge naming the registry's push lane `in_model` that is not the push form the builder renders (since 2.3.2). A form refusal, unasked |
 | `model_announcement_form` | an edge naming `model_subscribe`, `context.model_announcer`, `context.model_generation` or `context.model_announced` that is not the announcement form the builder renders, or one for a generation this manifest does not instantiate (since 2.3.2). A form refusal, unasked |
-| `model_road_key` | an edge whose `set_hop` writes `subscriber` or `subscribe`, or whose `delete_hop` removes one of those or `route` (since 2.3.2). A form refusal, unasked |
+| `model_refusal_form` | an edge naming the refusal lane `model_refused` or the registry's `in_refused` that is not the way back the builder renders: one composite under the container, to the container, on `model_refused` alone, no modifier (since 2.3.4). A form refusal, unasked |
+| `model_road_key` | an edge whose `set_hop` writes `subscriber` or `subscribe` (since 2.3.2), `refused_subscriber` or `refused_model` (since 2.3.4), or whose `delete_hop` removes one of those or `route`. A form refusal, unasked |
 | `model_route_computed` | an edge whose `set_hop.route` is computed and not closed over literals written in it (since 2.3.2). A form refusal, unasked |
 | `subscribe_not_permitted` | the broker refused this identity its own push lane — no enabled rule grants `affinity.subscribe` |
 

@@ -70,6 +70,10 @@
           "because": "a failed inference on the brain, normalised onto one lane by the exit edge itself -- this composite carries no errors cell. The parent MUST wire it -- unwired it dead-letters, loudly"
         },
         {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that the brain refused (GH #863): its error, with the brain's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of on `error` -- a refused push is no consultation's failure. The builder draws one edge from here to the registry's container, which carries it back to the registry's `in_refused` lane; without one the refusal dead-letters `no_route`, loudly"
+        },
+        {
           "route": "pack_ack",
           "because": "the receipt of one pack, unconditionally -- accepted and refused alike (GH #458). `hop.pack_owner` is the sender off the envelope, `hop.pack_slots` what was named, `hop.error_code` empty or `slot_unknown` / `pack_empty`, `hop.pack_unknown` the slots that were refused. It answers even on success because from the sending side a push that landed and a push that reached nothing are otherwise the same silence (`docs/development-rules.md` § 2c). Every key is present and empty rather than absent, so a CEL guard never fails on a missing hop key"
         },
@@ -254,10 +258,23 @@
         {
           "from": "./brain",
           "to": ".",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)",
           "modifier": {
             "set_hop": {
               "route": "'error'"
+            },
+            "delete_context": [
+              "col_phase"
+            ]
+          }
+        },
+        {
+          "from": "./brain",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
             },
             "delete_context": [
               "col_phase"

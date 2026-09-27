@@ -161,8 +161,15 @@ def _role(prompt: str, description: str) -> str:
 
 
 def scan(path: Path) -> dict:
-    """Everything the ten metrics need from one transcript."""
+    """Everything the metrics need from one transcript.
+
+    `calls` is the one field that keeps time and model per API call: Q11
+    asks how long a call came after the previous one of the same model, and
+    a sum per transcript cannot answer that.
+    """
     turns: dict[str, dict] = {}
+    started: dict[str, datetime] = {}
+    models: dict[str, str] = {}
     order: list[str] = []
     stamps: list[datetime] = []
     sections: list[datetime] = []
@@ -192,6 +199,12 @@ def scan(path: Path) -> dict:
             known = turns.get(key)
             if known is None:
                 order.append(key)
+            # A call starts with its FIRST streamed line; the later blocks of
+            # the same answer carry later stamps and the same usage.
+            if stamp and (key not in started or stamp < started[key]):
+                started[key] = stamp
+            if message.get("model") and key not in models:
+                models[key] = message["model"]
             if known is None or (usage.get("output_tokens") or 0) >= (
                     known.get("output_tokens") or 0):
                 turns[key] = usage
@@ -214,6 +227,24 @@ def scan(path: Path) -> dict:
         peak = max(peak, got)
         if (usage.get("cache_creation_input_tokens") or 0) > 100_000:
             big_creations += 1
+
+    calls = []
+    for key in order:
+        if key not in started:
+            continue
+        usage = turns[key]
+        split = usage.get("cache_creation") or {}
+        calls.append({
+            "t0": started[key],
+            "model": models.get(key, ""),
+            "inp": usage.get("input_tokens") or 0,
+            "cc": usage.get("cache_creation_input_tokens") or 0,
+            "cc5": split.get("ephemeral_5m_input_tokens") or 0,
+            "cc1h": split.get("ephemeral_1h_input_tokens") or 0,
+            "cr": usage.get("cache_read_input_tokens") or 0,
+            "out": usage.get("output_tokens") or 0,
+        })
+    calls.sort(key=lambda c: c["t0"])
 
     stamps.sort()
     wall = (stamps[-1] - stamps[0]).total_seconds() if len(stamps) > 1 else 0.0
@@ -247,6 +278,7 @@ def scan(path: Path) -> dict:
         "first": stamps[0] if stamps else None,
         "last": stamps[-1] if stamps else None,
         "sections": _sections(stamps, sections),
+        "calls": calls,
     }
 
 

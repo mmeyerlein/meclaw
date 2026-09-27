@@ -365,7 +365,8 @@ class Classify(unittest.TestCase):
         self.assertEqual(st["browser:display"].scope, "sheet")
         self.assertEqual(
             st["browser:display"].cmds,
-            [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"]])
+            [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"],
+             gp.CSP_LOCK_CMD])
 
         # So does a diff on the display template itself -- the sheet is what it measures.
         self.assertIn("browser:display",
@@ -382,14 +383,15 @@ class Classify(unittest.TestCase):
         # runs it too.
         both = [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"],
                 ["scripts/test-tier.sh", "filter", "binary(/710_the_colony_holds/)",
-                 "--run-ignored", "all"]]
+                 "--run-ignored", "all"],
+                gp.CSP_LOCK_CMD]
         for mode in ("integration", "release"):
             st_ir = by_name(gp.plan(["docs/x.md"], mode, repo=None))
             self.assertEqual(st_ir["browser:display"].scope, "sheet+colony", mode)
             self.assertEqual(st_ir["browser:display"].cmds, both, mode)
 
-        # A strand keeps the sheet half alone: six boots are a fifth of a whole pass.
-        self.assertNotIn("--run-ignored", str(st["browser:display"].cmds))
+        # A strand keeps the colony half out: six boots are a fifth of a whole pass.
+        self.assertNotIn("710_the_colony_holds", str(st["browser:display"].cmds))
 
         # ci never plans it: workshop/ does not travel.
         self.assertIn("browser:display", gp.CI_EXCLUDED)
@@ -401,6 +403,34 @@ class Classify(unittest.TestCase):
                         order.index("browser:display"))
         self.assertLess(order.index("browser:display"),
                         order.index("recall-harness"))
+
+    def test_the_csp_lock_rides_the_browser_station(self):
+        """GH #867: the CSP lock is a browser lock and runs where browser locks run.
+
+        It is `#[ignore]`d in the tree so the `tests` station -- which builds every
+        binary of a changed crate -- never drives a browser inside its own budget (the
+        audio drivers tripped there under parallel load, GH #763). So the station has to
+        name it, with `--run-ignored`, in every mode that plans the station at all: a
+        lock nothing runs is a lock nobody reads. And its driver is a
+        `workshop/tools/display-*` file, so a diff on the driver alone plans it.
+        """
+        lock = ("crates/meclaw-cells/tests/"
+                "gh867_a_display_runs_under_a_strict_csp_browser.rs")
+        driver = "workshop/tools/display-csp-browser.mjs"
+        self.assertIn(lock, gp.BROWSER_LOCKS)
+        self.assertIn("display_browser", gp.classify([lock]))
+        self.assertIn("display_browser", gp.classify([driver]))
+        self.assertEqual(gp.CSP_LOCK_CMD[-2:], ["--run-ignored", "all"])
+        self.assertIn("gh867_a_display_runs_under_a_strict_csp", gp.CSP_LOCK_CMD[2])
+        for diff, mode in (([driver], "strand"), ([lock], "strand"),
+                           (["templates/display/csp.json"], "strand"),
+                           (["docs/x.md"], "integration"), (["docs/x.md"], "release")):
+            with self.subTest(diff=diff, mode=mode):
+                st = by_name(gp.plan(diff, mode, repo=None))
+                self.assertIn(gp.CSP_LOCK_CMD, st["browser:display"].cmds)
+        # ci never plans the station: workshop/ does not travel.
+        self.assertNotIn("browser:display",
+                         {s.name for s in gp.plan([lock], "ci", repo=None)})
 
     def test_example_diff_selects_referencing_tests(self):
         repo = mini_repo(self)
@@ -1022,6 +1052,16 @@ class Classify(unittest.TestCase):
         itself -- the habit OR-P.retro.3 was written against."""
         for path in ("scripts/wave_retro.py", "scripts/retro/metrics.py",
                      "scripts/retro/thresholds.json"):
+            self.assertIn("gate_infra", gp.classify([path]), path)
+            names = {s.name for s in gp.plan([path], "strand", repo=None)}
+            self.assertIn("gate-selftest", names, path)
+
+    def test_the_strand_kit_plans_the_gate_selftest(self):
+        """`scripts/strand.sh` and `scripts/wave_receipt.py` carry their own
+        tests in `gate-selftest`, and a diff that touches only them planned
+        `shellcheck` and nothing else -- an under-selection, which
+        development-rules section 7 does not allow (V-kit section 1.6)."""
+        for path in ("scripts/strand.sh", "scripts/wave_receipt.py"):
             self.assertIn("gate_infra", gp.classify([path]), path)
             names = {s.name for s in gp.plan([path], "strand", repo=None)}
             self.assertIn("gate-selftest", names, path)

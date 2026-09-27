@@ -1,4 +1,4 @@
-# `display@2.7.0`
+# `display@2.8.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -128,6 +128,7 @@ A word the door does not know is refused: a `state` other than the two, a `seat`
 | `screens.<name>` | none | one output per entry, with its profile |
 | `default_screen` | none | mandatory, and it names an entry of `screens` |
 | `browser_mount` | `browser` | the browser cell a page is streamed from; the screen writes it on every page it draws |
+| `code_views` | `["colony-view"]` | the views whose own components may bring script, style and raw props; every other application's component is text in a frame |
 | `params.mount` of the cell `web` | `display` | the path prefix of every output |
 
 The judge writes four things and nothing else: `judged_relevance` and `judged_hidden` per
@@ -247,6 +248,32 @@ The front urgent rings. In the tile that is visual. The sound is the browser's, 
 urgent's arrival and then every two seconds for at most a minute, and a browser that forbids
 sound before the first gesture stays silent.
 
+## Behind a strict Content-Security-Policy
+
+The screen runs behind a proxy that sets `script-src 'self'` without `'unsafe-inline'`,
+`'unsafe-eval'` or `blob:`, provided the proxy lists the two hashes this template publishes.
+The page shell of the `web` cell carries no inline script since `web@2.2.0`: it boots from
+`@client/boot.js`, and the microphone's capture worklet is `@client/display-mic-worklet.js`,
+loaded by URL against the shell's `<base>`. What stays inline are the two hook scripts the
+screen writes into its own components, the scene hook and the microphone hook, because a
+hook has to be registered before the shell's socket reads `window.SurfaceHooks`. They are
+constants of this version, and `csp.json` beside this README carries their hashes together
+with the rest of the policy fragment the screen needs:
+
+- `script-src`: `'self'` and the two hashes.
+- `style-src`: `'self'` and `'unsafe-inline'`. The shell's connection style, the sheet and
+  a few `style` attributes the components write are inline, and a style hash would switch
+  `'unsafe-inline'` off for the attributes too.
+- `img-src`: `'self'` and `data:`, for the grain of the ground.
+- `connect-src`: `'self'`, the page's own socket.
+- `base-uri`: `'self'`. The shell's `<base>` is what makes relative links resolve from every
+  route of the page, so `'none'` would break it.
+
+The proxy adds what is its own business (`default-src`, `object-src 'none'`, `form-action`,
+`frame-ancestors`, a report endpoint). The cell sets no header of its own. The hashes change
+whenever a hook script changes, which is a new version of this template, so a proxy reads
+`csp.json` of the version it serves rather than copying the values once.
+
 ## Apps
 
 An app is a view. It sends exactly one window, one of `display-pane`, `display-panel`,
@@ -284,6 +311,34 @@ Which browser cell answers is `browser_mount`, a setting of this cell, shipped a
 The screen writes it onto every `display-browser` it draws, the way it writes the window a
 typed line belongs to, because the name is the operator's arrangement of the member's colony
 and an application cannot know it.
+
+The page's socket reaches exactly these two cells: the `web` cell inside carries
+`link_mounts: ["voice", "browser"]`, and a join to any other mount is refused. Whoever
+points `voice_mount` or `browser_mount` somewhere else moves the same name in
+`web/config.json` too; a test keeps the shipped pair equal.
+
+**What an app writes stays text.** Every prop an application sends is rendered as text
+in the place it stands, and a value that does not fit that place -- a command list in an
+event binding, a script URL in a `src`, a second declaration in a `style`, a word where an
+integer stands -- renders empty. Four props take markup, and the screen checks it on the way
+in: `head` and `rows` of `display-table` keep table cells, `figure` of `display-media` and
+`display-chart` keeps inline SVG shapes with `currentColor` or `none` as paint and `http(s)`
+links, `body` of `display-document` keeps basic text markup and `http(s)` links. Anything
+else is dropped and its text kept. The screen's own raw props, the font faces and the two
+hook scripts, are the screen's alone: an application that names one in its tree loses it.
+
+An application's own components are text in a frame: no `"html"` prop, no script, style,
+frame, embed, base, meta or link element, no event handler and no `javascript:` URL, and no
+`{{…}}` where the `web` cell's parser refuses one (inside a tag or attribute name, in a tag
+outside a quoted value, in a comment, before a URL's scheme, or in a text element's text
+where it would be a name if the element were no text element, as inside an svg), no
+`<plaintext>`, CDATA, script or style inside svg or math, SVG animation (`animate`, `set`,
+`animateMotion`, `animateTransform`), `srcdoc` or `<!--` in a script, and none that ends
+anywhere but between tags. A view that brings one is
+refused with `invalid_view`. The exception is a view listed in
+`code_views`, shipped as `colony-view`, whose hook and sheet travel in its components: it
+may bring its own script, style and raw props, and the rest of the rule holds for it too.
+An operator whose screen shows only text-and-catalogue applications sets `code_views: []`.
 
 ## The chat app and the channel `chat`
 
@@ -398,3 +453,10 @@ touch.
   the store holds the application rows and one small rest row, written only
   when it changes. A restart rebuilds the same screen out of the rows, the rest
   row and the tree, equal from the next stroke on.
+- `2.8.0` The screen runs under a strict Content-Security-Policy. `csp.json` publishes the
+  policy fragment it needs, with the hashes of its two hook scripts; the microphone's
+  worklet is a file of the `web` cell's client instead of an object URL, and the screen
+  pins the `web` whose shell carries no inline script (since `web@2.2.0`). And what an
+  application writes stays text: its raw props pass an allowlist, its own components carry
+  no script unless `code_views` lists the view, and the page's socket reaches only `voice`
+  and `browser`.

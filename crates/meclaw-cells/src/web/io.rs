@@ -184,6 +184,10 @@ pub struct WebIo {
     /// connection's, O-639-6) and `false` on the state no connection has
     /// reached yet, so a router built without a handoff believes nobody.
     pub peer_trusted: bool,
+    /// GH #869: the mounts a `voice:`/`page:` join may reach; empty is every
+    /// mount. Empty from [`WebIo::new`]; the factory sets the cell's own list
+    /// after it, like [`Self::trusted`].
+    pub link_mounts: Arc<Vec<String>>,
     /// The cell's own path — the identity the session token is minted for.
     pub cell_path: Arc<str>,
     /// The rendered pages, as last published by the handler half.
@@ -283,6 +287,7 @@ impl WebIo {
             identity_header,
             trusted: Arc::new(meclaw_colony::surfaces::loopback_only()),
             peer_trusted: false,
+            link_mounts: Arc::new(Vec::new()),
             cell_path: Arc::from(cell_path),
             pages,
             assets,
@@ -470,6 +475,26 @@ const VIEWPORT: &str = "width=device-width, initial-scale=1, viewport-fit=cover"
 /// the same file from `/<mount>/` and from `/<mount>/a/b` alike. Without it a
 /// page one segment deep would ask for `/<mount>/a/vision.css`, and an asset
 /// row would be unreachable from exactly the pages that are not the root.
+///
+/// # Why the shell carries no inline script (GH #867)
+///
+/// The shell used to boot LiveView from an inline `<script>` whose text held
+/// the socket URL -- proxy prefix plus mount. A proxy that sets a
+/// Content-Security-Policy of `script-src 'self'` can only admit inline script
+/// by its hash, and that hash was different on every deployment path: a proxy
+/// in front of many colonies would have needed one per colony, and a new
+/// colony would have been a proxy reload. So the socket URL is a `<meta>`
+/// (`meclaw-live`, data, not script) and the boot is `@client/boot.js`, served
+/// from the same origin as the bundles. The shell itself now runs under
+/// `script-src 'self'`; a page that brings inline script of its own needs
+/// that script's hash listed (`templates/display/csp.json` publishes the
+/// display's).
+///
+/// `boot.js` stands after the body and without `defer`: a page's hook scripts
+/// sit in the body and register on `window.SurfaceHooks` before the socket
+/// constructor reads it, exactly as the inline block did. The `<style>` stays:
+/// `style-src` needs `'unsafe-inline'` for the display's own attributes
+/// anyway, and a style block cannot run anything.
 pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> String {
     let container = session::container_id(cell_path);
     let token = session::mint(cell_path);
@@ -480,6 +505,7 @@ pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> Str
          <meta name=\"viewport\" content=\"{VIEWPORT}\">\n\
          <base href=\"{base}/\">\n\
          <meta name=\"csrf-token\" content=\"{token}\">\n\
+         <meta name=\"meclaw-live\" content=\"{base}/live\">\n\
          <title>{title}</title>\n\
          <style>{states}</style>\n\
          </head>\n<body>\n\
@@ -488,17 +514,7 @@ pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> Str
          </div>\n\
          <script src=\"{base}/@client/phoenix.min.js\"></script>\n\
          <script src=\"{base}/@client/phoenix_live_view.min.js\"></script>\n\
-         <script>\n\
-         (function () {{\n\
-         var csrf = document.querySelector(\"meta[name=csrf-token]\").content;\n\
-         var socket = new LiveView.LiveSocket(\"{base}/live\", Phoenix.Socket, {{\n\
-         params: {{_csrf_token: csrf}},\n\
-         hooks: window.SurfaceHooks || {{}}\n\
-         }});\n\
-         socket.connect();\n\
-         window.SurfaceSocket = socket;\n\
-         }})();\n\
-         </script>\n\
+         <script src=\"{base}/@client/boot.js\"></script>\n\
          </body>\n</html>\n",
         token = esc(&token),
         title = esc(title),
@@ -517,13 +533,27 @@ pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> Str
     )
 }
 
-/// `GET /@client/<file>` — the vendored LiveView bundles, compiled in.
+/// `GET /@client/<file>` — the vendored LiveView bundles and the two client
+/// files of our own (`boot.js`, `display-mic-worklet.js`), compiled in.
 ///
 /// A closed list rather than a lookup (`meclaw_surface::bundle`): the file name
 /// comes from a URL, and a list makes traversal impossible rather than guarded.
+///
+/// `no-cache`, like a page: since GH #867 the boot and the capture worklet are
+/// files here instead of text inside the page, and a heuristically cached copy
+/// would keep running a client the binary has long replaced -- the reason
+/// [`serve_path`] gives for the page itself. The response has no validators,
+/// so in practice it means "fetch"; the files are small.
 async fn get_client(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
     match bundle(&file) {
-        Some((ctype, body)) => ([(header::CONTENT_TYPE, ctype)], body).into_response(),
+        Some((ctype, body)) => (
+            [
+                (header::CONTENT_TYPE, ctype),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            body,
+        )
+            .into_response(),
         None => miss(),
     }
 }
@@ -588,11 +618,12 @@ fn serve_path(io: &WebIo, headers: &HeaderMap, path: &str) -> Response {
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 // A page is a live render and must never be served from a
-                // heuristic browser cache: it carries the client script inline,
-                // and a cached copy keeps running a client the cell has long
-                // replaced — seen as fixed bugs that will not die in one
-                // person's tab. `no-cache` still allows conditional reuse; the
-                // response has no validators, so in practice it means "fetch".
+                // heuristic browser cache: it names the client files and
+                // carries a display's hook scripts inline, and a cached copy
+                // keeps running a client the cell has long replaced — seen as
+                // fixed bugs that will not die in one person's tab. `no-cache`
+                // still allows conditional reuse; the response has no
+                // validators, so in practice it means "fetch".
                 (header::CACHE_CONTROL, "no-cache"),
             ],
             shell(
@@ -1345,6 +1376,40 @@ mod tests {
             !html.contains("\"/live\"") && !html.contains("\"/@client/"),
             "nothing may be written from the origin root any more; shell was:\n{html}"
         );
+        assert!(
+            html.contains("<meta name=\"meclaw-live\" content=\"/egon/screen/live\">")
+                && html.contains("src=\"/egon/screen/@client/boot.js\""),
+            "the boot reads the socket URL from a meta the base wrote; shell was:\n{html}"
+        );
+    }
+
+    /// GH #867: the shell runs under `script-src 'self'`. Every `<script>` it
+    /// writes has a `src`, so no proxy has to list a hash for it -- the inline
+    /// boot it replaced had the base in its text and a hash per deployment path.
+    #[test]
+    fn the_shell_carries_no_inline_script() {
+        let html = shell("/c/abc/screen", "/web", "Home", "<h1>hello</h1>");
+        let scripts: Vec<&str> = html.split("<script").skip(1).collect();
+        assert_eq!(
+            scripts.len(),
+            3,
+            "two bundles and the boot; shell was:\n{html}"
+        );
+        for tag in scripts {
+            let open = tag.split('>').next().unwrap_or_default();
+            assert!(
+                open.contains(" src=\""),
+                "a script without src is inline script; shell was:\n{html}"
+            );
+        }
+        assert!(
+            !html.contains("LiveSocket"),
+            "the boot is a file, not text in the page; shell was:\n{html}"
+        );
+        // The boot comes after both bundles: it names `LiveView` and `Phoenix`.
+        let at = |needle: &str| html.find(needle).expect(needle);
+        assert!(at("@client/phoenix_live_view.min.js") < at("@client/boot.js"));
+        assert!(at("@client/phoenix.min.js") < at("@client/boot.js"));
     }
 
     /// The identity header is read only when an operator named one (O-P-4).

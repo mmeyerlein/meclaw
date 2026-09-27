@@ -1,4 +1,4 @@
-# `affinity@3.6.0`
+# `affinity@3.6.1`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -106,8 +106,8 @@ only affinity is quoted. Memory is allowed to be wrong; affinity has to have dec
   the first object that carries a `text` key, and concatenates exactly those `text` values
   into the prompt. The pack had none anywhere, so it produced no leaf at all -- nothing
   persisted, nothing rendered, and the subscriber's model answered from whatever else it
-  had while the audit table said `ok`. Each slot therefore ships its structure and, at the
-  top of the same object, a `text` rendering of it: `path: value` lines under a heading
+  had while the audit table said `ok`. Each slot on `system` therefore ships its structure
+  and, at the top of the same object, a `text` rendering of it: `path: value` lines under a heading
   that names the subject, because a leaf reaches the prompt on its own and has to say what
   it is about. The `text` sits at the top so the leaf walk stops there and the four slots
   stay exactly four -- which is also what keeps a subscriber that pins `system_writable` to
@@ -123,10 +123,17 @@ only affinity is quoted. Memory is allowed to be wrong; affinity has to have dec
 - **And the same pack on the tool lane** (GH #242). A sealed agent hive delivers a tool
   answer as `messages[]` alone -- the `system` slot does not survive the boundary -- so an
   answer that travelled only there reached the asking model as a receipt line with nothing
-  behind it. The `tool_result` therefore carries the receipt line and, below it, the same
-  pack as JSON -- the very object the push lane hands its subscriber, renderings included.
-  One disclosure decision, one document, two lanes: which one a caller reads is a fact
-  about its wiring, not about what it is allowed to see.
+  behind it. The `tool_result` therefore carries the receipt line and, below it, the pack
+  as JSON -- every slot's structure, key for key, without the `text` rendering the push
+  lane needs, and with non-ASCII characters as they are (GH #864). A model on the tool lane
+  reads the JSON itself; with the rendering beside it every released value stood there
+  twice, and a brief with a 1,600-character channel persona grew from 2,174 to 4,309
+  characters -- past the collector's `tool_chars` of 4,000, which cut the `peer` slot's
+  `trust_rank` off before the model saw it. One disclosure decision, two lanes, each in the
+  shape its reader needs -- the push lane with the rendering, the tool lane with the structure
+  alone: which one a caller reads is a fact about its wiring, not about what it is allowed to
+  see. `mx.brain` families keep their `{"text": ...}` leaves on both lanes, because
+  those texts are the content and not a rendering of it.
 - **The answer names the call it answers** (GH #241). A `code` cell has no `cell.db`, so
   the id of the tool call rides in the lane's carry through every store round trip. Before
   that it was read from a context key nothing wrote, and every brief served after a store
@@ -161,7 +168,7 @@ round trip *is* the cell's memory. That is why this hive has ten internal edges 
 | port | direction | lane |
 |---|---|---|
 | `in_brief` | in -> the **hive path** | the request as a `tool_call` turn (`{subject, channel, slots}`), plus TWO facts a body may never carry: `hop.audience` (who asks) and `hop.audience_set` (the round, a JSON array of participant ids). The door edge promotes both to `context.asker` and `context.audience_set` -- a caller that promotes those keys on its own edge is served the same way, and **wins** where both exist (see § Identity comes from the edge). `participants` is **retired, not aliased** ([#330](https://github.com/mmeyerlein/meclaw/issues/330); see the retraction note under the audience-SET rule) -- a request that spells the round that way declared no round at all. **Both facts are required** -- no asker is `no_audience`, no round is `no_round`, and either is a denial with an `audit` row and no `system` slot at all |
-| `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the `system.*` slots the request asked for **and** the same pack as JSON in the `tool_result`, under the id of the call being answered, plus the body slot `who {ref, name, identity, known}` -- on the served brief and on every refusal after the subject was read whose subject is in the round (§ Who is speaking, since 3.6.0) |
+| `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the `system.*` slots the request asked for **and** the same pack as JSON in the `tool_result` (its structure without the per-slot `text` rendering, since 3.6.1, #864), under the id of the call being answered, plus the body slot `who {ref, name, identity, known}` -- on the served brief and on every refusal after the subject was read whose subject is in the round (§ Who is speaking, since 3.6.0) |
 | `in_propose` | in -> the **hive path** | the proposal as a `tool_call` turn (`{op, ...}`); the edge **MUST** promote the writer to `context.actor` and, for `subscribe`, the subscribing cell's address to `context.subscriber` |
 | `out_ack` | `./gate` -> the proposer | `hop.route == 'ack'`, `accepted` or `rejected` plus a `reason_code` |
 | `out_push` | `./brief` -> each subscribed `llm` cell | `hop.route == 'answer' && hop.subscriber == '<cell path>'`: the `system.*` slots the subscription asked for and **no** turn beside them, so the update costs a write and not an inference (GH #263; the `llm` cell returns without calling when a body carries no `messages[]`) |
@@ -638,7 +645,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.6.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.6.1` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -952,7 +959,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.6.0`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.6.1`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

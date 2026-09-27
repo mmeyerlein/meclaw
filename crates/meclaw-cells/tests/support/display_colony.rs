@@ -42,6 +42,7 @@ use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::timer::TimerCellFactory;
+use meclaw_cells::voice::VoiceCellFactory;
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::api_dto::{MessageLogDto, MessageLogFilter};
 use meclaw_colony::{
@@ -599,6 +600,21 @@ fn canned(text: &str) -> MockResponse {
 /// run beside each other -- and beside a gate, and beside the live colonies of this host --
 /// without a port ever being a reason for a red run.
 pub async fn boot(opts: Boot) -> Colony {
+    boot_inner(opts, false).await
+}
+
+/// [`boot`], plus a `voice` cell with the `echo` provider on the mount the screen's
+/// microphone joins (`voice`, the shipped `voice_mount`).
+///
+/// Its own entry point rather than a field of [`Boot`]: several locks spell `Boot` out
+/// field by field, and only a proof that holds the mark in a real browser needs something
+/// behind it (GH #867). Echo, because it needs no credential and sends every frame straight
+/// back -- the page then has audio to count on both sides of its own socket.
+pub async fn boot_with_voice_echo(opts: Boot) -> Colony {
+    boot_inner(opts, true).await
+}
+
+async fn boot_inner(opts: Boot, voice_echo: bool) -> Colony {
     let (judge_addr, judge_join, judge_asks) =
         start_mock_server_capturing(vec![canned(&opts.verdict.to_string())]).await;
 
@@ -610,14 +626,23 @@ pub async fn boot(opts: Boot) -> Colony {
     // `/alex` dies at the root onto this module's channel, marked on the way.
     let mut mark = meclaw_core::serde_json::Map::new();
     mark.insert(MARK.to_string(), json!("'1'"));
+    let mut edges = vec![
+        json!({"from": "./world", "to": "./alex"}),
+        json!({"from": "./alex", "to": ".", "modifier": {"set_context": mark}}),
+    ];
+    if voice_echo {
+        // A cell no edge reaches is never spawned, and a voice cell that never spawns
+        // registers no mount (measured: `no cell registered the mount "voice"`). The two
+        // edges `gh643_*` draws for its voice cell: a lane in, and the way out to the root.
+        edges.push(json!({"from": ".", "to": "./voice",
+                          "condition": "has(hop.route) && hop.route == 'in_speak'"}));
+        edges.push(json!({"from": "./voice", "to": "."}));
+    }
     write_json(
         &root.join("main/config.json"),
         &json!({
             "cell": {"type": "hive"},
-            "params": {"graph": {"edges": [
-                {"from": "./world", "to": "./alex"},
-                {"from": "./alex", "to": ".", "modifier": {"set_context": mark}}
-            ]}}
+            "params": {"graph": {"edges": edges}}
         }),
     );
     write_json(
@@ -665,6 +690,8 @@ pub async fn boot(opts: Boot) -> Colony {
                 // dead letter, the waiting lock ran 30 s into nothing. The stand-in gets
                 // about a dozen messages per run, so a fresh interpreter each time costs
                 // nothing measurable here, and what is under test is the SCREEN.
+                // Measured 27.09. with retries off: 0 lost writes in 180 stage rebuilds
+                // (120 without browsers, 60 between browser lines), GH #714 closed.
                 "runner_mode": "cold",
                 "external_timeout_ms": 20000,
                 "sandbox": {"trust": "restricted", "network": "deny",
@@ -702,7 +729,7 @@ pub async fn boot(opts: Boot) -> Colony {
         &repo("templates/display"),
         &root.join("main/alex/channels/display"),
     );
-    // The display refs `web@2.1.0`, and a ref resolves against the templates table, which
+    // The display refs `web@2.2.0`, and a ref resolves against the templates table, which
     // is empty until somebody fills it (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     let screen = root.join("main/alex/channels/display");
@@ -724,6 +751,46 @@ pub async fn boot(opts: Boot) -> Colony {
         v["params"]["base_url"] = json!(format!("http://{judge_addr}"));
     });
 
+    if voice_echo {
+        // Outside `/alex`, with only the two edges drawn above (a lane in, the way out to
+        // the root) so the cell spawns: the echo provider says nothing on the topology
+        // side (no partial, no turn), and a microphone proof only needs the mount.
+        write_json(
+            &root.join("main/voice/config.json"),
+            &json!({
+                "cell": {"type": "voice", "timeout": -1},
+                "params": {"mount": "voice", "release_grace_ms": 0,
+                           "stt": {"provider": "echo"}},
+                // The contract the shipped `voice` template declares, minus what a
+                // fixture has no use for (the same cut `gh643_*` makes).
+                "contract": {
+                    "version": "1.0.0", "settings": {},
+                    "ingress": {"context": ["session_id"]},
+                    "emits": {
+                        "body": {"messages": {"type": "array", "required": true}},
+                        "hop": {
+                            "route": {"type": "string", "required": false},
+                            "session_id": {"type": "string", "required": false},
+                            "call_id": {"type": "string", "required": false},
+                            "turn_id": {"type": "string", "required": false},
+                            "platform": {"type": "string", "required": false},
+                            "mode": {"type": "string", "required": false},
+                            "eager": {"type": "boolean", "required": false},
+                            "error_code": {"type": "string", "required": false}
+                        }
+                    },
+                    "consumes": {
+                        "body": {"messages": {"type": "array", "required": true}},
+                        "context": {
+                            "call_id": {"type": "string", "required": false},
+                            "session_id": {"type": "string", "required": false}
+                        }
+                    }
+                }
+            }),
+        );
+    }
+
     let surfaces = Arc::new(SurfaceRegistry::new());
     let factories: Vec<(String, Arc<dyn CellFactory>)> = vec![
         (
@@ -736,6 +803,10 @@ pub async fn boot(opts: Boot) -> Colony {
         (
             "web".to_string(),
             Arc::new(WebCellFactory::new(Arc::clone(&surfaces))),
+        ),
+        (
+            "voice".to_string(),
+            Arc::new(VoiceCellFactory::new(Arc::clone(&surfaces))),
         ),
     ];
     let (h, egress) = ColonyHandle::new_with_marked_egress_at(&td, factories.clone(), MARK);
@@ -760,6 +831,9 @@ pub async fn boot(opts: Boot) -> Colony {
         .expect("the colony boots");
 
     wait_for_mount(&surfaces, MOUNT).await;
+    if voice_echo {
+        wait_for_mount(&surfaces, "voice").await;
+    }
     let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
     let (api_port, api) = api_listener(h.inbox_tx.clone()).await;
     Colony {
@@ -798,12 +872,20 @@ pub fn window(props: Value) -> Value {
 }
 
 impl Colony {
-    /// Put one window up, owned by `owner`.
-    pub async fn write_view(&self, owner: &str, view_id: &str, props: Value) {
+    /// Put one window up, owned by `owner`. The trace id of the write comes back.
+    pub async fn write_view(&self, owner: &str, view_id: &str, props: Value) -> String {
         self.write_view_ttl(owner, view_id, props, 0).await
     }
 
-    pub async fn write_view_ttl(&self, owner: &str, view_id: &str, props: Value, ttl_ms: i64) {
+    /// `write_view` with a `ttl_ms` on the write (§ 4.34). The trace id of the write comes
+    /// back, so a wait that runs dry can name the hop where the write stopped (GH #714).
+    pub async fn write_view_ttl(
+        &self,
+        owner: &str,
+        view_id: &str,
+        props: Value,
+        ttl_ms: i64,
+    ) -> String {
         // `pane_id` is the DOM id of the window, and the dock's `data-for` is that id
         // (compose.py, TILE_TEMPLATE). A window written without one has no id in the
         // DOM at all, and a browser proof that follows a tile to its window finds
@@ -813,15 +895,16 @@ impl Colony {
             map.entry("pane_id")
                 .or_insert_with(|| json!(format!("pane-{view_id}")));
         }
-        self.h
-            .send(to_screen(
-                "in_view",
-                owner,
-                json!({"view_id": view_id, "region": "main", "kind": "component",
-                       "content": window(props), "components": [], "ttl_ms": ttl_ms,
-                       "messages": []}),
-            ))
-            .await;
+        let msg = to_screen(
+            "in_view",
+            owner,
+            json!({"view_id": view_id, "region": "main", "kind": "component",
+                   "content": window(props), "components": [], "ttl_ms": ttl_ms,
+                   "messages": []}),
+        );
+        let trace = msg.trace_id.to_string();
+        self.h.send(msg).await;
+        trace
     }
 
     /// Put one window up and WAIT until the pass has drawn it; the folded tree comes back.
@@ -836,16 +919,16 @@ impl Colony {
     /// `put` with a `ttl_ms` on the write (§ 4.34).
     pub async fn put_ttl(&self, owner: &str, view_id: &str, props: Value, ttl_ms: i64) -> Value {
         let before = self.writes_of(owner, view_id).await;
-        self.write_view_ttl(owner, view_id, props, ttl_ms).await;
-        self.drawn_after(owner, view_id, before).await
+        let trace = self.write_view_ttl(owner, view_id, props, ttl_ms).await;
+        self.drawn_after(owner, view_id, before, &trace).await
     }
 
     /// Tell the app stand-in to act, and WAIT until the pass has drawn the window
     /// `view_id`. An act may write more than one view (§ 9.1); this waits for one of them.
     pub async fn app_put(&self, cmd: Value, view_id: &str) -> Value {
         let before = self.writes_of(PROBE, view_id).await;
-        self.app(cmd).await;
-        self.drawn_after(PROBE, view_id, before).await
+        let trace = self.app(cmd).await;
+        self.drawn_after(PROBE, view_id, before, &trace).await
     }
 
     /// How many store bundles put a row of `(owner, view_id)` into the table: an `insert`
@@ -866,21 +949,111 @@ impl Colony {
 
     /// Wait until a write of `(owner, view_id)` beyond the first `before` reached the store
     /// and its window stands in the tree, then until the colony is quiet.
-    async fn drawn_after(&self, owner: &str, view_id: &str, before: usize) -> Value {
+    async fn drawn_after(&self, owner: &str, view_id: &str, before: usize, trace: &str) -> Value {
+        match self
+            .try_drawn_after(owner, view_id, before, trace, MARKER)
+            .await
+        {
+            Ok(tree) => tree,
+            Err(why) => panic!("{why}"),
+        }
+    }
+
+    /// `drawn_after` that hands a lost write back as text instead of panicking.
+    ///
+    /// Each of the two waits -- the write reaching the store, then its window standing in
+    /// the tree -- gets `window`, as `drawn_after` always gave each of them `MARKER`; the
+    /// path that succeeds does exactly what it did before.
+    ///
+    /// **Why the text names a hop.** GH #714: in 1 of 5 rebuilds (1 of 12 once the stand-in
+    /// ran cold) one write of a round never arrived -- no dead letter, every other write of
+    /// the round there -- and the wait said only "never reached the store". The owner asked
+    /// on 17.09. for the stand-in's own message log of that rebuild. So the failure reads the
+    /// write's trace back out of the colony's log (every hop of it, `from_path -> to_path`
+    /// with its `hop.route`, `ttl` and `hop.error_code`) and says which receiver the last
+    /// hop reached, plus the store count and whether the window stands in the tree.
+    pub async fn try_drawn_after(
+        &self,
+        owner: &str,
+        view_id: &str,
+        before: usize,
+        trace: &str,
+        window: Duration,
+    ) -> Result<Value, String> {
         let oid = self.oid(owner, view_id);
-        let deadline = Instant::now() + MARKER;
+        let deadline = Instant::now() + window;
         while self.writes_of(owner, view_id).await <= before {
             if Instant::now() >= deadline {
-                let dlq = self.h.drain_dead_letters().await;
-                panic!("the write of {oid} never reached the store within 30s; DLQ {dlq:?}");
+                let why = format!(
+                    "the write of {oid} never reached the store within {}s",
+                    window.as_secs()
+                );
+                return Err(self.lost_write(&why, owner, view_id, trace).await);
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         self.settle(Duration::from_millis(300)).await;
-        self.wait_tree(&format!("the window {oid} stands on the screen"), |t| {
-            t.get(&oid).is_some()
-        })
-        .await
+        // `wait_tree`, spelled out: its failure panics, and this one names the hop.
+        let deadline = Instant::now() + window;
+        loop {
+            let tree = self.tree().await;
+            if tree.get(&oid).is_some() {
+                return Ok(tree);
+            }
+            if Instant::now() >= deadline {
+                let why = format!(
+                    "the window {oid} stands on the screen did not hold within {}s",
+                    window.as_secs()
+                );
+                return Err(self.lost_write(&why, owner, view_id, trace).await);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// The account of a lost write (GH #714): DLQ, the hop chain of its trace, the last hop,
+    /// what the store took and whether the window stands in the tree.
+    async fn lost_write(&self, why: &str, owner: &str, view_id: &str, trace: &str) -> String {
+        let oid = self.oid(owner, view_id);
+        let dlq = self.h.drain_dead_letters().await;
+        let rows = self.trace(trace).await;
+        let chain: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                let hop = hop_of(r);
+                format!(
+                    "{} -> {} route={} ttl={} error_code={}",
+                    r.from_path, r.to_path, hop["route"], r.ttl, hop["error_code"]
+                )
+            })
+            .collect();
+        let last = rows.last().map_or_else(
+            || format!("none (the trace {trace} has no row in the log)"),
+            |r| r.to_path.clone(),
+        );
+        let writes = self.writes_of(owner, view_id).await;
+        let in_tree = self.tree().await.get(&oid).is_some();
+        format!(
+            "{why}; last hop: {last}; store took {writes} write(s) of {oid}; \
+             in the tree: {in_tree}; hops of trace {trace}: {chain:#?}; DLQ {dlq:?}"
+        )
+    }
+
+    /// Put one window up whose content is a whole component tree, and WAIT until the pass
+    /// has drawn it. `put` writes a bare `display-pane` with props; a proof that needs
+    /// children in the window (a list, a table, a line of text) names the tree itself.
+    pub async fn put_content(&self, owner: &str, view_id: &str, content: Value) -> Value {
+        let before = self.writes_of(owner, view_id).await;
+        let msg = to_screen(
+            "in_view",
+            owner,
+            json!({"view_id": view_id, "region": "main", "kind": "component",
+                   "content": content, "components": [], "ttl_ms": 0,
+                   "messages": []}),
+        );
+        let trace = msg.trace_id.to_string();
+        self.h.send(msg).await;
+        self.drawn_after(owner, view_id, before, &trace).await
     }
 
     /// Take one window down again (§ 4.34).
@@ -895,19 +1068,19 @@ impl Colony {
     }
 
     /// Tell the app stand-in to act. The command travels as an ordinary text turn, so the
-    /// probe is a cell of the colony and not a back door of the test.
-    pub async fn app(&self, cmd: Value) {
-        self.h
-            .send(
-                MessageBuilder::new(Path::new(PROBE))
-                    .reply_to(Path::new(PROBE))
-                    .body(Body::Inline(json!({"messages": [
-                        {"origin": "user", "type": "text", "text": cmd.to_string()}
-                    ]})))
-                    .ttl(24)
-                    .build(),
-            )
-            .await;
+    /// probe is a cell of the colony and not a back door of the test. The trace id of the
+    /// command comes back: every hop the act causes carries it (GH #714).
+    pub async fn app(&self, cmd: Value) -> String {
+        let msg = MessageBuilder::new(Path::new(PROBE))
+            .reply_to(Path::new(PROBE))
+            .body(Body::Inline(json!({"messages": [
+                {"origin": "user", "type": "text", "text": cmd.to_string()}
+            ]})))
+            .ttl(24)
+            .build();
+        let trace = msg.trace_id.to_string();
+        self.h.send(msg).await;
+        trace
     }
 
     /// The window id of a view in the screen state (§ 2 Id).
@@ -952,6 +1125,32 @@ impl Colony {
         );
         let mut rows = reply.entries;
         rows.reverse(); // the reply is newest first; a lock reads a colony forwards
+        rows
+    }
+
+    /// Every row of one trace, oldest first (`MessageLogFilter.trace_id`, indexed): the hops
+    /// one write caused, whoever handled them.
+    pub async fn trace(&self, trace_id: &str) -> Vec<MessageLogDto> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.h
+            .inbox_tx
+            .send(ColonyMsg::ReadMessages {
+                filter: MessageLogFilter {
+                    trace_id: Some(trace_id.to_string()),
+                    limit: 1000,
+                    scan_budget: 50_000,
+                    ..Default::default()
+                },
+                ack: ack_tx,
+            })
+            .await
+            .expect("inbox alive");
+        let reply = tokio::time::timeout(MARKER, ack_rx)
+            .await
+            .expect("the log answers within the failure-marker window")
+            .expect("ack delivered");
+        let mut rows = reply.entries;
+        rows.reverse(); // newest first on the wire; a hop chain reads forwards
         rows
     }
 
@@ -1242,21 +1441,32 @@ impl Colony {
     /// A pass is several hops, and a lock that reads after the first of them reads half a
     /// pass. `quiet` is a settle window and never a semantic discriminator -- what the lock
     /// then asserts is the same whether the colony took 5 ms or 500.
+    ///
+    /// **The newest row, not the count.** `log` reads a window of 1000 rows, so a count
+    /// SATURATES: from then on two windows compare equal whatever the colony did in
+    /// between, and `settle` returned after the first one. Measured 27.09. (GH #714):
+    /// the stage rebuild of `710_the_colony_holds_in_both_engines_browser` stands at
+    /// 1000 rows after round 6 in all 30 runs. A row id (uuid7) only ever moves forward.
     pub async fn settle(&self, quiet: Duration) {
         let deadline = Instant::now() + MARKER;
-        let mut seen = self.log_len().await;
+        let mut seen = self.newest_row().await;
         loop {
             tokio::time::sleep(quiet).await;
-            let now = self.log_len().await;
+            let now = self.newest_row().await;
             if now == seen {
                 return;
             }
             seen = now;
             assert!(
                 Instant::now() < deadline,
-                "the colony never went quiet ({seen} rows and still counting)"
+                "the colony never went quiet (newest row {seen:?} and still moving)"
             );
         }
+    }
+
+    /// The id of the newest row of the log, `None` on an empty one.
+    async fn newest_row(&self) -> Option<String> {
+        self.log(None).await.last().map(|r| r.id.clone())
     }
 }
 

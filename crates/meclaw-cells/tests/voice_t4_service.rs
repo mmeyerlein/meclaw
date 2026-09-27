@@ -612,6 +612,61 @@ async fn info_page_and_hello_declare_the_same_wiring() {
         meclaw_cells::voice::testpage::html(),
         "the route serves the page verbatim"
     );
+    // GH #867: the page's three files beside it, each with its own type --
+    // the page carries none of them inline any more.
+    for (file, ctype, body) in [
+        (
+            "test.js",
+            "text/javascript",
+            meclaw_cells::voice::testpage::script(),
+        ),
+        (
+            "test.css",
+            "text/css",
+            meclaw_cells::voice::testpage::style(),
+        ),
+        (
+            "worklet.js",
+            "text/javascript",
+            meclaw_cells::voice::testpage::worklet(),
+        ),
+    ] {
+        let res = reqwest::get(format!("{}/{file}", live.base))
+            .await
+            .expect("GET a page file");
+        assert_eq!(res.status(), 200, "{file}");
+        assert!(
+            res.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .starts_with(ctype),
+            "{file} is {ctype}"
+        );
+        assert_eq!(res.text().await.expect("body"), body, "{file} verbatim");
+    }
+    // And the mount without its slash is the page's directory, relatively:
+    // the page links its files relatively, so served at `/voice` it would ask
+    // for `/test.js`, outside the mount.
+    let no_follow = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a client");
+    let res = no_follow
+        .get(&live.base)
+        .send()
+        .await
+        .expect("GET the bare mount");
+    assert_eq!(
+        res.status(),
+        308,
+        "the bare mount redirects, keeping the method"
+    );
+    assert_eq!(
+        res.headers().get("location").and_then(|v| v.to_str().ok()),
+        Some("voice/"),
+        "relative, so it holds under any prefix a proxy stripped"
+    );
 
     // The session identity and the mode come from the query string.
     let mut ws = connect(&live.ws_base, "?session=abc&mode=hold").await;

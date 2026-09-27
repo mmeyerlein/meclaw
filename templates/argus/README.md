@@ -1,4 +1,4 @@
-# `argus@1.2.0`
+# `argus@1.2.1`
 
 The colony's watcher and its control loop, as a hive of seven cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -242,6 +242,7 @@ and it is named for what a caller asks for, never for the cell it lands on.
 |---|---|---|
 | `in_cycle` | in → the hive | run a cycle now (a cost alert, a DLQ spike). The timer is the ordinary trigger; this is the extra one |
 | `in_model` | in → the hive | a model package for `./judge`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 1.2.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
+| `model_refused` | out → the hive | a model push `./judge` refused: its error, with `hop.refused_subscriber` and `hop.refused_model`, instead of as a decision at `./mutator`. `meclaw-os` carries it back to its registry. Since 1.2.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `mutate` | out → the hive | a params update — body `{system:{}, params:{…}}`, `hop.target` naming the cell it is for. A parent draws one edge per cell the loop may reach |
 | `alert` | out → the hive | a watched symptom crossed zero, counted deterministically and with no model asked: the metric, the goal that watched for it, the count and the window |
 | `error` | out → the hive | a step of the cycle could not complete — including the one state this loop cannot leave on its own: an unhealthy colony whose applied change carries no revert plan |
@@ -307,7 +308,28 @@ registry resolves and falls back to `ARGUS_JUDGE_MODEL`. A push carries the `bas
 catalogue row, and the cell takes no other endpoint than its start one (it has no
 `base_url_allow`): whoever sets `ARGUS_JUDGE_BASE_URL` to an endpoint of their own pins the
 judge (`subscribe` with `pinned: 1`) or targets it at a catalogue row of that endpoint, or the
-push is refused at the cell -- and a refused push is not reported back to the registry today.
+push is refused at the cell. Since 1.2.1 the refusal goes back to the registry, and `show` names
+it beside the model it refused (below).
+
+**A refused push goes back** (since 1.2.1, [#863](https://github.com/mmeyerlein/meclaw/issues/863)). A push `./judge` refuses -- a `base_url` outside its
+`base_url_allow`, a timeout its backstop does not clear -- is no decision, and before 1.2.1 the judge's one out-edge was unconditional, so it reached `./mutator` as one. The refusal of a push
+addressed to the cell itself carries two header keys of its own, `hop.refused_subscriber` (the
+cell's path) and `hop.refused_model` (the model the push named); every other out-edge of the
+cell excludes it, and one way back per cell leaves the hive with it as `model_refused`:
+
+```json
+{"from": "./judge", "to": ".", "condition": "has(hop.refused_subscriber)",
+ "modifier": {"set_hop": {"route": "'model_refused'"}}}
+```
+
+Each way back also clears the interior context keys every exit of this hive clears.
+
+In `meclaw-os` the shell mirrors its push edge: `./argus -> ./llm-registry` on `model_refused`, with
+the same address test on `hop.refused_subscriber`, restamped to the registry's `in_refused`
+lane, where `show` names the refusal until the next push or a `reset`
+(`templates/llm-registry/README.md` § A refused push). A parent without that edge dead-letters
+it `no_route`, loudly. A push addressed to another cell is refused as `invalid_input` without the
+two keys and still reaches the verdict edge -- the forward that caused it is the defect.
 
 ## Relationship to `llm-registry`
 
@@ -333,7 +355,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.2.0",
+ "nodes": [{"name": "argus", "template": "argus@1.2.1",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},
@@ -412,7 +434,10 @@ know what it spent cannot measure itself while the network is what broke.
   is the answer. A loop that could override the gates it runs under would not be
   governed; it would merely be polite.
 - **And the loop never learns whether the change landed.** A params update is
-  fire-and-forget into a cell that answers nothing, exactly as in `llm-registry`.
+  fire-and-forget into a cell that answers nothing. `llm-registry` hears back
+  since its 2.3.1, because its pushes name the brain they are for and a brain
+  reports the refusal of a push addressed to it; this loop's pushes name no
+  address, so a refusal of one carries nothing that leads back here.
   What the argus knows is what it *sent*; what it measures afterwards is the
   colony's behaviour, which is the only evidence it needs and also the only one
   it has.

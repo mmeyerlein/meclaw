@@ -33,6 +33,12 @@
 //! them one socket may hold — is a column rather than a branch. The loop still
 //! knows nothing about either: it knows that a prefix names a kind.
 //!
+//! Which mounts a join may reach is the one thing the loop does decide
+//! (GH #869). The page names the mount, so without a list every cell with a
+//! link door in the process is reachable from every display socket.
+//! `params.link_mounts` is that list; empty, the default, keeps the old
+//! behaviour.
+//!
 //! # Which page a socket belongs to
 //!
 //! One cell, one container id — it is derived from the cell path — so the topic
@@ -589,6 +595,17 @@ async fn answer(
                 .and_then(Value::as_str)
                 .unwrap_or(kind.default_mount)
                 .to_string();
+            // GH #869: the mount comes from the page, so without a list any
+            // cell holding a link door in this process was one join away --
+            // `phone` through a display socket, for one. An empty list is the
+            // old behaviour; a list admits exactly its names, the kind's
+            // default included, and says which ones it admits.
+            if !io.link_mounts.is_empty() && !io.link_mounts.contains(&mount) {
+                return refuse(format!(
+                    "this display links no topic to {mount:?} (params.link_mounts: {})",
+                    io.link_mounts.join(", ")
+                ));
+            }
             // Everything the payload said except the `mount` that chose the
             // door, one level deep (OR-G32). The door reads the four voice
             // fields because it always did; what it does NOT read — a viewport,

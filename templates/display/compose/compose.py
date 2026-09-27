@@ -99,7 +99,10 @@ it where it was.
 """
 import copy
 import hashlib
+import html
+import html.parser
 import json
+import re
 import sys
 import time
 import uuid
@@ -4045,8 +4048,10 @@ OS_TEMPLATE = (
 # at all, and the button says so instead of failing silently; a REFUSED microphone
 # says so too, because an unhandled rejection there left the button doing nothing
 # and looking fine. And the worklet's decimation is nearest-sample: adequate for
-# speech into a recogniser at 16 kHz from a 48 kHz device, and what the built-in
-# test page does. It is not a filter.
+# speech into a recogniser at 16 kHz from a 48 kHz device. It is not a filter, and
+# it is not the voice test page's worklet, which interpolates linearly. Since 2.8.0
+# it is a file of the `web` cell's client, `@client/display-mic-worklet.js`, byte
+# for byte the string it used to be (GH #867).
 #
 # Three things it undoes. The playback context is built when `hello` names its rate,
 # which is not a gesture -- so the first press resumes it, because a context that
@@ -4253,7 +4258,6 @@ OS_CLIENT_JS = (
     "      }\n"
     "      if (audio && !refused) join();\n"
     "      function sendAudio(ab) { if (!joined) return; socket.push({ topic: topic, event: \"audio\", payload: ab, ref: \"\", join_ref: chan.joinRef() }); st.sent++; }\n"
-    "      var WORKLET = \"class P extends AudioWorkletProcessor{constructor(o){super();this.rate=o.processorOptions.rate;this.acc=[];this.pos=0;var s=this;this.port.onmessage=function(e){if(e.data==='flush')s.f()}}f(){var n=Math.floor(this.rate/50);if(!this.acc.length)return;while(this.acc.length<n)this.acc.push(0);var out=new Int16Array(n);for(var j=0;j<n;j++)out[j]=this.acc[j]*32767;this.acc=this.acc.slice(n);this.port.postMessage(out.buffer,[out.buffer])}process(i){var ch=i[0]&&i[0][0];if(!ch)return true;var r=sampleRate/this.rate;for(var k=0;k<ch.length;k+=r){this.acc.push(Math.max(-1,Math.min(1,ch[Math.floor(k)])))}var n=Math.floor(this.rate/50);while(this.acc.length>=n){var out=new Int16Array(n);for(var j=0;j<n;j++)out[j]=this.acc[j]*32767;this.acc=this.acc.slice(n);this.port.postMessage(out.buffer,[out.buffer])}return true}}registerProcessor('mic',P);\";\n"
     "      async function openMic() {\n"
     "        // `localhost` read as a signpost and pointed at the wrong place; the\n"
     "        // address that WOULD work lives in a proxy this page knows nothing\n"
@@ -4284,7 +4288,11 @@ OS_CLIENT_JS = (
     "        var rate = (st.hello && st.hello.audio_in && st.hello.audio_in.sample_rate) || 16000;\n"
     "        mctx = new (root.AudioContext || root.webkitAudioContext)();\n"
     "        try {\n"
-    "          await mctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: \"text/javascript\" })));\n"
+    # The capture worklet is a file of the `web` cell's client (GH #867), not a
+    # string turned into an object URL: a proxy that sets `script-src 'self'`
+    # refuses those. `document.baseURI` is the shell's `<base>`, the web cell's
+    # own mount, so the URL holds under any prefix a proxy stripped.
+    "          await mctx.audioWorklet.addModule(new URL(\"@client/display-mic-worklet.js\", document.baseURI).toString());\n"
     "          var src = mctx.createMediaStreamSource(stream);\n"
     "          worklet = new AudioWorkletNode(mctx, \"mic\", { processorOptions: { rate: rate } });\n"
     "        } catch (e) {\n"
@@ -6018,6 +6026,455 @@ def check_node(node, depth):
     return None
 
 
+# What an application's own component may not carry (GH #868, display-hive.md
+# § 7.11): elements that run, style, frame, embed or re-base a page, and a script
+# URL. An event-handler attribute is the other half, with the rule the `web` cell
+# applies at `component.define` (a name that BEGINS with `on`), so `data-front=` and
+# `aria-controls=` pass.
+FORBIDDEN_MARKUP = ("<script", "<style", "<iframe", "<object", "<embed", "<base",
+                    "<meta", "<link")
+# What a view listed in `params.code_views` may carry beyond that: its own client code
+# and sheet (`<script>`, `<style>`) and raw props to hold them. Such an application is
+# code the operator installed and trusts like the screen's own -- `colony-view` ships
+# its hook and its sheet exactly this way, and is the shipped default (OR-FX.H1b.1).
+# Everything else in FORBIDDEN_MARKUP, every event handler and every script URL stays
+# refused for it too.
+OWN_CODE_MARKUP = ("<script", "<style")
+
+# The views whose components may bring their own code, from `params.code_views`. A
+# module-level default, replaced by what this cell was configured with once per
+# message, like `VOICE_MOUNT`. An operator whose screen shows no such application
+# sets it to `[]` and every application component is text in a frame.
+CODE_VIEWS = ("colony-view",)
+# The tokenizer's ASCII whitespace and ASCII letters, as the `web` cell reads them
+# (review M4): Python's `\s` also takes a vertical tab and U+2028, and `[a-z]` with
+# IGNORECASE also takes `ſ` and the Kelvin sign -- none of which a browser reads so.
+EVENT_ATTRIBUTE = re.compile(r"(?:^|[ \t\n\r\f\"'/<])on[a-z]+[ \t\n\r\f]*=",
+                             re.IGNORECASE | re.ASCII)
+
+
+# Where in an application's template a `{{...}}` may not stand (review I1 of #868/#869):
+# the mirror of the `web` cell's parser (`crates/meclaw-cells/src/web/markup.rs`,
+# `Contexts::place`). The rules above read the template with every `{{...}}` blanked;
+# the page renders the value, or nothing, in its place. Where that joins the text on
+# either side into a name -- `<scr{{x}}ipt>`, `on{{x}}click=`, `h{{n}}="..."` -- or into a
+# scheme -- `href="java{{x}}script:..."` -- the rules judged another page than the one
+# that renders. The `web` cell refuses such a template at `component.define`; the door
+# says so first, with the same places.
+#
+# Both readers are a cut of the WHATWG tokenizer, and they are only as good as the cut
+# (review I2): a place the scanner reads as a quoted value while a browser already reads
+# markup there lets every rule above be walked around. So text elements end at their
+# own end tag only, `</` before a non-letter is a bogus comment, a comment starts with
+# its own two states, and where the tokenizer's reading depends on the tree around the
+# template (svg and math, scripting, a select) both readings are followed.
+URL_ATTRIBUTES = ("href", "src", "action", "formaction", "poster", "xlink:href", "data")
+IN_NAME = "a tag or attribute name"
+IN_UNQUOTED = "an unquoted attribute value"
+IN_COMMENT = "a comment"
+IN_RAW_END = "the end tag of a script, style or text element"
+IN_SCRIPT_ESCAPE = "a <!-- inside a script"
+IN_OPEN_URL = "a URL attribute whose scheme the template's own text has not settled"
+OUTSIDE_TEXT = "a place other than between tags"
+IN_DOUBT = "a place the parser cannot tell apart"
+AFTER_WHOLE_URL = "text after a value at the start of a URL attribute"
+PLAINTEXT = (
+    "the template opens a <plaintext> element: a browser reads everything after it "
+    "as text, and nothing closes it"
+)
+CDATA = (
+    "the template carries a <![CDATA[ section: inside svg or math a browser reads it "
+    "to ]]>, elsewhere to the first >, and a template cannot tell which"
+)
+FOREIGN_RAW = (
+    "a <script> or <style> stands inside an svg or math element: there it is no raw "
+    "text but markup, and its content would be read as tags"
+)
+# Places where a value loads or runs that the scanner would have to read as a second
+# language (review M3/M6/M7/M8/M9 of #868/#869): SVG animation sets the attribute its
+# `attributeName` names from `to`/`from`/`by`/`values`, `srcdoc` is a whole document,
+# and `<!--` in a script opens escaped script data.
+SVG_ANIMATION_ELEMENTS = ("animate", "set", "animatemotion", "animatetransform")
+SVG_ANIMATION = (
+    "the template carries an svg animation element (animate, set, animateMotion, "
+    "animateTransform): it sets the attribute attributeName names to a value from to, "
+    "from, by or values, which no rule reads as that attribute"
+)
+SRCDOC = (
+    "the template gives an element a srcdoc: its value is a whole document the browser "
+    "reads as markup again"
+)
+SCRIPT_ESCAPE = (
+    "the template writes <!-- in the text of a script: from there a browser reads "
+    "escaped script data, which this parser does not follow, up to past the template's end"
+)
+UNFINISHED = (
+    "the template ends inside a tag, an attribute value, a comment, a text element or "
+    "an svg or math element: what follows it on the page would be read on from there; "
+    "a template ends between tags, as it began"
+)
+# The elements whose start tag switches a browser's tokenizer to text until their own
+# end tag: RAWTEXT (`script` data is the same here) and RCDATA (`textarea`, `title`).
+# Whether it does depends on the tree around them -- not inside svg or math, `noscript`
+# only with scripting on, and an older parser ignores `<style>` in a `<select>` -- so a
+# template is read both ways from each of them.
+TEXT_ELEMENTS = ("script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
+                 "textarea", "title")
+_TAG_WS = " \t\n\r\f"
+# A value may stand nowhere a name is read, nor in a comment or an unquoted value; a
+# conditional nowhere its two sides would meet inside one name or value; children only
+# between tags.
+_COMMENT_TEXT = ("commentstart", "commentstartdash", "comment", "commentenddash",
+                 "commentend", "commentendbang")
+_VALUE_REFUSED = {
+    "lt": IN_NAME, "endtagopen": IN_NAME, "tagname": IN_NAME, "attrname": IN_NAME,
+    "intag": IN_NAME, "afterattrname": IN_NAME, "beforevalue": IN_UNQUOTED,
+    "unquoted": IN_UNQUOTED, "bang": IN_COMMENT, "bangdash": IN_COMMENT,
+    "bangcdata": IN_COMMENT, "rawlt": IN_RAW_END, "rawltslash": IN_RAW_END,
+    "rawend": IN_RAW_END, "rawbang": IN_SCRIPT_ESCAPE, "lost": IN_DOUBT,
+}
+_VALUE_REFUSED.update((st, IN_COMMENT) for st in _COMMENT_TEXT)
+_BRANCH_REFUSED = {
+    "lt": IN_NAME, "endtagopen": IN_NAME, "tagname": IN_NAME, "attrname": IN_NAME,
+    "beforevalue": IN_UNQUOTED, "unquoted": IN_UNQUOTED,
+    "bang": IN_COMMENT, "bangdash": IN_COMMENT, "bangcdata": IN_COMMENT,
+    "rawlt": IN_RAW_END, "rawltslash": IN_RAW_END, "rawend": IN_RAW_END,
+    "rawbang": IN_SCRIPT_ESCAPE, "lost": IN_DOUBT,
+}
+_MAX_READINGS = 16
+
+
+def _lower(ch):
+    """ASCII lowercase, as the tokenizer lowers a name (and `str.lower` does not)."""
+    return ch.lower() if ch.isascii() else ch
+
+
+def _reading(st="data", bad=None, foreign=0):
+    """A reading: (state, tag, end tag?, attribute, raw element, counter, url value,
+    refused, `/` just read in a tag, svg/math elements open)."""
+    return (st, "", False, "", "", 0, "", bad, False, foreign)
+
+
+def _tag_end(reading):
+    """The readings after a tag closes at `>`."""
+    tag, end, bad, slash, foreign = (reading[1], reading[2], reading[7], reading[8],
+                                     reading[9])
+    if tag in ("svg", "math"):
+        if end:
+            foreign = max(foreign - 1, 0)
+        elif not slash:
+            foreign += 1
+        return [_reading(bad=bad, foreign=foreign)]
+    if not end and tag in SVG_ANIMATION_ELEMENTS:
+        return [_reading(bad=bad or SVG_ANIMATION, foreign=foreign)]
+    if end or tag not in TEXT_ELEMENTS + ("plaintext",):
+        return [_reading(bad=bad, foreign=foreign)]
+    if tag == "plaintext":
+        return [_reading(bad=bad or PLAINTEXT, foreign=foreign)]
+    if foreign and tag in ("script", "style"):
+        bad = bad or FOREIGN_RAW
+    return [("raw", "", False, "", tag, 0, "", bad, False, foreign),
+            _reading(bad=bad, foreign=foreign)]
+
+
+def _markup_step(reading, ch):
+    """One character of the template's own text: the readings after it (two where a
+    text element opens, see TEXT_ELEMENTS)."""
+    st, tag, end, attr, raw, n, url, bad, slash, foreign = reading
+    ws = ch in _TAG_WS
+    alpha = ch.isascii() and ch.isalpha()
+    data = [_reading(bad=bad, foreign=foreign)]
+    if st in ("intag",):
+        slash = False
+    if st == "data":
+        if ch == "<":
+            st = "lt"
+    elif st == "lt":
+        if alpha:
+            st, tag, end = "tagname", _lower(ch), False
+        elif ch == "/":
+            st = "endtagopen"
+        elif ch == "!":
+            st = "bang"
+        elif ch == "?":
+            st = "bogus"
+        elif ch != "<":
+            return data
+    elif st == "endtagopen":
+        # `</` and a letter is an end tag, `</>` is nothing, anything else a bogus
+        # comment to the first `>`.
+        if alpha:
+            st, tag, end = "tagname", _lower(ch), True
+        elif ch == ">":
+            return data
+        else:
+            st = "bogus"
+    elif st == "tagname":
+        if ws or ch == "/":
+            st, slash = "intag", ch == "/"
+        elif ch == ">":
+            return _tag_end(reading)
+        else:
+            tag += _lower(ch)
+    elif st == "intag":
+        if ch == ">":
+            return _tag_end(reading)
+        if ch == "/":
+            slash = True
+        elif not ws:
+            st, attr = "attrname", _lower(ch)
+    elif st == "attrname":
+        if ch == "=":
+            st = "beforevalue"
+        elif ws:
+            st = "afterattrname"
+        elif ch == ">":
+            return _tag_end(reading)
+        elif ch == "/":
+            st, slash = "intag", True
+        else:
+            attr += _lower(ch)
+    elif st == "afterattrname":
+        if ch == "=":
+            st = "beforevalue"
+        elif ch == ">":
+            return _tag_end(reading)
+        elif ch == "/":
+            st, slash = "intag", True
+        elif not ws:
+            st, attr = "attrname", _lower(ch)
+    elif st == "beforevalue":
+        # Review M7: a srcdoc value is a document, markup again.
+        if ch != ">" and not ws and attr == "srcdoc":
+            bad = bad or SRCDOC
+        if ch in "\"'":
+            st = "dq" if ch == '"' else "sq"
+            url = "empty" if attr in URL_ATTRIBUTES else ""
+        elif ch == ">":
+            return _tag_end(reading)
+        elif not ws:
+            st = "unquoted"
+    elif st in ("dq", "sq"):
+        if ch == ('"' if st == "dq" else "'"):
+            st, url = "intag", ""
+        elif url == "whole":
+            bad = bad or AFTER_WHOLE_URL
+        elif url in ("empty", "open"):
+            url = "settled" if ch in ":/?#" else "open"
+    elif st == "unquoted":
+        if ws:
+            st = "intag"
+        elif ch == ">":
+            return _tag_end(reading)
+    elif st == "bang":
+        if ch == "-":
+            st = "bangdash"
+        elif ch == "[":
+            st, n = "bangcdata", 1
+        elif ch == ">":
+            return data
+        else:
+            st = "bogus"
+    elif st == "bangcdata":
+        if _lower(ch) == "[cdata["[n]:
+            n += 1
+            if n == 7:
+                st, n, bad = "bogus", 0, bad or CDATA
+        elif ch == ">":
+            return data
+        else:
+            st, n = "bogus", 0
+    elif st == "bangdash":
+        if ch == "-":
+            st = "commentstart"
+        elif ch == ">":
+            return data
+        else:
+            st = "bogus"
+    # A comment ends where the WHATWG tokenizer ends it: `<!-->` and `<!--->` right at
+    # its start, later `-->` and `--!>`. `<!--!>` and `<!---!>` do not end one.
+    elif st == "commentstart":
+        if ch == "-":
+            st = "commentstartdash"
+        elif ch == ">":
+            return data
+        else:
+            st = "comment"
+    elif st == "commentstartdash":
+        if ch == "-":
+            st = "commentend"
+        elif ch == ">":
+            return data
+        else:
+            st = "comment"
+    elif st == "comment":
+        if ch == "-":
+            st = "commentenddash"
+    elif st == "commentenddash":
+        st = "commentend" if ch == "-" else "comment"
+    elif st == "commentend":
+        if ch == ">":
+            return data
+        if ch == "!":
+            st = "commentendbang"
+        elif ch != "-":
+            st = "comment"
+    elif st == "commentendbang":
+        if ch == "-":
+            st = "commentenddash"
+        elif ch == ">":
+            return data
+        else:
+            st = "comment"
+    elif st == "bogus":
+        if ch == ">":
+            return data
+    elif st == "raw":
+        if ch == "<":
+            st = "rawlt"
+    elif st == "rawlt":
+        if ch == "/":
+            st, n = "rawltslash", 0
+        elif ch == "!" and raw == "script":
+            st, n = "rawbang", 0
+        elif ch != "<":
+            st = "raw"
+    elif st == "rawbang":
+        # Review M6/M9: `<!--` in script data opens its escaped state, which
+        # `<script>`/`</script>` move on ways this scanner does not read.
+        if ch == "-":
+            n += 1
+            if n == 2:
+                st, n, bad = "raw", 0, bad or SCRIPT_ESCAPE
+        else:
+            st, n = ("rawlt" if ch == "<" else "raw"), 0
+    elif st == "rawltslash":
+        if n < len(raw) and ch.isascii() and ch.lower() == raw[n]:
+            n += 1
+            if n == len(raw):
+                st = "rawend"
+        else:
+            st = "rawlt" if ch == "<" else "raw"
+    elif st == "rawend":
+        # `</title` is an end tag only when the name ends here.
+        if ch == ">":
+            return data
+        if ws or ch == "/":
+            st, tag, end, raw, n, slash = "intag", raw, True, "", 0, ch == "/"
+        else:
+            st = "rawlt" if ch == "<" else "raw"
+    return [(st, tag, end, attr, raw, n, url, bad, slash, foreign)]
+
+
+def _markup_place(reading, kind):
+    """Why a `{{...}}` of `kind` may not stand in `reading`, and the reading after it."""
+    st, url = reading[0], reading[6]
+    if kind == "children":
+        return (None if st == "data" else (IN_DOUBT if st == "lost" else OUTSIDE_TEXT)), reading
+    why = (_VALUE_REFUSED if kind == "value" else _BRANCH_REFUSED).get(st)
+    if why:
+        return why, reading
+    if st in ("dq", "sq") and url in ("empty", "open", "whole"):
+        if kind == "value" and url == "empty":
+            return None, reading[:6] + ("whole",) + reading[7:]
+        return IN_OPEN_URL, reading
+    return None, reading
+
+
+def _settle(readings):
+    """The readings without repeats, or one that gave up (keeping a refusal)."""
+    out = []
+    for reading in readings:
+        if reading not in out:
+            out.append(reading)
+    if len(out) > _MAX_READINGS:
+        bad = next((r[7] for r in out if r[7]), None)
+        return [_reading("lost", bad=bad)]
+    return out
+
+
+def _markup_feed(readings, text):
+    """Every reading after `text`, character by character."""
+    for ch in text:
+        if len(readings) == 1:
+            after = _markup_step(readings[0], ch)
+            readings = after if len(after) == 1 else _settle(after)
+        else:
+            readings = _settle([r for reading in readings for r in _markup_step(reading, ch)])
+    return readings
+
+
+def misplaced_substitution(template):
+    """The first `{{...}}` of `template` that stands where the `web` cell refuses it, as
+    "{{x}} in <place>", the reason its own text is refused, or None. Every reading a
+    conditional or a text element leaves is followed, as the parser does, and more than
+    sixteen at once is a place it cannot tell apart."""
+    readings = [_reading()]
+    opened = []
+    rest = template
+    while True:
+        at = rest.find("{{")
+        text = rest if at < 0 else rest[:at]
+        readings = _markup_feed(readings, text)
+        for reading in readings:
+            if reading[7]:
+                return reading[7]
+        if at < 0:
+            if any(r[0] != "data" or r[9] for r in readings):
+                return UNFINISHED
+            return None
+        close = rest.find("}}", at + 2)
+        if close < 0:
+            return None
+        tag = rest[at + 2:close].strip()
+        rest = rest[close + 2:]
+        if tag == "/if" or tag.startswith("#if "):
+            kind = "branch"
+        elif tag == "children":
+            kind = "children"
+        else:
+            kind = "value"
+        after = []
+        for reading in readings:
+            why, reading = _markup_place(reading, kind)
+            if why:
+                return "{{%s}} in %s" % (tag, why)
+            if reading not in after:
+                after.append(reading)
+        readings = after
+        if tag.startswith("#if "):
+            opened.append(list(readings))
+        elif tag == "/if" and opened:
+            readings = _settle(readings + opened.pop())
+
+
+def markup_refusal(template, own_code=False):
+    """What in an application's template the screen will not render, or None.
+
+    First where every `{{...}}` stands (`misplaced_substitution`): only where the
+    template's own text cannot run on through it do the rules below, read on that text
+    with every `{{...}}` blanked, judge the page that renders. `javascript:` is looked for the way a browser reads a URL: character
+    references decoded, tab and newline dropped. `own_code` is a view listed in
+    `CODE_VIEWS`, which may carry `OWN_CODE_MARKUP`.
+    """
+    misplaced = misplaced_substitution(template)
+    if misplaced:
+        return misplaced
+    plain = re.sub(r"\{\{.*?\}\}", " ", template, flags=re.S)
+    low = plain.lower()
+    for word in FORBIDDEN_MARKUP:
+        if own_code and word in OWN_CODE_MARKUP:
+            continue
+        if word in low:
+            return word
+    found = EVENT_ATTRIBUTE.search(plain)
+    if found:
+        return found.group(0).lstrip(" \t\n\r\f\"'/<").rstrip("= \t\n\r\f")
+    if "javascript:" in re.sub(r"[\t\n\r]", "", html.unescape(plain)).lower():
+        return "javascript:"
+    return None
+
+
 def check_components(declared, view_id):
     """The `component.define` arguments a view brings, or the reason they fail.
 
@@ -6025,7 +6482,14 @@ def check_components(declared, view_id):
     is ONE namespace shared by every application writing to that screen, so a
     prefix is what keeps two apps from redefining each other's vocabulary out
     from under a page that is already rendered.
+
+    And since GH #868 an application's component is text in a frame: it declares
+    no `"html"` prop and carries none of `FORBIDDEN_MARKUP`, no event handler and
+    no script URL. A table, a chart or a document it wants is the catalogue's, whose
+    raw props pass `sanitize_markup`. A view in `CODE_VIEWS` brings its own code:
+    `"html"` props and `OWN_CODE_MARKUP` are its, the rest holds for it as well.
     """
+    own_code = view_id in CODE_VIEWS
     if not isinstance(declared, list):
         return None, "invalid_view", '"components" is not a list'
     out = []
@@ -6045,6 +6509,23 @@ def check_components(declared, view_id):
             return None, "invalid_view", 'the component %r has no "template"' % name
         if not isinstance(item.get("prop_schema"), dict):
             return None, "invalid_view", 'the component %r has no "prop_schema"' % name
+        raw = sorted(k for k, v in item["prop_schema"].items() if v == "html")
+        if raw and not own_code:
+            return (
+                None,
+                "invalid_view",
+                'the component %r declares %r as "html" -- an application\'s component '
+                "carries text; tables, charts and documents are the catalogue's"
+                % (name, raw[0]),
+            )
+        why = markup_refusal(item["template"], own_code)
+        if why:
+            return (
+                None,
+                "invalid_view",
+                "the component %r carries %r -- a screen renders an application's "
+                "component as text in a frame" % (name, why),
+            )
         out.append(
             dict(
                 (k, item[k])
@@ -6455,6 +6936,224 @@ def pass_event(body):
 
 
 # ---------------------------------------------------------------------------
+# Raw props an application writes (GH #868, display-hive.md § 7.11)
+#
+# Four components of the catalogue take markup from the application and render it
+# raw: a table's `head` and `rows` (a table is as wide as it is, which the template
+# language cannot say), the `figure` of a media card and of a chart (inline SVG, a
+# link), and a document's `body`. Until this section the display trusted the writing
+# application to escape what a model said before it went in there -- so whether model
+# text reached a page as markup depended on every application, in whatever repository
+# it lives, getting that right every time. The screen now checks it itself, on the way
+# from the view to the object (`add_tree`): an allowlist per prop, text kept, anything
+# else dropped. Outside the pass, which stays byte-identical with the reference model.
+
+# Every `"html"` prop of `components()`, and who writes it. "app": the application
+# fills it and it passes `sanitize_markup`. "screen": this cell writes it itself (the
+# operator's font faces, the two hook scripts) and an application that names one in
+# its tree loses it. A test pins this table against `components()`, so a new raw prop
+# is red until it says who writes it.
+RAW_PROPS = {
+    ("display-shell", "faces"): "screen",
+    ("display-shell", "client_js"): "screen",
+    ("display-os", "client_js"): "screen",
+    ("display-table", "head"): "app",
+    ("display-table", "rows"): "app",
+    ("display-media", "figure"): "app",
+    ("display-chart", "figure"): "app",
+    ("display-document", "body"): "app",
+}
+
+_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_NUMBER_RE = re.compile(_NUMBER)
+_POINTS_RE = re.compile(r"\s*(?:%s(?:[\s,]+%s)*)?\s*" % (_NUMBER, _NUMBER))
+_VIEWBOX_RE = re.compile(r"\s*%s(?:[\s,]+%s){3}\s*" % (_NUMBER, _NUMBER))
+_PATH_RE = re.compile(r"[MmLlHhVvCcSsQqTtAaZz0-9eE\s,.+-]*")
+_COUNT_RE = re.compile(r"[0-9]{1,3}")
+
+
+def _one_of(*words):
+    return lambda value: value in words
+
+
+def _numeric(value):
+    return _NUMBER_RE.fullmatch(value.strip()) is not None
+
+
+def _http_url(value):
+    """An `http(s)` address with no whitespace or control character in it."""
+    low = value.lower()
+    return ((low.startswith("http://") or low.startswith("https://"))
+            and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value))
+
+
+def _rel(value):
+    words = value.split()
+    return bool(words) and all(w in ("noopener", "noreferrer", "nofollow") for w in words)
+
+
+# `name -> (spelling, check)`. The spelling is what goes out: the parser lowercases
+# every name it reads, and an SVG `viewbox` is not a `viewBox`.
+_ANCHOR = {
+    "href": ("href", _http_url),
+    "target": ("target", _one_of("_blank")),
+    "rel": ("rel", _rel),
+}
+_CELL = {
+    "colspan": ("colspan", _COUNT_RE.fullmatch),
+    "rowspan": ("rowspan", _COUNT_RE.fullmatch),
+    "scope": ("scope", _one_of("row", "col", "rowgroup", "colgroup")),
+}
+_SVG = dict({
+    "fill": ("fill", _one_of("currentColor", "none")),
+    "stroke": ("stroke", _one_of("currentColor", "none")),
+    "vector-effect": ("vector-effect", _one_of("non-scaling-stroke")),
+    # What the line of a chart is drawn with besides its colour (OR-FX.H1b.2): the
+    # applications that write charts round their joints.
+    "stroke-linejoin": ("stroke-linejoin", _one_of("round", "miter", "bevel")),
+    "stroke-linecap": ("stroke-linecap", _one_of("round", "butt", "square")),
+    "text-anchor": ("text-anchor", _one_of("start", "middle", "end")),
+    "points": ("points", _POINTS_RE.fullmatch),
+    # A `path` without its data is no shape (OR-FX.H1b.2): commands and numbers only.
+    "d": ("d", _PATH_RE.fullmatch),
+    "viewbox": ("viewBox", _VIEWBOX_RE.fullmatch),
+    "role": ("role", _one_of("img")),
+}, **dict((name, (name, _numeric)) for name in (
+    "x", "y", "width", "height", "x1", "y1", "x2", "y2", "cx", "cy", "r",
+    "stroke-width", "stroke-opacity", "font-size")))
+
+_TABLE = {"tr": {}, "th": _CELL, "td": _CELL}
+# The allowlist per raw prop: element -> its attributes. Everything not named is
+# dropped, and its text stays.
+RAW_MARKUP = {
+    "head": _TABLE,
+    "rows": _TABLE,
+    "figure": dict({"a": _ANCHOR}, **dict((name, _SVG) for name in (
+        "svg", "g", "rect", "line", "polyline", "path", "circle", "text"))),
+    "body": dict({"a": _ANCHOR}, **dict((name, {}) for name in (
+        "p", "h3", "h4", "ul", "ol", "li", "strong", "em", "code", "pre", "br",
+        "blockquote"))),
+}
+_SVG_NAMES = frozenset(("svg", "g", "rect", "line", "polyline", "path", "circle", "text"))
+_VOID = frozenset(("br",))
+# Elements whose CONTENT goes with them: it is code, not text anybody wrote to be read.
+_SKIP_CONTENT = frozenset(("script", "style"))
+
+
+def _esc(text):
+    """Text for an element or a double-quoted attribute: the five characters, as the
+    applications that write these props escape them, so a clean prop passes byte for
+    byte. A NUL is dropped -- a browser would draw it as a replacement character."""
+    return (str(text).replace("\0", "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
+
+
+class _Sanitiser(html.parser.HTMLParser):
+    """One raw prop through its allowlist. Balanced on the way out: an end tag closes
+    only an element this pass opened, and whatever is still open at the end is closed
+    here, so no prop can close the table, the figure or the article around it."""
+
+    def __init__(self, allowed):
+        super().__init__(convert_charrefs=True)
+        self.allowed = allowed
+        self.out = []
+        self.stack = []
+        self.skip = 0
+
+    def _attrs(self, tag, attrs):
+        rules = self.allowed[tag]
+        kept = []
+        for name, value in attrs:
+            rule = rules.get(name)
+            if rule is None or value is None:
+                continue
+            spelling, check = rule
+            if check(value):
+                kept.append(' %s="%s"' % (spelling, _esc(value)))
+        return "".join(kept)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _SKIP_CONTENT:
+            self.skip += 1
+            return
+        if self.skip or tag not in self.allowed:
+            return
+        self.out.append("<%s%s>" % (tag, self._attrs(tag, attrs)))
+        if tag not in _VOID:
+            self.stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        if self.skip or tag not in self.allowed:
+            return
+        spelled = self._attrs(tag, attrs)
+        if tag in _SVG_NAMES or tag in _VOID:
+            self.out.append("<%s%s/>" % (tag, spelled))
+        else:
+            # `<p/>` opens a paragraph in HTML; say what the writer meant.
+            self.out.append("<%s%s></%s>" % (tag, spelled, tag))
+
+    def handle_endtag(self, tag):
+        if tag in _SKIP_CONTENT:
+            self.skip = max(0, self.skip - 1)
+            return
+        if self.skip or tag not in self.stack:
+            return
+        while self.stack:
+            top = self.stack.pop()
+            self.out.append("</%s>" % top)
+            if top == tag:
+                break
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(_esc(data))
+
+    def result(self):
+        self.close()
+        while self.stack:
+            self.out.append("</%s>" % self.stack.pop())
+        return "".join(self.out)
+
+
+def sanitize_markup(prop, markup):
+    """`markup` as the raw prop `prop` may carry it (GH #868).
+
+    Tables keep `tr th td` (with `colspan rowspan scope`); figures keep inline SVG
+    shapes with their geometry and `currentColor`/`none` paint, and `http(s)` links;
+    a document body keeps basic text markup and `http(s)` links. Everything else is
+    dropped and its text kept, escaped; the content of a `script` or `style` goes
+    with it. A prop this table does not know is all text. A clean prop -- the tables
+    and charts the applications write -- comes back byte for byte.
+    """
+    if not isinstance(markup, str):
+        return ""
+    allowed = RAW_MARKUP.get(prop)
+    if allowed is None:
+        return _esc(markup)
+    parser = _Sanitiser(allowed)
+    parser.feed(markup)
+    return parser.result()
+
+
+def guard_raw(component, props):
+    """The raw props of one node of an application's tree, made safe in place.
+
+    An app-written raw prop passes `sanitize_markup`; a screen-written one is not the
+    application's to write and is dropped, and so is a raw prop that is not a string
+    (a list would render as its JSON, raw). Returns `props`.
+    """
+    for (name, prop), writer in RAW_PROPS.items():
+        if name != component or prop not in props:
+            continue
+        value = props[prop]
+        if writer == "app" and isinstance(value, str):
+            props[prop] = sanitize_markup(prop, value)
+        else:
+            del props[prop]
+    return props
+
+
+# ---------------------------------------------------------------------------
 # The store's rows and the display's tree, as this cell reads them
 
 
@@ -6546,6 +7245,9 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
     oid = "%s/%s" % (parent, key if is_node_key(key) else index)
     props = dict(node.get("props") or {})
     component = str(node.get("component") or "")
+    # What the application wrote as markup passes the allowlist here, on its way to
+    # the object; what only the screen writes is not the application's (GH #868).
+    guard_raw(component, props)
     # The state is the curator's word. An application may say `urgent` or
     # `hidden` about a window; any other word is dropped before the curator
     # looks, so a `focus` an app claims never reaches the screen (GH #679).
@@ -8267,20 +8969,26 @@ def read_knobs(params):
 
 
 def main():
-    global VOICE_MOUNT, FONT_BASE, BROWSER_MOUNT
+    global VOICE_MOUNT, FONT_BASE, BROWSER_MOUNT, CODE_VIEWS
     doc = json.load(sys.stdin)
-    # The three params this cell reads by name. `voice_mount` names the `voice`
+    # The four params this cell reads by name. `voice_mount` names the `voice`
     # cell the screen's microphone joins, so one screen can be pointed at a
     # voice cell that was mounted under another name -- and a screen with no
     # voice cell beside it simply has a button whose join is refused, out loud,
     # on the page. `browser_mount` is the same statement for pages: the cell a
     # `page:<page>` join finds. `font_base` is where the operator serves the two
-    # faces from, or empty for no faces at all.
+    # faces from, or empty for no faces at all. `code_views` names the applications
+    # whose components may bring their own script and sheet (GH #868).
     params = doc.get("params") or {}
     if isinstance(params, dict):
         VOICE_MOUNT = str(params.get("voice_mount") or "voice")
         BROWSER_MOUNT = str(params.get("browser_mount") or "browser")
         FONT_BASE = str(params.get("font_base") or "")
+        # `code_views` (GH #868): absent is the shipped default, a list is the
+        # operator's, `[]` included.
+        views = params.get("code_views")
+        CODE_VIEWS = (tuple(str(v) for v in views) if isinstance(views, list)
+                      else ("colony-view",))
     read_knobs(params if isinstance(params, dict) else {})
     body = doc.get("body") or {}
     envelope = doc.get("envelope") or {}

@@ -289,6 +289,7 @@ fn make_build(
                 mount: o.mount,
                 identity_header: o.identity_header,
                 trusted_proxies: o.trusted_proxies,
+                link_mounts: o.link_mounts,
                 external_timeout_ms: o.external_timeout_ms,
             },
             Err(e) => {
@@ -340,6 +341,8 @@ fn make_build(
         // effective params' (birth ⊕ overlay, like `identity_header`), and a
         // ninth argument would move four test call sites for one field.
         io.trusted = Arc::new(parsed.trusted());
+        // GH #869: set after `new` for the same reason as the list above.
+        io.link_mounts = Arc::new(parsed.link_mounts.clone());
         let cell = WebCell::new(
             path_cap.as_str().to_string(),
             io,

@@ -1,4 +1,4 @@
-# `web@2.1.0`
+# `web@2.2.0`
 
 A display as one cell, with a name of its own. One `web` cell, one `cell.db`,
 one mount on the colony's listener, and a token stylesheet in the visionOS
@@ -90,6 +90,14 @@ The join payload is flat. `mount` chooses the door; everything else the door
 hands to the cell unread, one level deep, so a `page:` join brings its viewport
 and the socket learns nothing about what a viewport is.
 
+Which doors a join may reach is `params.link_mounts`. Empty, the default, is
+every mount in the process -- the behaviour before the key existed. A list
+refuses a join to any other name, the kind's default included:
+`this display links no topic to "phone" (params.link_mounts: voice, browser)`.
+The page names the mount, so without a list every cell with a link door in the
+process is one join away from every display socket. `display` sets
+`["voice", "browser"]`.
+
 ## What it serves, and where
 
 The cell owns everything under `/<mount>/`. Four things answer there, and the
@@ -98,15 +106,15 @@ order matters because the last one is a wildcard:
 | path | what it is |
 |---|---|
 | `/<mount>/live/websocket` | the LiveView transport. A plain GET here is a `400`, not a `404` -- the path is right, the request is not. |
-| `/<mount>/@client/<file>` | the two vendored Phoenix bundles, compiled into the binary. A closed list, so a file name out of a URL can never traverse anywhere. |
+| `/<mount>/@client/<file>` | the two vendored Phoenix bundles and two small client files of the substrate's own (`boot.js`, `display-mic-worklet.js`), compiled into the binary and served `no-cache`. A closed list, so a file name out of a URL can never traverse anywhere. |
 | `/<mount>/` and `/<mount>/<route>` | a page out of the **`pages` table**, rendered and kept. A route nothing declares is a `404`, never a blank page. |
 | any other path under the mount | a file out of the **`assets` table** -- `vision.css` is the one this template ships. The page map is asked first and the asset map second, so a page and a file can never shadow each other by accident. |
 
 **Behind a proxy the whole set moves together.** The shell reads
 `X-Forwarded-Prefix`, checks it against `^/[A-Za-z0-9._~/-]{0,200}$` without a
 trailing slash, ignores it if it is anything else, and writes every URL it emits
--- the socket, the two bundles and a `<base href>` -- from that prefix plus the
-mount. So one nginx block
+-- the socket (as `<meta name="meclaw-live">`), the two bundles, the boot and a
+`<base href>` -- from that prefix plus the mount. So one nginx block
 
 ```nginx
 location ^~ /alpha/ {
@@ -152,7 +160,7 @@ second display takes its own. The template is one cell, so `override_params`
 takes the flat form -- there is no path inside it to address:
 
 ```json
-{"name": "web-two", "template": "web@2.1.0",
+{"name": "web-two", "template": "web@2.2.0",
  "override_params": {"mount": "screen"}}
 ```
 
@@ -288,6 +296,21 @@ inside the safe area, and every `env(safe-area-inset-*)` a stylesheet asks for
 reads 0 -- a correct answer to the wrong question, and furniture a sheet meant
 to lift off the bottom edge sits under the home indicator anyway.
 
+**The shell carries no inline script, since `web@2.2.0`.** It boots LiveView
+from `@client/boot.js`, which reads the socket URL from
+`<meta name="meclaw-live">` and the CSRF token from `<meta name="csrf-token">`,
+and it stands after the page body without `defer`, so a page's own hook scripts
+have registered on `window.SurfaceHooks` before the socket reads it. The inline
+boot it replaced had the socket URL -- prefix plus mount -- in its text, so its
+hash was different on every deployment path, and a proxy that sets a
+Content-Security-Policy could not list it once (GH #867). The shell itself now
+runs under `script-src 'self'`. A page that brings inline script of its own
+needs that script's hash listed: `display` publishes its two in
+`templates/display/csp.json`; `canvy` and `colony-view` publish none yet.
+`style-src` needs `'unsafe-inline'` (the block below, and `style` attributes a
+page writes), and `base-uri` needs `'self'` for the `<base>` above. The proxy
+sets the header; the cell sets none.
+
 **The one exception, and why it is not one.** The shell's `<head>` carries a
 handful of inline CSS lines for the LiveView *connection states* --
 `phx-loading`, `phx-error`, `phx-client-error`, `phx-server-error`, the classes
@@ -405,6 +428,50 @@ The template language is closed, and there is no fifth form:
 | `{{&prop}}` | the value raw -- honoured only where `prop_schema` types the prop as `"html"` |
 | `{{children}}` | the object's children, in `ord` order |
 | `{{#if prop}}…{{/if}}` | the enclosed text, if the prop is present, non-empty and not `false` |
+
+**A value fits the place it stands in.** Escaping keeps a value inside its
+quotes; it does not decide what the value means there. So the parser records
+where every substitution stands, and a value that does not fit renders
+**empty** -- a missing word rather than a page nobody can see:
+
+| place | what fits |
+|---|---|
+| a LiveView binding (`phx-click`, `phx-keyup`, `phx-submit`, `phx-window-*`, …) | an event name, `[A-Za-z0-9_.:/-]{0,64}`. The client reads a value starting with `[` as a list of JS commands |
+| `href`, `src`, `action`, `formaction`, `poster`, `xlink:href`, `data` | a relative URL, or one with the scheme `http`, `https`, `mailto` or `tel` |
+| `style` | a plain CSS value, `[A-Za-z0-9 _.,%#+-]{0,128}`: no second declaration, no `url()` |
+| inside a tag, outside quotes | a token, `[A-Za-z0-9_.-]{0,64}` |
+| the body of a `<script>` or `<style>` | the same plain CSS value as in `style`: there an escaped value is code |
+| any other attribute, `phx-value-*` included, and text | anything, escaped |
+
+A prop typed `"int"` renders an integer and nothing else. A raw value is raw
+only between tags and in the body of a `<script>` or `<style>`; inside an
+attribute it is escaped and fitted like any other.
+
+**Two definitions are refused** (`invalid_input`), at `component.define` and for
+every seeded component: an `editable` prop typed `"html"` -- one viewer's typing
+would reach every other viewer as markup -- and a template whose own text carries
+an event-handler attribute (`onclick=`, `onload=`; a name that merely ends in
+`on`, like `data-front=`, is not one) or a `javascript:` URL. A component reaches
+the cell through a binding, never through inline script.
+
+**A `{{…}}` stands where the template's own text cannot run on through it.** Those
+rules read the template's text; the page renders a value, or nothing, in each
+`{{…}}`. So the parser refuses one inside a tag or attribute name
+(`<scr{{x}}ipt>`, `on{{x}}click=`), anywhere in a tag outside a quoted value, in
+an unquoted value, in a comment, in the end tag of a script, style or text
+element, and in a URL attribute before the template's own `/`, `?`, `#` or scheme
+(`href="java{{x}}script:…"`); there a value is the whole attribute value.
+`{{children}}` stands between tags only. The parser reads markup as a browser's
+tokenizer does: `textarea`, `title`, `xmp`, `iframe`, `noembed`, `noframes` and
+`noscript` are text up to their own end tag, and since whether they (and `script`,
+`style`) are text depends on the page around the template (not inside `svg` or
+`math`), a `{{…}}` in their text fits both readings. A template ends between tags
+and outside `svg`/`math`; `<plaintext>`, `<![CDATA[` and a script or style inside
+`svg`/`math` are refused, and so are the SVG animation elements (`animate`, `set`,
+`animateMotion`, `animateTransform` -- `<set attributeName="href" to="javascript:…">`
+is a link no rule read as one), the attribute `srcdoc` (a whole document, read as
+markup again) and `<!--` in a script's text (the browser reads escaped script data
+from there, past the template's end).
 
 ### Which brain to point at it
 

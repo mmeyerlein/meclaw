@@ -572,6 +572,119 @@ class NamePatterns(unittest.TestCase):
         self.assertEqual([], of(pc.run(["docs/x.en.md"], repo=root), "name-pattern"))
 
 
+class ReasoningEffort(unittest.TestCase):
+    """An eval call to the local model lane names its thinking depth (GH #865).
+
+    The rules live in a private module under `workshop/tools/`, which does not
+    travel; precheck loads it when it is there and says nothing when it is not.
+    Case (1) runs everywhere. The others copy the real module into the fixture
+    tree, so they skip where the tree carries none.
+    """
+
+    MODULE = "workshop/tools/check_reasoning_effort.py"
+    LOCAL_CALL = (
+        "import json\n"
+        "def ask(env, messages):\n"
+        "    base = env['LOCAL_LLM_BASE_URL']\n"
+        "    body = {'model': 'm', 'messages': messages%s}\n"
+        "    return base, json.dumps(body)\n")
+
+    def with_module(self, files):
+        real = REPO / self.MODULE
+        if not real.is_file():
+            self.skipTest("the private check module is not in this tree")
+        files = dict(files)
+        files[self.MODULE] = real.read_text(encoding="utf-8")
+        return tree(self, files)
+
+    def graded(self, root, path):
+        return of(pc.run([path], repo=root), "reasoning-effort")
+
+    def test_without_the_module_it_says_nothing(self):
+        path = "workshop/evals/x/run.py"
+        root = tree(self, {path: self.LOCAL_CALL % ""})
+        self.assertEqual([], self.graded(root, path))
+
+    def test_a_local_call_names_medium_or_is_red(self):
+        path = "workshop/evals/x/run.py"
+        for extra, want in (("", ["RED"]),
+                            (", 'reasoning_effort': 'medium'", []),
+                            (", 'reasoning_effort': 'low'", []),
+                            (", 'reasoning_effort': 'xhigh'", ["RED"])):
+            root = self.with_module({path: self.LOCAL_CALL % extra})
+            self.assertEqual(want, levels(self.graded(root, path)), extra)
+
+    def test_a_local_call_through_a_module_level_url_is_graded(self):
+        # The common shape reads the URL once at the top of the module; the
+        # function holding the body never spells the variable name itself.
+        path = "workshop/evals/x/run.py"
+        text = ("import json, os\n"
+                "BASE = os.environ.get('LOCAL_LLM_BASE_URL')\n"
+                "def ask(messages):\n"
+                "    body = {'model': 'm', 'messages': messages%s}\n"
+                "    return BASE, json.dumps(body)\n")
+        for extra, want in (("", ["RED"]),
+                            (", 'reasoning_effort': 'medium'", [])):
+            root = self.with_module({path: text % extra})
+            self.assertEqual(want, levels(self.graded(root, path)), extra)
+
+    def test_the_base_of_an_attribute_target_is_not_a_local_name(self):
+        # `os.environ[...] = ...` binds no name: `os` is the base of the
+        # target, and counting it made every function that reads `os` a
+        # local-lane caller -- here one that asks a hosted router (review
+        # M-5 of GH #865).
+        path = "workshop/evals/x/run.py"
+        text = ("import json, os\n"
+                "os.environ['LOCAL_LLM_BASE_URL'] = 'http://127.0.0.1:8000'\n"
+                "CFG = {}\n"
+                "CFG['child'] = os.environ['LOCAL_LLM_BASE_URL']\n"
+                "def ask(messages):\n"
+                "    body = {'model': 'm', 'messages': messages}\n"
+                "    return os.environ.get('ROUTER_URL'), CFG, json.dumps(body)\n")
+        root = self.with_module({path: text})
+        self.assertEqual([], self.graded(root, path))
+        # A bare name among the targets still counts, unpacked or not.
+        text = ("import json, os\n"
+                "BASE, KEY = os.environ['LOCAL_LLM_BASE_URL'], 'k'\n"
+                "def ask(messages):\n"
+                "    body = {'model': 'm', 'messages': messages}\n"
+                "    return BASE, json.dumps(body)\n")
+        root = self.with_module({path: text})
+        self.assertEqual(["RED"], levels(self.graded(root, path)))
+
+    def test_a_router_call_is_not_graded(self):
+        path = "workshop/evals/x/run.py"
+        router = self.LOCAL_CALL.replace("LOCAL_LLM_BASE_URL", "OPENROUTER_BASE_URL") % ""
+        root = self.with_module({path: router})
+        self.assertEqual([], self.graded(root, path))
+
+    def test_an_llm_config_on_the_local_lane_carries_the_effort(self):
+        path = "workshop/evals/x/brain/config.json"
+        cfg = {"cell": {"type": "llm"},
+               "params": {"base_url": "${LOCAL_LLM_BASE_URL:-}", "model": "m"}}
+        root = self.with_module({path: json.dumps(cfg)})
+        self.assertEqual(["RED"], levels(self.graded(root, path)))
+        cfg["params"]["provider_extra"] = {"reasoning_effort": "medium"}
+        root = self.with_module({path: json.dumps(cfg)})
+        self.assertEqual([], self.graded(root, path))
+
+    def test_a_harness_pointing_a_template_at_the_local_lane_sets_the_effort(self):
+        path = "workshop/evals/x/backend.py"
+        text = ("def env(src):\n"
+                "    return {'MODEL_BUILDER': 'm',\n"
+                "            'LOCAL_LLM_BASE_URL': src.get('LOCAL_LLM_BASE_URL', '')}\n")
+        root = self.with_module({path: text})
+        self.assertEqual(["RED"], levels(self.graded(root, path)))
+        root = self.with_module({path: text + "EFFORT_KEY = 'reasoning_effort'\n"})
+        self.assertEqual([], self.graded(root, path))
+
+    def test_an_allowed_path_is_not_red(self):
+        path = "workshop/evals/builder-scenarios/run_builder_scenarios.py"
+        probe = self.LOCAL_CALL.replace("def ask(", "def local_lane_up(") % ""
+        root = self.with_module({path: probe})
+        self.assertEqual([], self.graded(root, path))
+
+
 class SheetNumbersMatchTheLock(unittest.TestCase):
     """The ceiling and the air are the Rust lock's numbers, read from it.
 

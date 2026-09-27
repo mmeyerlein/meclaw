@@ -37,8 +37,7 @@
 //!
 //! `the_os_hands_out_the_mount` is the ADR anchor of
 //! `plans/adr/0022-the-os-hands-out-what-is-system-near.md`: a colony carries
-//! many organisations and ONE OS, and the OS is what allocates the system-near
-//! things. The allocation in the builder is the first form of that
+//! exactly ONE OS, and the OS is what allocates the system-near things. The allocation in the builder is the first form of that
 //! responsibility — the builder is part of the OS — and never an org's own
 //! right.
 

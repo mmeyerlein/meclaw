@@ -14,6 +14,9 @@
 //! "the emission is here" always precedes "the exit record is on disk", and
 //! under load the gap is wide enough to lose a race that was never promised.
 //! Every read of the journal therefore goes through [`records_when_settled`].
+//! Since GH #866 the `bash` site retires the note BEFORE it answers, so the
+//! record is on disk first; the settled read stays, because it holds for
+//! either order and the order is not what this battery pins.
 
 #[path = "support_fitness.rs"]
 mod support;

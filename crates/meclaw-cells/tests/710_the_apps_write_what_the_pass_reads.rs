@@ -286,3 +286,40 @@ async fn three_views_in_one_breath_lose_no_window() {
 
     colony.shutdown().await;
 }
+
+/// GH #714: a write that never reaches the screen names the hop where it stopped.
+///
+/// The flake this pins the reading of lost one write of a stage rebuild -- no answer, no
+/// dead letter, every other write of the round there -- and the wait said only "never
+/// reached the store". Here the stand-in is told to do nothing: its script answers with
+/// an empty array, the `code` cell emits nothing (and dead-letters nothing), so the
+/// command's last hop is the stand-in itself. The account must say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_write_names_the_hop_it_stopped_at() {
+    if !library_ships() || !have_python() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    let colony = boot(Boot::default()).await;
+    let trace = colony.app(json!({"do": "nothing", "at": now_ms()})).await;
+    // Three seconds, not the marker: the write is known not to come, and the window only
+    // decides how long the lock waits before it reads the account.
+    let lost = colony
+        .try_drawn_after(PROBE, "nothing", 0, &trace, Duration::from_secs(3))
+        .await
+        .expect_err("a write the stand-in never made cannot be drawn");
+    assert!(
+        lost.contains(&format!("last hop: {PROBE};")),
+        "the account names the stand-in as the last hop of the command: {lost}"
+    );
+    assert!(
+        lost.contains(&format!("{PROBE} route=")),
+        "and carries the hop chain that led there: {lost}"
+    );
+    assert!(
+        lost.contains("store took 0 write(s)") && lost.contains("in the tree: false"),
+        "and says what the store took and what the tree holds: {lost}"
+    );
+
+    colony.shutdown().await;
+}

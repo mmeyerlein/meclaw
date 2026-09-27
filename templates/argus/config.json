@@ -27,6 +27,10 @@
         {
           "route": "error",
           "because": "a step of the cycle could not complete; which step it was is this hive business, that it failed is the caller business"
+        },
+        {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that `./judge` refused (GH #863): its error, with the judge's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of reaching `./mutator` as a verdict -- before 1.2.1 the judge's out-edge was unconditional, so a refusal was read as a decision. A push addressed to another cell is refused as `invalid_input` without the two keys and still reaches the verdict edge -- the forward that caused it is the defect. `meclaw-os` carries it back to its registry's `in_refused` lane; a parent without that edge dead-letters it `no_route`, loudly"
         }
       ]
     },
@@ -106,7 +110,27 @@
         {
           "from": "./judge",
           "to": "./mutator",
-          "condition": "true"
+          "condition": "!has(hop.refused_subscriber)"
+        },
+        {
+          "from": "./judge",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "argus_origin"
+            ]
+          }
         },
         {
           "from": "./meter",

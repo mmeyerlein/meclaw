@@ -18,6 +18,14 @@
 //! without the module, without the browser bundle, or without the laboratory
 //! in `$MECLAW_WKDEPS` it says `SKIP` and exits 3, and this test passes --
 //! the same tool guard every other one in this tree uses (R2b).
+//!
+//! The driver runs through `sh` with `workshop/tools/wkenv.sh` sourced first,
+//! the same way as the two 710 proofs. Without it this host never measured:
+//! the laboratory was only ever loaded by the 710 proofs, and this one said
+//! `SKIP ... missing dependencies` in every gate while the station read
+//! "passed" (wave fix, strand X, OR-FX.X.3). Every way out without a
+//! measurement prints one `SKIP ` line, and `.config/nextest.toml` puts it in
+//! the gate log when the test is green.
 
 use std::process::Command;
 
@@ -29,6 +37,10 @@ fn repo(rel: &str) -> std::path::PathBuf {
 
 const COMPOSE: &str = "templates/display/compose/compose.py";
 const DRIVER: &str = "workshop/tools/display-webkit-browser.mjs";
+/// The laboratory WebKit runs in on this host (see its head). Playwright's own
+/// wrapper sets `LD_LIBRARY_PATH`, so it has to be in the environment of the
+/// `node` process itself and cannot be handed over afterwards.
+const WKENV: &str = "workshop/tools/wkenv.sh";
 
 fn library_ships() -> bool {
     repo("templates/display/template.json").is_file()
@@ -70,21 +82,34 @@ fn field<'a>(line: &'a str, key: &str) -> &'a str {
 
 #[test]
 fn the_sheet_behaves_in_webkit() {
-    if !library_ships() || !repo(DRIVER).is_file() {
+    if !library_ships() {
+        println!("SKIP the template library does not ship in this tree");
+        return;
+    }
+    if !repo(DRIVER).is_file() || !repo(WKENV).is_file() {
+        println!("SKIP the webkit driver does not ship in this tree");
         return;
     }
     let td = tempfile::TempDir::new().expect("tempdir");
     if page_parts(td.path()).is_none() {
+        println!("SKIP no python3 on this host");
         return;
     }
-    let out = match Command::new("node")
+    let out = match Command::new("sh")
+        .arg("-c")
+        .arg(". \"$1\"; shift; exec node \"$@\"")
+        .arg("sh")
+        .arg(repo(WKENV))
         .arg(repo(DRIVER))
         .arg(td.path())
         .arg(td.path().join("shots"))
         .output()
     {
         Ok(out) => out,
-        Err(_) => return,
+        Err(e) => {
+            println!("SKIP neither node nor a shell for it on this host: {e}");
+            return;
+        }
     };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -94,7 +119,7 @@ fn the_sheet_behaves_in_webkit() {
     // `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` -- and a guard that swallows
     // every run inside the laboratory is a proof that cannot fail.
     if out.status.code() == Some(3) || stderr.lines().any(|l| l.starts_with("SKIP ")) {
-        println!("{stderr}");
+        println!("SKIP webkit: {}", stderr.trim());
         return;
     }
     assert!(
