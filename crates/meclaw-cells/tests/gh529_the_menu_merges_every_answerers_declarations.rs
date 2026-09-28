@@ -2,9 +2,10 @@
 //!
 //! Since GH #464 a collector's tool menu is asked for rather than typed:
 //! `params.tools` names what the agent declares it uses, an answerer sends the
-//! declarations back on `in_menu`, and the collector writes them into the
-//! brain's own `system.tools` with `$replace` — so the subtree becomes exactly
-//! what came back.
+//! declarations back on `in_menu`, and the collector writes them as the brain's
+//! `system.tools` with `$replace` — so the subtree becomes exactly what came
+//! back. (Since GH #889 that write goes to the curator, which hands it to the
+//! brain with the next call.)
 //!
 //! That is right while exactly ONE thing answers, and it is the whole defect the
 //! moment two do. A second answer would not merge with the first, it would
@@ -26,8 +27,9 @@
 //!    them all — and nothing else. Recording under the answerer's own key is
 //!    what makes a union possible at all.
 //! 2. **The write is the union.** Two answerers with disjoint sets produce ONE
-//!    menu carrying both, plus the names the collector serves itself, still
-//!    under `$replace`, with `hop.menu_answerers` naming whose rows it stands on.
+//!    menu carrying both, and nothing else — since GH #889 the collector serves
+//!    no name of its own — still under `$replace`, with `hop.menu_answerers`
+//!    naming whose rows it stands on.
 //! 3. **The order is decided, not accidental.** The union is ordered by answerer,
 //!    and a name two answerers both declare is taken from the first of them —
 //!    a menu no provider would accept declares one tool twice.
@@ -70,7 +72,6 @@ fn shipped(rel: &str) -> Option<Value> {
 }
 
 const MEM: &str = "memory_recall";
-const THREAD: &str = "thread_recall";
 
 fn run(doc: &Value) -> (Vec<Value>, String) {
     let out = run_shipped_script(&shipped_script(ASSEMBLE), &doc.to_string());
@@ -266,10 +267,12 @@ fn three_answerers_produce_one_menu_carrying_all_of_them() {
     assert_eq!(out.len(), 1, "one menu message: {out:#?}");
     let msg = &out[0];
     assert_eq!(msg["header"]["route"], "menu");
+    // GH #889: the union and nothing else -- `thread_recall`, the one name this
+    // cell served itself, is gone with the round table it read.
     assert_eq!(
         names(msg),
-        want(&["consult_cogny", "a_tool", MEM, THREAD]),
-        "the union of all three answerers plus the one this cell serves itself: {msg:#?}"
+        want(&["consult_cogny", "a_tool", MEM]),
+        "the union of all three answerers: {msg:#?}"
     );
     assert_eq!(
         msg["system"]["tools"]["$replace"],
@@ -278,12 +281,12 @@ fn three_answerers_produce_one_menu_carrying_all_of_them() {
          never that the subtree is replaced — a menu upserted leaf by leaf would keep every \
          declaration anybody ever dropped: {msg:#?}"
     );
-    assert_eq!(msg["header"]["menu_count"], "4");
+    assert_eq!(msg["header"]["menu_count"], "3");
     assert_eq!(
         msg["header"]["menu_answerers"], "cogny,memory,tools",
         "the receipt says whose rows the write stands on: {msg:#?}"
     );
-    assert_eq!(msg["header"]["menu_self"], THREAD);
+    assert_eq!(msg["header"]["menu_self"], "");
     assert_eq!(
         msg["header"]["menu_unknown"], "",
         "each answerer had nothing under the OTHERS' tools, and none of those is a \
@@ -311,9 +314,10 @@ fn a_name_two_answerers_declare_is_taken_from_the_first_of_them() {
     // trusted the store's order instead of deciding one.
     let (out, _) = merge(&[row_of(&b), row_of(&a)], &declared);
     let msg = &out[0];
+    // GH #889: no self-served name beside it any more.
     assert_eq!(
         names(msg),
-        want(&["shared", THREAD]),
+        want(&["shared"]),
         "one leaf per name: a menu that declared the same tool twice is a menu no provider \
          accepts: {msg:#?}"
     );
@@ -392,9 +396,10 @@ fn an_answer_with_no_answerer_named_is_the_shape_every_tree_had_before() {
     })));
     assert_eq!(row_of(&out)["answerer"], "tools", "the default answerer");
     let (menu, _) = merge(&[row_of(&out)], &declared);
+    // GH #889: no self-served name beside it any more.
     assert_eq!(
         names(&menu[0]),
-        want(&["a_tool", THREAD]),
+        want(&["a_tool"]),
         "which produces exactly the menu a one-answerer tree wrote before #529: {menu:#?}"
     );
 }

@@ -215,13 +215,22 @@ wave_name() { printf '%s\n' "${1%-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]}"; 
 # whose text mentions <key> down to the next heading of the same or a higher
 # level. Nothing found means the prompt carries a placeholder instead -- an
 # empty order is better than a wrong one.
+#
+# A line inside a fenced code block is never a heading: plan parts carry
+# shell blocks, and their `# comment` lines used to cut the order short or
+# start it in the wrong place. The key is compared as plain text, not as an
+# awk regex -- `Strang (R)` never matched itself, `[` broke the program. It
+# travels through ENVIRON, because `awk -v` rewrites backslashes (GH #891,
+# F17 of the wave Gate receipt).
 plan_section() {
     local file="$1" key="$2"
-    awk -v key="$key" '
+    PLAN_SECTION_KEY="$key" awk '
         function level(s) { match(s, /^#+/); return RLENGTH }
-        /^#+ / {
+        BEGIN { key = tolower(ENVIRON["PLAN_SECTION_KEY"]) }
+        /^[ \t]*```/ { fence = !fence; if (inside) print; next }
+        !fence && /^#+ / {
             if (inside && level($0) <= want) { exit }
-            if (!inside && tolower($0) ~ tolower(key)) {
+            if (!inside && index(tolower($0), key)) {
                 inside = 1; want = level($0); print; next
             }
         }

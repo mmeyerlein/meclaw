@@ -1,4 +1,4 @@
-# `operator@1.2.3`
+# `operator@1.2.4`
 
 **One front door into the OS, and one place a submission lives.** A sealed hive at the
 colony shell with one occupant per subject, reached by naming a lane and never a cell. It
@@ -12,6 +12,8 @@ announced cell's prose `requirement` ([#858](https://github.com/mmeyerlein/mecla
 again nothing of this hive's own moved. Since 1.2.3 it carries `submit@2.3.4`, whose gate takes
 the road's third form -- the way back of a refused push, `model_refusal_form` -- and holds the two
 keys of a refusal like the push's address ([#863](https://github.com/mmeyerlein/meclaw/issues/863)); nothing of this hive's own moved.
+Since 1.2.4 it carries `submit@2.3.5`, whose model-road form also lets a push reach the summarizer of a
+curator one hive deeper ([#877](https://github.com/mmeyerlein/meclaw/issues/877)); nothing of this hive's own moved.
 
 Since 1.1.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) the **submitter** is
 one of the occupants. It used to be a hive of its own beside this one, which meant a

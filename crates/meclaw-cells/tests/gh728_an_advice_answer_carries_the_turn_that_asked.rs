@@ -82,9 +82,11 @@ fn the_answer_of_that_round_carries_the_members_turn_and_its_own_round() {
     );
     assert_eq!(hop_str(ans, "round_id"), key, "and names the round it left");
     assert_eq!(hop_str(ans, "late"), "0", "inside the deadline it is a leg");
-    // The stored answer row stays on the round key.
-    let w = in_phase(&out, "ans-w");
-    assert_eq!(call(w, "c-ans-w")["row"]["turn_id"], key.as_str());
+    // GH #889: the answer is no longer stored; the drop of the round's rows
+    // that leaves with it stays on the round key.
+    let w = in_phase(&out, "round-drop");
+    assert_eq!(call(w, "c-drop-turns")["where"]["turn_id"], key.as_str());
+    assert_eq!(call(w, "c-drop-round")["where"]["turn_id"], key.as_str());
 }
 
 #[test]

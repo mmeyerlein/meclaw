@@ -11,7 +11,7 @@ Four readers and two writers, nothing else:
 * `prompts`     -- repeated sentences across the dispatch prompts of a wave.
   Derived from the P0 tool `prompt_repeat.py`.
 * `cache`       -- the pauses after which a call found its cache expired (Q11).
-* `metrics`     -- the eleven numbers Q1..Q11 and their verdicts.
+* `metrics`     -- the thirteen numbers Q1..Q13 and their verdicts.
 * `render`      -- the wave's `retro.md` and its line in the history.
 
 The P0 tools stay where they are, unchanged, as the record of the measurement

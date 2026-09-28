@@ -25,8 +25,8 @@ HISTORY_HEAD = [
     "Regelsatz und Schwellen: [README.md](README.md). Ein Verstoss ist ein",
     "Befund, nie ein Blocker.",
     "",
-    "| Datum | Welle | Q1 | Q2 | Q3 | Q4 | Q5 | Q6 | Q7 | Q8 | Q9 | Q10 | Q11 | Verstoesse |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| Datum | Welle | Q1 | Q2 | Q3 | Q4 | Q5 | Q6 | Q7 | Q8 | Q9 | Q10 | Q11 | Q12 | Q13 | Verstoesse |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
 ]
 
 #: Cells of a history line: the empty edges, date, wave, the metrics, breaches.
@@ -164,6 +164,9 @@ def readme(spec: dict) -> str:
             rule = "— (finding, no threshold yet)"
         else:
             text = f"{limit:g}"
+            if "e" in text:
+                # `:g` writes Q12's 15 000 000 as `1.5e+07`.
+                text = f"{limit:.0f}"
             if "threshold_secondary" in metric:
                 text += f" / {metric['threshold_secondary']:g}"
             # "<= 0" is a rule nobody reads twice; "= 0" is the rule.

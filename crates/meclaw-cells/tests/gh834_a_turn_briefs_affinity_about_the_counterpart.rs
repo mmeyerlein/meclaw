@@ -82,9 +82,10 @@ fn parked_brief_rows(out: &[Value]) -> Vec<Value> {
 }
 
 fn leg_window_row() -> Value {
+    // GH #889: the leg's shape is `{turns, deferred, deferred_turns}`.
     let payload = json!({"turns": [{"role": "user", "text": "hello from the north",
                                     "consult_id": ""}],
-                         "bytes": 20, "dropped": 0, "capped": 0, "deferred": 0});
+                         "deferred": 0, "deferred_turns": []});
     json!({"turn_id": TURN, "iter": 0, "role": "leg-window",
            "turn": payload.to_string(), "fired": 0})
 }
@@ -95,10 +96,12 @@ fn collect(over: &[(&str, Value)], rows: Value) -> Vec<Value> {
     assemble(over, reply)
 }
 
+/// The seam of the turn. GH #889: the brain call leaves on `curate` (to the
+/// curator) instead of `brain`.
 fn seam(out: &[Value]) -> Option<&Value> {
     out.iter().find(|m| {
         let r = m["header"]["route"].as_str();
-        r == Some("brain") || r == Some("answer")
+        r == Some("curate") || r == Some("answer")
     })
 }
 
@@ -362,50 +365,6 @@ fn the_pair_carries_the_id_the_answer_came_back_under() {
         "the leg is filed under the id the request left with, not one rebuilt from \
          the echo: {leg}"
     );
-}
-
-/// A brief longer than `tool_chars` is cut where every tool result is cut, and
-/// the cut is SAID: a pack with many relations would otherwise end mid-JSON and
-/// neither the model nor a reader of the prompt could tell a cut from an end. The
-/// marker is the house form of a visible cut (`code/cell.rs`, `llm/wire.rs`,
-/// `web_fetch.rs`: `… [truncated, N bytes total]`), counted in characters here
-/// because the knob is. The full text stays in the round table.
-#[test]
-fn a_brief_over_the_cap_is_cut_visibly() {
-    let call = the_call(&assemble(&knob(), turn(Some(COUNTERPART))));
-    let id = call["id"].as_str().expect("id").to_string();
-    let long = format!(
-        "affinity brief on North (peer) for agent:alpha: slots peer\n{}",
-        "x".repeat(300)
-    );
-    let total = long.chars().count();
-    let body = json!({"messages": [{"origin": "tool", "type": "tool_result", "id": id,
-                                    "text": long}]});
-    let over = [
-        ("brief_slots", json!(["peer", "channel"])),
-        ("tool_chars", json!(120)),
-    ];
-    let row = leg_brief_row_of(&assemble(&over, in_briefing("answer", body)));
-    let opened = collect(&over, json!([leg_window_row(), row]));
-    let msg = seam(&opened).unwrap_or_else(|| panic!("the turn opens: {opened:?}"));
-    let rt = msg["messages"]
-        .as_array()
-        .expect("messages")
-        .iter()
-        .find(|m| m["type"] == "tool_result" && m["id"] == id.as_str())
-        .and_then(|m| m["text"].as_str())
-        .unwrap_or_else(|| panic!("no brief result in the prompt: {msg}"))
-        .to_string();
-    assert!(
-        rt.ends_with(&format!("… [truncated, {total} chars total]")),
-        "the cut is marked with the full length: {rt:?}"
-    );
-    assert!(
-        rt.starts_with("affinity brief on North (peer)"),
-        "the head of the brief survives the cut: {rt:?}"
-    );
-    let kept = rt.split('…').next().unwrap_or_default().chars().count();
-    assert_eq!(kept, 120, "the kept part is exactly tool_chars: {rt:?}");
 }
 
 // ═══════════════════════════════════════════ 7. the knob and the road, together

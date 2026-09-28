@@ -60,12 +60,13 @@
 //! of thing: a cell that would leave this machine.
 //!
 //! * The `llm` cell type is replaced by an inert lazy double. A generation
-//!   carries three of them (`talky/brain`, `cogny/brain`, `cogny/brain_fast`),
-//!   and a spawned one opens an HTTP connection to a provider. Nothing in this
+//!   carries several of them (`talky/brain`, `cogny/brain`, `cogny/brain_fast`,
+//!   and since GH #889 the `summarizer` of every curator), and a spawned one
+//!   opens an HTTP connection to a provider. Nothing in this
 //!   file is about what a model answers: the keeper's stamp sits BEFORE the
 //!   brain in `talky`'s graph, so a session is opened by a turn arriving, not by
-//!   a turn being answered. The brain double swallows what the collector hands
-//!   it, and the round ends there.
+//!   a turn being answered. The brain double swallows what the curator hands
+//!   it (GH #889: collector -> curator -> brain), and the round ends there.
 //! * The fence the four stores write inside is set on this colony's own copy of
 //!   the library rather than on the host: since GH #555 the writer is the
 //!   substrate, and the shipped default (`/tmp/meclaw-member-export`) is an
@@ -470,7 +471,8 @@ async fn boot(
         "error",
         "write",
         "turn_write",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "build",
         "close_report",
         "export_done",
@@ -585,7 +587,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.10.5",
+            "add_nodes": [{"name": MEMBER, "template": "member@2.0.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -595,8 +597,8 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
 /// One generation, wired the way `templates/assistant/README.md` §
 /// *Instantiating* and `templates/member/README.md` § *Addressing an assistant
 /// through a channel* prescribe: the addressing pair, the guarded inbound lanes,
-/// the eight outward ones that are not `answer` — and the two transfer edges
-/// GH #475 added to that recipe.
+/// the seven outward ones that are not `answer` (eight until GH #889 took `prune`
+/// out of the chain) — and the two transfer edges GH #475 added to that recipe.
 fn assistant_manifest(name: &str) -> Value {
     let guarded = |routes: &str| {
         json!({"from": "./assistants", "to": format!("./assistants/{name}"),
@@ -648,7 +650,8 @@ fn assistant_manifest(name: &str) -> Value {
         "write",
         "turn_write",
         "sidecar",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "error",
         "build",
         // ... and the two plain edges back. They have to be plain: every level
@@ -674,7 +677,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.9.5"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@3.0.0"}],
             "add_edges": add_edges,
         }
     }]})

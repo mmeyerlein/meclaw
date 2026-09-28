@@ -22,7 +22,8 @@
 //!    The seam had two lanes until 4.4.0 and the class was a second tool name;
 //!    both are gone, because a fast memory question belongs to the surface that
 //!    already holds the window. Pinned three ways: the composite is
-//!    `collector` + `dispatcher` + `brain` + `schemas` and nothing else,
+//!    `collector` + `curator` + `dispatcher` + `brain` + `schemas` and nothing
+//!    else (the `curator` ref since GH #889: every LLM gets its own curator hive),
 //!    `ask_memory` / `escalate_to_deep` / `brain_fast` survive in no config of
 //!    the template, and an `in_schemas` request comes back on `tool_schemas`
 //!    carrying the `consult_cogny` schema with `question` and `context` both
@@ -82,10 +83,14 @@ fn templates_root() -> std::path::PathBuf {
 /// and `templates/dispatcher/` and are pulled in at instantiation time. That is
 /// why `collector/assemble` and `collector/window` are no longer listed here:
 /// they are not files of THIS template any more.
+///
+/// `curator/config.json` joined with GH #889: the brain's curator hive is a
+/// `ref` marker like the other two sub-units (R-27-1, one curator per LLM).
 const COGNY_FILES: &[&str] = &[
     "config.json",
     "brain/config.json",
     "collector/config.json",
+    "curator/config.json",
     "schemas/config.json",
     "dispatcher/config.json",
 ];
@@ -355,6 +360,14 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, base_url:
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!(DEEP_MODEL);
     });
+    // GH #889: the cogny carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    patch(root, "main/cogny/curator/summarizer/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!(DEEP_MODEL);
+    });
 }
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
@@ -465,6 +478,10 @@ fn collect_configs(
 /// R-CG-2 named three units and no keeper, no summarizer, no proxy. A template
 /// that grew one of them would still pass the round below -- it would just stop
 /// being the agent core. So the inventory is pinned as a set, not as a floor.
+///
+/// GH #889 added the brain's curator hive as a third ref (R-27-1: every LLM
+/// gets its own curator). Its summarizer belongs to the curator and compresses
+/// the brain's history; the core itself still carries no summarizer of its own.
 #[test]
 fn the_core_carries_the_tool_loop_and_nothing_else() {
     let Some(cogny) = shipped_cogny() else {
@@ -481,8 +498,9 @@ fn the_core_carries_the_tool_loop_and_nothing_else() {
     want.sort();
     assert_eq!(
         found, want,
-        "cogny is collector + dispatcher + brain (R-CG-2): no keeper, no summarizer, \
-         no proxy -- the core has no channel, no sessions and no night"
+        "cogny is collector + curator + dispatcher + brain + schemas (R-CG-2, the \
+         curator since GH #889): no keeper, no proxy -- the core has no channel, no \
+         sessions and no night"
     );
 }
 

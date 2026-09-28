@@ -43,6 +43,9 @@ fn restore_cell(
         "{}",
         cell.params_line(path.as_str())
     );
+    if let Some(note) = cell.cache_note(path.as_str()) {
+        tracing::warn!(target: "meclaw::llm::params", "{note}");
+    }
     if let Err(why) = cell.restore_check() {
         tracing::warn!(
             target: "meclaw::llm::params",

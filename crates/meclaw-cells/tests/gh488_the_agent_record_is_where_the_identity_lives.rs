@@ -24,13 +24,15 @@
 //! * `brief` renders the subtree verbatim, under the request slot `brain`, and
 //!   the disclosure filter decides what may travel — the audience rule stays in
 //!   one place.
-//! * `collector/assemble` is the whitelist, and since this issue it names
-//!   `instructions` too. That is a REOPENING of one of GH #458's three
+//! * The pack lane's closed list is the whitelist, and since this issue it
+//!   names `instructions` too. That is a REOPENING of one of GH #458's three
 //!   subtractions, and claim 1 states the reason where the next reader will
-//!   find it.
+//!   find it. Since GH #889 the list is read at the rims (`talky`, `cogny`) that
+//!   take the lane: `PACK_SLOTS` left `collector/assemble` with the lane, and
+//!   the curator that holds a pack now publishes no constant.
 //!
-//! No colony here: this file is about constants, a schema mirror, a seed and
-//! four sentences. The end-to-end run lives in
+//! No colony here: this file is about a closed list, a schema mirror, a seed
+//! and four sentences. The end-to-end run lives in
 //! `gh488_a_reborn_agent_answers_as_itself.rs`.
 
 use meclaw_core::serde_json::Value;
@@ -57,10 +59,9 @@ fn script_of(rel: &str) -> String {
 }
 
 /// The string members of a python tuple constant `NAME = ("a", "b", ...)`, read
-/// out of the shipped source — the same technique `w11_curator.rs` and
-/// `gh458_the_pack_slots_are_a_subset_of_sys_keep.rs` use. Reading the constant
-/// out of the artefact is the point: a copy of the list in this file could
-/// agree with itself while disagreeing with what ships.
+/// out of the shipped source. Reading the constant out of the artefact is the
+/// point: a copy of the list in this file could agree with itself while
+/// disagreeing with what ships.
 fn tuple_constant(src: &str, name: &str) -> Vec<String> {
     let needle = format!("\n{name} = (");
     let at = src
@@ -96,6 +97,53 @@ fn str_constant(src: &str, name: &str) -> String {
     src[from..from + len].to_string()
 }
 
+/// The rims that take the `in_pack` lane.
+const RIMS: [&str; 2] = ["talky", "cogny"];
+
+/// The closed list as a rim states it: the backticked names of the sentence
+/// "Only `…` may be written." in the rim's own `in_pack` accept term.
+///
+/// GH #889 moved the list's machine-readable home here: `PACK_SLOTS` left
+/// `collector/assemble` with the lane, and the curator that enforces the list
+/// publishes no constant a caller could read. The same reader stands in
+/// `gh458_the_pack_slots_are_a_subset_of_sys_keep.rs`.
+fn rim_writable(composite: &str) -> Vec<String> {
+    let rel = format!("{composite}/config.json");
+    let v: Value = meclaw_core::serde_json::from_str(&read_file(&rel))
+        .unwrap_or_else(|e| panic!("{rel} must be JSON: {e}"));
+    let because = v["params"]["contract"]["accepts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{rel} must declare accepts"))
+        .iter()
+        .find(|a| a["route"] == "in_pack")
+        .unwrap_or_else(|| panic!("{rel} must still declare the `in_pack` lane"))["because"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{rel}: an accept term carries a `because`"))
+        .to_string();
+    let at = because.find("Only `").unwrap_or_else(|| {
+        panic!(
+            "{rel}: the `in_pack` because no longer states the closed list as \
+             \"Only `…` may be written.\" -- repair the pin in the same change \
+             (`docs/development-rules.md` § 2d): {because:?}"
+        )
+    });
+    let rest = &because[at..];
+    let end = rest.find(" may be written").unwrap_or_else(|| {
+        panic!("{rel}: the closed-list sentence must end in \"may be written\": {rest:?}")
+    });
+    let names: Vec<String> = rest[..end]
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "{rel}: the closed list must name at least one family: {rest:?}"
+    );
+    names
+}
+
 /// One JSONL seed table: the header row's `schema` and the data rows.
 fn seed_rows(rel: &str) -> Vec<Value> {
     read_file(rel)
@@ -110,49 +158,44 @@ fn seed_rows(rel: &str) -> Vec<Value> {
 
 /// Claim 1. The charter has a family it may land in.
 ///
-/// GH #458 subtracted `instructions` from `PACK_SLOTS` on the ground that "an
-/// identity that could overwrite it would be an identity that could rewrite
-/// what the agent is for". That argument assumed the charter had ANOTHER
-/// owner. GH #488 measured that it had none — nothing exported it, no template
-/// supplied it — so the subtraction did not protect a slot, it kept one empty.
-/// The subset relation to `SYS_KEEP` is untouched and re-asserted here, because
-/// it is what keeps a written pack out of the curator's reach at any budget.
+/// GH #458 subtracted `instructions` from the writable list on the ground that
+/// "an identity that could overwrite it would be an identity that could
+/// rewrite what the agent is for". That argument assumed the charter had
+/// ANOTHER owner. GH #488 measured that it had none — nothing exported it, no
+/// template supplied it — so the subtraction did not protect a slot, it kept
+/// one empty.
+///
+/// GH #889: read at the rims instead of out of `PACK_SLOTS`. The subset
+/// relation to `SYS_KEEP` this claim re-asserted left the collector with the
+/// curation stages (R-27-1); that a written pack is out of the curator's reach
+/// is pinned at `curator@1.0.0` (plan K § 2 "Pack"). `budget` is no longer a
+/// subtraction: `system.budget` went with the window (R-27-1: the collector no
+/// longer looks after the context window).
 #[test]
 fn the_charter_may_be_written_over_the_pack_lane() {
-    let src = script_of("collector/assemble/config.json");
-    let pack = tuple_constant(&src, "PACK_SLOTS");
-    let keep = tuple_constant(&src, "SYS_KEEP");
+    for rim in RIMS {
+        let pack = rim_writable(rim);
 
-    assert!(
-        pack.contains(&"instructions".to_string()),
-        "`instructions` must be writable over `in_pack`: it is the family the \
-         agent's reply instructions land in, and with the family closed there \
-         is no lane at all through which a rebuilt agent could be told how it \
-         answers. PACK_SLOTS = {pack:?}"
-    );
-    assert!(
-        pack.contains(&"identity".to_string()),
-        "`identity` carries `identity.soul`, the other half of GH #488. \
-         PACK_SLOTS = {pack:?}"
-    );
-
-    let outside: Vec<&String> = pack.iter().filter(|s| !keep.contains(s)).collect();
-    assert!(
-        outside.is_empty(),
-        "PACK_SLOTS must stay a subset of SYS_KEEP, and {outside:?} is not in \
-         it — a writable family outside SYS_KEEP is one the curator may cut \
-         behind the sender's back on the very next assembly. \
-         PACK_SLOTS = {pack:?}, SYS_KEEP = {keep:?}"
-    );
-
-    // The two subtractions that are still subtractions, and why they are:
-    // this cell re-derives both every round, so a sender writing them would
-    // fight it for the same path forever.
-    for derived in ["tools", "budget"] {
         assert!(
-            !pack.contains(&derived.to_string()),
-            "`{derived}` must NOT be writable over in_pack — the collector \
-             re-derives it on every assembly. PACK_SLOTS = {pack:?}"
+            pack.contains(&"instructions".to_string()),
+            "{rim}: `instructions` must be writable over `in_pack`: it is the family \
+             the agent's reply instructions land in, and with the family closed \
+             there is no lane at all through which a rebuilt agent could be told how \
+             it answers. Writable: {pack:?}"
+        );
+        assert!(
+            pack.contains(&"identity".to_string()),
+            "{rim}: `identity` carries `identity.soul`, the other half of GH #488. \
+             Writable: {pack:?}"
+        );
+
+        // The subtraction that is still a subtraction, and why it is: the
+        // collector re-derives the menu on its own lane, so a sender writing it
+        // would fight it for the same path forever.
+        assert!(
+            !pack.contains(&"tools".to_string()),
+            "{rim}: `tools` must NOT be writable over in_pack — the collector \
+             re-derives it from the menu answers. Writable: {pack:?}"
         );
     }
 }
@@ -212,9 +255,11 @@ fn the_record_is_inside_the_document_the_porter_already_writes() {
     // against a hash it never sent, stays silent for ever, and the reborn
     // agent never gets its first pack (the porter says so itself).
     assert!(
-        src.contains(r#"RESET = {"subscribers": ["pack_hash", "sent_at"]}"#),
+        src.contains(r#"RESET = {"subscribers": ["pack_hash", "sent_at", "retry"]}"#),
         "the porter must keep blanking `pack_hash`/`sent_at` on import — it is \
-         what makes the FIRST identity pack after a rebuild fire at all"
+         what makes the FIRST identity pack after a rebuild fire at all — and \
+         `retry` beside them: a try parked in the source would hold the reborn \
+         agent's first pack back for ever (GH #877)"
     );
 }
 
@@ -223,8 +268,9 @@ fn the_record_is_inside_the_document_the_porter_already_writes() {
 /// operator to guess the one thing that is fail-closed.
 #[test]
 fn the_shipped_agent_record_carries_the_example_and_its_release() {
-    let src = script_of("collector/assemble/config.json");
-    let pack = tuple_constant(&src, "PACK_SLOTS");
+    // GH #889: the writable list is the rim's, not `PACK_SLOTS` of a collector
+    // that no longer takes the lane.
+    let pack = rim_writable("talky");
 
     let agent = seed_rows("affinity/store/seed/entities.jsonl")
         .into_iter()
@@ -289,8 +335,18 @@ fn the_shipped_agent_record_carries_the_example_and_its_release() {
 /// what it promised (`docs/development-rules.md` § 2d).
 #[test]
 fn the_prose_names_the_family_the_constant_names() {
-    let src = script_of("collector/assemble/config.json");
-    let pack = tuple_constant(&src, "PACK_SLOTS");
+    // GH #889: the list the prose must agree with is the rim's accept term
+    // (read by `rim_writable`); the collector's own `in_pack` accept term, the
+    // machine-readable half this claim used to read, left with the lane.
+    let pack = rim_writable("talky");
+    for rim in RIMS {
+        assert_eq!(
+            rim_writable(rim),
+            pack,
+            "{rim}: both rims state ONE closed list — a core and a surface that \
+             disagree about what an identity may carry answer as two agents"
+        );
+    }
 
     for readme in ["talky/README.md", "cogny/README.md", "collector/README.md"] {
         let text = read_file(readme);
@@ -306,29 +362,9 @@ fn the_prose_names_the_family_the_constant_names() {
             assert!(
                 sentence.contains(&format!("`{slot}`")),
                 "{readme} must name `{slot}` where it states the closed list, \
-                 because the shipped PACK_SLOTS does: {sentence:?}"
+                 because the rims' `in_pack` accept term does: {sentence:?}"
             );
         }
-    }
-
-    // And the machine-readable half: the collector's own `in_pack` accept term.
-    let cfg = read_file("collector/config.json");
-    let v: Value = meclaw_core::serde_json::from_str(&cfg).expect("collector config is JSON");
-    let because = v["params"]["contract"]["accepts"]
-        .as_array()
-        .expect("the collector declares accepts")
-        .iter()
-        .find(|a| a["route"] == "in_pack")
-        .expect("the collector accepts in_pack")["because"]
-        .as_str()
-        .expect("an accept term has a reason")
-        .to_string();
-    for slot in &pack {
-        assert!(
-            because.contains(&format!("`{slot}`")),
-            "the collector's `in_pack` accept term must name `{slot}` — it is \
-             the machine-readable half of the same promise: {because:?}"
-        );
     }
 
     // The affinity side states which slot carries it, in its own README.

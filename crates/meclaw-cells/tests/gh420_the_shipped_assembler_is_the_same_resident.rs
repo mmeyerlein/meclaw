@@ -35,7 +35,7 @@ fn assemble_config() -> Value {
 }
 
 /// The shipped params with `runner_mode` forced to `mode` — everything else,
-/// the script and all twenty knobs included, byte-identical to the template.
+/// the script and all its knobs included, byte-identical to the template.
 fn params_in_mode(mode: &str) -> Value {
     let mut cfg = assemble_config();
     let p = cfg["params"].as_object_mut().expect("params object");
@@ -159,8 +159,35 @@ fn reply(phase: &str, op: &str, rows_affected: i64, payload: Value) -> meclaw_co
         .build()
 }
 
+/// A materialised window leg of `t1`, in the shape `collector@5.0.0` parks it.
+fn leg_window() -> Value {
+    json!({"turn_id": "t1", "iter": 0, "role": "leg-window", "fired": 0,
+           "turn": json!({"turns": [{"role": "user", "text": "first question"}],
+                          "deferred": 0, "deferred_turns": []}).to_string()})
+}
+
+/// The slate of a tool round of `t1` whose one call has answered.
+fn round_done() -> Value {
+    json!([
+        {"turn_id": "t1", "iter": 0, "role": "assistant", "fired": 0,
+         "turn": json!([{"origin": "assistant", "type": "tool_call", "id": "c1",
+                         "text": "{}"}]).to_string()},
+        {"turn_id": "t1", "iter": 0, "role": "tool", "fired": 0,
+         "turn": json!({"origin": "tool", "type": "tool_result", "id": "c1",
+                        "text": "tool said so"}).to_string()},
+        leg_window()
+    ])
+}
+
 /// The stream. Every consecutive pair takes a DIFFERENT path through the
 /// script, which is what makes a leftover binding observable at all.
+///
+/// GH #889: `collector@5.0.0` has no `in_close`, `in_prune` or
+/// `in_thread_call` lane and no `ans-w`, `tw-scan` or `prune-ledger` phase any
+/// more. Their slots are taken by paths that exist and emit -- the brief leg,
+/// the assembled seam on `curate` (from `collect` and from `round-check`), the
+/// menu merge and the echo of a closing mark -- so the stream still crosses as
+/// many roads as before instead of parking on dead ones.
 fn stream() -> Vec<meclaw_core::Message> {
     vec![
         lane(
@@ -180,22 +207,35 @@ fn stream() -> Vec<meclaw_core::Message> {
             "in_calls",
             json!([{"origin":"assistant","type":"tool_call","id":"c1","text":"{}"}]),
         ),
-        lane("in_close", json!([])),
+        lane(
+            "in_briefing",
+            json!([{"origin":"tool","type":"tool_result","id":"b1","text":"a brief"}]),
+        ),
         lane("in_round_sweep", json!([])),
-        lane("in_prune", json!([])),
-        reply("ans-w", "insert", 1, json!([])),
-        reply("tw-scan", "select", 0, json!([])),
+        bundle(
+            "collect",
+            "t1",
+            &[("c-collect-read", json!([leg_window()]))],
+        ),
+        bundle("round-check", "t1", &[("c-round-check-read", round_done())]),
+        reply("collect-done", "update", 1, json!([])),
         reply("sweep", "select", 0, json!([])),
-        reply("prune-ledger", "select", 0, json!([])),
+        bundle(
+            "menu-merge",
+            "t1",
+            &[(
+                "c-menu-all",
+                json!([{"answerer": "tools", "sidecar": [], "unknown": "",
+                        "tools": [{"type": "function", "function": {
+                            "name": "web_search", "description": "search",
+                            "parameters": {"type": "object", "properties": {}}}}]}]),
+            )],
+        ),
         lane(
             "in_bundle",
             json!([{"origin":"tool","type":"tool_result","id":"m1","text":"{}"}]),
         ),
-        lane(
-            "in_thread_call",
-            json!([{"origin":"assistant","type":"tool_call","id":"tc1",
-                    "text":"{\"name\":\"thread_recall\",\"arguments\":{}}"}]),
-        ),
+        lane("in_menu_tick", json!([])),
         lane("in_advice", json!([])),
         // GH #728 (T5 review M2): the three roads the late-answer build added.
         // A handed call leaves a `depart` row; an advice with a consult id is
@@ -246,7 +286,11 @@ fn stream() -> Vec<meclaw_core::Message> {
             "in_answer",
             json!([{"origin":"assistant","type":"text","text":"another answer"}]),
         ),
-        lane("in_close", json!([])),
+        bundle(
+            "collect",
+            "t1",
+            &[("c-collect-read", json!([leg_window()]))],
+        ),
         lane(
             "in_turn",
             json!([{"origin":"user","type":"text","text":"third question"}]),

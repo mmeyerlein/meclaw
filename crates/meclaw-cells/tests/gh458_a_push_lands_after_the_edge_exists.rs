@@ -11,6 +11,8 @@
 //! README's "door in the wall" section prints — no third edge, no shortcut past
 //! a door — and asks whether an identity that was pushed ends up in the
 //! subscriber's own durable state. That is the whole issue in one message.
+//! Since GH #889 that state is the ledger of the talky's `./curator`, which
+//! holds the pack and hands it to the brain with the next call.
 //!
 //! The OPERATOR half — who may draw that edge, and what the gate and the broker
 //! check before they let it be drawn — is not this file's question; it is asked
@@ -20,7 +22,8 @@
 //! The second pin is the pairing: `in_pack` and `pack_ack` are one decision, so
 //! a mutation that wires the lane without its receipt drain is refused by the
 //! substrate's own check — the same shape `gh202_shipped_drain_requirements.rs`
-//! measures for the `in_prune` / `prune` pair.
+//! measures for the other shipped pairs (the `in_prune` / `prune` pair this
+//! sentence named left talky with GH #889).
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -264,6 +267,12 @@ fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, talky: &std::p
         v["params"]["base_url"] = json!("http://127.0.0.1:1/v1");
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // GH #889: the curator in front of the brain carries an `llm` cell of its
+    // own, and the same refusal holds for it.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+        v["params"]["base_url"] = json!("http://127.0.0.1:1/v1");
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
 async fn boot(
@@ -340,18 +349,27 @@ async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
     }
 }
 
-/// The subscriber's OWN durable state: the `system` table of the talky brain's
-/// `cell.db`. Nothing else in this colony can write a row into it.
-fn brain_slots(td: &tempfile::TempDir) -> Vec<(String, String)> {
-    let p = td.path().join("main/talky/brain/cell.db");
+/// The subscriber's OWN durable state for this lane: the pack-owned slots of
+/// the talky curator's ledger, as `(path, body)` pairs. Nothing else in this
+/// colony can write a row into it.
+///
+/// GH #889: the pack no longer lands in the brain's `cell.db` on arrival.
+/// `./curator` holds it in its ledger — table `slots`, owner `pack`
+/// (`curator@1.0.0`) — and hands it to the brain as a `$replace` root with the
+/// NEXT call; the body is read from `blocks` by the slot's hash.
+fn ledger_slots(td: &tempfile::TempDir) -> Vec<(String, String)> {
+    let p = td.path().join("main/talky/curator/ledger/cell.db");
     if !p.exists() {
         return Vec::new();
     }
     let Ok(conn) = rusqlite::Connection::open(&p) else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare("SELECT slot_path, value FROM system ORDER BY slot_path")
-    else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.path, COALESCE(b.body, '') FROM slots s \
+         LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'pack' ORDER BY s.path",
+    ) else {
         return Vec::new();
     };
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
@@ -359,6 +377,16 @@ fn brain_slots(td: &tempfile::TempDir) -> Vec<(String, String)> {
         Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// A ledger path belongs to a family when it IS the family or lies under it.
+/// The ledger may hold a family whole (`identity`) or leaf by leaf
+/// (`identity.text`); what is pinned is the family, not the granularity.
+fn in_family(path: &str, family: &str) -> bool {
+    path == family
+        || path
+            .strip_prefix(family)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
 }
 
 // ═══════════════════════════════════════════════════════════════════════ pins
@@ -436,27 +464,29 @@ async fn an_affinity_push_reaches_a_talkys_prompt_through_in_pack() {
     );
 
     // 3. And the proof that outlives the message: the slot is in the
-    //    subscriber's own cell.db, which is what its next system prompt is
-    //    concatenated from. Polled, because the write happens off the
-    //    receipt's thread; 30s is the failure marker.
+    //    subscriber's own durable state, which is what its next system prompt
+    //    is built from — since GH #889 the talky curator's ledger, which hands
+    //    it to the brain with the next call. Polled, because the write may land
+    //    off the receipt's thread; 30s is the failure marker.
     let mut slots = Vec::new();
     for _ in 0..1500 {
-        slots = brain_slots(&td);
-        if slots.iter().any(|(p, _)| p == "identity") {
+        slots = ledger_slots(&td);
+        if slots.iter().any(|(p, _)| in_family(p, "identity")) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(
+        slots.iter().any(|(p, _)| in_family(p, "identity")),
+        "the pushed identity never reached the talky curator's ledger (`slots`, \
+         owner `pack`); it holds {slots:?}"
+    );
     let identity = slots
         .iter()
-        .find(|(p, _)| p == "identity")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| {
-            panic!(
-                "the pushed identity never reached the talky brain's own cell.db; \
-                 it holds {slots:?}"
-            )
-        });
+        .filter(|(p, _)| in_family(p, "identity"))
+        .map(|(_, v)| v.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         identity.contains("Alex"),
         "the slot must carry what the affinity DISCLOSED — the pack went \
@@ -468,8 +498,8 @@ async fn an_affinity_push_reaches_a_talkys_prompt_through_in_pack() {
 
 /// The pairing. `in_pack` and `pack_ack` are one decision, and the substrate's
 /// own check is what enforces it: a mutation that wires the lane without its
-/// receipt drain is refused with `required_drain_missing`, the same way the
-/// `in_prune` / `prune` pair is refused (`gh202_shipped_drain_requirements.rs`).
+/// receipt drain is refused with `required_drain_missing`, the same way every
+/// shipped pair is refused (`gh202_shipped_drain_requirements.rs`).
 ///
 /// No colony: the question is about a mutation that never commits.
 #[test]

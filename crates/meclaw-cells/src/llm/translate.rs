@@ -261,6 +261,341 @@ pub(crate) fn compose_system_prompt(
     }
 }
 
+// ───── GH #890: the provider cache on the wire ─────
+
+/// GH #890: the one `prompt_cache_key` of a cell -- the same on every call it
+/// makes, a different one for every other cell.
+///
+/// Derived from the cell's own path, because that is the one stable identity
+/// a cell has; hashed (sha256, already a dependency of this crate for the
+/// params line), because the path is colony structure and a provider has no
+/// business reading it. `meclaw-` plus 32 hex digits is 39 characters, well
+/// inside what the providers take, and carries no secret and no host.
+pub(crate) fn prompt_cache_key(cell_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(cell_path.as_bytes());
+    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    format!("meclaw-{hex}")
+}
+
+/// GH #890: the mark one prefix end carries. `"ttl": "1h"` exactly when the
+/// cell is told the provider keeps the prefix for an hour or more; below that
+/// the provider's default (five minutes) is what `cache_ttl_s` describes.
+fn cache_control(ttl_s: u64) -> Value {
+    use meclaw_core::serde_json::json;
+    if ttl_s >= 3600 {
+        json!({"type": "ephemeral", "ttl": "1h"})
+    } else {
+        json!({"type": "ephemeral"})
+    }
+}
+
+/// Mark the END of one wire message: its string content becomes a one-part
+/// content array whose text part carries the mark. Only a non-empty string is
+/// marked -- a `null` content (an assistant turn that only calls tools) has no
+/// text part to carry it, and an empty text block is refused by the provider
+/// that reads the mark; such a message is left untouched.
+fn mark_message_end(message: &mut Value, mark: &Value) {
+    use meclaw_core::serde_json::json;
+    let Some(text) = text_of(message).map(str::to_string) else {
+        return;
+    };
+    message["content"] = json!([{"type": "text", "text": text, "cache_control": mark}]);
+}
+
+/// The non-empty string content of a wire message -- the one form a mark can
+/// close ([`mark_message_end`]).
+fn text_of(message: &Value) -> Option<&str> {
+    message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether a wire message can carry a mark.
+fn has_text(message: &Value) -> bool {
+    text_of(message).is_some()
+}
+
+/// GH #890: lay the cache wire over a built chat-completions request.
+///
+/// | `cache_mode` | what changes |
+/// |---|---|
+/// | `off` | nothing -- the request of before, byte for byte |
+/// | `implicit` | root `prompt_cache_key` ([`prompt_cache_key`]) |
+/// | `breakpoints` | two marks ([`cache_control`]): the end of the system message, and the end of the stable history |
+///
+/// The stable history ends before the YOUNGEST user message (wire role
+/// `user`, which is also how a `peer` turn travels): everything behind it is
+/// this call's own round. Its last message that has text carries the second
+/// mark; a request with no history before its youngest user turn carries the
+/// system mark alone (OR-KX-C3: two marks cover the prefix the curator
+/// freezes, OR-KX-G4). Only the marked messages change form -- `map_turn`
+/// keeps building strings, and every other message stays byte-identical.
+///
+/// Runs AFTER `build_openai_request`, so a `prompt_cache_key` in
+/// `provider_extra` is kept: the overlay wins there as everywhere.
+pub(crate) fn apply_cache_wire(
+    request: &mut Value,
+    params: &crate::llm::params::LlmParams,
+    cell_path: &str,
+) {
+    use crate::llm::params::CacheMode;
+    match params.cache_mode {
+        CacheMode::Off => {}
+        CacheMode::Implicit => {
+            if let Some(body) = request.as_object_mut() {
+                body.entry("prompt_cache_key")
+                    .or_insert_with(|| Value::String(prompt_cache_key(cell_path)));
+            }
+        }
+        CacheMode::Breakpoints => {
+            let mark = cache_control(params.cache_ttl_s);
+            let Some(messages) = request.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+                return;
+            };
+            let role_is =
+                |m: &Value, role: &str| m.get("role").and_then(|r| r.as_str()) == Some(role);
+            let has_system = messages.first().is_some_and(|m| role_is(m, "system"));
+            if has_system {
+                mark_message_end(&mut messages[0], &mark);
+            }
+            let Some(youngest_user) = messages.iter().rposition(|m| role_is(m, "user")) else {
+                return;
+            };
+            // The system message sits at 0 and a user message never does when
+            // it is there, so the history is never an inverted range.
+            let history = &mut messages[usize::from(has_system)..youngest_user];
+            if let Some(last_with_text) = history.iter_mut().rev().find(|m| has_text(m)) {
+                mark_message_end(last_with_text, &mark);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod gh890_tests {
+    use super::*;
+    use crate::llm::params::LlmParams;
+    use meclaw_core::serde_json::json;
+
+    fn params(extra: Value) -> LlmParams {
+        let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k"});
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            raw[k] = v;
+        }
+        LlmParams::parse(&raw).unwrap()
+    }
+
+    fn turn(origin: &str, text: &str) -> Value {
+        json!({"origin": origin, "type": "text", "text": text})
+    }
+
+    /// The request as `handle` builds it: body, then the cache wire.
+    fn wired(extra: Value, system: &str, turns: &[Value], path: &str) -> Value {
+        let p = params(extra);
+        let mut body = build_openai_request(&p, system, turns, &[]).unwrap();
+        apply_cache_wire(&mut body, &p, path);
+        body
+    }
+
+    /// Every `cache_control` in the body, as the index of the message it sits in.
+    fn marked(body: &Value) -> Vec<usize> {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.to_string().contains("cache_control"))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn history() -> Vec<Value> {
+        vec![turn("user", "a"), turn("assistant", "b"), turn("user", "c")]
+    }
+
+    #[test]
+    fn off_changes_nothing_at_all() {
+        let p = params(json!({"cache_mode": "off", "cache_ttl_s": 3600}));
+        let plain = build_openai_request(&p, "S", &history(), &[]).unwrap();
+        let mut body = plain.clone();
+        apply_cache_wire(&mut body, &p, "/a/brain");
+        assert_eq!(
+            meclaw_core::serde_json::to_string(&body).unwrap(),
+            meclaw_core::serde_json::to_string(&plain).unwrap()
+        );
+    }
+
+    #[test]
+    fn implicit_sets_one_stable_prompt_cache_key() {
+        let one = wired(
+            json!({"cache_mode": "implicit"}),
+            "S",
+            &history(),
+            "/a/brain",
+        );
+        let two = wired(
+            json!({"cache_mode": "implicit"}),
+            "T",
+            &[turn("user", "z")],
+            "/a/brain",
+        );
+        let other = wired(
+            json!({"cache_mode": "implicit"}),
+            "S",
+            &history(),
+            "/b/brain",
+        );
+        let key = one["prompt_cache_key"].as_str().expect("a key").to_string();
+        assert_eq!(two["prompt_cache_key"], key.as_str(), "same cell, same key");
+        assert_ne!(
+            other["prompt_cache_key"],
+            key.as_str(),
+            "another cell, another key"
+        );
+        assert!(key.len() <= 64 && !key.contains("brain"), "{key}");
+        assert!(marked(&one).is_empty(), "implicit sets no marks: {one}");
+        // A key the operator set in provider_extra is kept.
+        let own = wired(
+            json!({"cache_mode": "implicit", "provider_extra": {"prompt_cache_key": "mine"}}),
+            "S",
+            &history(),
+            "/a/brain",
+        );
+        assert_eq!(own["prompt_cache_key"], "mine");
+    }
+
+    #[test]
+    fn breakpoints_marks_the_system_end_and_the_history_end() {
+        let body = wired(json!({"cache_mode": "breakpoints"}), "S", &history(), "/a");
+        assert_eq!(marked(&body), vec![0, 2], "{body}");
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([{"type": "text", "text": "S", "cache_control": {"type": "ephemeral"}}])
+        );
+        assert_eq!(
+            body["messages"][2]["content"][0]["text"], "b",
+            "the last message before the youngest user turn"
+        );
+        assert_eq!(
+            body["messages"][3]["content"], "c",
+            "the round stays a string"
+        );
+        assert!(body.get("prompt_cache_key").is_none(), "{body}");
+    }
+
+    /// The plan's two cases: one turn = the system mark alone; no system
+    /// message and one turn = no mark at all.
+    #[test]
+    fn one_turn_gets_only_the_system_mark() {
+        let body = wired(
+            json!({"cache_mode": "breakpoints"}),
+            "S",
+            &[turn("user", "x")],
+            "/a",
+        );
+        assert_eq!(marked(&body), vec![0], "{body}");
+        let bare = wired(
+            json!({"cache_mode": "breakpoints"}),
+            "",
+            &[turn("user", "x")],
+            "/a",
+        );
+        assert!(marked(&bare).is_empty(), "{bare}");
+        assert_eq!(bare["messages"][0]["content"], "x");
+    }
+
+    /// A tool round after the youngest user turn is not history, and an
+    /// assistant message without text cannot carry a mark: the walk goes back
+    /// to the last message that has text.
+    #[test]
+    fn the_history_mark_skips_the_round_and_a_textless_message() {
+        let turns = vec![
+            turn("user", "a"),
+            turn("assistant", "b"),
+            json!({"origin": "assistant", "type": "tool_call", "id": "t1",
+                   "text": "{\"name\":\"f\",\"arguments\":\"{}\"}"}),
+            json!({"origin": "tool", "type": "tool_result", "id": "t1", "text": "r"}),
+            turn("user", "c"),
+            json!({"origin": "assistant", "type": "tool_call", "id": "t2",
+                   "text": "{\"name\":\"f\",\"arguments\":\"{}\"}"}),
+            json!({"origin": "tool", "type": "tool_result", "id": "t2", "text": "r2"}),
+        ];
+        let body = wired(json!({"cache_mode": "breakpoints"}), "S", &turns, "/a");
+        // messages: 0 system, 1 a, 2 b, 3 tool_calls, 4 tool r, 5 c, 6 tool_calls, 7 tool r2
+        assert_eq!(marked(&body), vec![0, 4], "{body}");
+        let only_calls = vec![
+            turn("user", "a"),
+            json!({"origin": "assistant", "type": "tool_call", "id": "t1",
+                   "text": "{\"name\":\"f\",\"arguments\":\"{}\"}"}),
+            turn("user", "c"),
+        ];
+        let body = wired(json!({"cache_mode": "breakpoints"}), "S", &only_calls, "/a");
+        assert_eq!(
+            marked(&body),
+            vec![0, 1],
+            "back past the textless call: {body}"
+        );
+    }
+
+    /// The mock fixtures of the three dialects: each spelling of the
+    /// cache-write figure lands in one field.
+    #[test]
+    fn the_three_cache_write_spellings_land_in_one_field() {
+        for (usage, want) in [
+            (
+                json!({"prompt_tokens_details": {"cache_write_tokens": 7}}),
+                Some(7),
+            ),
+            (
+                json!({"input_tokens_details": {"cache_creation_tokens": 8}}),
+                Some(8),
+            ),
+            (json!({"cache_creation_input_tokens": 9}), Some(9)),
+            (json!({"prompt_tokens": 1}), None),
+        ] {
+            assert_eq!(usage_tokens_cache_write(Some(&usage)), want, "{usage}");
+        }
+        let body = json!({
+            "id": "x", "model": "m",
+            "choices": [{"message": {"role": "assistant", "content": "hi"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 1,
+                      "cache_creation_input_tokens": 64, "cache_read_input_tokens": 5}
+        });
+        let t = parse_openai_response(&body).unwrap();
+        assert_eq!(t.tokens_cache_write, Some(64));
+        assert_eq!(t.tokens_cached, Some(5));
+    }
+
+    #[test]
+    fn ttl_1h_only_at_or_above_3600() {
+        for (ttl, one_hour) in [
+            (0, false),
+            (300, false),
+            (3599, false),
+            (3600, true),
+            (7200, true),
+        ] {
+            let body = wired(
+                json!({"cache_mode": "breakpoints", "cache_ttl_s": ttl}),
+                "S",
+                &history(),
+                "/a",
+            );
+            for idx in marked(&body) {
+                let mark = &body["messages"][idx]["content"][0]["cache_control"];
+                assert_eq!(mark["type"], "ephemeral", "{ttl}: {mark}");
+                assert_eq!(mark.get("ttl").is_some(), one_hour, "{ttl}: {mark}");
+                if one_hour {
+                    assert_eq!(mark["ttl"], "1h");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod gh853_gh854_tests {
     use super::*;
@@ -780,6 +1115,9 @@ pub(crate) struct TranslatedResponse {
     /// hit and a provider that reports nothing at all are the same `None`
     /// here, because neither of them is a zero we measured (GH #463).
     pub(crate) tokens_cached: Option<u64>,
+    /// GH #890: cache-WRITE token-count, from whichever spelling the provider
+    /// uses ([`usage_tokens_cache_write`]). `None` when not reported.
+    pub(crate) tokens_cache_write: Option<u64>,
     /// The provider's OWN cost figure for this call (`usage.cost`, OpenRouter).
     /// Never computed here — a price table in the substrate would be a second
     /// source of truth that goes stale silently (GH #463).
@@ -813,6 +1151,33 @@ pub(crate) fn usage_tokens_cached(usage: Option<&Value>) -> Option<u64> {
         }
     }
     u.get("cache_read_input_tokens").and_then(|v| v.as_u64())
+}
+
+/// GH #890: cache-WRITE tokens out of a provider `usage` object, across the
+/// three spellings the dialects use -- the counterpart of
+/// [`usage_tokens_cached`], and before this issue read by nobody:
+///
+/// | Spelling | Dialect |
+/// |---|---|
+/// | `prompt_tokens_details.cache_write_tokens` | OpenRouter chat-completions |
+/// | `input_tokens_details.cache_creation_tokens` | Responses |
+/// | `cache_creation_input_tokens` | Anthropic and Anthropic-compatible proxies |
+///
+/// A lookup order, not a preference, for the same reason as the read side.
+/// A reported 0 is returned as 0; that a zero write is no write is decided
+/// where the hop is written (`output::HopUsage`).
+pub(crate) fn usage_tokens_cache_write(usage: Option<&Value>) -> Option<u64> {
+    let u = usage?;
+    for path in [
+        ["prompt_tokens_details", "cache_write_tokens"],
+        ["input_tokens_details", "cache_creation_tokens"],
+    ] {
+        if let Some(v) = u.get(path[0]).and_then(|d| d.get(path[1])) {
+            return v.as_u64();
+        }
+    }
+    u.get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
 }
 
 /// The provider's own cost figure out of a `usage` object (`usage.cost`,
@@ -921,6 +1286,7 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
         tokens_prompt,
         tokens_completion,
         tokens_cached: usage_tokens_cached(usage),
+        tokens_cache_write: usage_tokens_cache_write(usage),
         cost: usage_cost(usage),
         model,
         response_id,

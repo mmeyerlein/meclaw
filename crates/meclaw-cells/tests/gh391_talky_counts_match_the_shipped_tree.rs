@@ -141,6 +141,9 @@ fn word(n: usize) -> &'static str {
         (35, "thirty-five"),
         (36, "thirty-six"),
         (37, "thirty-seven"),
+        // GH #889: the curator between collector and brain took talky's graph
+        // to thirty-nine edges.
+        (39, "thirty-nine"),
     ]
     .into_iter()
     .collect();

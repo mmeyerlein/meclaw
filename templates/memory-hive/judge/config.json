@@ -70,6 +70,30 @@
         "error_code": {
           "type": "string",
           "required": false
+        },
+        "latency_ms": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cached": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "cost": {
+          "type": "number",
+          "required": false
+        },
+        "cache_expires_at": {
+          "type": "string",
+          "required": false
+        },
+        "context_window": {
+          "type": "number",
+          "required": false
         }
       }
     },

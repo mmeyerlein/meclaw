@@ -13,7 +13,7 @@
 //!   because every shipped brain's out-edges would take an emission for a
 //!   model answer or dead-letter it as `no_route` (OR-SN.L2.1).
 
-use crate::llm::params::{LlmParams, MODEL_PACKAGE_KEYS};
+use crate::llm::params::{CacheMode, LlmParams, MODEL_PACKAGE_KEYS, WireDialect};
 use crate::params_overlay::RESET_KEY;
 use meclaw_core::serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -101,6 +101,17 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
                     let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
                     format!("len:{},sha:{hex}", m.len())
                 }),
+            // GH #890: shown only when they say something, so the line of a
+            // cell that sets none of them stays the line it always was.
+            "cache_mode" => match params.cache_mode {
+                CacheMode::Off => None,
+                CacheMode::Implicit => Some("implicit".to_string()),
+                CacheMode::Breakpoints => Some("breakpoints".to_string()),
+            },
+            "cache_ttl_s" => (params.cache_ttl_s > 0).then(|| params.cache_ttl_s.to_string()),
+            "context_window" => {
+                (params.context_window > 0).then(|| params.context_window.to_string())
+            }
             _ => None,
         };
         if let Some(v) = value {
@@ -133,6 +144,24 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             keys.join(",")
         }
     )
+}
+
+/// OR-KX-C1: the line that says `breakpoints` runs as `implicit` here.
+///
+/// The Responses wire has no block marks, so a cell on it that is told
+/// `breakpoints` sends the `prompt_cache_key` of `implicit` instead. A hard
+/// refusal would break a registry assignment at run time; silence would leave
+/// an operator believing in marks that never travel. Written beside the params
+/// line, on every restore and every update -- where the params are parsed.
+pub(crate) fn cache_note(path: &str, params: &LlmParams) -> Option<String> {
+    (params.cache_mode == CacheMode::Breakpoints
+        && params.effective_wire_dialect() == WireDialect::Responses)
+        .then(|| {
+            format!(
+                "llm: params {path} cache_mode=breakpoints runs as implicit: the responses \
+                 wire carries no cache marks, only prompt_cache_key"
+            )
+        })
 }
 
 /// A URL for a log line: userinfo, query and fragment dropped, the rest as
@@ -228,5 +257,44 @@ mod tests {
         let bare =
             LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k"})).unwrap();
         assert!(!params_line("/a", &bare, &Map::new()).contains("requirement"));
+    }
+
+    /// GH #890: the three cache keys show when they say something, and a cell
+    /// that sets none of them writes the line it always wrote.
+    #[test]
+    fn the_line_names_the_cache_keys_only_when_set() {
+        let bare =
+            LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k"})).unwrap();
+        let line = params_line("/a", &bare, &Map::new());
+        for key in ["cache_mode", "cache_ttl_s", "context_window"] {
+            assert!(!line.contains(key), "{key} in {line}");
+        }
+        let p = LlmParams::parse(&json!({
+            "provider": "openai", "model": "m", "api_key": "k",
+            "cache_mode": "breakpoints", "cache_ttl_s": 300, "context_window": 64000,
+        }))
+        .unwrap();
+        let line = params_line("/a", &p, &obj(json!({"cache_ttl_s": 300})));
+        assert!(line.contains("cache_mode=breakpoints[start]"), "{line}");
+        assert!(line.contains("cache_ttl_s=300[overlay]"), "{line}");
+        assert!(line.contains("context_window=64000[start]"), "{line}");
+    }
+
+    /// OR-KX-C1: `breakpoints` on the Responses wire is `implicit`, and that is
+    /// said once per params change, not silently.
+    #[test]
+    fn breakpoints_on_the_responses_wire_is_named_as_implicit() {
+        let raw = |mode: &str, dialect: &str| {
+            LlmParams::parse(&json!({
+                "provider": "openai", "model": "m", "api_key": "k",
+                "cache_mode": mode, "wire_dialect": dialect,
+            }))
+            .unwrap()
+        };
+        let note = cache_note("/a", &raw("breakpoints", "responses")).expect("a note");
+        assert!(note.contains("/a") && note.contains("implicit"), "{note}");
+        assert!(cache_note("/a", &raw("breakpoints", "chat_completions")).is_none());
+        assert!(cache_note("/a", &raw("implicit", "responses")).is_none());
+        assert!(cache_note("/a", &raw("off", "responses")).is_none());
     }
 }

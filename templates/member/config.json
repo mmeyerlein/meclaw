@@ -128,10 +128,6 @@
           "because": "one finished turn an assistant offers for archiving, one message per turn. Since GH #527 it is a FAN-OUT and no longer a pure pass-through, on the same terms as `write`: BOTH edges fire, because the same turn is this member's own episode below and the parent's archive above. The edge down is `./assistants -> ./memory-hive` on the hive's `in_episode`, and it is the only path in the substrate from a conversation into an `episodes` table (GH #298 removed every other one). RETRACTED with it, in the words this line carried until #527: `the member's own episode path is extraction -> the memory hive's in_remember, so this lane crosses the boundary untouched`. That was wrong in both halves. `in_remember` is the FACTS lane and it PRESUPPOSES episodes -- a block names no turn, so the ingress binds it to the newest `user` episode of the session and refuses every block while there is none -- and `write` -> `in_close_pass` is no second writer either, because nothing travels in its body and the pass reads the hive's OWN `episodes`. So the level that holds the memory (GH #122) declined the one lane that fills it, and a shipped colony dead-lettered every stored turn as `hive_no_route` at the OS root while its collector stamped each one `episode_written = 1`. `turn_id` comes off the HOP and not off the context: `context.turn_id` is a round uuid, `hop.turn_id` is the deterministic `<session_id>#<index>` the collector mints, and it is what the inline bind and the queue row are keyed on -- an edge that promoted the context key would write episodes nothing can ever bind to, a defect that looks exactly like this one from the outside. The lane still LEAVES the level unchanged, so a parent that wants an archive of its own still gets one. Derived from the emits list of assistant@2.0.0"
         },
         {
-          "route": "prune",
-          "because": "an assistant's housekeeping report, raised when something upstream fired its `in_prune` lane. This member owns no timer and fires nothing, so it neither produces this lane nor consumes it -- it only refuses to swallow it. Derived from the emits list of assistant@2.0.0"
-        },
-        {
           "route": "build",
           "because": "a structural wish or a submission leaving one of this person's generations. The member neither reads it nor answers it: the builder is at the OS level because one colony has one baumeister, and everything between is transit. Derived from the emits list of assistant@2.0.0"
         },
@@ -146,10 +142,6 @@
         {
           "route": "dump",
           "because": "the receipt of one applied import part, from whichever holder took it -- `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row. It is the only positive signal an import has, and it LEAVES the level because whoever sent the document is outside it. Until 1.6.0 it ended inside this member, in a `code` cell that read it and said nothing about it -- the one arrangement GH #284 forbids -- and it ended there only because that cell existed for the EXPORT half. The export writes its own files now (GH #555), so the receipt travels the way every other receipt of this level does. FOUR senders: the three holders and, for a named generation, `./assistants`"
-        },
-        {
-          "route": "pack_ack",
-          "because": "the receipt of one identity pack, from a generation this member's own `./affinity` pushed to (GH #458). The member does NOT consume it, and that is the decision rather than an omission: affinity's own record of a delivery is the `sent_at` stamp it writes itself, and the hive has no lane that takes a receipt -- so a receipt is evidence for whoever operates the colony, and it leaves the level the way `prune` and `error` do. TWO travel per pack, one per occupant of the generation, because `in_pack` fans out to the surface and the core inside the assistant. Derived from the emits list of assistant@2.2.0 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
         },
         {
           "route": "in_tool",
@@ -431,16 +423,6 @@
         {
           "from": "./assistants",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'prune'",
-          "modifier": {
-            "delete_context": [
-              "tool_answerer"
-            ]
-          }
-        },
-        {
-          "from": "./assistants",
-          "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
             "delete_context": [
@@ -558,9 +540,16 @@
         },
         {
           "from": "./assistants",
-          "to": ".",
+          "to": "./affinity",
           "condition": "has(hop.route) && hop.route == 'pack_ack'",
           "modifier": {
+            "set_hop": {
+              "route": "'in_pack_ack'"
+            },
+            "set_context": {
+              "pack_sub": "has(context.pack_sub) ? context.pack_sub : ''",
+              "pack_hash": "has(context.pack_hash) ? context.pack_hash : ''"
+            },
             "delete_context": [
               "tool_answerer"
             ]
@@ -916,7 +905,7 @@
   },
   "description": {
     "purpose": "One person, and the things every assistant that person owns must share: the memory of what was said to them, the curated record of who they and their people are, the screen every inbound turn passes, and -- since 1.3.0 -- the CHANNELS they are reached on. Three refs plus three open containers -- `assistants`, `channels` and, since GH #459, `apps` -- plus one cell of its own: the sink that turns a memory export into files on disk. The level owns nothing else -- no brain, no tools. Since GH #475 the transfer lanes reach one thing more: a generation's session keeper, four levels down, through `./assistants` -- the sessions are the last table of a member that a rebuild could not recompute. Since member@1.5.0 the level also carries an `access` of its own (GH #560). Authorisation and key ownership are two different jobs: the shell's broker answers the submitter's policy questions, but the provider keys this person's brains burn belong to the PERSON -- the same ADR-0013 logic that puts the memory hive at this level. Nothing in this graph reaches it except the drain for its `error` lane, and that is deliberate: the two edges that carry a credential are V-LANES (GH #559), drawn by the manifest that grows a generation, from the brain that spends the grant straight to `./access`. See README section `The credential v-lanes`.",
-    "use_when": "One per person (or per group that owns an agent nobody owns personally -- that group is a member with its own name). Instantiate it into an org's members container, and wire its eight inbound lanes and its thirteen outbound ones in the same mutation -- the three refusal and receipt lanes above all (`reject`, `close_report`, `export_done`), because `memory-hive` pairs every ingress this level sends with an egress the level above has to take, and an undrained pairing refuses the mutation rather than the message. `bundle` is the twelfth and youngest of them (GH #533) and this level pairs it itself: it is the answer to a question sent at the `in_recall` door, and a caller that asks and does not subscribe gets the answer nowhere. Assistants are instantiated into ./assistants afterwards, one at a time, and each of those mutations draws its own two addressing edges to the container. Channels are instantiated into ./channels the same way, one at a time, and each of those draws two edges as well -- see templates/member/README.md, 'Addressing an assistant through a channel'.",
+    "use_when": "One per person (or per group that owns an agent nobody owns personally -- that group is a member with its own name). Instantiate it into an org's members container, and wire its eight inbound lanes and its eleven outbound ones in the same mutation -- the three refusal and receipt lanes above all (`reject`, `close_report`, `export_done`), because `memory-hive` pairs every ingress this level sends with an egress the level above has to take, and an undrained pairing refuses the mutation rather than the message. `bundle` is the twelfth and youngest of them (GH #533) and this level pairs it itself: it is the answer to a question sent at the `in_recall` door, and a caller that asks and does not subscribe gets the answer nowhere. Assistants are instantiated into ./assistants afterwards, one at a time, and each of those mutations draws its own two addressing edges to the container. Channels are instantiated into ./channels the same way, one at a time, and each of those draws two edges as well -- see templates/member/README.md, 'Addressing an assistant through a channel'.",
     "not_in_scope": "No brain and no tool surface -- those are the assistant's, and one member may own several. No memory-drain: per-turn extraction (GH #298, ruling Q11) replaced it, and it does not belong in the assistant either. No terminal: a refusal here leaves the level and becomes no_route in the DLQ if nobody consumes it -- recorded and self-localising, which is state (2) of GH #284. And since 1.6.0 there is no cell here at all to be a counter-example: the one that landed an export on disk is gone, because every store writes its own files (GH #555). No org-level anything: what a group knows about a person is a filter on the read, never a second store. The push into a subscribing brain is this level's to own and the instantiating mutation's to draw (GH #453): a subscribe writes a row, never an edge, so the two edges of the recipe are drawn per subscribing cell at instantiation (templates/affinity/README.md, 'Wiring out_push for a subscribing brain'). This level ships the half a template CAN ship -- the answer exit conditioned on hop.subscriber == '', so a push can never leave on the brief lane."
   }
 }

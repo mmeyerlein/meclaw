@@ -15,9 +15,37 @@
 //! `"header"` object; Colony extracts `content.header` into `message.headers`
 //! via the Phase-3b mechanism.
 
+use crate::llm::params::{CacheMode, LlmParams};
 use crate::llm::translate::TranslatedResponse;
 use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{CellOutput, OutputSink, Path};
+
+/// Every key this module writes into a hop header, with its JSON type -- the
+/// success path ([`emit_assistant_turn`]) and the error path
+/// ([`emit_error_with_hop`]) together, each written only when it has a value.
+///
+/// GH #890 (F15 of the gate wave, OR-KX-G8): the header grew keys the shipped
+/// `llm` cells never declared -- `latency_ms`, `tokens_cached` and `cost` were
+/// undeclared in 18 of 18 -- and nothing failed, because the contract check
+/// leaves undeclared slots open. `gh890_every_llm_cell_declares_what_output_writes`
+/// reads THIS list and holds every `llm` cell under `templates/` to it, so a
+/// key added here without its declaration is a red test, not a quiet gap.
+/// The unit test `every_key_the_emitters_write_is_named_here` holds the list
+/// to the emitters in the other direction. Keys a caller hands in through
+/// `extra_hop` (the GH #863 refusal pair) are the caller's, not this module's.
+pub const HOP_KEYS: &[(&str, &str)] = &[
+    ("finish_reason", "string"),
+    ("error_code", "string"),
+    ("latency_ms", "number"),
+    ("tokens_prompt", "number"),
+    ("tokens_completion", "number"),
+    ("tokens_cached", "number"),
+    ("tokens_cache_write", "number"),
+    ("cost", "number"),
+    ("model", "string"),
+    ("cache_expires_at", "string"),
+    ("context_window", "number"),
+];
 
 /// The usage block of one provider call, as it travels into the hop header.
 ///
@@ -35,6 +63,10 @@ pub(crate) struct HopUsage {
     pub(crate) tokens_completion: Option<u64>,
     /// Cache-read tokens, in whichever spelling the provider used.
     pub(crate) tokens_cached: Option<u64>,
+    /// GH #890: cache-WRITE tokens, in whichever spelling the provider used.
+    /// Read before this issue by nobody: the one figure that says a prefix
+    /// was just written, and so when a cache begins to age.
+    pub(crate) tokens_cache_write: Option<u64>,
     /// The provider's own cost figure for the call. Never computed here.
     pub(crate) cost: Option<f64>,
 }
@@ -46,6 +78,7 @@ impl HopUsage {
             tokens_prompt: t.tokens_prompt,
             tokens_completion: t.tokens_completion,
             tokens_cached: t.tokens_cached,
+            tokens_cache_write: t.tokens_cache_write,
             cost: t.cost,
         }
     }
@@ -62,11 +95,64 @@ impl HopUsage {
         if let Some(t) = self.tokens_cached {
             header.insert("tokens_cached".into(), Value::from(t));
         }
+        // GH #890: a zero write is no write. A provider that reports
+        // `cache_write_tokens: 0` on every call that wrote nothing would
+        // otherwise put a key on every hop that says nothing happened.
+        if let Some(t) = self.tokens_cache_write.filter(|t| *t > 0) {
+            header.insert("tokens_cache_write".into(), Value::from(t));
+        }
         // `Value::from(f64)` yields `Null` for a non-finite float, and a null
         // in a summed header column is worse than a missing key: SQLite would
         // read it as "present, unreadable" rather than "not reported".
         if let Some(c) = self.cost.filter(|c| c.is_finite()) {
             header.insert("cost".into(), Value::from(c));
+        }
+    }
+}
+
+/// GH #890: what the cell states about its own cache and window, stamped on a
+/// SUCCESSFUL answer only. An error carries none of it: a call that failed
+/// wrote no prefix, so there is nothing that could go cold, and the error
+/// path keeps the header it has had since GH #463.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct HopCache {
+    /// Seconds the provider keeps the written prefix warm. `Some` only with
+    /// `cache_mode` not `off` and `cache_ttl_s > 0`: `off` marks nothing, and
+    /// a TTL of 0 is an unknown expiry (a local engine's prefix cache).
+    pub(crate) ttl_s: Option<u64>,
+    /// The model's context window in tokens, `Some` only above 0.
+    pub(crate) context_window: Option<u64>,
+}
+
+impl HopCache {
+    /// Read the stamp rules off the cell's params.
+    pub(crate) fn of(params: &LlmParams) -> Self {
+        Self {
+            ttl_s: (params.cache_mode != CacheMode::Off && params.cache_ttl_s > 0)
+                .then_some(params.cache_ttl_s),
+            context_window: (params.context_window > 0).then_some(params.context_window),
+        }
+    }
+
+    /// Write the stamp. `answered_at_unix_ms` is the end of the provider call
+    /// -- `started_at + latency_ms`, the instant `latency_ms` measures to --
+    /// cut to whole seconds, in UTC, and the TTL is added to that: RFC 3339 on
+    /// seconds with `Z`, the form a `timer` takes as `at`, so the curator sets
+    /// its alarm on the stamp as it stands (OR-KX-G2).
+    fn write_into(&self, header: &mut Map<String, Value>, answered_at_unix_ms: i64) {
+        if let Some(ttl) = self.ttl_s {
+            let at = answered_at_unix_ms
+                .div_euclid(1000)
+                .saturating_add(ttl as i64);
+            if let Some(t) = chrono::DateTime::<chrono::Utc>::from_timestamp(at, 0) {
+                header.insert(
+                    "cache_expires_at".into(),
+                    Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                );
+            }
+        }
+        if let Some(window) = self.context_window {
+            header.insert("context_window".into(), Value::from(window));
         }
     }
 }
@@ -84,6 +170,7 @@ pub(crate) async fn emit_assistant_turn(
     assistant_turns: Vec<Value>,
     finish_reason: &str,
     usage: HopUsage,
+    cache: HopCache,
     model: &str,
     response_id: &str,
     started_at_unix_ms: i64,
@@ -95,6 +182,10 @@ pub(crate) async fn emit_assistant_turn(
         Value::String(finish_reason.to_string()),
     );
     usage.write_into(&mut header);
+    cache.write_into(
+        &mut header,
+        started_at_unix_ms.saturating_add(latency_ms as i64),
+    );
     // GH #463: the measured wall time belongs in the header, because that is
     // the compartment `/colony/ledger` sums over. It STAYS in `meta` as well —
     // dropping it there would break every reader that has been reading it
@@ -272,8 +363,10 @@ mod tests {
                 tokens_prompt: Some(10),
                 tokens_completion: Some(5),
                 tokens_cached: Some(8),
+                tokens_cache_write: None,
                 cost: Some(0.000_25),
             },
+            HopCache::default(),
             "gpt-4o",
             "chatcmpl-1",
             1234567890,
@@ -315,8 +408,10 @@ mod tests {
                 tokens_prompt: Some(10),
                 tokens_completion: Some(5),
                 tokens_cached: None,
+                tokens_cache_write: None,
                 cost: None,
             },
+            HopCache::default(),
             "gpt-4o",
             "chatcmpl-1",
             1,
@@ -351,6 +446,7 @@ mod tests {
                 cost: Some(f64::NAN),
                 ..HopUsage::default()
             },
+            HopCache::default(),
             "gpt-4o",
             "chatcmpl-1",
             1,
@@ -366,6 +462,155 @@ mod tests {
             "NaN is not a cost: {}",
             em.content["header"]
         );
+    }
+
+    // ───── GH #890: the cache stamp ─────
+
+    fn cache(ttl_s: Option<u64>, context_window: Option<u64>) -> HopCache {
+        HopCache {
+            ttl_s,
+            context_window,
+        }
+    }
+
+    async fn header_of(usage: HopUsage, cache: HopCache, started: i64, latency: u64) -> Value {
+        let (sink, mut rx) = mk_sink();
+        emit_assistant_turn(
+            &sink,
+            Path::new("/sink"),
+            vec![],
+            "stop",
+            usage,
+            cache,
+            "m",
+            "r",
+            started,
+            latency,
+        )
+        .await;
+        rx.recv().await.unwrap().content["header"].clone()
+    }
+
+    /// The answer time is the end of the provider call (`started + latency`),
+    /// cut to whole seconds in UTC; the TTL is added to that.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_cache_stamp_is_the_answer_time_plus_the_ttl() {
+        let h = header_of(
+            HopUsage::default(),
+            cache(Some(300), Some(200_000)),
+            1_700_000_000_500,
+            1_700,
+        )
+        .await;
+        // 1_700_000_002_200 ms -> 1_700_000_002 s, + 300 s.
+        assert_eq!(h["cache_expires_at"], "2023-11-14T22:18:22Z", "{h}");
+        assert_eq!(h["context_window"], 200_000, "{h}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_ttl_and_no_window_stamp_nothing() {
+        let h = header_of(HopUsage::default(), HopCache::default(), 1, 1).await;
+        let h = h.as_object().unwrap();
+        assert!(!h.contains_key("cache_expires_at"), "{h:?}");
+        assert!(!h.contains_key("context_window"), "{h:?}");
+    }
+
+    #[test]
+    fn off_or_a_zero_ttl_leaves_the_expiry_unknown() {
+        let params = |extra: Value| {
+            let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k"});
+            for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+                raw[k] = v;
+            }
+            LlmParams::parse(&raw).unwrap()
+        };
+        assert_eq!(
+            HopCache::of(&params(json!({"cache_mode": "off", "cache_ttl_s": 300}))),
+            cache(None, None)
+        );
+        assert_eq!(
+            HopCache::of(&params(json!({"cache_mode": "implicit", "cache_ttl_s": 0}))),
+            cache(None, None)
+        );
+        assert_eq!(
+            HopCache::of(&params(
+                json!({"cache_mode": "breakpoints", "cache_ttl_s": 300,
+                                        "context_window": 1000})
+            )),
+            cache(Some(300), Some(1000))
+        );
+        assert_eq!(
+            HopCache::of(&params(json!({"context_window": 1000}))),
+            cache(None, Some(1000)),
+            "the window is stamped without a cache"
+        );
+    }
+
+    /// Review focus (4): a zero write is not stamped, a real one is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_zero_cache_write_is_not_stamped() {
+        let zero = HopUsage {
+            tokens_cache_write: Some(0),
+            ..HopUsage::default()
+        };
+        let h = header_of(zero, HopCache::default(), 1, 1).await;
+        assert!(h.get("tokens_cache_write").is_none(), "{h}");
+        let some = HopUsage {
+            tokens_cache_write: Some(176),
+            ..HopUsage::default()
+        };
+        let h = header_of(some, HopCache::default(), 1, 1).await;
+        assert_eq!(h["tokens_cache_write"], 176, "{h}");
+    }
+
+    /// `HOP_KEYS` is what the two emitters write, no more and no less: every
+    /// key of a fully reported success and of an error is in it, and every
+    /// entry of it is written by one of them. The template sweep reads the
+    /// constant, so a dead entry would be a declaration nobody emits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_key_the_emitters_write_is_named_here() {
+        let full = HopUsage {
+            tokens_prompt: Some(1),
+            tokens_completion: Some(1),
+            tokens_cached: Some(1),
+            tokens_cache_write: Some(1),
+            cost: Some(0.1),
+        };
+        let success = header_of(full, cache(Some(60), Some(1)), 1, 1).await;
+        let (sink, mut rx) = mk_sink();
+        emit_error(
+            &sink,
+            Path::new("/sink"),
+            "provider_error",
+            "x",
+            "wire",
+            vec![],
+            1,
+            1,
+            None,
+            None,
+            None,
+        )
+        .await;
+        let error = rx.recv().await.unwrap().content["header"].clone();
+        let named: std::collections::BTreeSet<&str> = HOP_KEYS.iter().map(|(k, _)| *k).collect();
+        let mut written = std::collections::BTreeSet::new();
+        for header in [&success, &error] {
+            for (key, value) in header.as_object().unwrap() {
+                let (_, ty) = HOP_KEYS
+                    .iter()
+                    .find(|(k, _)| *k == key.as_str())
+                    .unwrap_or_else(|| panic!("{key} is written but not in HOP_KEYS"));
+                let fits = match *ty {
+                    "string" => value.is_string(),
+                    "number" => value.is_number(),
+                    other => panic!("{key}: unknown type {other}"),
+                };
+                assert!(fits, "{key} is declared {ty} but written as {value}");
+                written.insert(key.as_str());
+            }
+        }
+        assert_eq!(written, named, "an entry of HOP_KEYS no emitter writes");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

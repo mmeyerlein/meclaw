@@ -81,9 +81,9 @@ PLACEABLE = {
 # and table file: {hive directory: {table file: (column, ...)}}.
 #
 # This is the twin of `RESET` in `templates/affinity/porter` -- the same
-# decision, taken on the other way in. `pack_hash` and `sent_at` do not say
-# what the source DECIDED, they say what the source already DELIVERED, to a
-# cell path in a colony that no longer exists. Placed verbatim, the reborn
+# decision, taken on the other way in. `pack_hash`, `sent_at` and `retry` do
+# not say what the source DECIDED, they say what the source already DELIVERED
+# or tried, to a cell path in a colony that no longer exists. Placed verbatim, the reborn
 # store holds the hash of a pack it never sent, `./push` computes that very
 # hash over the unchanged record, and stays silent for ever: measured on a
 # rebuilt deployment, thousands of push ticks and not one `in_pack`, and every
@@ -94,7 +94,7 @@ PLACEABLE = {
 # One entry, because there is exactly one such case in the catalogue; a hive
 # that grows a second delivery trace names it here beside its porter's list.
 RESET_ON_SEED = {
-    "affinity": {"subscribers.jsonl": ("pack_hash", "sent_at")},
+    "affinity": {"subscribers.jsonl": ("pack_hash", "sent_at", "retry")},
 }
 
 # The marker the substrate writes after the last table of a complete export
@@ -380,8 +380,8 @@ def edges(name):
     inbound = ["in_turn", "in_recall", "in_brief", "in_propose",
                "in_build_result", "in_export"]
     outbound = ["answer", "bundle", "ack", "reject", "error", "write",
-                "turn_write", "prune", "build", "close_report", "export_done",
-                "dump", "pack_ack"]
+                "turn_write", "build", "close_report", "export_done",
+                "dump"]
     # The doors carry the member's own name as well (GH #478). `Edge.to` is a
     # static path, so a container with two members needs two addresses -- and
     # the guard is PERMISSIVE, because nothing promotes `context.member` today:

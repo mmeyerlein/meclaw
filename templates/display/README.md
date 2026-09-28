@@ -1,4 +1,4 @@
-# `display@2.8.0`
+# `display@2.8.1`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -460,3 +460,5 @@ touch.
   application writes stays text: its raw props pass an allowlist, its own components carry
   no script unless `code_views` lists the view, and the page's socket reaches only `voice`
   and `browser`.
+- `2.8.1` `./judge` declares every hop key the `llm` cell writes into an answer; nothing else
+  moved.

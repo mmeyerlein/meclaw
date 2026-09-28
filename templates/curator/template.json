@@ -1,0 +1,33 @@
+{
+  "name": "curator",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The window of one model, owned in one place, with a ledger of every call. The hive decides the whole context of the model it serves -- the system part, the history and the running round -- and writes down, per call, exactly which blocks went out: every element is stored once under the sha256 of its canonical JSON, the wall records the order they arrived in, and `calls` plus `call_blocks` rebuild any request byte for byte. The system part is sent only when a family of it changed, and then as one `$replace` root; between two rebuilds only the end of the window moves, which is what a provider's prefix cache keys on. When the model reports that its cache has gone cold, or the prompt crosses `compress_at` of the context window, a small model of the hive's own condenses the older history into one summary, which the window then carries as `system.history.summary` -- never while a call waits, at most one at a time, and a failed summary leaves the window as it was.",
+    "use_when": "In front of any `llm` cell whose window must not grow without bound or must be accountable: instantiate it with `ctx.model` for its summarizer, send the round on `in_curate`, draw `brain` onto the model with `curator_call`, `session_id`, `turn_id` and `iter` promoted into context, and route every output of the model back on `in_llm` with that context. The model's `system_order` puts `history` after `identity`, `persona` and `instructions`, so the summary is the last and least stable part of the system prompt.",
+    "not_in_scope": "No retrieval and no tool round: the caller gathers, this hive keeps and projects. No policy per role and no horizon: the window is the whole wall after the last summary, across sessions. No judgement of what is true: a summary reports what was said. It never reads the sections of a sidecar block; it only measures where the block stands.",
+    "examples": [
+      "PORTS - every endpoint is the HIVE path (`params.ports` is empty and therefore sealed; a mutation edge onto a cell inside is refused with hive_port_boundary). Entry: in_curate, in_slots, in_llm, in_pack, in_close, in_model. Exit on `hop.route`: brain, turn_write, write, pack_ack, model_refused.",
+      "LEDGER - `blocks` (hash, kind, chars, body, first_seen), `wall` (seq, session_id, turn_id, iter, kind, hash, nth, final, episode_idx, at), `calls`, `call_blocks`, `summaries`, `slots`, `state`. A call is rebuilt by reading its `call_blocks` in `pos` order and each block's `body`: the system leaves first, then the messages.",
+      "REBUILD - a tap stamped `cache_expires_at` sets the clock (remove the last order, add this one); when it fires for the newest call, the wall between the last summary and the newest `keep_recent` rounds goes to the summarizer with the previous summary, and the next call's `actions` name `rebuild:cache` and the summary id."
+    ]
+  },
+  "requires": {
+    "ctx": {
+      "model": {
+        "type": "string",
+        "required": true,
+        "because": "the model the summarizer condenses the history with"
+      }
+    }
+  },
+  "tags": [
+    "curator",
+    "context",
+    "window",
+    "ledger",
+    "cache",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

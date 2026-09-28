@@ -14,11 +14,15 @@
 //!    description lives elsewhere (OR-SN-49) -- non-empty, within the 2 KiB the
 //!    llm cell holds it to, and naming no model: no `vendor/model` shape, no
 //!    model id of the shipped catalogue, not the cell's own start value;
-//! 2. every sealed template (`params.ports == []`) with an `llm` cell directly
-//!    in it -- except `display`, and `llm-registry`, whose translator is never
-//!    resolved by the registry itself -- accepts `in_model`, draws exactly one door
-//!    edge per llm cell from `.`, and no other door from `.` takes the lane;
-//!    each such llm cell consumes a params-only body;
+//! 2. every sealed template (`params.ports == []`) with an `llm` cell in it --
+//!    except `display`, and `llm-registry`, whose translator is never resolved
+//!    by the registry itself -- accepts `in_model`, draws exactly one door edge
+//!    per llm cell from `.`, and no other door from `.` takes the lane; each such
+//!    llm cell consumes a params-only body. An llm cell counts when it sits
+//!    directly in the template or in a hive the template nests (a `ref` or an
+//!    inline hive): since GH #889 every talky and cogny carries a curator hive
+//!    with its own `summarizer`, whose door from `.` leads onto `./curator`,
+//!    and the brain's door must let exactly that push pass;
 //! 3. the builder's recipe announces a grown brain's need as a byte copy of the
 //!    template cell's `requirement` (it reads nothing but its stdin), and so do
 //!    the shell's own announcement of its judge and its composer;
@@ -205,12 +209,63 @@ fn every_llm_cell_states_what_it_needs_and_names_no_model() {
     assert!(checked >= 15, "only {checked} cells checked");
 }
 
-/// Hop of a push addressed to `cell` inside a composite.
-fn push_hop(cell: &str) -> Map<String, Value> {
-    json!({"route": "in_model", "subscriber": format!("/x/composite/{cell}")})
+/// Hop of a push addressed to `cell` (a path below the template, e.g. `brain`
+/// or `curator/summarizer`) inside an instance of `template`. The instance
+/// carries the template's name, as every instance does, so a door conditioned
+/// on the nested path (`endsWith('/curator/summarizer')`) is measured on the
+/// address a grown colony really stamps.
+fn push_hop(template: &str, cell: &str) -> Map<String, Value> {
+    json!({"route": "in_model", "subscriber": format!("/x/{template}/{cell}")})
         .as_object()
         .cloned()
         .unwrap()
+}
+
+/// The llm cells a push into the sealed template at `dir` has to reach, as
+/// `(path below the template, directory of the cell)`: the direct children, and
+/// the direct children of every child that is itself a hive -- a `ref`, resolved
+/// to the template it names, or an inline hive (GH #889: the curator's
+/// `summarizer`). A ref this tree cannot resolve names no cell to check yet --
+/// whether a ref resolves is not this rule's question.
+fn llm_cells_of(dir: &Path) -> Vec<(String, PathBuf)> {
+    let is_llm = |d: &Path| {
+        d.join("config.json").is_file()
+            && read_json(&d.join("config.json"))["cell"]["type"] == "llm"
+    };
+    let mut out = Vec::new();
+    for child in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = child.path();
+        let name = child.file_name().to_string_lossy().to_string();
+        if !path.join("config.json").is_file() {
+            continue;
+        }
+        let cfg = read_json(&path.join("config.json"));
+        let nested = match cfg["cell"]["type"].as_str() {
+            Some("llm") => {
+                out.push((name, path));
+                continue;
+            }
+            Some("ref") => {
+                let template = cfg["cell"]["template"].as_str().unwrap_or_default();
+                repo("templates").join(template.split('@').next().unwrap_or_default())
+            }
+            Some("hive") => path,
+            _ => continue,
+        };
+        let Ok(inner) = std::fs::read_dir(&nested) else {
+            continue;
+        };
+        for grand in inner.flatten() {
+            if is_llm(&grand.path()) {
+                out.push((
+                    format!("{name}/{}", grand.file_name().to_string_lossy()),
+                    grand.path(),
+                ));
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 fn takes(condition: Option<&str>, hop: &Map<String, Value>) -> bool {
@@ -244,17 +299,12 @@ fn every_sealed_composite_with_a_model_opens_the_model_door() {
         if cfg["params"]["ports"] != json!([]) {
             continue;
         }
-        let mut llms: Vec<String> = std::fs::read_dir(entry.path())
-            .unwrap()
-            .flatten()
-            .filter(|e| e.path().join("config.json").is_file())
-            .filter(|e| read_json(&e.path().join("config.json"))["cell"]["type"] == "llm")
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
+        // GH #889: nested llm cells count too -- the curator's summarizer is
+        // reached through the composite's door onto `./curator`.
+        let llms = llm_cells_of(&entry.path());
         if llms.is_empty() {
             continue;
         }
-        llms.sort();
         sealed_with_llm += 1;
         let accepts = cfg["params"]["contract"]["accepts"]
             .as_array()
@@ -269,22 +319,24 @@ fn every_sealed_composite_with_a_model_opens_the_model_door() {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        for llm in &llms {
-            let hop = push_hop(llm);
+        for (llm, cell_dir) in &llms {
+            let hop = push_hop(&name, llm);
             let reached: Vec<String> = edges
                 .iter()
                 .filter(|e| e["from"] == ".")
                 .filter(|e| takes(e["condition"].as_str(), &hop))
                 .map(|e| e["to"].as_str().unwrap_or_default().to_string())
                 .collect();
+            // A direct cell is reached itself; a nested one through the door
+            // onto the hive that holds it, whose own door takes it from there.
+            let door = llm.split('/').next().unwrap_or(llm);
             assert_eq!(
                 reached,
-                vec![format!("./{llm}")],
-                "{name}: a push addressed to `{llm}` must reach that cell and nothing else -- \
+                vec![format!("./{door}")],
+                "{name}: a push addressed to `{llm}` must reach `./{door}` and nothing else -- \
                  not another llm cell, not a door that takes every `in_` lane"
             );
-            let body = &read_json(&entry.path().join(llm).join("config.json"))["contract"]["consumes"]
-                ["body"];
+            let body = &read_json(&cell_dir.join("config.json"))["contract"]["consumes"]["body"];
             assert!(
                 body["messages"]["required"] == false && body["params"]["type"] == "object",
                 "{name}/{llm} does not consume a params-only body (no `messages`, a `params` \
@@ -332,13 +384,15 @@ fn what_the_recipe_announces_is_what_the_cell_states() {
         copies.keys().cloned().collect::<Vec<_>>(),
         vec![
             "cogny/brain",
+            "curator/summarizer",
             "memory-hive/closer",
             "memory-hive/dialectic",
             "memory-hive/dreamer",
             "memory-hive/judge",
             "talky/brain"
         ],
-        "the recipe announces the assistant's brains and the member's memory cells"
+        "the recipe announces the assistant's brains, its curator summarizers (GH #877) and \
+         the member's memory cells"
     );
     for (cell, copy) in &copies {
         let cfg = read_json(&repo(&format!("templates/{cell}/config.json")));

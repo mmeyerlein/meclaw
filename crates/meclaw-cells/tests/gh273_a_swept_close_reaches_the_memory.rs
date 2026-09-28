@@ -218,7 +218,9 @@ fn main_config() -> Value {
         {"from": "./talky/collector", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer' \
           && !has(hop.round_capped) && !has(hop.degraded)"},
-        {"from": "./talky/collector", "to": "./drain",
+        // GH #889: the close batch is the curator's now -- the keeper's close
+        // reaches `./curator` on `in_close`, and `write` leaves from there.
+        {"from": "./talky/curator", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
@@ -276,6 +278,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["idle_ms"] = json!(0);
     });
     patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });

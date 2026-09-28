@@ -1,0 +1,69 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "resident",
+    "external_timeout_ms": 10000,
+    "turn_write": "1",
+    "script_inline": "import sys, json\n\n# WHAT LEAVES FOR THE MEMORY (curator, GH #888). Two routes, and both keep the\n# contract the collector held up to 4.4.1, word for word, so whoever received them from\n# the collector receives them from here without a change on its side:\n#\n#   turn_write  ONE message per participant turn (the person's `user` turn, the\n#               model's final answer, a `peer` turn), never a batch; `hop.turn_id`\n#               is `<session_id>#<index>`, the index counting the participant\n#               turns of the session from 0. `./intake` mints the index with the\n#               wall row, so a turn written twice is a row written twice -- which\n#               the wall's key rules out.\n#   write       the closed session in ONE message: `messages[]` the participant\n#               turns in order, `rounds` everything else raw.\n#\n# An advice, a delegation, a tool round and a recall are context for the model\n# and nobody's words: they never become an episode (collector `drainable_turns`).\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nenvelope = doc.get(\"envelope\") or {}\nP = doc.get(\"params\") or {}\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\nctx = header.get(\"context\") or {}\n\n\ndef _str(key, default):\n    v = P.get(key, default)\n    return default if v is None else str(v)\n\n\n# Per-turn episodes on or off. The literal is the shipped default, the same one\n# `params` and `contract.settings` carry.\nTURN_WRITE = _str(\"turn_write\", \"1\")\nME = \"curator-writer\"\nSAID = (\"user\", \"assistant\", \"peer\")\n\n\ndef block_span(text):\n    \"\"\"Where an answer's sidecar block stands: (start, end) or None.\n\n    The boundary is the fence `talky/splitter` cuts (GH #379, #605): the\n    ```sidecar fence, or the legacy ```memory fence, to the next closing fence\n    or to the end of the text when the completion stopped inside the block.\n    Measured, never parsed -- the sections inside are somebody else's business.\n    \"\"\"\n    low = text.lower()\n    for fence in (\"```sidecar\", \"```memory\"):\n        at = low.find(fence)\n        if at < 0:\n            continue\n        head = text.find(\"\\n\", at)\n        close = text.find(\"```\", head + 1) if head >= 0 else -1\n        if head >= 0 and close >= 0:\n            return at, close + 3\n        return at, len(text)\n    return None\n\n\ndef stripped_text(text):\n    span = block_span(text)\n    if span is None:\n        return text\n    return (text[:span[0]] + text[span[1]:]).strip()\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef park(reason=\"\"):\n    if reason:\n        sys.stderr.write(\"curator/writer: %s\\n\" % reason)\n    emit([])\n\n\ndef said_turn(role, text, speaker=\"\", speaker_ref=\"\"):\n    \"\"\"One turn as a writer receives it (collector `said_turn`).\"\"\"\n    out = {\"origin\": role, \"type\": \"text\", \"text\": text}\n    if role == \"peer\":\n        if speaker:\n            out[\"speaker\"] = speaker\n        if speaker_ref:\n            out[\"speaker_ref\"] = speaker_ref\n    return out\n\n\ndef lstore(ops, phase, session):\n    return {\"header\": {\"route\": \"lstore\", \"phase\": phase, \"reply_cell\": ME,\n                       \"cur_call\": session, \"cur_reason\": \"\"},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": cid,\n                          \"text\": json.dumps(args)} for cid, args in ops]}\n\n\ndef legs(body):\n    out = {}\n    for m in body.get(\"messages\") or []:\n        if not isinstance(m, dict):\n            continue\n        try:\n            payload = json.loads(m.get(\"text\") or \"null\")\n        except Exception:\n            payload = None\n        out[str(m.get(\"id\") or \"\")] = payload\n    return out\n\n\ndef rows(lg, cid):\n    p = lg.get(cid)\n    return p if isinstance(p, list) else []\n\n\ndef wall_select(session):\n    return {\"operation\": \"select\", \"table\": \"wall\",\n            \"columns\": [\"seq\", \"turn_id\", \"iter\", \"kind\", \"hash\", \"nth\", \"final\",\n                        \"episode_idx\", \"at\"],\n            \"where\": {\"session_id\": session},\n            \"order_by\": [{\"col\": \"seq\", \"dir\": \"asc\"}]}\n\n\ndef write_of(session, wall, blocks):\n    \"\"\"The session, handed on in ONE message (collector `close_batch`).\"\"\"\n    msgs, rounds = [], []\n    for r in wall:\n        b = blocks.get(str(r.get(\"hash\") or \"\"))\n        try:\n            el = json.loads(str((b or {}).get(\"body\") or \"null\"))\n        except Exception:\n            el = None\n        if not isinstance(el, dict):\n            continue\n        kind = str(r.get(\"kind\") or \"\")\n        final = int(r.get(\"final\") or 0) == 1\n        if kind in (\"user\", \"peer\") or (kind == \"assistant\" and final):\n            text = str(el.get(\"text\") or \"\")\n            msgs.append(said_turn(kind, stripped_text(text) if kind == \"assistant\" else text,\n                                  str(el.get(\"speaker\") or \"\"), str(el.get(\"speaker_ref\") or \"\")))\n            continue\n        rounds.append({\"seq\": r.get(\"seq\"), \"turn_id\": r.get(\"turn_id\"), \"iter\": r.get(\"iter\"),\n                       \"kind\": kind, \"hash\": r.get(\"hash\"), \"nth\": r.get(\"nth\"),\n                       \"at\": r.get(\"at\"), \"turn\": el})\n    return {\"header\": {\"route\": \"write\", \"phase\": \"\", \"turn_id\": \"close-\" + session,\n                       \"session_id\": session, \"iter\": \"0\", \"turn_count\": str(len(msgs)),\n                       \"round_count\": str(len(rounds))},\n            \"messages\": msgs, \"rounds\": rounds}\n\n\nlane = str(hop.get(\"route\") or \"\")\nphase = str(ctx.get(\"cur_phase\") or \"\")\nop = str(hop.get(\"operation\") or \"\")\n\nif lane == \"episode\":\n    if TURN_WRITE in (\"\", \"0\"):\n        emit([])\n    out = []\n    for ep in d.get(\"episodes\") or []:\n        if not isinstance(ep, dict) or str(ep.get(\"role\") or \"\") not in SAID:\n            continue\n        session = str(ep.get(\"session_id\") or \"\")\n        index = int(ep.get(\"index\") or 0)\n        out.append({\"header\": {\"route\": \"turn_write\", \"phase\": \"\",\n                               \"turn_id\": \"%s#%d\" % (session, index),\n                               \"session_id\": session, \"iter\": str(ep.get(\"iter\") or \"0\"),\n                               \"turn_index\": str(index),\n                               \"happened_at\": str(ep.get(\"at\") or \"\")},\n                    \"messages\": [said_turn(str(ep.get(\"role\")), str(ep.get(\"text\") or \"\"),\n                                           str(ep.get(\"speaker\") or \"\"),\n                                           str(ep.get(\"speaker_ref\") or \"\"))]})\n    emit(out)\n\nif lane == \"in_close\":\n    session = str(ctx.get(\"session_id\") or hop.get(\"session_id\") or \"\")\n    if not session:\n        park(\"in_close without a session id -- dropped\")\n    emit([lstore([(\"c-wall\", wall_select(session))], \"close-wall\", session)])\n\nif lane:\n    park(\"unknown lane %r -- dropped\" % lane)\n\nif not op:\n    park(\"a message with neither a lane nor a store answer -- dropped\")\n\nsession = str(ctx.get(\"cur_call\") or \"\")\nlg = legs(d)\n\nif phase == \"close-wall\":\n    wall = rows(lg, \"c-wall\")\n    if not wall:\n        # A session with nothing on the wall closes with an empty batch\n        # (review focus K-4): the receiver learns it closed, and nothing fails.\n        emit([write_of(session, [], {})])\n    hashes = sorted({str(r.get(\"hash\") or \"\") for r in wall})\n    emit([lstore([(\"c-wall\", wall_select(session)),\n                  (\"c-blocks\", {\"operation\": \"select\", \"table\": \"blocks\",\n                                \"columns\": [\"hash\", \"body\"],\n                                \"where\": {\"hash\": {\"in\": hashes}}})],\n                 \"close-blocks\", session)])\n\nif phase == \"close-blocks\":\n    blocks = {}\n    for r in rows(lg, \"c-blocks\"):\n        blocks.setdefault(str(r.get(\"hash\") or \"\"), r)\n    emit([write_of(session, rows(lg, \"c-wall\"), blocks)])\n\npark(\"store answer in unknown phase %r -- dropped\" % phase)\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "turn_write": {
+        "type": "string",
+        "secret": false,
+        "default": "1",
+        "description": "Per-turn episodes on the `turn_write` route. \"1\" = one message per participant turn, \"0\" or empty = none."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "rounds": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "lstore",
+            "turn_write",
+            "write"
+          ],
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "What leaves for the memory, in the collector's contract: one `turn_write` per participant turn as it enters the wall, and one `write` batch per closed session, read back from the wall.",
+    "use_when": "Inside the curator only.",
+    "not_in_scope": "An advice, a delegation, a tool round and a recall are context for the model and never an episode.",
+    "emits_meaning": "turn_write: one participant turn. write: the closed session. lstore: the close read.",
+    "consumes_meaning": "episode from `./intake`, in_close from outside, and the ledger's answers to the close read."
+  }
+}

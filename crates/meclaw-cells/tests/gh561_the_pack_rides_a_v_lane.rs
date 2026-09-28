@@ -475,9 +475,15 @@ async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
     }
 }
 
-/// A brain's OWN durable state: the `system` table of one `llm` cell's
-/// `cell.db`. Nothing else in this colony can write a row into it.
-fn brain_slots(td: &tempfile::TempDir, rel: &str) -> Vec<(String, String)> {
+/// A brain's OWN durable state for this lane: the pack-owned slots of the
+/// ledger of the curator in front of it, as `(path, body)` pairs. Nothing else
+/// in this colony can write a row into it.
+///
+/// GH #889: the pack no longer lands in the brain's `cell.db` on arrival. Each
+/// rim's `./curator` holds it in its ledger — table `slots`, owner `pack`
+/// (`curator@1.0.0`) — and hands it to its brain as a `$replace` root with the
+/// NEXT call; the body is read from `blocks` by the slot's hash.
+fn ledger_slots(td: &tempfile::TempDir, rel: &str) -> Vec<(String, String)> {
     let p = td.path().join(rel).join("cell.db");
     if !p.exists() {
         return Vec::new();
@@ -485,8 +491,11 @@ fn brain_slots(td: &tempfile::TempDir, rel: &str) -> Vec<(String, String)> {
     let Ok(conn) = rusqlite::Connection::open(&p) else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare("SELECT slot_path, value FROM system ORDER BY slot_path")
-    else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.path, COALESCE(b.body, '') FROM slots s \
+         LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'pack' ORDER BY s.path",
+    ) else {
         return Vec::new();
     };
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
@@ -496,20 +505,34 @@ fn brain_slots(td: &tempfile::TempDir, rel: &str) -> Vec<(String, String)> {
     }
 }
 
-/// Poll one brain's `system` table until the pushed slot stands in it. The write
-/// happens off the receipt's thread, so this is a wait and not a race; 30s is
-/// the failure marker.
+/// A ledger path belongs to the `identity` family when it IS the family or
+/// lies under it: the ledger may hold it whole or leaf by leaf.
+fn is_identity(path: &str) -> bool {
+    path == "identity"
+        || path
+            .strip_prefix("identity")
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
+}
+
+/// Poll one curator's ledger until the pushed slot stands in it. The write may
+/// land off the receipt's thread, so this is a wait and not a race; 30s is the
+/// failure marker.
 async fn await_identity(td: &tempfile::TempDir, rel: &str) -> String {
     for _ in 0..1500 {
-        let slots = brain_slots(td, rel);
-        if let Some((_, v)) = slots.iter().find(|(p, _)| p == "identity") {
-            return v.clone();
+        let slots = ledger_slots(td, rel);
+        if slots.iter().any(|(p, _)| is_identity(p)) {
+            return slots
+                .iter()
+                .filter(|(p, _)| is_identity(p))
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!(
-        "the pushed identity never reached {rel}'s own cell.db; it holds {:?}",
-        brain_slots(td, rel)
+        "the pushed identity never reached {rel} (`slots`, owner `pack`); it holds {:?}",
+        ledger_slots(td, rel)
     )
 }
 
@@ -584,12 +607,14 @@ async fn the_pack_reaches_both_brains_over_two_v_lanes() {
     }
 
     // 3. And the proof that outlives the messages: the slot stands in the OWN
-    //    `cell.db` of both brains of the generation. One push, two durable
-    //    writes, no hop in between — a generation whose surface knew who it was
-    //    while its core did not would answer as two different people.
+    //    durable state of both brains of the generation — since GH #889 the
+    //    ledger of the curator in front of each, which hands it to its brain
+    //    with the next call. One push, two durable writes, no hop in between —
+    //    a generation whose surface knew who it was while its core did not
+    //    would answer as two different people.
     for rel in [
-        "main/assistants/scribe/talky/brain",
-        "main/assistants/scribe/cogny/brain",
+        "main/assistants/scribe/talky/curator/ledger",
+        "main/assistants/scribe/cogny/curator/ledger",
     ] {
         let identity = await_identity(&td, rel).await;
         assert!(

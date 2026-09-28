@@ -19,17 +19,20 @@
 //! renders an earlier answer as text + block (`wire_turn`). No channel ever
 //! receives the block.
 //!
+//! **GH #889.** The window moved to the curator (R-27-1): the collector files no
+//! answer and no block any more, and the curator keeps what the model said, raw
+//! and with its block, off the brain's tap. Claims 1 and 3 below and the cap on
+//! a kept block are the curator's now (`earlier_answer_keeps_its_block_up_to_the_cap`
+//! in its own tests); what stays here is the hand-over and the channel.
+//!
 //! What this file pins, measured at the receiver:
 //!
-//! 1. the system message the PROVIDER receives carries the contract;
-//! 3. every earlier `assistant` message the provider receives carries its block
-//!    -- the answer that came through splitter, dispatcher and collector, and a
-//!    second one straight from the store; a row written before the column
-//!    existed renders as it always did;
+//! 1. (moved to the curator) the system message the PROVIDER receives carries
+//!    the contract;
+//! 3. (moved to the curator) every earlier `assistant` message the provider
+//!    receives carries its block;
 //! 4. the answer leaving the collector for the channel carries no fence and no
-//!    `sidecar_raw`.
-//!
-//! Plus the cap: a block over `sidecar_max_chars` is not kept, never cut.
+//!    `sidecar_raw`, and the collector files neither.
 //!
 //! **Fix round 1 (review I-1, I-2).** The consult return still saw a bare
 //! earlier answer: the sentence the model writes BESIDE a consult call leaves
@@ -46,30 +49,16 @@
 
 #[path = "support/assemble_cell.rs"]
 mod assemble_cell;
-#[path = "mock_openai.rs"]
-mod mock_openai;
 
-use assemble_cell::{ASSEMBLE, DISPATCHER, SESSION, bundle_reply, calls_of, lane, run_cell};
-use meclaw_cells::llm::LlmCell;
-use meclaw_cells::llm::params::LlmParams;
-use meclaw_colony::DbConn;
-use meclaw_colony::stateful_cell::StatefulCell;
-use meclaw_core::{Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid};
-use mock_openai::{MockOpenAI, canned_chat_completion};
+use assemble_cell::{ASSEMBLE, DISPATCHER, calls_of, lane, run_cell};
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
 
 const SPLITTER: &str = "templates/talky/splitter/config.json";
 const MEMORY_SCHEMAS: &str = "templates/memory-hive/schemas/config.json";
-const TALKY_BRAIN: &str = "templates/talky/brain/config.json";
 
 const ANSWER: &str = "Tea it is.";
 const BLOCK: &str = "```sidecar\n{\"memory\": {\"nothing_new\": false, \"facts\": [{\"subject\": \
      \"alex\", \"predicate\": \"likes\", \"object\": \"tea\"}]}}\n```";
-const ANSWER_2: &str = "Noted, no change.";
-const BLOCK_2: &str = "```sidecar\n{\"memory\":{\"nothing_new\":true,\"facts\":[],\
-     \"topic\":{\"movement\":\"continue\"}}}\n```";
-const OLD_ANSWER: &str = "An answer from before the column.";
 const BESIDE_CALL: &str = "Let me ask the core about that.";
 const CONSULT_CALL: &str =
     "{\"name\":\"consult_cogny\",\"arguments\":\"{\\\"question\\\":\\\"why\\\"}\"}";
@@ -121,145 +110,33 @@ fn collect_answer(ans: &Value, over: &[(&str, Value)]) -> Vec<Value> {
     run_cell(ASSEMBLE, over, doc).0
 }
 
-fn stored_answer_row(out: &[Value]) -> Value {
-    out.iter()
-        .filter(|m| m["header"]["route"] == "cstore")
-        .flat_map(calls_of)
-        .map(|(_, a)| a)
-        .find(|a| a["operation"] == "insert" && a["table"] == "turns")
-        .map(|a| a["row"].clone())
-        .unwrap_or_else(|| panic!("the answer was not stored: {out:?}"))
-}
-
-// ──────────────────────────────────────────────── the window, fan-in, brain
-
-fn row(id: &str, turn: &str, role: &str, content: &str) -> Value {
-    json!({"id": id, "session_id": SESSION, "turn_id": turn, "role": role,
-           "content": content, "deferred": 0, "consult_id": "", "speaker": "",
-           "speaker_ref": ""})
-}
-
-/// The next turn's assembly out of the store rows given, newest first as the
-/// window read returns them: turn-open parks the window leg, collect fires.
-fn assemble_turn(win: Value) -> Value {
-    let a = run_cell(
-        ASSEMBLE,
-        &[],
-        bundle_reply(
-            "turn-open",
-            "t4",
-            &[
-                ("c-open-turn", Value::Null),
-                ("c-open-round", json!([])),
-                ("c-open-win", win),
-                ("c-open-scope", json!([])),
-                ("c-open-roster", json!([])),
-            ],
-        ),
-    )
-    .0;
-    let mut leg = a
+/// GH #889: the collector files no answer -- the curator keeps what the model
+/// said, raw and with its block, off the brain's tap -- so no store op of the
+/// answer's emission writes a `turns` row, and the block rides on none of them.
+fn assert_files_nothing(out: &[Value]) {
+    let writes: Vec<Value> = out
         .iter()
         .filter(|m| m["header"]["route"] == "cstore")
         .flat_map(calls_of)
-        .map(|(_, op)| op)
-        .find(|op| op["operation"] == "insert" && op["row"]["role"] == "leg-window")
-        .map(|op| op["row"].clone())
-        .unwrap_or_else(|| panic!("turn-open parked no window leg: {a:?}"));
-    leg["fired"] = json!(0);
-    run_cell(
-        ASSEMBLE,
-        &[],
-        bundle_reply("collect", "t4", &[("c-collect-read", json!([leg]))]),
-    )
-    .0
-    .into_iter()
-    .find(|m| m["header"]["route"] == "brain")
-    .expect("a complete round assembles on route `brain`")
-}
-
-/// The `memory` offer of the SHIPPED memory hive, merged by the SHIPPED
-/// collector into the `menu` message that carries the contract (GH #606).
-fn contract_menu() -> Value {
-    let (offer, _) = run_cell(MEMORY_SCHEMAS, &[], json!({"tools": ["*"], "messages": []}));
-    let offers = offer[0]["sidecar"].clone();
-    let recorded = run_cell(
-        ASSEMBLE,
-        &[("sidecar", json!("1"))],
-        json!({"target": "/main/collector",
-               "header": {"hop": {"route": "in_menu"}, "context": {}},
-               "messages": [], "unknown": [], "sidecar": offers,
-               // One declaration, or the lane writes no menu at all (gh525).
-               "schemas": [{"name": "web_search", "description": "search",
-                            "parameters": {"type": "object", "properties": {}}}]}),
-    )
-    .0;
-    let op: Value = serde_json::from_str(
-        recorded[0]["messages"]
-            .as_array()
-            .expect("a store bundle")
-            .iter()
-            .find(|m| m["id"] == "c-menu-put")
-            .expect("the answer is recorded")["text"]
-            .as_str()
-            .expect("op text"),
-    )
-    .expect("op json");
-    run_cell(
-        ASSEMBLE,
-        &[("sidecar", json!("1"))],
-        json!({"target": "/main/collector",
-               "header": {"hop": {"route": "cstore", "operation": "bundle"},
-                          "context": {"col_phase": "menu-merge"}},
-               "messages": [{"id": "c-menu-all", "type": "tool_result",
-                             "text": json!([op["row"].clone()]).to_string()}],
-               "results": [{"tool_call_id": "c-menu-all", "operation": "select"}]}),
-    )
-    .0
-    .into_iter()
-    .next()
-    .expect("the menu lane writes one message")
-}
-
-fn brain(td: &tempfile::TempDir, base_url: &str) -> (LlmCell, DbConn) {
-    let order = assemble_cell::config_of(TALKY_BRAIN)["params"]["system_order"].clone();
-    let params = LlmParams::parse(&json!({
-        "provider": "openai", "model": "gpt-x", "api_key": "sk-test",
-        "base_url": format!("{base_url}/v1"), "system_order": order,
-    }))
-    .expect("params must parse");
-    let conn = meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
-    (
-        LlmCell::new(params, reqwest::Client::builder().build().unwrap()),
-        DbConn::wrap(conn, None),
-    )
-}
-
-async fn deliver(cell: &mut LlmCell, db: &mut DbConn, body: Value) {
-    let (tx, mut rx) = mpsc::channel::<CellEmission>(8);
-    let sink = OutputSink::new(
-        tx,
-        Path::new("/brain"),
-        Uuid::now_v7(),
-        Uuid::now_v7(),
-        32,
-        meclaw_core::Headers::new(),
-        None,
+        .map(|(_, a)| a)
+        .filter(|a| a["operation"] == "insert" && a["table"] == "turns")
+        .collect();
+    assert!(
+        writes.is_empty(),
+        "the collector files no answer: {writes:?}"
     );
-    let msg = MessageBuilder::new(Path::new("/brain"))
-        .reply_to(Path::new("/observer"))
-        .body(Body::Inline(body))
-        .build();
-    cell.handle(msg, &sink, db).await;
-    drop(sink);
-    while rx.recv().await.is_some() {}
+    assert!(
+        !serde_json::to_string(out).unwrap().contains("```"),
+        "the block rides on no emission of the collector: {out:?}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════ the locks
 
 /// Claim 4, and the hand-over it rests on: the block travels BESIDE the answer
-/// through splitter and dispatcher, the collector keeps it beside the answer,
-/// and what leaves for the channel carries neither the fence nor the slot.
+/// through splitter and dispatcher, the collector files neither (GH #889: the
+/// curator keeps the raw answer off the tap), and what leaves for the channel
+/// carries neither the fence nor the slot.
 #[test]
 fn the_block_travels_beside_the_answer_and_never_to_the_channel() {
     let half = split(&format!("{ANSWER}\n\n{BLOCK}"));
@@ -277,15 +154,7 @@ fn the_block_travels_beside_the_answer_and_never_to_the_channel() {
         "the dispatcher hands the block on with the answer: {ans}"
     );
     let out = collect_answer(&ans, &[]);
-    let stored = stored_answer_row(&out);
-    assert_eq!(
-        stored["content"], ANSWER,
-        "content stays the bare answer: {stored}"
-    );
-    assert_eq!(
-        stored["sidecar"], BLOCK,
-        "the block is kept beside it: {stored}"
-    );
+    assert_files_nothing(&out);
 
     let channel = out
         .iter()
@@ -308,110 +177,9 @@ fn an_unreadable_block_is_cut_and_not_handed_on() {
     assert!(half.get("sidecar_raw").is_none(), "{half}");
 }
 
-/// The cap: a block over `sidecar_max_chars` is not kept -- never cut to fit.
-#[test]
-fn a_block_over_the_cap_is_not_kept() {
-    let ans = json!({"messages": [{"origin": "assistant", "type": "text", "text": ANSWER}],
-                     "sidecar_raw": BLOCK});
-    let stored = stored_answer_row(&collect_answer(&ans, &[("sidecar_max_chars", json!(20))]));
-    assert_eq!(stored["sidecar"], "", "{stored}");
-    let mut oversize = row("0002", "t1", "assistant", ANSWER);
-    oversize["sidecar"] = json!("x".repeat(7000));
-    let brain_msg = assemble_turn(json!([
-        row("0003", "t4", "user", "and now?"),
-        oversize,
-        row("0001", "t1", "user", "I like tea"),
-    ]));
-    let shown: Vec<&Value> = brain_msg["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|m| m["origin"] == "assistant" && m["type"] == "text")
-        .collect();
-    assert_eq!(
-        shown[0]["text"], ANSWER,
-        "an oversize stored block is not shown"
-    );
-}
-
-/// Claims 1 and 3, at the provider: a third turn with two earlier answers and
-/// an open consult. The contract is in the system message, and every earlier
-/// answer the provider receives carries its own block.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_provider_sees_every_earlier_answer_with_its_block() {
-    // Turn 1's answer, through the real three hops into a stored row.
-    let stored = stored_answer_row(&collect_answer(
-        &dispatch(&split(&format!("{ANSWER}\n\n{BLOCK}"))),
-        &[],
-    ));
-    let mut first = row("0002", "t1", "assistant", ANSWER);
-    first["sidecar"] = stored["sidecar"].clone();
-    let mut second = row("0004", "t2", "assistant", ANSWER_2);
-    second["sidecar"] = json!(BLOCK_2);
-    let mut advice = row("0005", "t3", "advice", "the core says 21C");
-    advice["consult_id"] = json!("call_c1");
-    // Newest first, as the window read returns them.
-    let win = json!([
-        row("0006", "t4", "user", "and now?"),
-        advice,
-        second,
-        row("0003", "t2", "user", "anything new?"),
-        first,
-        row("0001", "t1", "user", "I like tea"),
-        row("0000", "t0", "assistant", OLD_ANSWER),
-    ]);
-    let turn = assemble_turn(win);
-    assert_eq!(
-        turn["system"]["consult"]["open"],
-        json!(["call_c1"]),
-        "the fixture has an open consult: {turn}"
-    );
-
-    let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
-    let td = tempfile::TempDir::new().unwrap();
-    let (mut cell, mut db) = brain(&td, &mock.base_url);
-    let menu = contract_menu();
-    deliver(
-        &mut cell,
-        &mut db,
-        json!({"system": menu["system"].clone()}),
-    )
-    .await;
-    deliver(&mut cell, &mut db, turn).await;
-
-    let reqs = mock.recorded_requests().await;
-    let req = reqs.first().expect("the brain called the provider");
-    let msgs = req.messages().expect("messages[]");
-
-    // 1. The contract is in the system message the provider received.
-    let system: String = msgs
-        .iter()
-        .filter(|m| m["role"] == "system")
-        .filter_map(|m| m["content"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    assert!(
-        system.contains("ANNOTATE EVERY TURN") && system.contains("```sidecar"),
-        "the provider must receive the contract: {system}"
-    );
-
-    // 3. Every earlier answer carries its block; the old row renders as before.
-    let answers: Vec<&str> = msgs
-        .iter()
-        .filter(|m| m["role"] == "assistant")
-        .filter_map(|m| m["content"].as_str())
-        .collect();
-    assert_eq!(
-        answers,
-        vec![
-            OLD_ANSWER,
-            format!("{ANSWER}\n\n{BLOCK}").as_str(),
-            format!("{ANSWER_2}\n\n{BLOCK_2}").as_str(),
-        ],
-        "each earlier answer reaches the model as it was written, block included; \
-         a row from before the column is unchanged"
-    );
-}
+// GH #889: the cap on a kept block and the provider's view of every earlier
+// answer with its block moved to the curator with the window (R-27-1); its own
+// tests pin them (`earlier_answer_keeps_its_block_up_to_the_cap`).
 
 // ═══════════════════════════════════════════════ fix round 1 (review I-1/I-2)
 
@@ -455,12 +223,13 @@ fn the_frame_beside_a_call_is_the_contract_s_own_nothing_form() {
     );
 }
 
-/// Review I-1, at the provider: the sentence said beside a consult call is an
-/// earlier answer on the consult's return, and it carries a block like every
-/// other one -- the nothing form, because the model wrote none. The round
-/// stays byte-identical (GH #378) and the channel still gets no fence.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sentence_beside_a_consult_call_carries_a_block_on_the_return() {
+/// Review I-1, the hand-over half: the sentence said beside a consult call is
+/// handed the nothing form as its block, because the model wrote none. The
+/// round stays byte-identical (GH #378) and the channel still gets no fence.
+/// GH #889: the consult's return -- the window that shows the sentence with
+/// its block -- is the curator's now.
+#[test]
+fn a_sentence_beside_a_consult_call_is_handed_the_nothing_form() {
     let frame = nothing_frame();
     let (input, half) = split_round(BESIDE_CALL);
     assert_eq!(
@@ -478,9 +247,7 @@ async fn a_sentence_beside_a_consult_call_carries_a_block_on_the_return() {
         "the dispatcher hands it on with the sentence: {ans}"
     );
     let out = collect_answer(&ans, &[]);
-    let stored = stored_answer_row(&out);
-    assert_eq!(stored["content"], BESIDE_CALL, "{stored}");
-    assert_eq!(stored["sidecar"], frame, "{stored}");
+    assert_files_nothing(&out);
     let channel = out
         .iter()
         .find(|m| m["header"]["route"] == "answer")
@@ -488,36 +255,6 @@ async fn a_sentence_beside_a_consult_call_carries_a_block_on_the_return() {
     assert!(
         !channel.to_string().contains("```") && channel.get("sidecar_raw").is_none(),
         "no channel ever receives the block: {channel}"
-    );
-
-    // The consult comes back: the window holds the question, the sentence
-    // beside the call and the advice.
-    let mut said = row("0002", "t1", "assistant", BESIDE_CALL);
-    said["sidecar"] = stored["sidecar"].clone();
-    let mut advice = row("0003", "t2", "advice", "the core says 21C");
-    advice["consult_id"] = json!("call_c1");
-    let turn = assemble_turn(json!([
-        advice,
-        said,
-        row("0001", "t1", "user", "why is it so warm?"),
-    ]));
-    let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
-    let td = tempfile::TempDir::new().unwrap();
-    let (mut cell, mut db) = brain(&td, &mock.base_url);
-    deliver(&mut cell, &mut db, turn).await;
-    let reqs = mock.recorded_requests().await;
-    let req = reqs.first().expect("the brain called the provider");
-    let answers: Vec<&str> = req
-        .messages()
-        .expect("messages[]")
-        .iter()
-        .filter(|m| m["role"] == "assistant")
-        .filter_map(|m| m["content"].as_str())
-        .collect();
-    assert_eq!(
-        answers,
-        vec![format!("{BESIDE_CALL}\n\n{frame}").as_str()],
-        "the provider sees the sentence with a block"
     );
 }
 

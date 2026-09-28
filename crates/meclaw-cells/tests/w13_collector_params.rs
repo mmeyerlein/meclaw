@@ -28,16 +28,17 @@ use std::process::{Command, Stdio};
 
 const ASSEMBLE_CONFIG: &str = "../../templates/collector/assemble/config.json";
 
-/// The twenty-eight knobs, with the kind of accessor the script reads each one with.
+/// The nine knobs, with the kind of accessor the script reads each one with.
 /// Restated here on purpose: this is the inventory the migration claims to be
 /// complete, and a knob that quietly leaves the config should fail the pin.
+///
+/// GH #889 (`collector@5.0.0`) took nineteen knobs out -- the window and its
+/// caps (`window_turns`, `window_bytes`, `turn_chars`, `tool_chars`,
+/// `round_bytes`, `memory_chars`), the curation stages (`context_window`,
+/// `curate_*`, `keep_rounds`, `recoverability`, `tool_menu`,
+/// `tool_desc_chars`), `thread_recall*`, `turn_write` and `prune_after_ms`:
+/// the curator owns the window now (R-27-1), so this inventory shrinks with it.
 const KNOBS: &[(&str, &str)] = &[
-    ("window_turns", "_int"),
-    ("window_bytes", "_int"),
-    ("turn_chars", "_int"),
-    ("tool_chars", "_int"),
-    ("round_bytes", "_int"),
-    ("memory_chars", "_int"),
     ("memory_tier", "_str"),
     ("memory_form", "_str"),
     // `memory_call_tier` stood here until GH #552. It was the tier of the memory
@@ -50,35 +51,16 @@ const KNOBS: &[(&str, &str)] = &[
     // GH #728 -- the deadline of a consult or a delegation: inside it the answer
     // is a leg of the member's turn, past it a straggler (`hop.late`).
     ("late_after_ms", "_int"),
-    ("prune_after_ms", "_int"),
-    ("turn_write", "_str"),
-    // GH #525 -- the block contract, `inline_extraction` until GH #606. It sits
-    // beside `turn_write` because the two are one sentence: this one asks the
-    // brain for the annotation, that one mints the episode the annotation is
-    // bound to, and a block whose turn is not yet an episode is rejected by
-    // design. What it asks FOR is no longer a literal of this cell: the
-    // sections are offered on the menu lane and this knob decides whether they
-    // are composed into a contract at all.
+    // GH #525 -- the block contract, `inline_extraction` until GH #606. What it
+    // asks FOR is no longer a literal of this cell: the sections are offered on
+    // the menu lane and this knob decides whether they are composed into a
+    // contract at all. (Its partner `turn_write`, which minted the episode the
+    // annotation is bound to, moved to the curator's writer with GH #889.)
     ("sidecar", "_str"),
     // GH #606 -- the ceiling of that composed contract. It is the only bound
     // this cell puts on words it did not write, which is why it lives here and
     // not as a promise each offering template has to keep.
     ("sidecar_max_chars", "_int"),
-    ("context_window", "_int"),
-    ("curate_soft", "_float"),
-    ("curate_hard", "_float"),
-    ("keep_rounds", "_int"),
-    ("recoverability", "_str"),
-    ("thread_recall", "_str"),
-    ("thread_recall_budget", "_float"),
-    // GH #451 -- the curator's widened contract. `tool_menu` is the one that
-    // moves an OWNERSHIP: with it set, the collector writes `system.tools` and
-    // the tool declarations become curatable; empty, the menu stays in the
-    // brain and nothing about this cell changes.
-    ("tool_menu", "_str"),
-    ("tool_desc_chars", "_int"),
-    ("curate_slot_chars", "_int"),
-    ("curate_budget_line", "_str"),
     // GH #464 -- the DECLARATION. It is the only knob whose value is a list,
     // and the only one whose effect is a QUESTION rather than a number: the
     // names in it are what the menu tick asks a tools hive for. Empty is the
@@ -161,28 +143,49 @@ fn emit(params: serde_json::Value, doc: serde_json::Value) -> Vec<serde_json::Va
     serde_json::from_slice(&out.stdout).expect("emissions are json")
 }
 
-/// The arriving turn -- the occasion the window read is built on. Since
-/// GH #419 the window is a CALL of the ONE message a turn opens with, so the
-/// knob is observed where the op is written rather than one hop later.
-fn window_read() -> serde_json::Value {
+/// A tool round of iteration `iter` that has just completed: one call and its
+/// result, read back by the round-check bundle -- the occasion the iteration
+/// cap is judged on.
+///
+/// GH #889: the behavioural pins below used to observe `window_turns` as the
+/// `limit` of the window read. That knob left with the window (the curator owns
+/// it, R-27-1), so they observe `max_iter` instead -- the same accessor, a knob
+/// that stays, and a decision (`curate` or `answer`) the seam writes itself.
+fn round_done_at(iter: i64) -> serde_json::Value {
+    let call = serde_json::json!([
+        {"origin": "assistant", "type": "tool_call", "id": "c1", "text": "{}"}
+    ]);
+    let res = serde_json::json!(
+        {"origin": "tool", "type": "tool_result", "id": "c1", "text": "ok"}
+    );
+    let rows = serde_json::json!([
+        {"turn_id": "t1", "iter": iter, "role": "assistant",
+         "turn": call.to_string(), "fired": 0},
+        {"turn_id": "t1", "iter": iter, "role": "tool",
+         "turn": res.to_string(), "fired": 0}
+    ]);
     serde_json::json!({
-        "header": {"context": {"session_id": "s1", "turn_id": "t1"},
-                   "hop": {"route": "in_turn"}},
-        "messages": [{"origin": "user", "type": "text", "text": "hello"}]
+        "header": {"context": {"session_id": "s1", "turn_id": "t1",
+                               "iter": iter.to_string(), "col_phase": "round-check",
+                               "store_origin": "collector"},
+                   "hop": {"operation": "bundle", "rows_affected": 2,
+                           "bundle_errors": 0}},
+        "messages": [{"origin": "tool", "type": "tool_result",
+                      "id": "c-round-check-read", "text": rows.to_string()}],
+        "results": [{"tool_call_id": "c-round-check-read", "operation": "select",
+                     "rows_affected": 2, "duration_ms": 0}]
     })
 }
 
-/// The `limit` of the window select -- i.e. what `window_turns` actually did.
-fn window_limit(out: &[serde_json::Value]) -> i64 {
-    assert_eq!(out.len(), 1, "the turn opens with one message");
-    let op = out[0]["messages"]
-        .as_array()
-        .expect("calls")
+/// Whether the round of iteration `iter` leaves on `answer` instead of going on
+/// to `curate` -- i.e. what `max_iter` actually did.
+fn capped_at(params: serde_json::Value, iter: i64) -> bool {
+    let out = emit(params, round_done_at(iter));
+    let seam = out
         .iter()
-        .filter_map(|t| serde_json::from_str::<serde_json::Value>(t["text"].as_str()?).ok())
-        .find(|a| a["table"] == "turns" && a["operation"] == "select" && a["limit"].is_i64())
-        .expect("the window call");
-    op["limit"].as_i64().expect("limit")
+        .find(|m| m["header"]["route"] == "curate" || m["header"]["route"] == "answer")
+        .unwrap_or_else(|| panic!("the completed round leaves on a seam: {out:?}"));
+    seam["header"]["route"] == "answer"
 }
 
 // ═══════════════════════════════════════════════════════════════════════ pins
@@ -205,9 +208,9 @@ fn nothing_in_the_shipped_collector_reads_the_environment_any_more() {
 /// Claim 2. Every knob exists in all three places, with the same value.
 ///
 /// The script literal is read out of the source text rather than exercised,
-/// because that literal IS the fallback: `_int("window_turns", 12)` is the
+/// because that literal IS the fallback: `_int("max_iter", 8)` is the
 /// value a cell uses when its config says nothing, and comparing the text is
-/// the complete check over all twenty-eight knobs.
+/// the complete check over all nine knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let cfg = config();
@@ -231,7 +234,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
             "params.{knob} and contract.settings.{knob}.default disagree"
         );
 
-        // `NAME = _int("window_turns", 12)` -- the literal after the comma.
+        // `NAME = _int("max_iter", 8)` -- the literal after the comma.
         let needle = format!("{kind}(\"{knob}\", ");
         let at = src
             .find(&needle)
@@ -246,7 +249,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
 
-    // No knob may hide: every non-substrate param is one of the twenty-eight above.
+    // No knob may hide: every non-substrate param is one of the nine above.
     //
     // The allow-list is the `code` cell's OWN param surface, i.e. every key
     // `CodeParams::parse` reads (crates/meclaw-cells/src/code/params.rs) --
@@ -280,13 +283,19 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
 /// the one that runs the script.
 #[test]
 fn an_empty_params_object_behaves_like_the_shipped_defaults() {
-    let shipped = window_limit(&emit(shipped_params(), window_read()));
-    let empty = window_limit(&emit(serde_json::json!({}), window_read()));
-    assert_eq!(
-        shipped, empty,
-        "the script's fallback and the shipped param produce different windows"
+    // GH #889: observed on `max_iter` (8) instead of the removed `window_turns`.
+    for iter in [7, 8] {
+        assert_eq!(
+            capped_at(shipped_params(), iter),
+            capped_at(serde_json::json!({}), iter),
+            "the script's fallback and the shipped param end the round apart at \
+             iteration {iter}"
+        );
+    }
+    assert!(
+        !capped_at(shipped_params(), 7) && capped_at(shipped_params(), 8),
+        "the shipped round still ends at eight iterations"
     );
-    assert_eq!(shipped, 12, "the shipped window is still twelve turns");
 }
 
 /// A knob blanked by an operator means "not configured", not a dead cell.
@@ -297,12 +306,12 @@ fn a_blank_or_null_knob_falls_back_to_the_shipped_default() {
         serde_json::json!("   "),
         serde_json::json!(null),
     ] {
+        // GH #889: `max_iter` stands in for the removed `window_turns`.
         let mut p = shipped_params();
-        p["window_turns"] = blank.clone();
-        assert_eq!(
-            window_limit(&emit(p, window_read())),
-            12,
-            "a window_turns of {blank} must fall back to the shipped default"
+        p["max_iter"] = blank.clone();
+        assert!(
+            !capped_at(p.clone(), 7) && capped_at(p, 8),
+            "a max_iter of {blank} must fall back to the shipped default"
         );
     }
 }
@@ -311,21 +320,32 @@ fn a_blank_or_null_knob_falls_back_to_the_shipped_default() {
 /// param resolves to, and the reason the accessors coerce instead of assuming.
 #[test]
 fn a_numeric_knob_may_arrive_as_a_string() {
+    // GH #889: `max_iter` stands in for the removed `window_turns`.
     let mut p = shipped_params();
-    p["window_turns"] = serde_json::json!("5");
-    assert_eq!(window_limit(&emit(p, window_read())), 5);
+    p["max_iter"] = serde_json::json!("5");
+    assert!(!capped_at(p.clone(), 4), "under the cap the round goes on");
+    assert!(
+        capped_at(p, 5),
+        "the string \"5\" is read as the number five"
+    );
 }
 
 /// Claim 3 -- the whole point of GH #136. One shipped script, two params
-/// objects, two windows. Under the environment form both instances read the
+/// objects, two behaviours. Under the environment form both instances read the
 /// same key and this test could not be written at all.
+///
+/// GH #889: the two instances differ in `max_iter` now, since `window_turns`
+/// left with the window -- the same round ends in one and goes on in the other.
 #[test]
 fn two_instances_of_the_same_script_are_tuned_apart() {
-    let mut chatty = shipped_params();
-    chatty["window_turns"] = serde_json::json!(40);
+    let mut patient = shipped_params();
+    patient["max_iter"] = serde_json::json!(40);
     let mut terse = shipped_params();
-    terse["window_turns"] = serde_json::json!(3);
+    terse["max_iter"] = serde_json::json!(3);
 
-    assert_eq!(window_limit(&emit(chatty, window_read())), 40);
-    assert_eq!(window_limit(&emit(terse, window_read())), 3);
+    assert!(
+        !capped_at(patient, 3),
+        "forty iterations: the round goes on"
+    );
+    assert!(capped_at(terse, 3), "three iterations: the same round ends");
 }

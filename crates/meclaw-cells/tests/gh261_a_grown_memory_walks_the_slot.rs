@@ -322,6 +322,8 @@ async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandl
         json!({"from": ".", "to": "./members",
                "condition": "has(hop.route) && hop.route == 'in_build_result'"}),
     ];
+    // GH #889: `prune` left this list with the prune chain — no member emits
+    // it any more, so a flag edge for it would wait for a lane nothing sends.
     for lane in [
         "answer",
         "ack",
@@ -329,7 +331,6 @@ async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandl
         "error",
         "write",
         "turn_write",
-        "prune",
         "build",
         "close_report",
         "export_done",
@@ -424,7 +425,7 @@ fn members_manifest(fence: &std::path::Path) -> Value {
                 json!({"transfer": {"base_path": fence.to_str().unwrap()}}),
             );
         }
-        nodes.push(json!({"name": name, "template": "member@1.10.5",
+        nodes.push(json!({"name": name, "template": "member@2.0.0",
                           "override_params": Value::Object(over)}));
         // The two members get the lane each of them needs and no more: one run
         // directory is named per export, and two members exporting into it at

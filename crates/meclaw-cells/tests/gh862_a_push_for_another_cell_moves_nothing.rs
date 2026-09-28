@@ -759,6 +759,19 @@ fn build_tree(td: &TempDir, base_url: &str) {
             v["params"]["base_url"] = json!(base_url);
             v["params"]["model"] = json!(START);
         });
+        // GH #889: each talky carries its own curator, and the curator's
+        // summarizer is an `llm` cell whose model is `${ctx.model}` -- an
+        // instantiation-side substitution a tree booted from disk cannot
+        // resolve. It names the mock here; a run this short never reaches a
+        // rebuild, and the pushes below name a brain, so it is never called.
+        patch(
+            root,
+            &format!("main/{composite}/curator/summarizer/config.json"),
+            |v| {
+                v["params"]["base_url"] = json!(base_url);
+                v["params"]["model"] = json!(START);
+            },
+        );
     }
 }
 

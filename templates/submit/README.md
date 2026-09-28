@@ -1,4 +1,4 @@
-# `submit@2.3.4`
+# `submit@2.3.5`
 
 Two occupants behind one door, and the only reach onto the mutation door in the
 whole tree. It asks who may submit — and, when the diff itself asks for it, whether
@@ -397,7 +397,11 @@ be one of the three forms the builder renders, byte for byte:
   carries only the pushes addressed to one cell standing directly in its own
   composite: a talky's or cogny's `brain`, and since 2.3.3
   ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) each of the four llm
-  cells of a member's memory hive, which the builder draws one edge each.
+  cells of a member's memory hive, which the builder draws one edge each. One
+  named exception reaches one hive deeper since 2.3.5
+  ([#877](https://github.com/mmeyerlein/meclaw/issues/877)): `curator/<cell>`, the
+  summarizer of the curator a talky or cogny stands in front of, which the
+  composite's own `in_model` door hands on; any other two-segment path is refused.
   Violation → `model_push_form`.
 - **announcement:** `from` is a generation some declaration of the SAME manifest
   instantiates (the anchor rule of GH #566), `to` is `.`, the condition is exactly

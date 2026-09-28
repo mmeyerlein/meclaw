@@ -6,11 +6,13 @@
 //! question the composite adds: is the WIRING between them right? So it boots
 //! the shipped `talky` tree and drives
 //!
-//!   turn -> stamp -> seam -> brain(mock) -> split -> fake tool -> seam -> answer
+//!   turn -> stamp -> seam -> curator -> brain(mock) -> split -> fake tool -> seam -> answer
 //!
 //! and a close through the write path, where the batch leaves on the write
 //! port -- which since `talky@4.3.0` (GH #447) is the whole of the close path:
 //! the composite carries no summarizer, so the close costs no inference.
+//! Since GH #889 the seam hands the round to the brain's curator hive, and the
+//! write batch leaves the composite from that curator instead of the collector.
 //!
 //! Free of a real provider by construction: the one `llm` cell talks to the
 //! mock OpenAI wire, and every other cell is a `code`/`store`/`timer` cell that
@@ -206,24 +208,20 @@ fn main_config() -> Value {
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id",
                                       "audience_set": AUDIENCE_CEL}}},
-        // the operator lane of the keeper (a forced sweep)
+        // the operator lane of the keeper (a forced sweep). The second operator
+        // lane, `in_prune` with its `prune` report (GH #312), left with GH #889:
+        // the collector keeps no window any more, so there is nothing to prune.
         {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'sweep'",
          "modifier": {"set_hop": {"route": "'in_sweep'"}}},
-        // the other operator lane (GH #312): a window prune, sent at the
-        // composite's OWN path and on its own lane, the way the README wires it
-        {"from": "./surface", "to": "./talky",
-         "condition": "has(hop.route) && hop.route == 'prune'",
-         "modifier": {"set_hop": {"route": "'in_prune'"}}},
-        // ... and the report it answers with, taken off the same path
-        {"from": "./talky", "to": "/park",
-         "condition": "has(hop.route) && hop.route == 'prune'"},
         // reply exit
         {"from": "./talky/collector", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer' \
           && !has(hop.round_capped) && !has(hop.degraded)"},
-        // write exit -- the instance decides the target
-        {"from": "./talky/collector", "to": "./archive",
+        // write exit -- the instance decides the target. Taken off the
+        // composite's own path: since GH #889 the batch is written by the
+        // curator (`./curator -> .` on `write`), not by the collector.
+        {"from": "./talky", "to": "./archive",
          "condition": "has(hop.route) && hop.route == 'write'"},
         {"from": "./archive", "to": "/park"},
         // error drain
@@ -253,7 +251,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         "main/surface/config.json",
         &code_cell(
             SURFACE,
-            &["turn", "sweep", "prune"],
+            &["turn", "sweep"],
             json!({"chat_id": {"type": "string", "required": false}}),
         ),
     );
@@ -290,13 +288,17 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     patch(root, "main/talky/session-keeper/close/config.json", |v| {
         v["params"]["idle_ms"] = json!(0);
     });
-    // The age gate of the prune lane, opened all the way: per-INSTANCE tuning,
-    // the same knob a live parent sets, not a behaviour patch. The shipped week
-    // would put every prune of a test run behind the gate.
-    patch(root, "main/talky/collector/assemble/config.json", |v| {
-        v["params"]["prune_after_ms"] = json!(0);
-    });
+    // The prune age gate (`prune_after_ms`) was patched open here until
+    // GH #889 removed the knob together with the prune lane.
     patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
@@ -351,7 +353,7 @@ fn turn(text: &str) -> Message {
 }
 
 /// An operator lane, addressed by the route the surface stamps on it: `sweep`
-/// for the keeper's forced close, `prune` for the window's age cut.
+/// for the keeper's forced close (the `prune` lane left with GH #889).
 fn operator(route: &str) -> Message {
     let mut hop = meclaw_core::serde_json::Map::new();
     hop.insert("route".into(), json!(route));
@@ -398,8 +400,8 @@ async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
 }
 
 /// The next message on this drain that travels the named lane. One drain takes
-/// several lanes here (the write batch, the error report, the prune report), so
-/// a test that wants one of them says which and lets the others pass.
+/// several lanes here (the write batch, the error report, the sidecar), so a
+/// test that wants one of them says which and lets the others pass.
 async fn recv_lane(rx: &mut mpsc::Receiver<Message>, route: &str) -> Option<Message> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while let Ok(Some(m)) = tokio::time::timeout_at(deadline, rx.recv()).await {
@@ -628,114 +630,4 @@ async fn a_swept_close_reaches_the_write_port_with_the_round_it_belonged_to() {
     assert!(!text.contains('*'), "and it is never universalised: {text}");
 
     h.shutdown().await;
-}
-
-/// GH #312 -- the pin. The composite accepts `in_prune`, and the report the
-/// prune answers with LEAVES it.
-///
-/// `in_prune` was accepted (`contract.accepts`) and forwarded to the collector,
-/// and the collector's report is unconditional -- the zero case says "pruned
-/// nothing" in so many words. But no edge took a `prune` hop off the collector,
-/// and no `emits` entry named the lane: every prune request, including the one
-/// that found nothing to cut, paid exactly one `no_route` dead letter for its
-/// answer. The deletions ran; only the report was lost, which is the shape of
-/// defect nobody notices until they need the number.
-///
-/// Both cases travel here, because they are two different emissions of the same
-/// lane: the zero report (no ledger evidence yet) and a real cut (a session
-/// batched and behind the age gate). A fix that only routes one of them is not
-/// a fix -- the report an operator most needs is the one that says nothing was
-/// eligible.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_prune_report_leaves_the_composite_on_its_own_lane() {
-    let mock = MockOpenAI::start(vec![
-        canned_chat_completion("Noted.", "stop"),
-        canned_chat_completion("The user lives in Berlin.", "stop"),
-    ])
-    .await;
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &mock.base_url);
-    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
-
-    // Case one: nothing has ever been batched, so the age gate has no evidence
-    // to work on. The collector still answers -- and the answer has to arrive.
-    h.send(operator("prune")).await;
-    let empty = recv_lane(&mut park_rx, "prune")
-        .await
-        .expect("the zero report leaves the composite");
-    assert_eq!(
-        hop_of(&empty, "pruned_turns"),
-        "0",
-        "nothing was eligible: {:?}",
-        empty.headers.hop
-    );
-    assert_eq!(hop_of(&empty, "pruned_rounds"), "0");
-    assert!(
-        answer_text(&empty).contains("pruned nothing"),
-        "the zero report says so in words: {}",
-        answer_text(&empty)
-    );
-
-    // Case two: one turn, one close -- now the ledger carries a batched session
-    // and, with the gate open, it is behind it.
-    h.send(turn("remember: my city is berlin")).await;
-    recv_bounded(&mut sink_rx).await.expect("the answer");
-    h.send(sweep()).await;
-    recv_lane(&mut park_rx, "archived")
-        .await
-        .expect("the write batch");
-    // Settle: the batch leaves the collector before the ledger row it writes is
-    // acknowledged. Generous on purpose (30 s convention), not a discriminator.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    h.send(operator("prune")).await;
-    let cut = recv_lane(&mut park_rx, "prune")
-        .await
-        .expect("the report of a real cut leaves the composite");
-    let turns: i64 = hop_of(&cut, "pruned_turns").parse().unwrap_or(-1);
-    assert!(
-        turns > 0,
-        "the batched session was cut and the report says by how much: {:?}",
-        cut.headers.hop
-    );
-    assert!(
-        hop_of(&cut, "session_id").starts_with("c-42-"),
-        "and which session it cut: {:?}",
-        cut.headers.hop
-    );
-
-    h.shutdown().await;
-}
-
-/// The other half of GH #312, and the half a runtime test cannot see: the lane
-/// is DECLARED, and declared as a pair.
-///
-/// A door without an `emits` entry is a lane a caller can only find by reading
-/// the composite's inside, which is the practice the hive contract exists to
-/// end. And an operator lane whose report nobody takes is the defect this issue
-/// is about, one wiring later -- so the composite pairs the two and lets the
-/// substrate refuse the half-wiring. That the pairing BITES is proven against
-/// the real checker in `gh202_shipped_drain_requirements`; what is asserted
-/// here is that talky states it at all.
-#[test]
-fn the_prune_lane_is_declared_and_paired_with_the_ingress_that_opens_it() {
-    let raw = std::fs::read_to_string(templates_root().join("talky/config.json")).unwrap();
-    let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
-    let emits = v["params"]["contract"]["emits"].as_array().unwrap();
-    assert!(
-        emits
-            .iter()
-            .any(|l| l["route"] == "prune" && l["because"].as_str().unwrap_or_default().len() > 20),
-        "the composite emits a prune report and has to say so: {emits:#?}"
-    );
-    let drains = v["params"]["required_drains"]
-        .as_array()
-        .expect("talky declares required_drains");
-    assert!(
-        drains
-            .iter()
-            .any(|d| d["accepts"] == "in_prune" && d["emits"] == "prune"),
-        "sending the prune lane in obliges the caller to take the report back \
-         out: {drains:#?}"
-    );
 }

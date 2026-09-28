@@ -116,7 +116,8 @@ fn op_of(msg: &serde_json::Value) -> serde_json::Value {
 fn the_session_row_is_one_generation_of_one_channel() {
     // The store is the whole memory of the keeper: which channel is in which
     // generation, when it last spoke, and whether that generation is over. No
-    // conversation content -- the turns belong to the collector's window.
+    // conversation content -- the turns belong to the curator's ledger (the
+    // collector's window until GH #889).
     let sessions = config_of("sessions/config.json");
     assert_eq!(sessions["cell"]["type"], "store");
     let cols = &sessions["params"]["schema"]["sessions"];
@@ -509,7 +510,7 @@ fn only_the_pass_that_won_the_guard_asks_for_the_close() {
     assert!(
         close(lost).is_empty(),
         "rows_affected 0: this generation was already sealed, and a second \
-         close request would ask the collector for the same batch twice"
+         close request would ask the curator for the same batch twice"
     );
 
     let mut won = reply_doc("keeper-close", "seal", "update", 1, serde_json::json!("ok"));
@@ -525,8 +526,8 @@ fn only_the_pass_that_won_the_guard_asks_for_the_close() {
     assert_eq!(
         out[0]["messages"],
         serde_json::json!([]),
-        "a close request carries no conversation turns -- the collector reads \
-         the session out of its own store"
+        "a close request carries no conversation turns -- the curator reads \
+         the session out of its own ledger (GH #889; the collector's store before)"
     );
 }
 
@@ -891,7 +892,8 @@ sys.stdout.write(json.dumps({"header": {"route": "report"},
                                            "text": str(ctx.get("session_id", ""))}]}))
 "#;
 
-/// The stand-in for the collector's `in_close` lane.
+/// The stand-in for the close lane downstream -- the curator's `in_close` since
+/// GH #889, the collector's before.
 const CLOSED: &str = r#"
 import sys, json
 doc = json.load(sys.stdin)

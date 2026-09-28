@@ -9,11 +9,14 @@
 //! because the turn it belongs to is on the model's clock, not on ours.
 //!
 //! WHY IT MUST NOT DRAIN. The row reads like a sentence and is none: nobody in
-//! this conversation said it. `SAID` names the two roles that are something
-//! somebody said, `drainable_turns` refuses everything else, and both writers
-//! -- the close lane's batch and the per-turn episode lane -- ask there. A
-//! delegation drained into the memory would be quoted back to the caller as her
-//! own words, which is the defect GH #282 measured on `advice` rows.
+//! this conversation said it. A delegation drained into the memory would be
+//! quoted back to the caller as her own words, which is the defect GH #282
+//! measured on `advice` rows. Both writers -- the close batch (`write`) and the
+//! per-turn episodes (`turn_write`) -- left the collector with GH #889
+//! (R-27-1): the curator's writer writes only participant turns (`user`, the
+//! final `assistant`, `peer`), so the no-drain half of this lane is the
+//! curator's to pin (`curator@1.0.0`, writer). What stays here is the lane
+//! itself: the row, its correlation, the fresh round and the frame on the wire.
 //!
 //! The form is `collector_window.rs`: the SHIPPED `params.script_inline` runs
 //! under `python3` over a real stdin document, so what is measured here is what
@@ -90,17 +93,6 @@ fn delegation_doc() -> serde_json::Value {
     })
 }
 
-/// A store reply on a phase of this hive's own chain.
-fn reply(phase: &str, op: &str, payload: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "header": {"context": {"session_id": "s1", "turn_id": "t1", "iter": "0",
-                               "col_phase": phase, "store_origin": "collector"},
-                   "hop": {"operation": op, "rows_affected": 1}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "x",
-                      "text": payload.to_string()}]
-    })
-}
-
 #[test]
 fn a_delegation_is_written_as_its_own_role_under_its_own_id() {
     let out = emit(delegation_doc());
@@ -148,7 +140,9 @@ fn the_delegation_says_on_the_wire_what_it_is() {
         {"role": "delegation", "text": "book me a table for two",
          "consult_id": "d-7"}
     ]);
-    let payload = serde_json::json!({"turns": turns, "bytes": 0, "dropped": 0, "capped": 0});
+    // The `leg-window` payload of GH #889: the round's turns and the deferral
+    // marks, no byte count and no drop or cap marks.
+    let payload = serde_json::json!({"turns": turns, "deferred": 0, "deferred_turns": []});
     let rows = serde_json::json!([{"turn_id": "t1", "iter": 0, "role": "leg-window",
                                    "turn": payload.to_string(), "fired": 0}]);
     let doc = serde_json::json!({
@@ -162,7 +156,9 @@ fn the_delegation_says_on_the_wire_what_it_is() {
     });
     let out = emit(doc);
 
-    assert_eq!(out[0]["header"]["route"], "brain");
+    // GH #889: the round leaves on `curate` (to the curator, which owns the
+    // window) where it left on `brain`; the frame it carries is the same.
+    assert_eq!(out[0]["header"]["route"], "curate");
     let msgs = out[0]["messages"].as_array().expect("messages");
     assert_eq!(
         msgs[1]["origin"], "user",
@@ -174,73 +170,6 @@ fn the_delegation_says_on_the_wire_what_it_is() {
          travels under and quotes what was last heard: {}",
         msgs[1]
     );
-}
-
-#[test]
-fn a_delegation_becomes_no_episode() {
-    // The per-turn write path (GH #298): one message per turn of the session
-    // that has not been written yet. A delegation is not one.
-    let rows = serde_json::json!([
-        {"id": "r1", "role": "user", "content": "hello", "interim": 0,
-         "recorded_at": "r1", "episode_written": 0},
-        {"id": "r2", "role": "delegation", "content": "book me a table for two",
-         "interim": 0, "recorded_at": "r2", "episode_written": 0}
-    ]);
-    let out = emit(reply("tw-scan", "select", rows));
-
-    let episodes: Vec<&serde_json::Value> = out
-        .iter()
-        .filter(|m| m["header"]["route"] == "turn_write")
-        .collect();
-    assert_eq!(
-        episodes.len(),
-        1,
-        "one episode, for the one thing somebody said: {out:?}"
-    );
-    assert_eq!(episodes[0]["messages"][0]["text"], "hello");
-    let whole = serde_json::to_string(&out).expect("emission");
-    assert!(
-        !whole.contains("r2"),
-        "and the row nobody said is not even marked as written: {out:?}"
-    );
-}
-
-#[test]
-fn a_delegation_is_no_part_of_the_days_batch() {
-    // The other writer, the close lane: the session leaves as ONE batch, and
-    // both writers ask `drainable_turns` -- so what may become a memory is
-    // decided in one place and stays decidable there.
-    let turns = serde_json::json!([
-        {"role": "user", "text": "hello", "interim": 0},
-        {"role": "delegation", "text": "book me a table for two", "interim": 0},
-        {"role": "assistant", "text": "a table for two, then", "interim": 0}
-    ]);
-    let rows = serde_json::json!([
-        {"turn_id": "close-s1", "iter": 0, "role": "leg-close",
-         "turn": turns.to_string(), "fired": 0, "recorded_at": "b"}
-    ]);
-    let doc = serde_json::json!({
-        "header": {"context": {"session_id": "s1", "turn_id": "close-s1|b", "iter": "0",
-                               "col_phase": "close-fire", "store_origin": "collector"},
-                   "hop": {"operation": "bundle", "rows_affected": 1, "bundle_errors": 0}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-close-read",
-                      "text": rows.to_string()}],
-        "results": [{"tool_call_id": "c-close-read", "operation": "select",
-                     "rows_affected": 1, "duration_ms": 0}]
-    });
-    let out = emit(doc);
-
-    assert_eq!(out[0]["header"]["route"], "write");
-    let msgs = out[0]["messages"].as_array().expect("messages");
-    assert_eq!(
-        msgs.len(),
-        2,
-        "the caller's word and the agent's own, and nothing between them: {}",
-        out[0]
-    );
-    assert_eq!(msgs[0]["text"], "hello");
-    assert_eq!(msgs[1]["text"], "a table for two, then");
-    assert_eq!(out[0]["header"]["turn_count"], "2");
 }
 
 #[test]

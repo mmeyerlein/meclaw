@@ -20,8 +20,10 @@
 //!
 //! 1. **The declaration exists, and it is the ONLY one.** The hive's `schemas`
 //!    cell answers `memory_recall`; and — the negative half `docs/development-rules.md`
-//!    § 8 demands of a migration — `self_tool_menu()` in the shipped assembler no
-//!    longer carries the name, and `talky`'s brain seed no longer carries the row.
+//!    § 8 demands of a migration — the shipped assembler no longer carries the
+//!    name (since GH #889 it has no declaration source of its own at all:
+//!    `self_tool_menu()` left with `thread_recall`), and `talky`'s brain seed no
+//!    longer carries the row (since GH #889 there is no brain seed).
 //! 2. **What the model names reaches the recall port under the contract's own
 //!    name** — measured through the shipped adapter, not asserted.
 //! 3. **What the model is NOT asked for is filled beside it**: the tier off the
@@ -39,7 +41,7 @@
 //! | old copy | now |
 //! |---|---|
 //! | `self_tool_menu()`'s `memory_recall` branch (`collector/assemble`) | `templates/memory-hive/schemas/config.json`, `SCHEMAS` |
-//! | `templates/talky/brain/seed/system.jsonl` line 2 | gone — the menu tick asks the hive |
+//! | `templates/talky/brain/seed/system.jsonl` line 2 | gone — the menu tick asks the hive (the whole seed left in GH #889) |
 //! | `templates/collector/README.md` § "The memory tool" prose | `templates/memory-hive/README.md` § "The recall tool" |
 //! | the half-open-window warning `self_tool_menu()` RECORDED | written once, in the description the hive serves |
 
@@ -183,7 +185,7 @@ fn tool_call(args: &Value, params: &Value) -> Value {
 }
 
 /// The menu one shipped collector produces, as the GH #529 merge writes it:
-/// one foreign answerer's row plus the names this cell answers itself.
+/// one foreign answerer's row, and since GH #889 nothing of the cell's own.
 ///
 /// Measured rather than read, because what matters is not whether a string
 /// appears in a script but which names reach the model.
@@ -210,26 +212,6 @@ fn collector_menu() -> Option<Value> {
         .find(|m| m["header"]["route"] == json!("menu"))
 }
 
-/// The body of `self_tool_menu()` in the shipped assembler — the function that
-/// IS the collector's declaration source, cut out of the script.
-///
-/// Only the DECLARATION literal is measured, never a mention: the ambient leg
-/// still synthesises a `memory_recall` call further down (`recall_call`,
-/// GH #278), because a recall bundle travelling as a tool result needs a tool
-/// call in front of it, and the docstring of the function says where the name
-/// went. Naming a tool somebody else answers is fine; declaring it is the thing
-/// that moved.
-fn the_collectors_own_menu() -> Option<String> {
-    let src = shipped_script(ASSEMBLE);
-    let start = src.find("def self_tool_menu():")?;
-    let rest = &src[start..];
-    let end = rest[1..]
-        .find("\ndef ")
-        .map(|i| i + 1)
-        .unwrap_or(rest.len());
-    Some(rest[..end].to_string())
-}
-
 // ══════════════ 1. the declaration exists, and it is the only one in the tree
 
 #[test]
@@ -250,8 +232,7 @@ fn the_hive_declares_the_recall_and_nothing_else_does() {
         names,
         BTreeSet::from([MEM.to_string()]),
         "the memory hive declares exactly the one tool it answers — `{MEM}`, and \
-         nothing else: `thread_recall` reads the COLLECTOR's own slate and is declared \
-         where it is answered (ruling 31.08.)"
+         nothing else (ruling 31.08.)"
     );
     let decl = &schemas[0];
     assert!(
@@ -288,38 +269,39 @@ fn the_collector_no_longer_types_the_schema_it_does_not_answer() {
     let Some(menu) = collector_menu() else {
         return;
     };
+    // Empty since GH #889: the collector answers no name itself (it answered
+    // `thread_recall` until then). `{MEM}` is served by the member's memory,
+    // which is the hive that enforces the rules the schema states.
     assert_eq!(
-        menu["header"]["menu_self"], "thread_recall",
-        "the collector answers ONE name itself now. `{MEM}` is served by the member's \
-         memory, which is the hive that enforces the rules the schema states — a cell \
-         that answers a call it cannot enforce the rules of will drift from them: {menu:#?}"
+        menu["header"]["menu_self"], "",
+        "the collector answers no tool itself — a cell that answers a call it cannot \
+         enforce the rules of will drift from them: {menu:#?}"
     );
     assert!(
         menu["system"]["tools"][MEM].is_null(),
         "`{MEM}` still reaches the model as a leaf of THIS cell's menu. It belongs to the \
          answerer, and this cell is not it: {menu:#?}"
     );
-    let Some(src) = the_collectors_own_menu() else {
-        return;
-    };
+    // The source itself, not just its output. `docs/development-rules.md` § 8
+    // asks for this half of a migration explicitly: the old source is not merely
+    // unused, it is gone. GH #552 took the `{MEM}` branch out of
+    // `self_tool_menu()`; GH #889 took the function with its last name. Only
+    // the declaration source is measured, never a mention: the ambient leg still
+    // synthesises a `{MEM}` call (`recall_call`, GH #278), because a recall
+    // bundle travelling as a tool result needs a tool call in front of it.
+    let src = shipped_script(ASSEMBLE);
     assert!(
-        !src.contains(&format!("\"name\": \"{MEM}\"")),
-        "`self_tool_menu()` still TYPES the schema. `docs/development-rules.md` § 8 asks \
-         for this half of a migration explicitly: the old source is not merely unused, it \
-         is gone:\n{src}"
-    );
-    assert!(
-        src.contains("THREAD_RECALL"),
-        "`thread_recall` must stay: it reads this collector's OWN slate, no other cell \
-         may read that table, and it is declared where it is answered:\n{src}"
+        !src.contains("def self_tool_menu("),
+        "the assembler declares tools of its own again (`self_tool_menu()`); since \
+         GH #889 it answers none"
     );
 }
 
 #[test]
 fn the_brain_seed_no_longer_carries_the_second_hand_typed_copy() {
-    let Ok(raw) = std::fs::read_to_string(BRAIN_SEED) else {
-        return;
-    };
+    // A missing seed carries no row: since GH #889 the talky brain ships no seed
+    // at all, which is the strongest form of this claim, not a reason to skip.
+    let raw = std::fs::read_to_string(BRAIN_SEED).unwrap_or_default();
     let slots: Vec<String> = raw
         .lines()
         .filter(|l| !l.trim().is_empty())

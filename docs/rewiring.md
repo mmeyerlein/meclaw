@@ -414,7 +414,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.0.1",
        "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
-      {"name": "talky", "template": "talky@5.4.4"}
+      {"name": "talky", "template": "talky@6.0.0"}
     ]
   }
 }
@@ -470,13 +470,13 @@ hive used to carry outward.
     "modifier": {"set_context": {"channel_open_history": "'0'"}}},
    {"from": ".", "to": "./telegram",
     "condition": "has(hop.route) && hop.route == 'in_reply' && has(context.channel) && context.channel == <chat-id>"},
-   // in_tool | in_advice | in_delegation | in_bundle | in_briefing | in_thread_call |
-   // in_sweep | in_prune | in_round_sweep: same shape, target ./talky
+   // in_tool | in_advice | in_delegation | in_bundle | in_briefing |
+   // in_sweep | in_round_sweep: same shape, target ./talky
    …
 
    // outbound: the talky's lanes, unchanged but for the sender
    {"from": "./talky", "to": ".", "condition": "has(hop.route) && hop.route == 'write'"},
-   // turn_write | sidecar | recall | brief | prune | tool | error: same shape
+   // turn_write | sidecar | recall | brief | tool | error: same shape
    …
 
    // a round that ran out of iterations, and a turn the store could not
@@ -495,10 +495,7 @@ everything on one wire and the caller sorts it: `!has(hop.error_code)` is the
 turn, `has(hop.error_code)` is the failure. Draw the first edge and forget the
 second and you get a colony that goes quiet exactly where somebody is waiting
 for an answer, and with the hive gone there is no `required_drains` left to stop
-you. The level that holds the connector owes the `error` drain. The same goes
-for the pair the talky declares itself: `in_prune` is paired with `prune`, and a
-prune ingress without a plain `prune` drain makes every operator cut
-dead-letter its own answer.
+you. The level that holds the connector owes the `error` drain.
 
 The `context.channel` condition carries the assignment. The return from the
 shared firewall used to land in the one hive that was the chat; now it lands on

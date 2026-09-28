@@ -351,6 +351,11 @@ fn main_config() -> Value {
 /// ticks. The push test overrides it.
 const QUIET_CRON: &str = "0 0 4 * * *";
 
+/// The id of the seeded example subscription: the one `./gate` derives for the
+/// seeded address and subject (`"sub:" + subscriber + "|" + subject`), since
+/// GH #877 (F19) the same spelling in the seed as at the gate.
+const SEEDED_SUB_ID: &str = "sub:./assistants/aiden/brain|entity:aiden";
+
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &str) {
     let root = td.path();
     std::fs::write(root.join(".env"), "").unwrap();
@@ -1674,7 +1679,7 @@ async fn a_body_asserted_subscriber_is_refused() {
     );
     assert_eq!(
         subs[0]["id"].as_str(),
-        Some("sub:aiden-self"),
+        Some(SEEDED_SUB_ID),
         "and the one row that IS there is the seeded one: {subs}"
     );
 
@@ -1799,15 +1804,16 @@ async fn a_subscribe_without_an_edge_subscriber_is_refused() {
         "and nothing was written on the way to that refusal -- the one row in \
          the table is the seeded birth state (GH #453): {subs}"
     );
-    assert_eq!(subs[0]["id"].as_str(), Some("sub:aiden-self"), "{subs}");
+    assert_eq!(subs[0]["id"].as_str(), Some(SEEDED_SUB_ID), "{subs}");
 
     h.shutdown().await;
 }
 
 /// Push-on-change, both halves. A subscription whose subject has never been
-/// rendered is a change, so the first tick re-briefs it; the second tick
-/// computes the hash the first one stored and therefore says nothing at all.
-/// That silence is what makes a short cadence affordable.
+/// rendered is a change, so the first tick re-briefs it; once the receipt of
+/// that pack comes back clean (`in_pack_ack`, GH #877) the row holds its hash,
+/// and every later tick computes the hash the receipt stored and therefore says
+/// nothing at all. That silence is what makes a short cadence affordable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
     let Some(root) = shipped_affinity() else {
@@ -1868,7 +1874,56 @@ async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
          slots: {system}"
     );
 
-    // 2. The stored hash moved, so every further tick is silent. Several
+    // 2. The receipt. GH #877: a send is not a delivery, so the row stays
+    //    unbooked until the pack's receipt comes back clean -- here in the form
+    //    the member's `./assistants -> ./affinity` edge delivers it, with the
+    //    row and the hash the pack named promoted into context.
+    assert!(
+        !hop_of(&pushed, "pack_sub").is_empty() && hop_of(&pushed, "pack_hash").len() == 64,
+        "the pack names the row it serves and the hash of what it sends: {:?}",
+        pushed.headers.hop
+    );
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".into(), json!("in_pack_ack"));
+    hop.insert("error_code".into(), json!(""));
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    ctx.insert("pack_sub".into(), json!(hop_of(&pushed, "pack_sub")));
+    ctx.insert("pack_hash".into(), json!(hop_of(&pushed, "pack_hash")));
+    h.send(
+        MessageBuilder::new(Path::new("/affinity"))
+            .hop(hop)
+            .context(ctx)
+            .body(Body::Inline(json!({"messages": []})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let subs = probe(
+            &h,
+            &mut rx,
+            json!({"operation": "select", "table": "subscribers",
+                   "columns": ["pack_hash"],
+                   "where": {"cell_path": "/main/consumer", "status": "active"}, "limit": 5}),
+        )
+        .await;
+        if subs[0]["pack_hash"].as_str().map(str::len) == Some(64) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the clean receipt never booked the row: {subs}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A tick that fired between the send and the booking sent the same pack
+    // once more; it was on its way before the row changed, so it is drained
+    // here and is not the silence under test.
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(500), push_rx.recv()).await {
+    }
+
+    // 3. The stored hash moved, so every further tick is silent. Several
     //    two-second ticks fit in this window; not one of them may speak.
     // The push exit is the one a tick can reach, so silence is measured there.
     let quiet = tokio::time::timeout(Duration::from_secs(7), push_rx.recv()).await;
@@ -1878,7 +1933,7 @@ async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
         quiet.map(|m| m.map(|m| m.headers.hop.clone()))
     );
 
-    // 3. And the hash really is what stopped it, not a dead lane.
+    // 4. And the hash really is what stopped it, not a dead lane.
     let subs = probe(
         &h,
         &mut rx,
@@ -1891,7 +1946,7 @@ async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
     assert_eq!(
         subs[0]["pack_hash"].as_str().map(|s| s.len()),
         Some(64),
-        "the first tick wrote the sha256 of what it sent: {subs}"
+        "the clean receipt wrote the sha256 of what was sent: {subs}"
     );
 
     h.shutdown().await;
@@ -2002,6 +2057,9 @@ async fn the_two_answer_lanes_are_told_apart_by_the_subscriber_key() {
     //    bounded window and count: every answer at `/sink` is a tool answer,
     //    every answer at `/pushsink` is a push, and there is at least one of
     //    each -- a test that counted zero on both sides would pass trivially.
+    //    Nothing acks at `/pushsink`, so the push goes again (GH #877) -- on
+    //    the next tick, then after a doubling wait, which is what lets the
+    //    push lane fall quiet at all.
     let mut tool_answers = 1usize;
     while let Ok(Some(m)) = tokio::time::timeout(Duration::from_secs(4), rx.recv()).await {
         if hop_of(&m, "route") != "answer" {

@@ -499,7 +499,8 @@ fn app_edges(name: &str) -> Vec<Value> {
 }
 
 /// The colony around the member: one driver, and a drain for every lane the
-/// member emits. Draining all ten is the point — an undrained lane is a dead
+/// member emits. Draining all nine is the point (ten until GH #889 took `prune`
+/// out of the chain) — an undrained lane is a dead
 /// letter, and this test would then be reading a silence.
 fn main_config() -> Value {
     let mut edges = vec![
@@ -528,7 +529,8 @@ fn main_config() -> Value {
         "error",
         "write",
         "turn_write",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "build",
         "close_report",
         "export_done",
@@ -864,8 +866,8 @@ async fn an_event_on_an_agents_view_reaches_that_agent_as_a_turn() {
 /// that was the second half of a loop that cost money: a generation reads a turn
 /// by answering it, the answer went to the screen, the screen refused it again.
 /// A receipt is feedback to a WRITER, not something a person said, and the level
-/// treats it the way it already treats `pack_ack`: evidence for whoever operates
-/// the colony, carried out on `error` with the original lane on `hop.kind`.
+/// treats it as evidence for whoever operates the colony, carried out on `error`
+/// with the original lane on `hop.kind`.
 /// The loop itself is measured in
 /// `crates/meclaw-cells/tests/gh598_a_screen_receipt_is_not_a_turn.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

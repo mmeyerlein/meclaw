@@ -426,15 +426,17 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // one way back per composite on the model road (GH #863);
         // 1.15.2 pins its own dispatcher at `dispatcher@1.2.2` (GH #871).
         // 1.15.3 pins its librarian at `builder-librarian@2.2.6` (GH #886).
-        "builder@1.15.3"
+        // 1.16.0 draws the identity pack for talky-chat and pins `assistant@3.0.0`,
+        // `display@2.8.1` and `builder-librarian@2.2.7` (GH #877, GH #889, GH #890).
+        "builder@1.16.0"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],
-        "operator@1.2.3"
+        "operator@1.2.4"
     );
     assert_eq!(
         read("templates/operator/submit/config.json")["cell"]["template"],
-        "submit@2.3.4"
+        "submit@2.3.5"
     );
 }
 
@@ -547,7 +549,7 @@ fn the_shell_template_counts_the_lanes_it_declares() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        examples.contains("pack_ack and catalogue leave the hive path"),
+        examples.contains("close_report and catalogue leave the hive path"),
         "the lane inventory in the examples names the lane too"
     );
 }

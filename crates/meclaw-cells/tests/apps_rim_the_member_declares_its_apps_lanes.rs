@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "1.10.5",
+            v, "2.0.0",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -402,12 +402,14 @@ fn the_versions_moved_with_the_declarations() {
              1.10.3 only pins `affinity@3.6.1` (GH #864) and `memory-hive@3.6.1` (GH #863), \
              the third digit once more, as 1.10.4 only pins `memory-hive@3.6.2` (GH #873) \
              and derives `./assistants` from `assistant@2.9.4` (GH #871); 1.10.5 only derives \
-             `./assistants` from `assistant@2.9.5` (GH #886)"
+             `./assistants` from `assistant@2.9.5` (GH #886); GH #877 and GH #889 make it \
+             2.0.0, the first digit: `pack_ack` and `prune` no longer leave the level, \
+             and the apps rim stays as it was"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "2.9.5",
+            v, "3.0.0",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -426,7 +428,9 @@ fn the_versions_moved_with_the_declarations() {
              `talky@5.4.2` and `cogny@5.1.2` again; GH #871 makes it 2.9.4, only the pins \
              `talky@5.4.3` and `cogny@5.1.3`, whose collectors show an earlier answer with \
              its block; GH #886 makes it 2.9.5, only the pins `talky@5.4.4` and \
-             `cogny@5.1.4`, whose brains declare `hop.model`"
+             `cogny@5.1.4`, whose brains declare `hop.model`; GH #889 makes it 3.0.0, the \
+             first digit: `in_prune` and `prune` left with `talky@6.0.0`, and it pins \
+             `cogny@5.2.0`"
         );
     }
 }

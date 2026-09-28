@@ -636,7 +636,8 @@ async fn probe(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, op: Value) ->
 ///    promotes `context.actor` and `context.subscriber`, the row lands `active`
 ///    with an empty `pack_hash`, and the NEXT tick delivers: the pack arrives at
 ///    the wired sink under the subscribed address, carrying `system.*` and no
-///    turn beside it, and the hash and the timestamp are written back.
+///    turn beside it -- and once its receipt comes back clean (GH #877) the
+///    hash and the timestamp are written back.
 ///
 /// The two halves also prove each other. The tick in (1) is the same mechanism
 /// as the tick in (2), so the silence is not the silence of a dead lane -- and
@@ -682,7 +683,11 @@ async fn the_seeded_subscription_is_silent_until_something_subscribes() {
         "and it is still inactive -- that column is WHY the tick was silent, \
          which is what makes the silence readable instead of ambiguous: {subs}"
     );
-    assert_eq!(subs[0]["id"].as_str(), Some("sub:aiden-self"), "{subs}");
+    assert_eq!(
+        subs[0]["id"].as_str(),
+        Some(format!("sub:{SEEDED_SUBSCRIBER}|entity:aiden").as_str()),
+        "the seeded row carries the id ./gate derives for it (F19, GH #877): {subs}"
+    );
     assert_eq!(
         subs[0]["pack_hash"].as_str(),
         Some(""),
@@ -773,20 +778,72 @@ async fn the_seeded_subscription_is_silent_until_something_subscribes() {
         body_of(&pushed)["system"]
     );
 
-    // The receipt on the row itself: what was sent, and when.
+    // GH #877: a send is not a delivery. The pack names the row it serves and
+    // the hash of what it carries; the row stays unbooked until the receipt of
+    // that pack comes back clean.
+    assert_eq!(
+        hop_of(&pushed, "pack_sub"),
+        format!("sub:{SEEDED_SUBSCRIBER}|entity:aiden"),
+        "the pack names the row it serves: {:?}",
+        pushed.headers.hop
+    );
     let subs = probe(
         &h,
         &mut rx,
         json!({"operation": "select", "table": "subscribers",
-               "columns": ["cell_path", "pack_hash", "sent_at", "status"],
+               "columns": ["pack_hash", "sent_at"],
                "where": {"status": "active"}, "limit": 5}),
     )
     .await;
+    assert_eq!(
+        subs[0]["pack_hash"].as_str(),
+        Some(""),
+        "the send wrote nothing back -- nobody has confirmed the pack yet: {subs}"
+    );
+
+    // The receipt, in the form the member's `./assistants -> ./affinity` edge
+    // delivers it: the row and the hash promoted into context.
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".into(), json!("in_pack_ack"));
+    hop.insert("error_code".into(), json!(""));
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    ctx.insert("pack_sub".into(), json!(hop_of(&pushed, "pack_sub")));
+    ctx.insert("pack_hash".into(), json!(hop_of(&pushed, "pack_hash")));
+    h.send(
+        MessageBuilder::new(Path::new("/affinity"))
+            .hop(hop)
+            .context(ctx)
+            .body(Body::Inline(json!({"messages": []})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+
+    // The receipt on the row itself: what was delivered, and when.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let subs = loop {
+        let subs = probe(
+            &h,
+            &mut rx,
+            json!({"operation": "select", "table": "subscribers",
+                   "columns": ["cell_path", "pack_hash", "sent_at", "status"],
+                   "where": {"status": "active"}, "limit": 5}),
+        )
+        .await;
+        if subs[0]["pack_hash"].as_str().map(str::len) == Some(64) {
+            break subs;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the clean receipt never booked the row: {subs}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_eq!(subs.as_array().map(|a| a.len()), Some(1), "subs: {subs}");
     assert_eq!(
         subs[0]["pack_hash"].as_str().map(|s| s.len()),
         Some(64),
-        "the tick wrote the sha256 of what it sent: {subs}"
+        "the clean receipt wrote the sha256 of what was sent: {subs}"
     );
     assert!(
         subs[0]["pack_hash"]
@@ -798,7 +855,7 @@ async fn the_seeded_subscription_is_silent_until_something_subscribes() {
         subs[0]["sent_at"]
             .as_str()
             .is_some_and(|s| s.ends_with('Z') && s.len() >= 20),
-        "and when it sent it: {subs}"
+        "and when the receipt came: {subs}"
     );
 
     h.shutdown().await;

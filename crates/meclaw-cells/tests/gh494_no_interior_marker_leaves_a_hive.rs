@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 29] = [
+const SHARED: [&str; 31] = [
     "actor",
     "asker",
     "audience_now",
@@ -122,6 +122,16 @@ const SHARED: [&str; 29] = [
     // with nothing, so no exit of the shell ever carries one it set.
     "model_announced",
     "model_generation",
+    // GH #877 -- the delivery identity of an identity pack: which subscriber
+    // row it serves and the hash of what it carries. `affinity/push` names both
+    // on the pack, the builder's `in_pack` v-lane stamps them into context at
+    // the member, they ride through the talky or cogny and its curator on the
+    // way in and back out on the receipt, and the member's
+    // `./assistants -> ./affinity` edge restates them into affinity's
+    // `in_pack_ack` lane, where the delivery is booked. Four hives read or
+    // carry them; clearing them at any rim would leave every pack unbooked.
+    "pack_hash",
+    "pack_sub",
     "recall_as_of",
     "recall_caller",
     "recall_query",

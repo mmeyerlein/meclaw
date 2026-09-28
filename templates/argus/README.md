@@ -1,4 +1,4 @@
-# `argus@1.2.1`
+# `argus@1.2.2`
 
 The colony's watcher and its control loop, as a hive of seven cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -331,6 +331,9 @@ lane, where `show` names the refusal until the next push or a `reset`
 it `no_route`, loudly. A push addressed to another cell is refused as `invalid_input` without the
 two keys and still reaches the verdict edge -- the forward that caused it is the defect.
 
+Since 1.2.2 ([#890](https://github.com/mmeyerlein/meclaw/issues/890)) `./judge` declares
+every hop key the `llm` cell writes into an answer, the cache keys among them; nothing else moved.
+
 ## Relationship to `llm-registry`
 
 **The registry is the book, the argus is the brain.** The registry stays a
@@ -355,7 +358,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.2.1",
+ "nodes": [{"name": "argus", "template": "argus@1.2.2",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},

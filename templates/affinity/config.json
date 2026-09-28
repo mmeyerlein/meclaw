@@ -23,6 +23,14 @@
           "because": "write: one proposed change to the domain. The propose edge promotes the WRITER to `context.actor` -- the audit row is only worth writing if its actor came from an edge rather than from body text -- and, for a `subscribe`, the cell that shall receive the pushes to `context.subscriber` (GH #288). Both are identity, and identity is the one thing a body may not state about itself: the subscription row IS the routing decision `./push` reads every tick, so a body that names its own `cell_path` or `audience` is refused with `identity_from_body` rather than narrowed. An edge that promotes neither still reaches the gate on the BOOT path; it is refused there (`subscriber_not_on_edge`, `actor_not_on_edge`), which is the fail-closed half. On the RUNTIME path the gate never sees it: an `add_edges` mutation that promotes neither is refused by validation stage 6 (contract locality) and the edge is never laid, so the two refusals are the same rule read at two different moments, not a second chance."
         },
         {
+          "route": "in_pack_ack",
+          "context": [
+            "pack_sub",
+            "pack_hash"
+          ],
+          "because": "the receipt of one identity pack this hive pushed (GH #877). A pack counts as delivered only when the curator in front of the subscribing brain acknowledged it without an error: `./push` then writes `pack_hash` and `sent_at` onto the row `context.pack_sub` names, and only onto that row while it is active and does not hold `context.pack_hash` already. A receipt with `hop.error_code` set books no delivery and parks that hash in `subscribers.retry`, so the pack goes again only once it changes (an unanswered one goes again with a doubling wait, capped at six hours); one without `pack_sub` is dropped with a line on stderr. Both keys are identity of the delivery and never body text: `./push` puts them on the pack, the hive's exit carries them on the answer's hop, the edge that delivers the pack promotes them into context, the curator hands the context back on its receipt, and the edge that brings the receipt home promotes them again. Until #877 the row was written when the pack was SENT, so a pack that met no door stood as delivered for ever and the brain never received its identity"
+        },
+        {
           "route": "in_export",
           "because": "a demand that this hive hand out everything it holds, as a versioned document. The walk reads the two identity tables the store keys itself and then `entities`, `relations`, `trust`, `disclosure`, `subscribers`, `proposals` and `audit`, one `dump` part per table -- schema declaration first, rows after it -- and the last part carries the completeness marker. The caller sends no keys with it: an export is about the whole hive rather than about a round, and what may leave is not a question this lane asks (GH #471)",
           "context": []
@@ -36,7 +44,7 @@
       "emits": [
         {
           "route": "answer",
-          "because": "the brief, for whoever asked -- and on the tool lane, since 3.6.0, the body slot `who {ref, name, identity, known}` naming the subject it is about, on the served brief and on every refusal after the subject was read whose subject is in the round (#848)"
+          "because": "the brief, for whoever asked -- and on the tool lane, since 3.6.0, the body slot `who {ref, name, identity, known}` naming the subject it is about, on the served brief and on every refusal after the subject was read whose subject is in the round (#848). On the push lane the answer also carries `hop.pack_sub` (the subscriber row) and `hop.pack_hash` (the hash of what is sent), empty on the tool lane; the edge that delivers a pack promotes both into context so the receipt can name its row (GH #877)"
         },
         {
           "route": "ack",
@@ -104,6 +112,18 @@
           "condition": "has(hop.route) && hop.route == 'in_propose'"
         },
         {
+          "from": ".",
+          "to": "./push",
+          "condition": "has(hop.route) && hop.route == 'in_pack_ack'",
+          "modifier": {
+            "set_context": {
+              "affinity_origin": "'push'",
+              "aff_phase": "''",
+              "aff_carry": "''"
+            }
+          }
+        },
+        {
           "from": "./brief",
           "to": "./store",
           "condition": "has(hop.route) && hop.route == 'astore'",
@@ -169,7 +189,9 @@
               "aff_subscriber": "hop.subscriber",
               "affinity_origin": "''",
               "aff_phase": "''",
-              "aff_carry": "''"
+              "aff_carry": "''",
+              "aff_pack_sub": "hop.pack_sub",
+              "aff_pack_hash": "hop.pack_hash"
             }
           }
         },
@@ -194,6 +216,8 @@
               "aff_audience",
               "aff_carry",
               "aff_channel",
+              "aff_pack_hash",
+              "aff_pack_sub",
               "aff_phase",
               "aff_slots",
               "aff_subject",
@@ -202,7 +226,11 @@
               "port_phase",
               "port_run",
               "port_table"
-            ]
+            ],
+            "set_hop": {
+              "pack_sub": "has(context.aff_pack_sub) ? context.aff_pack_sub : ''",
+              "pack_hash": "has(context.aff_pack_hash) ? context.aff_pack_hash : ''"
+            }
           }
         },
         {
@@ -214,6 +242,8 @@
               "aff_audience",
               "aff_carry",
               "aff_channel",
+              "aff_pack_hash",
+              "aff_pack_sub",
               "aff_phase",
               "aff_slots",
               "aff_subject",
@@ -234,6 +264,8 @@
               "aff_audience",
               "aff_carry",
               "aff_channel",
+              "aff_pack_hash",
+              "aff_pack_sub",
               "aff_phase",
               "aff_slots",
               "aff_subject",
@@ -297,6 +329,8 @@
               "aff_audience",
               "aff_carry",
               "aff_channel",
+              "aff_pack_hash",
+              "aff_pack_sub",
               "aff_phase",
               "aff_slots",
               "aff_subject",
@@ -317,6 +351,8 @@
               "aff_audience",
               "aff_carry",
               "aff_channel",
+              "aff_pack_hash",
+              "aff_pack_sub",
               "aff_phase",
               "aff_slots",
               "aff_subject",
@@ -337,6 +373,8 @@
               "aff_audience",
               "aff_carry",
               "aff_channel",
+              "aff_pack_hash",
+              "aff_pack_sub",
               "aff_phase",
               "aff_slots",
               "aff_subject",
@@ -354,7 +392,7 @@
   "description": {
     "purpose": "Scope marker of the affinity hive: the curated person and agent domain behind ONE read port and ONE write port. Eight internal edges, and every one of them exists for the same reason -- a code cell has no cell.db, so the state of a multi-read lane rides in the hop keys these edges promote to context and comes back on the store's answer. The store round-trip IS the cell's memory.",
     "use_when": "One per family tree, not one per member (a member's own view is a `disclosure` row, not a second store). Instantiate with add_nodes and wire the ports in the SAME mutation; the composite is an island until an edge crosses into it.",
-    "contract_in": "Two lanes, both at the hive path. in_brief — read: who is this audience, what is known about them; the caller carries the audience and the ROUND it is speaking in as `hop.audience` and `hop.audience_set` (a JSON array of participant ids) and the door edge promotes both to `context.asker` / `context.audience_set` — or promotes them itself on its own edge, which then WINS: `context.audience_set` ranks above `hop.audience_set`, so an edge-pinned identity cannot be overwritten by a hop key stamped downstream. `participants` was retired under GH #330 and the door no longer reads it: a request that spells the round that way declared no round at all and is refused like any other undeclared one. The door also resets `aff_phase`, `aff_carry` and `aff_subscriber`: context travels colony-wide, so a fresh request must not inherit a phase, a carry or a subscriber from whatever the caller did before. Until GH #306 that promise had no modifier behind it: nothing in the library ever wrote the round into context, so the audience-SET rule's refusal half was dead in every shipped colony and a four-person round read a three-person release as if it were alone. A round nobody declared is now refused with `no_round` rather than narrowed to the asker — 'the asker alone' is the WIDEST reading a subset test can be handed, not the narrowest. in_propose — write: one proposed change to the domain, with the actor on the hop. Older wirings named ./brief and ./gate directly and declared them as `ports`; that is a cell name, not a lane, and it moved the boundary one step instead of drawing it (overview, Die Hive-Grenze).",
+    "contract_in": "Two lanes, both at the hive path. in_brief — read: who is this audience, what is known about them; the caller carries the audience and the ROUND it is speaking in as `hop.audience` and `hop.audience_set` (a JSON array of participant ids) and the door edge promotes both to `context.asker` / `context.audience_set` — or promotes them itself on its own edge, which then WINS: `context.audience_set` ranks above `hop.audience_set`, so an edge-pinned identity cannot be overwritten by a hop key stamped downstream. `participants` was retired under GH #330 and the door no longer reads it: a request that spells the round that way declared no round at all and is refused like any other undeclared one. The door also resets `aff_phase`, `aff_carry` and `aff_subscriber`: context travels colony-wide, so a fresh request must not inherit a phase, a carry or a subscriber from whatever the caller did before. Until GH #306 that promise had no modifier behind it: nothing in the library ever wrote the round into context, so the audience-SET rule's refusal half was dead in every shipped colony and a four-person round read a three-person release as if it were alone. A round nobody declared is now refused with `no_round` rather than narrowed to the asker — 'the asker alone' is the WIDEST reading a subset test can be handed, not the narrowest. in_propose — write: one proposed change to the domain, with the actor on the hop. Older wirings named ./brief and ./gate directly and declared them as `ports`; that is a cell name, not a lane, and it moved the boundary one step instead of drawing it (overview, Die Hive-Grenze). in_pack_ack — the receipt of one pack this hive pushed (GH #877), carrying the row and the hash in `context.pack_sub` / `context.pack_hash`; a clean one books the delivery onto that row, a refused or anonymous one books nothing.",
     "contract_out": "`answer` — the brief, for whoever asked. `ack` — the write was accepted. `error` — any of the three lanes failed, on ONE edge out of the hive: which cell inside produced it is not the caller's business, and three separate edges for it delivered the same failure three times once both ends named the hive. The push tick is internal: a schedule that fires inside this hive is not an exit.",
     "not_in_scope": "No model of any kind: every judgement in this hive is a comparison, so a brief costs nothing and a push tick over unchanged data costs two selects. No conversation, no session, no channel surface -- affinity is a tool address, never a turn in the hot path. And enforcement only in half: the substrate refuses a write from outside this hive (`write_denied`, from the store's `write_surface: \"internal\"`) and refuses a mutation naming a path inside it (`hive_port_boundary`), but a parent's BOOT graph may still wire straight into `./store`, and a read from anywhere is free -- which cell may READ is a fact about the edges drawn here, not a rule the substrate applies (see README, `Data sovereignty, honestly`)."
   }

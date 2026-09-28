@@ -201,8 +201,9 @@ fn a_turn_is_split_on_the_channel_and_a_tool_round_on_its_caller() {
 ///
 /// Every edge around `./talky` has a counterpart around `./talky-chat` on the same lane,
 /// with the same other end. The lanes that would go missing quietly are exactly the ones
-/// no test drives — a sweep, a prune, an export — and a keeper whose sessions are never
-/// swept is a store that grows until the disk does.
+/// no test drives — a sweep, an export — and a keeper whose sessions are never
+/// swept is a store that grows until the disk does. (A prune was the third until
+/// GH #889 took the prune chain out with the collector's `in_prune`.)
 #[test]
 fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     let Some(root) = shipped() else { return };
@@ -256,14 +257,16 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     assert_eq!(
         side("./talky"),
         side("./talky-chat"),
-        "the two keepers carry the same rim. Every sweep, prune, transfer and mutation \
+        "the two keepers carry the same rim. Every sweep, transfer and mutation \
          receipt fans out to BOTH, because each of them has its own sessions to tidy and \
          to carry, and everything either of them says leaves the level the same way"
     );
+    // GH #889: sixty-three, down from sixty-seven -- the `in_prune` door and the
+    // `prune` exit fell with the collector's prune chain, one pair per keeper.
     assert_eq!(
         hp.graph.edges.len(),
-        67,
-        "thirty-nine edges and twenty-eight twins. The number is asserted so that an \
+        63,
+        "thirty-seven edges and twenty-six twins. The number is asserted so that an \
          edge added on one side and forgotten on the other is loud"
     );
 }
@@ -428,7 +431,8 @@ fn main_config() -> Value {
         "turn_write",
         "sidecar",
         "recall",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "error",
         "build",
         "tool",

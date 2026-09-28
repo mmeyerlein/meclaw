@@ -432,6 +432,15 @@ fn build_tree(td: &TempDir, base_url: &str) {
             p.remove("base_url_allow");
         }
     });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, and the push below names
+    // the brain, so it is never called.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!(START);
+    });
 }
 
 struct Ports {

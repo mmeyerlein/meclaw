@@ -26,17 +26,10 @@ cargo build --workspace --release
 cp -r templates examples/never-forgets/templates
 ```
 
-That is the whole step, and it is worth knowing what it is *not* for. The
-collector's per-turn write is a **param**, and a param is named in the
-declaration: `grow.json` carries `"override_params": {"collector/assemble":
-{"turn_write": "1"}}` on the `talky` node, so nothing about this example needs an
-edited library. Since
-[#298](https://github.com/mmeyerlein/meclaw/issues/298) that value is also the
-shipped default, so the line names the knob this example lives on rather than
-switching it on. Since [#140](https://github.com/mmeyerlein/meclaw/issues/140) an
-`override_params` on a subtree template is addressed by the cell's path inside it
-(`collector/assemble` — the cell, not `collector`, which is the sub-unit's hive
-and would swallow the key).
+That is the whole step, and it is worth knowing what it is *not* for. Episodes
+are written by `./talky/curator/writer`, whose `turn_write` param ships `"1"`
+([#298](https://github.com/mmeyerlein/meclaw/issues/298)), so nothing about this
+example needs an edited library or an override.
 
 The copy exists for **Step 2**. A seed is a *file* in a template's `seed/`
 directory, read once when the cell is first spawned, and there is no
@@ -223,7 +216,7 @@ makes a port a port rather than a function call with two callers.
 
 Until GH #298 (ruling Q11) the live half of that sentence had a `memory-drain`
 hive in it, which took the talky's batch and cut it into single turns. It is
-gone from this walkthrough, not moved: the collector emits one message per turn
+gone from this walkthrough, not moved: the talky emits one message per turn
 on `turn_write` itself, so the two producers are now literally the same shape and
 there is nothing left in between.
 
@@ -534,6 +527,3 @@ March one, and the counter-test asks about April and requires the empty answer.
 It runs step 2 as written and then asserts the wire carried `memory_recall` in
 its tool list, because a mock returns a canned tool call whatever the brain was
 told — the assertion, not the answer, is what says a live run would have worked.
-And it pins the `turn_write` override in `grow.json` rather than trusting the
-freshness assertion alone: a setup key that reaches nothing is exactly how
-[#203](https://github.com/mmeyerlein/meclaw/issues/203) came up silently wrong.

@@ -1,4 +1,4 @@
-# `memory-hive@3.6.2`
+# `memory-hive@3.6.3`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -513,10 +513,6 @@ The answerer is called `memory` — short, no hyphen, the spelling `tools` and `
 use. It is what the menu merge keys its store table on, so a third answerer joins the menu
 instead of overwriting it.
 
-**`thread_recall` did not move and will not.** It reads the collector's OWN slate — the round
-table in that cell's `cell.db`, which no other cell may read — so it is declared where it is
-answered. This hive knows nothing about it.
-
 ### What this memory asks in return: the sidecar offer ([#606](https://github.com/mmeyerlein/meclaw/issues/606))
 
 `in_schemas` is the lane on which **whoever is reached declares themselves**, and #552 read that
@@ -910,7 +906,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.6.2` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.6.3` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1295,6 +1291,9 @@ lane, where `show` names the refusal until the next push or a `reset`
 addressed to another cell -- keeps the shape it had and the edge it always took: the forward that
 caused the second is the defect.
 
+Since 3.6.3 ([#890](https://github.com/mmeyerlein/meclaw/issues/890)) `./closer`, `./dialectic`, `./dreamer` and `./judge` declare
+every hop key the `llm` cell writes into an answer, the cache keys among them; nothing else moved.
+
 ## Variables and params
 
 **Since 3.2.0 every behaviour knob of this hive is a `param` of the cell that reads it**
@@ -1314,7 +1313,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@1.10.5",
+{"add_nodes": [{"name": "alex", "template": "member@2.0.0",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

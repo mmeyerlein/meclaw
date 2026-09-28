@@ -1,4 +1,4 @@
-# `llm-registry@2.3.2`
+# `llm-registry@2.4.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -93,6 +93,7 @@ it is born with.
 | `base_url` | `base_url` (empty = the cell keeps its own endpoint) |
 | `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own) |
 | `model_prompt` | `prompt` -- the lines this model needs in every system prompt and no other model does; the brain puts them FIRST in its system part |
+| `cache_mode`, `cache_ttl_s`, `context_window` | the columns of the same names -- how the model's provider caches a prompt prefix and for how many seconds, and its window in tokens; empty or 0 = the cell keeps its own (GH #890) |
 | `reasoning_effort`, `reasoning_wire`, `reasoning`, `thinking_budget`, `max_tokens`, `temperature`, `external_timeout_ms`, `provider_extra` | `package`, a json object; any other key in it is dropped and never reaches a cell |
 
 The key list is the llm cell's own (`MODEL_PACKAGE_KEYS`, GH #853), and a template test holds
@@ -149,7 +150,8 @@ A push is a **params-only** message -- an empty `system` slot and no `messages` 
             "wire_dialect": "responses", "reasoning_effort": "medium", "max_tokens": 4096,
             "model_prompt": "…",
             "$reset": ["reasoning_wire", "reasoning", "thinking_budget", "temperature",
-                       "external_timeout_ms", "provider_extra"]}}
+                       "external_timeout_ms", "provider_extra", "cache_mode",
+                       "cache_ttl_s", "context_window"]}}
 ```
 
 It carries the WHOLE package and `$reset` for every package key the package does not set, so no
@@ -331,6 +333,10 @@ translation fails into the journal. The instructions it is given travel in the q
 Since 2.3.2 ([#886](https://github.com/mmeyerlein/meclaw/issues/886)) `./translate` declares `hop.model`, the model that
 answered its translation; nothing else moved.
 
+Since 2.4.0 ([#890](https://github.com/mmeyerlein/meclaw/issues/890)) a model row carries `cache_mode` and `cache_ttl_s`, `./hand`
+pushes both with `context_window` in the package, and `./translate` declares every hop key the
+`llm` cell writes. A package can now say how its provider caches, so it is the second digit.
+
 ## How a brain becomes a subscriber
 
 **From the tree, in `meclaw-os`.** The builder's `grow_level assistant` draws, beside the level,
@@ -495,7 +501,7 @@ pins this: an incident row changes no other table and emits nothing.
 
 | table | what it is | who writes it |
 |---|---|---|
-| `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads) | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
+| `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s` | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
 | `tiers` | the index: `tier -> model_id`, with `since`, `decided_by`, `active` | `seed/tiers.jsonl` at instantiation, then `hand` (`remap`) |
 | `overrides` | the replacements: `id`, `scope` (`global` \| `target`), `match`, `model_id`, `since`, `decided_by`, `active`. Since 2.2.0 | `hand` (`override_set`, `override_clear`, `reset`) |
 | `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
@@ -527,7 +533,8 @@ the **template** -- the store has a `delete` op and would happily run it.
 `store/seed/models.jsonl` ships **six rows a hosted provider lists publicly, as of
 2026-09-26** -- id, context window and list price in cents per million tokens, all behind one
 OpenAI-compatible gateway endpoint (`https://openrouter.ai/api/v1`, `chat_completions`), each
-with a sentence of `strengths` for the translator -- plus one row retired on purpose:
+with a sentence of `strengths` for the translator and how its provider caches (`cache_mode`,
+`cache_ttl_s`, the source in its `note`) -- plus one row retired on purpose:
 
 | model | context | in / out (cents per million) | status |
 |---|---|---|---|

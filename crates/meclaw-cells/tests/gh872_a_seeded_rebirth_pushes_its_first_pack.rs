@@ -17,14 +17,17 @@
 //! This file runs the whole path once:
 //!
 //!   colony A   shipped affinity + shipped talky, one active self-subscription
-//!              with an EMPTY hash -> the real `./push` delivers once and writes
-//!              the hash it computed; then `in_export` writes the seed set
+//!              with an EMPTY hash -> the real `./push` delivers once and, on
+//!              the clean receipt (GH #877), writes the hash it computed; then
+//!              `in_export` writes the seed set
 //!   tool       `build_import.py` turns that directory into one manifest; the
 //!              manifest's `affinity/store/seed/` files are the seed under test
 //!   colony B   the same two templates, its affinity store seeded with exactly
 //!              those files -- the birth a derived member gets
 //!   proof      one `in_pack` reaches the brain's rim carrying the record's two
-//!              slots, the brain holds them, and the store wrote a new `sent_at`
+//!              slots, the rim holds them (since GH #889 in its curator's
+//!              ledger, which hands them to the brain with the next call), and
+//!              the store wrote a new `sent_at`
 //!
 //! The hash is never re-implemented here (OR-FD-I-Test): it is the one the
 //! shipped `./push` wrote in colony A, carried by a real export.
@@ -166,18 +169,29 @@ fn data_rows(body: &str) -> Vec<Value> {
 
 // ───────────────────────────────────────────────────────────────── the colony
 
-/// The identity door, verbatim the one `templates/talky/README.md` prints, a
-/// TAP on the same condition (an edge table fans out: every matching edge
-/// delivers), and drains for everything else.
+/// The identity door, verbatim the one `templates/talky/README.md` prints plus
+/// the promotion of the row and the hash the pack names (GH #877), a TAP on the
+/// same condition (an edge table fans out: every matching edge delivers), the
+/// receipt's way home in the form the member draws it -- a pack is booked only
+/// when its receipt comes back clean -- and drains for everything else.
 fn main_config() -> Value {
     let door = "has(hop.route) && hop.route == 'answer' && hop.subscriber == '/talky'";
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
         {"from": "./affinity", "to": "./talky", "condition": door,
-         "modifier": {"set_hop": {"route": "'in_pack'"}}},
+         "modifier": {"set_hop": {"route": "'in_pack'"},
+                      "set_context": {
+                          "pack_sub": "has(hop.pack_sub) ? hop.pack_sub : ''",
+                          "pack_hash": "has(hop.pack_hash) ? hop.pack_hash : ''"}}},
         {"from": "./affinity", "to": "/tap", "condition": door,
          "modifier": {"set_hop": {"route": "'in_pack'"}}},
         {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'pack_ack'"},
+        {"from": "./talky", "to": "./affinity",
+         "condition": "has(hop.route) && hop.route == 'pack_ack'",
+         "modifier": {"set_hop": {"route": "'in_pack_ack'"},
+                      "set_context": {
+                          "pack_sub": "has(context.pack_sub) ? context.pack_sub : ''",
+                          "pack_hash": "has(context.pack_hash) ? context.pack_hash : ''"}}},
         {"from": "./affinity", "to": "/sink",
          "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' \
           || hop.route == 'reject')"},
@@ -219,6 +233,12 @@ fn build_tree(
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
     patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the curator in front of the brain carries an `llm` cell of its
+    // own; it is never expected to talk here, and it may only ever reach the mock.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
@@ -367,16 +387,33 @@ fn subscription_state(td: &tempfile::TempDir) -> Option<(String, String)> {
     .map(|r| (r[0].clone(), r[1].clone()))
 }
 
-/// The brain's own `system` table: the receiver, and the only place a
-/// delivered slot lands.
-fn brain_slots(td: &tempfile::TempDir) -> Vec<(String, String)> {
+/// The receiver: the pack-owned slots of the talky curator's ledger, as
+/// `(path, body)` pairs.
+///
+/// GH #889: this was the brain's own `system` table until the pack moved to the
+/// curator. `./curator` holds an accepted pack in its ledger — table `slots`,
+/// owner `pack` (`curator@1.0.0`) — and hands it to the brain as a `$replace`
+/// root with the NEXT call; the body is read from `blocks` by the slot's hash.
+fn ledger_slots(td: &tempfile::TempDir) -> Vec<(String, String)> {
     rows(
-        &td.path().join("main/talky/brain/cell.db"),
-        "SELECT slot_path, value FROM system ORDER BY slot_path",
+        &td.path().join("main/talky/curator/ledger/cell.db"),
+        "SELECT s.path, COALESCE(b.body, '') FROM slots s \
+         LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'pack' ORDER BY s.path",
     )
     .into_iter()
     .map(|r| (r[0].clone(), r[1].clone()))
     .collect()
+}
+
+/// A ledger path belongs to a family when it IS the family or lies under it.
+/// The ledger may hold a family whole (`identity`) or leaf by leaf
+/// (`identity.soul`); what is pinned is the family and its text.
+fn in_family(path: &str, family: &str) -> bool {
+    path == family
+        || path
+            .strip_prefix(family)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
 }
 
 /// Run the example's own tool -- what a reader runs, so what is under test.
@@ -611,18 +648,24 @@ async fn a_member_born_from_an_export_seed_delivers_its_first_identity_pack() {
             }
             let ack = next_route(&mut b.sink, "pack_ack", RECV_TIMEOUT)
                 .await
-                .expect("the brain never acknowledged the pack");
+                .expect("the rim never acknowledged the pack");
             assert_eq!(hop_of(&ack, "error_code"), "", "{:?}", ack.headers.hop);
+            // GH #889: the receiver is the curator's ledger now; the brain gets
+            // the two slots with its next call, and no call happens here.
             let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
             loop {
-                let slots = brain_slots(&b_td);
-                let has = |p: &str| slots.iter().any(|(s, _)| s == p);
-                if has("identity.soul") && has("instructions.reply") {
+                let slots = ledger_slots(&b_td);
+                let holds = |family: &str, text: &str| {
+                    slots
+                        .iter()
+                        .any(|(p, v)| in_family(p, family) && v.contains(text))
+                };
+                if holds("identity", soul.as_str()) && holds("instructions", reply.as_str()) {
                     break;
                 }
                 assert!(
                     tokio::time::Instant::now() < deadline,
-                    "the brain's cell.db holds no identity after the ack: {:?}",
+                    "the curator's ledger holds no identity after the ack: {:?}",
                     slots.iter().map(|(p, _)| p).collect::<Vec<_>>()
                 );
                 tokio::time::sleep(Duration::from_millis(50)).await;

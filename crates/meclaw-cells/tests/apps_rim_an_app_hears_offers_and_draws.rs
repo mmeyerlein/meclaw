@@ -573,7 +573,8 @@ fn main_config() -> Value {
         "error",
         "write",
         "turn_write",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "build",
         "close_report",
         "export_done",

@@ -71,6 +71,34 @@ def head_block(text: str) -> dict:
     return {k: v.strip().strip('"') for k, v in out.items()}
 
 
+def plan_parts(wave_dir: Path) -> list[str] | None:
+    """The strand of every plan part: `plan-parts/<S>-<topic>.md` -> `<S>`.
+
+    One entry per file, so two parts of one strand count as two planned
+    parts. None when the wave has no `plan-parts/` at all -- the waves before
+    `plans/PLANUNG.md` planned in one file, and there Q13 cannot count.
+    """
+    folder = wave_dir / "plan-parts"
+    if not folder.is_dir():
+        return None
+    return [p.stem.split("-")[0] for p in sorted(folder.glob("*.md"))]
+
+
+def reported(wave_dir: Path) -> list[str]:
+    """The strands that wrote a report WITH a head block (OR-P5), by the
+    name in its `strang:` key. A file without one -- `minors.md`, a
+    hand-over, a measurement note -- is no strand (Q13)."""
+    folder = wave_dir / "berichte"
+    if not folder.is_dir():
+        return []
+    names = set()
+    for path in sorted(folder.glob("*.md")):
+        strand = head_block(path.read_text(encoding="utf-8", errors="replace")).get("strang")
+        if strand:
+            names.add(strand)
+    return sorted(names)
+
+
 def commits(strand: dict) -> list[str]:
     """The commits a strand declares in its head block, as short shas.
 

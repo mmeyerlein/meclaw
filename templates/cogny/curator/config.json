@@ -1,0 +1,11 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "curator@1.0.0"
+  },
+  "override_params": {
+    "writer": {
+      "turn_write": "0"
+    }
+  }
+}

@@ -12,6 +12,71 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-09-29
+
+Each conversational model gets a curator that owns its window and keeps a ledger of every call, the collector hands the round on
+uncut, the `llm` cell marks its provider cache and says when it goes cold, and affinity counts a pack as delivered only once it is
+acknowledged. Several template boundaries lose lanes; the migrations are listed under Breaking.
+
+### Breaking
+
+- **`collector@5.0.0` hands the round on uncut and keeps no history** ([#889](https://github.com/mmeyerlein/meclaw/issues/889)). It fans in the turn,
+  the memory leg, the brief and every tool round and sends the whole running round on the new route `curate`;
+  what enters the model's window is the `curator`'s decision. Gone are the lanes `in_thread_call`, `in_pack`,
+  `in_close` and `in_prune`, the routes `brain`, `turn_write`, `write`, `pack`, `pack_ack` and `prune`, the
+  `thread_recall` tool and nineteen knobs, which its README lists. **Migration: put a `curator@1.0.0` between the
+  collector and its brain, as `talky@6.0.0` and `cogny@5.2.0` do: `curate` and `menu` go into the curator, `brain`
+  leaves it, and the brain's output is tapped back as `in_llm`. Move `in_close`, `in_pack`, `write`, `turn_write`
+  and `pack_ack` from the collector to the curator, and drop the removed knobs from `override_params`.**
+- **`talky@6.0.0` and `assistant@3.0.0` drop the window's housekeeping lanes** ([#889](https://github.com/mmeyerlein/meclaw/issues/889)). `talky` no longer
+  accepts `in_prune` or `in_thread_call` and no longer emits `prune`; `assistant` no longer accepts `in_prune` and
+  no longer emits `prune`. The curator's ledger only appends, so there is nothing to prune. **Migration: remove the
+  timer or operator edges that fed `in_prune` and drained `prune`, and any `thread_recall` an instance lists as a
+  tool.**
+- **`member@2.0.0`, `org@2.0.0` and `meclaw-os@2.0.0` no longer emit `pack_ack` or `prune`** ([#877](https://github.com/mmeyerlein/meclaw/issues/877),
+  [#889](https://github.com/mmeyerlein/meclaw/issues/889)). A member books every pack receipt at its own `./affinity`, and nothing raises `prune` any more.
+  **Migration: remove the edges above a member that drained either lane.**
+
+### Added
+
+- **`curator@1.0.0` owns one model's window and keeps a ledger** ([#888](https://github.com/mmeyerlein/meclaw/issues/888)). A sealed hive of six cells stands in
+  front of an `llm` cell: it builds the window out of the system part, the history and the running round, records
+  every call as an ordered list of content-addressed blocks from which the request the provider received can be
+  rebuilt byte for byte, and moves only the end of the window between two rebuilds. When the provider's cache goes
+  cold or the prompt crosses `compress_at` of the context window, a small model of its own condenses the older
+  history into one summary, never while a call waits. It writes the per-turn episodes and the close batch that used
+  to leave the collector.
+- **The `llm` cell marks its provider cache and says when it goes cold** ([#890](https://github.com/mmeyerlein/meclaw/issues/890)). Three params travel in a model
+  package: `cache_mode` (`off`, the default, keeps the request byte-identical; `implicit` sends a stable
+  `prompt_cache_key`; `breakpoints` places `cache_control` at the end of the system message and of the stable
+  history on the Chat Completions wire), `cache_ttl_s` and `context_window`. A successful answer carries
+  `tokens_cache_write`, `cache_expires_at` and `context_window` in its `hop` header. `llm-registry@2.4.0` holds
+  `cache_mode` and `cache_ttl_s` per model and pushes all three with the package, and every `llm` cell under
+  `templates/` declares every hop key the cell writes (`memory-hive@3.6.3`, `argus@1.2.2`, `display@2.8.1`,
+  `steward@2.1.2`, `summarizer@2.2.3`).
+
+### Changed
+
+- **A turn runs collector, curator, brain** ([#889](https://github.com/mmeyerlein/meclaw/issues/889)). `talky@6.0.0` and `cogny@5.2.0` reference `curator@1.0.0`
+  between their collector and their brain; `cogny`'s curator writes no per-turn episodes by default. By pin
+  `assistant@3.0.0`, `member@2.0.0`, `org@2.0.0`, `meclaw-os@2.0.0`, `builder@1.16.0` and `builder-librarian@2.2.7`
+  (corpus regenerated).
+- **The wave retro measures the planning** ([#891](https://github.com/mmeyerlein/meclaw/issues/891)). `scripts/wave_retro.py` reports Q12, the planning session's
+  cost in input-equivalent tokens and wall-clock hours (found by the wave marker, or named with `--planning <id>`),
+  and Q13, the strands that reported without a plan part per planned strand. `scripts/strand.sh new --section` no
+  longer reads a `#` line inside a code fence as a heading and matches the section name as fixed text.
+
+### Fixed
+
+- **A pack sent before its subscriber has a door is sent again** ([#877](https://github.com/mmeyerlein/meclaw/issues/877)). `affinity` booked a pack as delivered
+  when it was sent, so a pack that met no door stood as delivered for ever and the brain never received its
+  identity. `affinity@3.6.2` writes `pack_hash` and `sent_at` only when the curator's receipt comes back without an
+  error, on the new lane `in_pack_ack`, and the member carries every receipt to its own `./affinity`. Until then it
+  resends on the next tick and then after a wait that doubles up to six hours, and a refused receipt parks the pack
+  until it changes (the new store column `subscribers.retry`, cleared on import like `pack_hash`). The seeded
+  subscription row carries the id the gate derives, `builder@1.16.0` draws the pack and its receipt for `talky-chat`
+  as well, and `submit@2.3.5` (carried by `operator@1.2.4`) lets the model road reach a curator's summarizer.
+
 ## [0.47.2] — 2026-09-28
 
 Every `llm` cell now says in its contract that it reports the model it was served, the gate gains two free stations that hold the

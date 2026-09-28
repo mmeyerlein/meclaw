@@ -206,9 +206,7 @@ PIN-assistant-wires-channels-once	templates/assistant/README.md	The measured fan
 PIN-container-declares-nothing	templates/member/README.md	a container hive that its own level	pinned	neither_container_declares_a_contract_because_the_level_wires_them
 PIN-member-holds-the-memory	templates/member/README.md	**The memory belongs to the member, not to the agent.**	pinned	the_level_wires_the_screen_the_memory_and_the_record
 PIN-level-lane-union-derived	templates/member/README.md	A level's transit contract carries the lanes that	pinned	the_member_declares_the_lanes_that_cross_its_boundary
-PIN-talky-serves-its-own-tools	templates/talky/README.md	the collector inside this hive **serves** it	pinned	thread_recall_is_served_inside_and_never_leaves_on_the_tool_lane
 PIN-talky-tool-exit-default	templates/talky/README.md	**The tool exit stopped naming names.**	pinned	an_ordinary_tool_call_still_leaves_on_the_tool_lane
-PIN-talky-ships-its-tool-schemas	templates/talky/README.md	So the composite carries the schema of `thread_recall`	pinned	the_shipped_talky_declares_the_tool_it_serves_to_the_provider
 PIN-no-silencer	templates/terminal/README.md	A `reject` or an `error` lane has exactly **two** honest states	pinned	no_shipped_topology_routes_a_refusal_into_a_cell_that_swallows_it
 PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **six declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level
 PIN-web-asset-route-de	docs/cell-types.md	erst wird die materialisierte Seitenkarte gefragt, dann die Asset-Karte	pinned	a_page_and_an_asset_do_not_shadow_each_other

@@ -6,8 +6,9 @@
 //! gh420 replay shape). Both open their round as they did before the build — a fresh
 //! id, no label, `late` empty — and the first one says so on stderr.
 //!
-//! And the adoption of a channel's stamp disarms `~` beside `|`: a channel id that read
-//! like a round key would hand an answer a label nobody gave it.
+//! And the adoption of a channel's stamp disarms `~` (since GH #889 only `~`: the `|`
+//! composites went with thread_recall and prune): a channel id that read like a round
+//! key would hand an answer a label nobody gave it.
 
 #[path = "support/assemble_cell.rs"]
 mod assemble_cell;

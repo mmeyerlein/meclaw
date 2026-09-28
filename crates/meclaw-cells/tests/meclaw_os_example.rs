@@ -8,7 +8,9 @@
 //! through:
 //!
 //!   HTTP turn -> door -> firewall screen -> talky keeper -> seam ->
-//!   brain(mock) -> split -> seam -> answer
+//!   curator -> brain(mock) -> split -> seam -> answer
+//!
+//! (The curator stands between the seam and the brain since GH #889.)
 //!
 //! Fourteen cells, and NOBODY wrote a single one of them here: one comes from
 //! `door@1`, two from `firewall@1`, ten from `talky`, one from
@@ -81,15 +83,17 @@ const GROWN_FROM: [(&str, &str); 4] = [
 /// The second declaration names exactly one template, and it ships too.
 const GROWN_FROM_COGNY: [(&str, &str); 1] = [("cogny", "templates/cogny")];
 
-/// GH #277: `talky` REFERENCES its three sub-units instead of carrying copies
+/// GH #277: `talky` REFERENCES its sub-units instead of carrying copies
 /// of them, so the library the colony scans has to hold them next to it. They
 /// are NOT `grow.json` entries -- the mutation still names `talky` alone, and
 /// the registry resolves the rest. The `summarizer` left the set with
-/// `talky@4.3.0` (GH #447).
-const REFERENCED_SUB_UNITS: [(&str, &str); 3] = [
+/// `talky@4.3.0` (GH #447). GH #889: the fourth is `curator`, the hive that
+/// stands between the collector and the brain in `talky` and in `cogny` alike.
+const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
     ("collector", "templates/collector"),
     ("session-keeper", "templates/session-keeper"),
     ("dispatcher", "templates/dispatcher"),
+    ("curator", "templates/curator"),
 ];
 
 /// One cell from `door@1`, FOUR from `firewall@2` (the third is the transfer
@@ -102,8 +106,10 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 3] = [
 /// `terminal@1`. The collector's
 /// `menu-clock` was a thirteenth between `collector@3.3.0` (GH #464) and
 /// `collector@4.0.0` (GH #553), which asks the menu on the mutation receipt
-/// instead. MEASURED.
-const CELLS_AFTER_GROW: usize = 18;
+/// instead. MEASURED. GH #889 adds six more to `talky`: its `curator`
+/// (`intake`, `policy`, `writer`, `ledger`, `summarizer`, `clock`), so eighteen
+/// became twenty-four.
+const CELLS_AFTER_GROW: usize = 24;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -112,8 +118,9 @@ const CELLS_AFTER_GROW: usize = 18;
 /// the other a `code` cell answering a menu question. The collector's menu clock
 /// was a sixth until GH #553. MEASURED, and it moves with
 /// [`CELLS_AFTER_GROW`] -- `talky`'s twelfth cell (`schemas`, GH #783) is in
-/// this total too.
-const CELLS_AFTER_COGNY: usize = 23;
+/// this total too. GH #889: `cogny` carries a curator of its own, six cells more,
+/// so the core adds eleven.
+const CELLS_AFTER_COGNY: usize = 35;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -220,7 +227,8 @@ fn grow_cogny_json_only_names_templates_that_ship() {
 /// per-turn route ending at that same sink: a lane that ends HERE is a decision
 /// this example has not made for you, which is what `terminal@1` is for. So no
 /// node grows from `memory-drain`, no edge names `./drain`, and the lane that
-/// carries what was just said is the collector's own `turn_write`.
+/// carries what was just said is talky's own `turn_write` -- written by its
+/// curator since GH #889, by the collector before, and leaving `./talky` either way.
 #[test]
 fn grow_json_ends_the_per_turn_route_at_the_terminal() {
     let grow = read_json(&example_path("grow.json"));
@@ -390,9 +398,12 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     // a line is read by nothing at all -- the sweep would fire into this run and
     // close the very generation the walkthrough opens, and nobody would say so.
     meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
+    // GH #889: the curator's summarizer is an `llm` cell too, so it gets the mock
+    // wire as well -- the file stays free of a real provider by construction.
     for rel in [
         "templates/talky/brain/config.json",
         "templates/cogny/brain/config.json",
+        "templates/curator/summarizer/config.json",
     ] {
         patch(&root.join(rel), |v| {
             v["params"]["base_url"] = json!(base_url)
@@ -562,7 +573,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus eighteen instantiated ones: {after:?}"
+        "zero checked-in cells plus twenty-four instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.
@@ -638,7 +649,8 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         with_core.len(),
         CELLS_AFTER_COGNY + 1,
-        "eighteen plus the core's five, plus the test-only probe: {with_core:?}"
+        "twenty-four plus the core's eleven (five and its curator's six), plus the \
+         test-only probe: {with_core:?}"
     );
 
     h.shutdown().await;

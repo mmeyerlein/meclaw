@@ -315,14 +315,22 @@ PERSONA_SOURCES = (
     # talky, cogny and collector, taken WHOLE as well: root, every sub-config
     # (a ref marker's override_params moves the menu, the sidecar switch, the
     # window -- talky/collector sets assemble.tools and assemble.sidecar) and
-    # the version. Single-level `*`: none of the three nests deeper.
+    # the version. Single-level `*`: none of the three nests deeper since
+    # talky's brain seed went with GH #889 (it carried only the recall tool).
     "templates/collector/config.json",
     "templates/collector/*/config.json",          # assemble (system_order, menu, preamble), window
     "templates/collector/template.json",
     "templates/talky/config.json",                # the route that carries the sidecar
     "templates/talky/*/config.json",              # brain, splitter, schemas, collector, dispatcher, ...
-    "templates/talky/brain/seed/*.jsonl",
     "templates/talky/template.json",
+    # the curator, taken WHOLE (GH #888/#889): it decides what of the wall a
+    # model reads -- intake's PACK_SLOTS, the policy's budgets, the rebuild --
+    # and its summarizer cell carries a prompt and a model of its own. The
+    # ledger seed is the durable state a rebuild starts from.
+    "templates/curator/config.json",
+    "templates/curator/*/config.json",            # intake, policy, summarizer, writer, ledger, clock
+    "templates/curator/ledger/seed/*.jsonl",
+    "templates/curator/template.json",
     "templates/cogny/config.json",
     "templates/cogny/*/config.json",
     "templates/cogny/template.json",

@@ -13,6 +13,7 @@
 //!   --edge B: in_briefing (answer || error, brief_caller inside)--> assistants
 //!   --v-lane in_briefing, guarded on context.assistant--> <gen>/talky
 //!   --> <gen>/talky/collector: the leg parks, the turn opens, the brain is called
+//!       (GH #889: through `<gen>/talky/curator`, a `ref`, doubled below)
 //! ```
 //!
 //! Measured before it (member@1.9.3): nothing in a turn asked affinity at all, and
@@ -183,6 +184,42 @@ sys.stdout.write(json.dumps({
                   "text": json.dumps(summary)}]}))
 "#;
 
+/// The curator, doubled (GH #889) as what it is on a session's first call
+/// (`curator@1.0.0` route `brain`): the round the collector sent on `curate` as
+/// `messages[]`, the system slots as sent, `tool_scope` unchanged, every hop key
+/// of `in_curate` plus a `curator_call` -- which talky's `./curator -> ./brain`
+/// edge promotes, so it has to be there. Every other lane (the brain's tap
+/// `in_llm`, `in_slots`, `in_close`) ends here.
+const CURATOR: &str = r#"
+import sys, json
+doc = json.load(sys.stdin)
+hop = (doc["envelope"].get("header") or {}).get("hop") or {}
+body = doc["body"]
+out = []
+if hop.get("route") == "in_curate":
+    head = dict(hop)
+    head["route"] = "brain"
+    head["curator_call"] = "call-%s-%s" % (hop.get("turn_id") or "", hop.get("iter") or "0")
+    one = {"header": head, "messages": body.get("messages") or []}
+    for k in ("system", "tool_scope"):
+        if body.get(k):
+            one[k] = body[k]
+    out = [one]
+sys.stdout.write(json.dumps(out))
+"#;
+
+fn curator_double() -> Value {
+    let mut c = double(
+        CURATOR,
+        json!({}),
+        "The curator, doubled: it hands the round on to the brain.",
+    );
+    for k in ["system", "tool_scope"] {
+        c["contract"]["emits"]["body"][k] = json!({"type": "object", "required": false});
+    }
+    c
+}
+
 fn double(script: &str, params: Value, purpose: &str) -> Value {
     let mut p = json!({"runner": "python3", "script_inline": script,
                        "external_timeout_ms": 15000});
@@ -229,17 +266,9 @@ fn main_config() -> Value {
                 "from": "./driver", "to": collector,
                 "condition": format!("has(hop.route) && hop.route == 'turn_{g}_{s}'"),
                 "modifier": {"set_hop": {"route": "'in_turn'"}}}));
-            // The probe into the surface's own round table -- the one read past
-            // the doors this file keeps: "the answer did NOT land in the other
-            // generation / the other surface" is only measurable where it would
-            // have landed.
-            edges.push(json!({
-                "from": "./driver", "to": format!("{collector}/window"),
-                "condition": format!("has(hop.route) && hop.route == 'probe_{g}_{s}'"),
-                "modifier": {"set_context": {"store_origin": "'probe'"}}}));
-            edges.push(json!({
-                "from": format!("{collector}/window"), "to": "/sink",
-                "condition": "has(context.store_origin) && context.store_origin == 'probe'"}));
+            // GH #889: no probe into the surface's round table any more -- the
+            // collector drops a round's rows when its answer leaves (OR-KX-V2).
+            // Where a leg landed is read off the message log (`legs_parked`).
         }
     }
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}})
@@ -270,14 +299,18 @@ fn stage_generation(root: &std::path::Path, who: &str) {
         copy_cells(&repo("templates/collector"), &root.join(&collector));
         // What the assistant's ref marker sets on the surface's collector -- the
         // same slots on both (`both_surfaces_of_the_assistant_set_brief_slots`) --
-        // minus the knobs that would send this turn anywhere else (no memory
-        // leg, no per-turn episode): the brief leg is the only leg besides the
-        // window.
+        // minus the knob that would send this turn anywhere else (no memory
+        // leg): the brief leg is the only leg besides the window. (GH #889: the
+        // collector writes no per-turn episode any more, so `turn_write` is gone.)
         patch(root, &format!("{collector}/assemble/config.json"), |v| {
             v["params"]["brief_slots"] = json!(["peer", "channel"]);
             v["params"]["memory_tier"] = json!("");
-            v["params"]["turn_write"] = json!("0");
         });
+        // GH #889: the curator stands between the collector and the brain -- a
+        // `ref` a filesystem boot cannot resolve, so it is doubled like the brain.
+        let curator = format!("{talky}/curator");
+        std::fs::remove_dir_all(root.join(&curator)).expect("drop the ref marker");
+        write(root, &format!("{curator}/config.json"), &curator_double());
         write(
             root,
             &format!("{talky}/brain/config.json"),
@@ -499,19 +532,6 @@ fn turn_at(who: &str, surface: &str, turn_id: &str, counterpart: Option<&str>) -
     )
 }
 
-/// A read of the round table of `gen`'s `surface`.
-fn probe_at(who: &str, surface: &str, turn_id: &str) -> Message {
-    let op = json!({"operation": "select", "table": "round",
-                    "columns": ["turn_id", "role", "turn"],
-                    "where": {"turn_id": turn_id, "role": "leg-brief"}});
-    drive(
-        json!({}),
-        json!({"route": format!("probe_{who}_{surface}")}),
-        json!([{"origin": "assistant", "type": "tool_call", "id": "p1",
-                "text": op.to_string()}]),
-    )
-}
-
 async fn recv(rx: &mut mpsc::Receiver<Message>, secs: u64) -> Option<Message> {
     tokio::time::timeout(Duration::from_secs(secs), rx.recv())
         .await
@@ -554,34 +574,52 @@ async fn until_reports(
     (reports, others)
 }
 
-/// The rows a probe of `gen`'s round table read.
-async fn probed(
-    h: &ColonyHandle,
-    rx: &mut mpsc::Receiver<Message>,
-    who: &str,
-    turn_id: &str,
-) -> Vec<Value> {
-    probed_at(h, rx, who, TALKY, turn_id).await
+/// The brief legs of `turn_id` parked in the round table of `gen`'s `surface`,
+/// counted where they were sent: the `leg-brief` inserts the message log holds
+/// for that surface's `collector/window`. GH #889: the collector drops a round's
+/// rows when its answer leaves (OR-KX-V2), so a read of the table after the
+/// answer finds nothing; the insert that parked the leg is what the log keeps.
+fn legs_in_log(td: &tempfile::TempDir, who: &str, surface: &str, turn_id: &str) -> usize {
+    let window = format!("/person/assistants/{who}/{surface}/collector/window");
+    let conn = rusqlite::Connection::open(td.path().join("colony.db")).expect("colony.db");
+    let mut st = conn
+        .prepare("SELECT body_payload FROM message_log WHERE to_path = ?1")
+        .expect("message_log");
+    let bodies: Vec<String> = st
+        .query_map([&window], |r| r.get::<_, Option<String>>(0))
+        .expect("query")
+        .filter_map(Result::ok)
+        .flatten()
+        .collect();
+    bodies
+        .iter()
+        .filter_map(|b| meclaw_core::serde_json::from_str::<Value>(b).ok())
+        .flat_map(|body| body["messages"].as_array().cloned().unwrap_or_default())
+        .filter_map(|m| {
+            m["text"]
+                .as_str()
+                .and_then(|t| meclaw_core::serde_json::from_str::<Value>(t).ok())
+        })
+        .filter(|op| {
+            op["operation"] == "insert"
+                && op["table"] == "round"
+                && op["row"]["role"] == "leg-brief"
+                && op["row"]["turn_id"] == turn_id
+        })
+        .count()
 }
 
-/// The rows a probe of the round table of `gen`'s `surface` read.
-async fn probed_at(
-    h: &ColonyHandle,
-    rx: &mut mpsc::Receiver<Message>,
-    who: &str,
-    surface: &str,
-    turn_id: &str,
-) -> Vec<Value> {
-    h.send(probe_at(who, surface, turn_id)).await;
-    for _ in 0..16 {
-        let m = recv(rx, 30).await.expect("the probe answers");
-        if m.headers.hop.get("operation").is_some() {
-            let rows: Value =
-                meclaw_core::serde_json::from_str(&text_of(&m)).unwrap_or(Value::Null);
-            return rows.as_array().cloned().unwrap_or_default();
+/// `legs_in_log` once the log has caught up with a leg that was parked: the
+/// log is written beside the delivery, so it may trail the answer by a moment.
+async fn legs_parked(td: &tempfile::TempDir, who: &str, surface: &str, turn_id: &str) -> usize {
+    for _ in 0..50 {
+        let n = legs_in_log(td, who, surface, turn_id);
+        if n > 0 {
+            return n;
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("the probe of {who}/{surface} never answered");
+    0
 }
 
 /// `(to_path, headers)` of every message the colony logged for a cell inside the
@@ -680,8 +718,8 @@ async fn the_member_stamps_turn_id_asker_and_brief_caller() {
     );
 
     // turn_id at the receiver: the leg is filed under the turn that asked.
-    let rows = probed(&h, &mut rx, ALPHA, "peer-channel#a1").await;
-    assert_eq!(rows.len(), 1, "one brief leg under the turn: {rows:?}");
+    let legs = legs_parked(&td, ALPHA, TALKY, "peer-channel#a1").await;
+    assert_eq!(legs, 1, "one brief leg under the turn");
     h.shutdown().await;
 }
 
@@ -714,12 +752,13 @@ async fn the_answer_and_the_error_find_the_asking_generation_and_not_the_other()
         (BETA, ALPHA, "peer-channel#b2"),
     ] {
         assert_eq!(
-            probed(&h, &mut rx, asked, tid).await.len(),
+            legs_parked(&td, asked, TALKY, tid).await,
             1,
             "the leg of {tid} is in {asked}'s round table"
         );
-        assert!(
-            probed(&h, &mut rx, other, tid).await.is_empty(),
+        assert_eq!(
+            legs_in_log(&td, other, TALKY, tid),
+            0,
             "and NOT in {other}'s: the container door is guarded on context.assistant"
         );
     }
@@ -877,12 +916,13 @@ async fn a_typed_turn_is_briefed_at_the_chat_surface_and_the_answer_finds_that_s
     // asked, and NOT in the sibling's -- the default door did not also take it.
     for (asked, other, tid) in [(TALKY, TALKY_CHAT, spoken), (TALKY_CHAT, TALKY, typed)] {
         assert_eq!(
-            probed_at(&h, &mut rx, ALPHA, asked, tid).await.len(),
+            legs_parked(&td, ALPHA, asked, tid).await,
             1,
             "the leg of {tid} is in {asked}'s round table"
         );
-        assert!(
-            probed_at(&h, &mut rx, ALPHA, other, tid).await.is_empty(),
+        assert_eq!(
+            legs_in_log(&td, ALPHA, other, tid),
+            0,
             "and NOT in {other}'s: the in_briefing doors are told apart by \
              hop.brief_surface"
         );
@@ -939,12 +979,8 @@ async fn a_turn_without_a_counterpart_opens_at_the_brain_and_asks_affinity_nothi
             pair_of(r).is_null(),
             "no counterpart, no brief in the prompt: {r}"
         );
-        let rows = probed_at(&h, &mut rx, ALPHA, surface, tid).await;
-        assert_eq!(
-            rows.len(),
-            1,
-            "the leg of {tid} is parked, empty, at {surface}: {rows:?}"
-        );
+        let legs = legs_parked(&td, ALPHA, surface, tid).await;
+        assert_eq!(legs, 1, "the leg of {tid} is parked, empty, at {surface}");
     }
     while let Some(m) = recv(&mut rx, 3).await {
         others.push(m);

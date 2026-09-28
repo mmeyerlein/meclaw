@@ -61,13 +61,11 @@ fn a_context_id_alone_is_no_label() {
 
 #[test]
 fn a_hop_label_is_disarmed_like_every_adopted_id() {
+    // GH #889: only `~` (the event key's separator) is replaced now; the `|`
+    // composites and the `close-<session>` row went with thread_recall, prune and
+    // the close chain, so `|` stays and a `close-` label is no longer refused.
     let key = round_key(delegation(Some("a|b~c"), None));
-    assert!(key.starts_with("a_b_c~"), "{key}");
-    let key = round_key(delegation(Some("close-s1"), None));
-    assert!(
-        !key.starts_with("close-"),
-        "the reserved shape is refused: {key}"
-    );
+    assert!(key.starts_with("a|b_c~"), "{key}");
 }
 
 #[test]

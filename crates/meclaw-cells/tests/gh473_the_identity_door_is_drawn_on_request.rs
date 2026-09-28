@@ -56,6 +56,9 @@ fn repo(rel: &str) -> PathBuf {
 
 const MEMBER: &str = "/os/orgs/acme/members/alex";
 const NAME: &str = "scribe";
+/// The rims an identity pack docks at, in the order the assistant's own
+/// `in_pack` connect points name them (GH #561, GH #877).
+const RIMS: [&str; 3] = ["talky", "talky-chat", "cogny"];
 
 /// One assistant level, with or without the door: the declaration's scope and
 /// its edges. Both are needed since GH #503 — a plain level declares itself AT
@@ -158,9 +161,9 @@ fn the_level_alone_draws_no_identity_door() {
     );
 }
 
-/// Asked for, it is exactly two edges — and they are the two the assistant's own
-/// contract pairs. The count is derived from the difference rather than written
-/// down, so it cannot drift from the table.
+/// Asked for, it is exactly six edges — one push and one drain per rim, and the
+/// pair is the one the assistant's own contract pairs. The count is derived from
+/// the difference rather than written down, so it cannot drift from the table.
 #[test]
 fn subscribe_draws_the_push_edge_and_its_receipt_drain_and_nothing_else() {
     // Resolved, because the two declarations do not stand at the same scope
@@ -177,16 +180,16 @@ fn subscribe_draws_the_push_edge_and_its_receipt_drain_and_nothing_else() {
     let extra: Vec<Value> = assistant_edges(true)[plain.len()..].to_vec();
     assert_eq!(
         extra.len(),
-        4,
-        "the identity door is two V-LANES and their two receipt drains — \
+        6,
+        "the identity door is three V-LANES and their three receipt drains — \
          nothing more, and never a half of it. Since GH #561 the pack ends at \
-         the two BRAIN RIMS of the generation rather than at its rim, because \
-         the level that used to fan it out inside no longer carries the lane: \
-         {extra:?}"
+         the BRAIN RIMS of the generation rather than at its rim, because \
+         the level that used to fan it out inside no longer carries the lane, \
+         and since GH #877 at all three of them (`talky-chat` too): {extra:?}"
     );
 
     let target = format!("./assistants/{NAME}");
-    for (i, rim) in ["talky", "cogny"].iter().enumerate() {
+    for (i, rim) in RIMS.iter().enumerate() {
         let push = &extra[i];
         assert_eq!(
             push["from"],
@@ -226,8 +229,16 @@ fn subscribe_draws_the_push_edge_and_its_receipt_drain_and_nothing_else() {
              edge without that comparison also collects every brief meant for \
              somebody else: {guard}"
         );
+        assert_eq!(
+            push["modifier"]["set_context"],
+            json!({"pack_sub": "has(hop.pack_sub) ? hop.pack_sub : ''",
+                   "pack_hash": "has(hop.pack_hash) ? hop.pack_hash : ''"}),
+            "the push promotes the row it serves and the hash of what it sends \
+             into CONTEXT, so the receipt can carry them home and the member's \
+             `./assistants -> ./affinity` edge can book the delivery (GH #877): {push}"
+        );
 
-        let drain = &extra[2 + i];
+        let drain = &extra[RIMS.len() + i];
         assert_eq!(
             drain["from"],
             json!(format!("{target}/{rim}")),
@@ -236,8 +247,9 @@ fn subscribe_draws_the_push_edge_and_its_receipt_drain_and_nothing_else() {
         assert_eq!(
             drain["to"],
             json!("./assistants"),
-            "and it stops at the container, where the member's own boundary \
-             edge for `pack_ack` takes it the rest of the way out"
+            "and it stops at the container, where the member's own \
+             `./assistants -> ./affinity` edge takes every receipt to the hive \
+             that pushed the pack (GH #877) -- none leaves the member"
         );
         assert_eq!(
             drain["lane"],
@@ -254,6 +266,73 @@ fn subscribe_draws_the_push_edge_and_its_receipt_drain_and_nothing_else() {
              check reads it and nothing else: {drain}"
         );
     }
+}
+
+/// GH #877 -- where the drain's receipts go next is the MEMBER's decision, and
+/// the member makes one: every receipt that reaches `./assistants` goes on to
+/// `./affinity` as `in_pack_ack`, and none leaves the level. The rendered drain
+/// above ends at `./assistants` precisely because this edge stands there
+/// whether or not a generation subscribed.
+#[test]
+fn the_member_takes_every_receipt_into_its_affinity_and_none_out() {
+    let raw = std::fs::read_to_string(repo("templates/member/config.json"))
+        .expect("the member template travels with the library");
+    let tpl: Value = meclaw_core::serde_json::from_str(&raw).expect("json");
+    let edges = tpl["params"]["graph"]["edges"]
+        .as_array()
+        .expect("the member draws edges");
+    let carries_pack_ack = |e: &&Value| {
+        e["condition"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hop.route == 'pack_ack'")
+    };
+    let receipts: Vec<&Value> = edges
+        .iter()
+        .filter(|e| e["from"] == json!("./assistants"))
+        .filter(carries_pack_ack)
+        .collect();
+    assert_eq!(
+        receipts.len(),
+        1,
+        "the member carries a receipt off `./assistants` on exactly ONE edge: \
+         {receipts:?}"
+    );
+    let edge = receipts[0];
+    assert_eq!(
+        edge["to"],
+        json!("./affinity"),
+        "and that edge ends at the hive that pushed the pack: {edge}"
+    );
+    assert_eq!(
+        edge["condition"],
+        json!("has(hop.route) && hop.route == 'pack_ack'"),
+        "it takes EVERY receipt -- no guard on `context.pack_sub` any more, so a \
+         receipt that names no row reaches `./push` too and is dropped there \
+         rather than leaving the member: {edge}"
+    );
+    assert_eq!(
+        restamp(edge).as_deref(),
+        Some("in_pack_ack"),
+        "the receipt arrives on affinity's own lane: {edge}"
+    );
+    assert!(
+        !edges
+            .iter()
+            .filter(|e| e["to"] == json!("."))
+            .any(|e| carries_pack_ack(&e)),
+        "no `pack_ack` edge ends at the member's own path any more (GH #877): a \
+         receipt is booked where the push was sent, and above the member nobody \
+         consumes one"
+    );
+    let emits = tpl["params"]["contract"]["emits"]
+        .as_array()
+        .expect("the member declares what it emits");
+    assert!(
+        !emits.iter().any(|l| l["route"] == json!("pack_ack")),
+        "the member contract no longer emits `pack_ack` (GH #877): an emit with no \
+         edge to carry it out is a promise the level cannot keep"
+    );
 }
 
 /// § 2d, the second opinion. The two routes the recipe draws are not this file's
@@ -292,7 +371,7 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
         "the push edge re-stamps onto the lane the template accepts"
     );
     assert!(
-        extra[2]["condition"]
+        extra[RIMS.len()]["condition"]
             .as_str()
             .unwrap_or_default()
             .contains(&format!(
@@ -326,7 +405,7 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
         // what `v_lane_no_connect_point` refuses, and the list is a permission rather
         // than an instruction.
         let at = at.as_array().expect("a connect point list").clone();
-        for rim in ["./talky", "./cogny"] {
+        for rim in ["./talky", "./talky-chat", "./cogny"] {
             assert!(
                 at.iter().any(|a| a == rim),
                 "the connect points of `{route}` must name {rim}, which is where the \
@@ -336,7 +415,7 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
     }
     let drawn: Vec<String> = extra
         .iter()
-        .take(2)
+        .take(RIMS.len())
         .map(|e| {
             e["to"]
                 .as_str()
@@ -349,12 +428,11 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
         .collect();
     assert_eq!(
         drawn,
-        vec!["talky".to_string(), "cogny".to_string()],
-        "and the two edges end at exactly those two rims, in that order. A generation \
-         grown with a chat keeper beside them (`assistant@2.7.0`) needs a third pair, \
-         and the recipe does not draw one: nothing routes a turn to that keeper until a \
-         channel `chat` exists, and whoever grows one draws its rim's v-lanes with it \
-         (templates/assistant/README.md, `One talky per channel`): {extra:?}"
+        RIMS.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+        "and the three edges end at exactly those three rims, in that order. Until \
+         GH #877 the recipe drew two and left the chat keeper's rim (`assistant@2.7.0`) \
+         to whoever grew a channel `chat` -- nobody did, and the typed channel's voice \
+         answered without an identity: {extra:?}"
     );
 }
 
@@ -395,7 +473,7 @@ fn both_surfaces_say_the_door_is_asked_for_and_the_row_is_not_a_mutation() {
          extra in it reaches a model that has to invent them"
     );
     assert!(
-        text.contains("Draw all four or none"),
+        text.contains("Draw all six or none"),
         "the briefing must name the pairing: a push edge without its drain is \
          refused with `required_drain_missing` and nothing is applied"
     );
@@ -403,8 +481,8 @@ fn both_surfaces_say_the_door_is_asked_for_and_the_row_is_not_a_mutation() {
     // The mechanism: both sentences are true of the table.
     assert_eq!(
         assistant_edges(true).len() - assistant_edges(false).len(),
-        4,
-        "the surfaces describe a door of four v-lanes that is drawn on request; \
+        6,
+        "the surfaces describe a door of six v-lanes that is drawn on request; \
          the renderer must agree with them"
     );
 }

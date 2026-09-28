@@ -55,8 +55,9 @@
 //!    one slot path, not a revocation of a family.
 //! 3. **The shipped default asks for nothing**, because what cuts the block back
 //!    out is a splitter this cell cannot see.
-//! 4. **A GROWN brain carries both.** A real `llm` cell, an identity pack
-//!    through the door of GH #488 and then the menu message:
+//! 4. **A GROWN brain carries both.** A real `llm` cell handed the call a
+//!    curator builds after an identity pack through the door of GH #488 and the
+//!    menu message (GH #889: one call, the family replaced whole):
 //!    `instructions.reply` and `instructions.sidecar` stand side by side in the
 //!    brain's own `cell.db`, and both reach the composed system prompt.
 //! 5. **Nobody offering anything is an EMPTY slot, not a silence.** Durable state
@@ -384,15 +385,17 @@ fn a_tool() -> Value {
             "parameters": {"type": "object", "properties": {}}}])
 }
 
-/// The one message the seam emits: the assembly on route `brain`.
+/// The one message the seam emits: the assembly on route `curate`. GH #889
+/// renamed the route from `brain`: the round goes to the curator, which hands
+/// it on to the brain with the slots it holds.
 fn seam(over: &[(&str, &str)]) -> Value {
     let out = emit_with(
         over,
         a_complete_round(json!([{"role": "user", "text": "and my editor?"}])),
     );
     out.into_iter()
-        .find(|m| m["header"]["route"] == "brain")
-        .expect("a complete round assembles on route `brain`")
+        .find(|m| m["header"]["route"] == "curate")
+        .expect("a complete round assembles on route `curate`")
 }
 
 // ═════════════════════════════════════════════════ 1. the two texts are one
@@ -785,56 +788,58 @@ async fn composed_system_prompt(mock: &MockOpenAI) -> String {
         .join("\n\n")
 }
 
-/// Claim 4 — the drift lock this issue exists for. A brain whose birth is behind
-/// it: an identity pack arrives through the door of GH #488 and writes the
-/// charter, then a turn arrives from the collector. Both slots stand, and both
-/// are read.
+/// Claim 4 — the drift lock this issue exists for. A brain whose birth is
+/// behind it carries the charter an identity pack wrote AND the contract the
+/// menu composed, and both are read.
 ///
-/// The order is the honest one. The pack is what a grown colony does FIRST —
-/// it is how a rebuilt agent gets its charter back — and it is the write that
-/// would have deleted a seeded slot had it carried a marker on the family.
+/// GH #889 changed how the two reach the brain, not what it has to end up with.
+/// Until then the pack and the menu were written into the brain one message
+/// each and a turn followed; a pack that had carried a marker on the family
+/// would have deleted the contract. Now `./curator` holds both in its ledger
+/// (the pack as owner `pack`, the menu as owner `collector`) and hands the
+/// brain ONE call: the round, with every changed family as a `$replace` root
+/// carrying ALL of its leaves (`curator@1.0.0`, route `brain`). Composing that
+/// call is the curator's promise (plan K: `system_leaves_only_when_changed`,
+/// `collector_slot_wins_at_its_leaf`); what stays here is the brain's half — a
+/// family replaced whole with the charter and the contract side by side leaves
+/// both standing, and the prompt reads the charter first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_grown_brain_carries_the_contract_after_an_identity_pack() {
     let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
     let td = tempfile::TempDir::new().unwrap();
     let (mut cell, mut db) = brain(&td, &mock.base_url);
 
-    // 1. The charter, exactly as `affinity/brief` renders it and the `in_pack`
-    //    lane hands it on: the slots and NO turn beside them, so the update
-    //    costs a write and not an inference (GH #263).
-    deliver(
-        &mut cell,
-        &mut db,
-        json!({"system": {"instructions": {"reply": {"text": CHARTER}}}}),
-    )
-    .await;
-    assert_eq!(
-        slot_paths(&mut db).await,
-        vec!["instructions.reply".to_string()],
-        "the pack lands as the charter and nothing else"
-    );
-
-    // 2. The menu message, straight out of the shipped collector: the answer of
-    //    a memory hive, merged and composed. This is the write that carries the
-    //    contract since GH #606, and it is a write and not an inference — no
-    //    turn beside it.
+    // 1. The collector's two messages, straight out of the shipped script: the
+    //    menu — the answer of a memory hive, merged and composed, which is what
+    //    carries the contract since GH #606 — and the round on `curate`, which
+    //    carries no contract of its own.
     let menu = menu_merge(&[("sidecar", "1")], a_tool(), memory_offers());
-    deliver(
-        &mut cell,
-        &mut db,
-        json!({"system": menu["system"].clone()}),
-    )
-    .await;
+    let mut call = seam(&[("sidecar", "1")]);
+    call["messages"] = json!([{"origin": "user", "type": "text", "text": "and my editor?"}]);
 
-    // 3. And then an ordinary turn, which carries no instructions of its own.
-    let mut turn = seam(&[("sidecar", "1")]);
-    turn["messages"] = json!([{"origin": "user", "type": "text", "text": "and my editor?"}]);
-    deliver(&mut cell, &mut db, turn).await;
+    // 2. The call the curator builds after a pack and that menu: `instructions`
+    //    replaced whole — the charter exactly as `affinity/brief` renders it and
+    //    the `in_pack` lane hands it on, the contract the menu composed, and the
+    //    leaves the round itself carries — and the menu's `tools` subtree as it
+    //    came.
+    let mut instructions = call["system"]["instructions"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    instructions.insert("$replace".to_string(), json!(true));
+    instructions.insert("reply".to_string(), json!({"text": CHARTER}));
+    instructions.insert(
+        "sidecar".to_string(),
+        menu["system"]["instructions"]["sidecar"].clone(),
+    );
+    call["system"]["instructions"] = Value::Object(instructions);
+    call["system"]["tools"] = menu["system"]["tools"].clone();
+    deliver(&mut cell, &mut db, call).await;
 
     let paths = slot_paths(&mut db).await;
     assert!(
         paths.contains(&"instructions.reply".to_string()),
-        "the charter must survive the turn — a collector that revoked it every round \
+        "the charter must stand beside the contract — a family replaced without it \
          would answer as the vendor's default assistant (GH #488): {paths:?}"
     );
     assert!(

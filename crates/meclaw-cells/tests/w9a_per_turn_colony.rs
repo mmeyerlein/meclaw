@@ -1,13 +1,21 @@
 //! meclaw-os -- per-turn episodes in a running colony (wave 9, track A).
 //!
-//! The script pins live in `w9a_per_turn_episodes.rs`. This file asks the
-//! question the track is actually about, and it asks it of a COLONY that
-//! contains the shipped `talky` and the memory hive's real write path (writer +
-//! `episodes` surface, the pinned snapshots of GH #125, drift-locked by
-//! `x2_hive_fixture_drift.rs`):
+//! This file asks the question the track is actually about, and it asks it of
+//! a COLONY that contains the shipped `talky` and the memory hive's real write
+//! path (writer + `episodes` surface, the pinned snapshots of GH #125,
+//! drift-locked by `x2_hive_fixture_drift.rs`):
 //!
-//!   surface -> talky (keeper, collector, brain) -> route turn_write
+//!   surface -> talky (keeper, collector, curator, brain) -> route turn_write
 //!           -> the hive's writer port -> episodes
+//!
+//! **GH #889 (R-27-1) moved the writer of that route.** The collector hands
+//! the round on to the curator and writes nothing any more; the curator's
+//! writer emits `turn_write` (one message per participant turn, the contract
+//! of `collector@4.4.1` word for word) and, on the keeper's close, `write`.
+//! The route leaves the talky under the same name and in the same shape, so
+//! this file measures the same promise at the same receiver -- the `episodes`
+//! table -- and only the prose about WHO mints the ids moved. The script-level
+//! pins of the writer are the curator's (`curator@1.0.0`).
 //!
 //! **Ruling Q11 (2026-08-21, GH #298) removed the middle of that line.** Route
 //! `turn_write` no longer hands out the day as a batch for `memory-drain` to
@@ -23,12 +31,16 @@
 //!    into the memory to be a net: the close batch is a closed DAY for whoever
 //!    archives one, and wiring it into the same memory would be a second writer
 //!    over turns the per-turn lane already wrote. What takes its place is the
-//!    property that made the net unnecessary -- IDEMPOTENCE, now the
-//!    collector's own `episode_written` column, measured here across two turns
-//!    of one live session and across the close that follows them.
+//!    property that made the net unnecessary -- IDEMPOTENCE, the curator
+//!    writer's since GH #889 (the collector's `episode_written` column
+//!    before), measured here across two turns of one live session and across
+//!    the close that follows them.
 //!
 //! The write path is model-free by spec; the only provider call in this tree
-//! is the talky's own brain, and it talks to the mock wire.
+//! is the talky's own brain, and it talks to the mock wire. The curator's
+//! summarizer is the second `llm` cell of the talky since GH #889; it is
+//! pointed at the same mock wire so nothing here can reach a paid endpoint,
+//! and nothing in this run asks it anything.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -212,9 +224,9 @@ fn main_config() -> Value {
          "modifier": {"set_hop": {"route": "'in_sweep'"}}},
         // THE per-turn lane, and since Q11 the whole write path.
         //
-        // The three keys the collector mints per turn (`turn_id`,
-        // `happened_at`, `session_id`) are promoted here, together with the
-        // provenance the writer refuses to guess (#244/#269): `audience_set`
+        // The three keys the curator's writer mints per turn since GH #889
+        // (`turn_id`, `happened_at`, `session_id`) are promoted here, together
+        // with the provenance the writer refuses to guess (#244/#269): `audience_set`
         // says who was in the round and `speaker`/`agent_id` who said it;
         // `channel` is not set here -- it travels from the connector seam above
         // (`hop.chat_id` -> `context.channel`), exactly as it does in a real
@@ -277,7 +289,8 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     memory_write_path(root);
 
     // Nothing patches `turn_write` here on purpose: since GH #298 the lane
-    // ships ON, so what runs below is the shipped instance and not a tuned one.
+    // ships ON (since GH #889 as the knob of the curator's writer), so what
+    // runs below is the shipped instance and not a tuned one.
     patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
@@ -292,6 +305,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["idle_ms"] = json!(0);
     });
     patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the curator between collector and brain carries an `llm` cell
+    // of its own (the summarizer of its rebuilds). It is pointed at the same
+    // mock so the tree has no way to a real provider; nothing in this short
+    // run triggers a rebuild, so it is never asked.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
@@ -444,7 +465,8 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
     assert!(session.starts_with("c-9a-"), "session {session:?}");
 
     // FRESHNESS: the exchange is memory while the session is still open. Two
-    // emissions of the collector, one per stored row -- no batch, no adapter.
+    // emissions of the curator's writer (GH #889), one per participant turn --
+    // no batch, no adapter.
     let rows = await_episodes(&db, 2);
     assert_eq!(
         rows,
@@ -460,13 +482,13 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
                 content: "Noted.".to_string(),
             }
         ],
-        "the turn and the answer, each once, under the collector's deterministic ids"
+        "the turn and the answer, each once, under the curator writer's deterministic ids"
     );
 
-    // IDEMPOTENCE, live: the second turn scans the SAME session again -- the
-    // first two rows are in every scan it makes -- and adds exactly its own two
-    // episodes. Without the `episode_written` guard this is where the memory
-    // starts doubling.
+    // IDEMPOTENCE, live: the second turn runs over the SAME session again --
+    // the curator's wall holds the first two turns -- and adds exactly its own
+    // two episodes, with the index counting on. A writer that re-emitted what
+    // it already wrote is where the memory starts doubling.
     h.send(turn("and i cook keto")).await;
     recv_bounded(&mut sink_rx).await.expect("the second answer");
     let rows = await_episodes(&db, 4);

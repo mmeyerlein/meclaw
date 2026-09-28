@@ -1,0 +1,69 @@
+{
+  "max_tokens": 512,
+  "messages": [
+    {
+      "content": [
+        {
+          "cache_control": {
+            "type": "ephemeral"
+          },
+          "text": "You are a fixture.\n\nBe terse.",
+          "type": "text"
+        }
+      ],
+      "role": "system"
+    },
+    {
+      "content": "first",
+      "role": "user"
+    },
+    {
+      "content": null,
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{}",
+            "name": "get_weather"
+          },
+          "id": "call_1",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "content": "sunny",
+      "role": "tool",
+      "tool_call_id": "call_1"
+    },
+    {
+      "content": [
+        {
+          "cache_control": {
+            "type": "ephemeral"
+          },
+          "text": "it is sunny",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": "thanks",
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4o",
+  "seed": 42,
+  "temperature": 0.3,
+  "tools": [
+    {
+      "description": "w",
+      "name": "get_weather",
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    }
+  ]
+}

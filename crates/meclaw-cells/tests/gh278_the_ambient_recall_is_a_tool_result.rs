@@ -156,10 +156,12 @@ fn reply_doc(phase: &str, rows_affected: i64, payload: serde_json::Value) -> ser
     })
 }
 
-/// A materialised `leg-window` row, as the `win` step writes it.
+/// A materialised `leg-window` row, as the `turn-open` step writes it. GH #889:
+/// the leg carries the round's turns whole, so `bytes`/`dropped`/`capped` left
+/// it and `deferred`/`deferred_turns` stand beside `turns`.
 fn leg_window_row(turns: serde_json::Value) -> serde_json::Value {
-    let payload = serde_json::json!({"turns": turns, "bytes": 0,
-                                     "dropped": 0, "capped": 0});
+    let payload = serde_json::json!({"turns": turns, "deferred": 0,
+                                     "deferred_turns": []});
     serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-window",
                        "turn": payload.to_string(), "fired": 0})
 }
@@ -248,9 +250,10 @@ fn assemble(over: &[(&str, &str)], payload: serde_json::Value) -> serde_json::Va
     // The guarded update that used to set it one hop in FRONT of the seam is
     // gone -- the read-back elects now -- but the record it wrote is not, because
     // a leg that lands after the turn has left would otherwise assemble it twice.
+    // GH #889: the seam's route is `curate` (the curator in front of the brain).
     let seams: Vec<serde_json::Value> = out
         .into_iter()
-        .filter(|m| m["header"]["route"] == "brain" || m["header"]["route"] == "answer")
+        .filter(|m| m["header"]["route"] == "curate" || m["header"]["route"] == "answer")
         .collect();
     assert_eq!(seams.len(), 1, "ONE seam: {seams:?}");
     seams.into_iter().next().expect("the seam message")
@@ -307,7 +310,8 @@ fn the_ambient_bundle_leaves_as_a_tool_result_pair() {
         "the call says what it asked, out of the bundle's own record of it: {msg}"
     );
 
-    // VERBATIM, up to the cap: the collector renders nothing of its own here.
+    // VERBATIM: the collector renders nothing of its own here, and since GH #889
+    // (R-27-1) it caps nothing either.
     assert_eq!(
         result["text"], READABLE,
         "the readable form the memory hive rendered, byte for byte: {msg}"
@@ -456,84 +460,11 @@ fn the_revocation_stays_on_the_node_the_collector_owns() {
     assert!(sys["consult"].get("$replace").is_none(), "{}", out[0]);
 }
 
-// ══════════════════════════════════════════════ 4. THE PAIR IS IN THE BUDGET
-
-/// The third consequence #278 names, stated precisely: the bundle was never
-/// OUTSIDE the budget. `curate` receives `len(json.dumps(sysm))` as `sys_chars`
-/// and adds it to every projection, so the bytes were always counted — but they
-/// were counted as an anonymous lump in a subtree the curator may not touch.
-///
-/// What changes here is WHERE they are counted: the pair sits in `msgs`, so the
-/// projection grows through the conversation rather than through `system`, and
-/// every byte is attributable to the item that produced it. The two assertions
-/// below are the discriminating ones — the projection grows with the bundle
-/// AND the `system` half stays the same size, which is exactly the move from
-/// `sys_chars` into the round.
-///
-/// It is still not a curation CANDIDATE, and that is deliberate: curation only
-/// touches items tagged with an iteration, and this pair belongs to no round.
-#[test]
-fn the_pair_counts_towards_the_curator_budget() {
-    let over = [("memory_tier", "0"), ("context_window", "200")];
-    let small = assemble(&over, bundle_body(AS_OF, QUERY, READABLE));
-    let large = assemble(
-        &over,
-        bundle_body(
-            AS_OF,
-            QUERY,
-            &format!("{READABLE}\n{}", "  more said\n".repeat(80)),
-        ),
-    );
-
-    let projected = |m: &serde_json::Value| {
-        m["header"]["tokens_projected"]
-            .as_str()
-            .expect("tokens_projected")
-            .parse::<i64>()
-            .expect("a number")
-    };
-    assert!(
-        projected(&large) > projected(&small),
-        "a bigger bundle has to make a bigger projection: {} vs {}",
-        projected(&small),
-        projected(&large)
-    );
-    // The move, made visible: the growth is in the ROUND, not in `sys_chars`.
-    // The system half is a literal now and cannot grow with the bundle at all.
-    //
-    // `budget` is lifted out before the measurement (GH #451): since
-    // `collector@3.1.0` the tree also carries the remaining-budget sentence, and
-    // that sentence quotes the projection — so it changes length with the number
-    // it names, for reasons that have nothing to do with the bundle. Measuring
-    // it here would turn a deliberate report of the projection into evidence
-    // about where the bundle travels, which is the opposite of this assertion.
-    let sys_chars = |m: &serde_json::Value| {
-        let mut sys = m["system"].clone();
-        if let Some(obj) = sys.as_object_mut() {
-            obj.remove("budget");
-        }
-        serde_json::to_string(&sys).unwrap().len()
-    };
-    assert_eq!(
-        sys_chars(&small),
-        sys_chars(&large),
-        "the bundle must no longer reach the projection through `system`: {large}"
-    );
-    assert_ne!(
-        large["header"]["curate_mark"], "none",
-        "and the budget still marks on it: {large}"
-    );
-    // And it is never a curation candidate: an ambient recall the curator
-    // elided would be a bundle the model was told it had and cannot read.
-    let (_, result) = pair(&large);
-    assert!(
-        !result["text"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("[elided"),
-        "{large}"
-    );
-}
+// ══════════════════════════════════ 4. THE PAIR IN THE BUDGET LEFT WITH IT (GH #889)
+//
+// The collector counted the pair into a budget projection and its curator could
+// mark on it. Both are gone (R-27-1: the collector hands the round on uncut and
+// does not look after the context window); the window belongs to the curator.
 
 // ═════════════════════ 5. THE EXPLICIT PATH LEFT THIS CELL ENTIRELY (GH #552)
 //

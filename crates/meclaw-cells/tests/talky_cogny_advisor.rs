@@ -227,9 +227,12 @@ sys.stdout.write(json.dumps([]))
 /// sessions and no night. Its "conversation" is the talky's errands.
 fn cogny_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        // its own seam, with its own iteration ceiling and its own restore_ttl
+        // its own seam, with its own iteration ceiling and its own restore_ttl.
+        // GH #889: the collector hands the round on route `curate` now; this
+        // core has no curator (its brain reads nothing but the round), so the
+        // seam goes straight into the brain.
         {"from": "./collector", "to": "./brain",
-         "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 6",
+         "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 6",
          "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                       "session_id": "hop.session_id",
                                       "iter": "hop.iter"},
@@ -352,6 +355,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
         v["params"]["handoff_tools"] = json!(["consult_cogny"]);
     });
     patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
@@ -768,7 +779,8 @@ async fn the_advisor_can_ask_back_and_the_users_answer_finds_the_same_thread() {
     );
 
     // And the id was OFFERED, not guessed: the third inference saw it in the
-    // system prompt, because the advice turn was still in the window.
+    // system prompt, because the answered departure still stood in the session
+    // (OR-KX-63, GH #889) -- the round the person answered in held no advice.
     let reqs = mock.recorded_requests().await;
     assert_eq!(reqs.len(), 4, "two rounds of two inferences each");
     let third = reqs[2].messages().expect("wire messages");

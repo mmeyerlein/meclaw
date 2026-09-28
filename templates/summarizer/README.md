@@ -1,4 +1,4 @@
-# `summarizer@2.2.2`
+# `summarizer@2.2.3`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -141,6 +141,9 @@ addressed to another cell -- keeps the shape it had and the edge it always took.
 Since 2.2.2 ([#886](https://github.com/mmeyerlein/meclaw/issues/886)) `./writer` declares `hop.model`, the model the provider served, which the
 `llm` cell has always written into the header; nothing else moved.
 
+Since 2.2.3 ([#890](https://github.com/mmeyerlein/meclaw/issues/890)) `./writer` declares
+every hop key the `llm` cell writes into an answer, the cache keys among them; nothing else moved.
+
 ## Knobs
 
 **Since `2.1.0` the four weighting knobs are params of `./prep`, not environment
@@ -235,3 +238,5 @@ Decisions worth naming:
   `summary_error`.
 - `crates/meclaw-cells/tests/gh886_every_llm_cell_declares_hop_model.rs` -- `./writer` declares
   `hop.model` in the library's one wording.
+- `crates/meclaw-cells/tests/gh890_every_llm_cell_declares_what_output_writes.rs` -- `./writer`
+  declares every hop key the `llm` cell writes.

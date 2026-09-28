@@ -19,9 +19,10 @@
 //! `gh848_affinity_names_who_is_speaking.rs`, trimmed to what this lock reads):
 //!
 //! 1. the tool lane carries the persona once;
-//! 2. the brief of the fixture stays at or below 2,400 characters and under the
-//!    collector's `tool_chars`, read from the collector's own config;
-//! 3. the `peer` slot's `trust_rank` sits before that cap;
+//! 2. the brief of the fixture stays at or below 2,400 characters (GH #889: the
+//!    collector's `tool_chars` cap it also had to stay under is gone);
+//! 3. (GH #889: gone -- the `peer` slot's `trust_rank` had to sit before the
+//!    collector's cap; the collector cuts nothing now, and 9. pins the seam);
 //! 4. the JSON below the receipt line is `system` with the `text` rendering
 //!    removed from every person slot -- no field missing, none added;
 //! 5. a German persona travels unescaped;
@@ -33,12 +34,11 @@
 #[path = "support/assemble_cell.rs"]
 mod assemble_cell;
 
-use assemble_cell::{assemble, bundle_reply, calls_of, config_of, in_phase, lane, repo, run_cell};
+use assemble_cell::{assemble, bundle_reply, calls_of, in_phase, lane, repo, run_cell};
 use serde_json::{Value, json};
 
 const BRIEF: &str = "templates/affinity/brief/config.json";
 const README: &str = "templates/affinity/README.md";
-const COLLECTOR: &str = "templates/collector/assemble/config.json";
 
 const SUBJECT: &str = "peer:colA/org1/jonas/-";
 const CHANNEL: &str = "peer-friend";
@@ -56,15 +56,6 @@ Garten, dem Chor und den Blüten. ";
 /// A channel persona of exactly `PERSONA_CHARS` characters.
 fn persona(base: &str) -> String {
     base.chars().cycle().take(PERSONA_CHARS).collect()
-}
-
-/// The collector's cap on a tool result -- read, never restated.
-fn tool_chars() -> usize {
-    let v = &config_of(COLLECTOR)["params"]["tool_chars"];
-    v.as_u64()
-        .map(|n| n as usize)
-        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
-        .unwrap_or_else(|| panic!("{COLLECTOR}: params.tool_chars is not a number: {v}"))
 }
 
 // ─────────────────────────────────────────────────────────────── the lane
@@ -256,37 +247,21 @@ fn the_tool_lane_carries_the_persona_once() {
 
 // ═══════════════════════════════════════════════════════════ 2. it fits
 
+/// GH #889: the collector's `tool_chars` cap is gone (R-27-1: the collector
+/// hands everything on uncut), so the brief only has to stay under its own
+/// ceiling.
 #[test]
-fn a_brief_with_a_1600_char_persona_fits_under_the_collectors_cap() {
-    let cap = tool_chars();
+fn a_brief_with_a_1600_char_persona_stays_under_its_ceiling() {
     for base in [EN, DE] {
         let (ans, _) = tool_brief(base);
         let n = tool_text(&ans).chars().count();
         assert!(
-            n <= BRIEF_CEILING && n <= cap,
+            n <= BRIEF_CEILING,
             "the brief with a {PERSONA_CHARS}-character persona is {n} characters; \
-             it has to stay at or below {BRIEF_CEILING} and under the collector's \
-             tool_chars ({cap}) -- measured 4,301 / 4,471 before GH #864, 2,169 after"
+             it has to stay at or below {BRIEF_CEILING} -- measured 4,301 / 4,471 \
+             before GH #864, 2,169 after"
         );
     }
-}
-
-// ═══════════════════════════════════════════════════════════ 3. peer whole
-
-#[test]
-fn the_peer_slot_reaches_the_model_whole() {
-    let cap = tool_chars();
-    let (ans, _) = tool_brief(EN);
-    let text = tool_text(&ans);
-    let at = text
-        .find("\"trust_rank\"")
-        .unwrap_or_else(|| panic!("the peer slot carries trust_rank: {text}"));
-    let at_chars = text[..at].chars().count();
-    assert!(
-        at_chars < cap,
-        "`trust_rank` sits at character {at_chars}, the collector cuts at {cap}: the \
-         model would never see it (4,284 before GH #864)"
-    );
 }
 
 // ═══════════════════════════════════════════════════════════ 4. same decision
@@ -463,12 +438,13 @@ fn the_collector_hands_the_model_the_whole_brief() {
         .find(|row| row["role"] == "leg-brief")
         .unwrap_or_else(|| panic!("in_briefing parked no leg-brief row: {parked:?}"));
 
-    // 4. The round collects, and the brain gets its prompt.
+    // 4. The round collects, and the brain gets its prompt -- on `curate`, through
+    //    the curator, since GH #889.
     let window = json!({"turn_id": TURN, "iter": 0, "role": "leg-window",
+                        // GH #889: the leg's shape is `{turns, deferred, deferred_turns}`.
                         "turn": json!({"turns": [{"role": "user", "text": "hello from colony A",
                                                   "consult_id": ""}],
-                                       "bytes": 19, "dropped": 0, "capped": 0,
-                                       "deferred": 0}).to_string(),
+                                       "deferred": 0, "deferred_turns": []}).to_string(),
                         "fired": 0});
     let reply = bundle_reply("collect", TURN, &[("c-collect-read", json!([window, row]))]);
     let out = assemble(&knob(), reply);
@@ -477,7 +453,7 @@ fn the_collector_hands_the_model_the_whole_brief() {
         .find(|m| {
             matches!(
                 m["header"]["route"].as_str(),
-                Some("brain") | Some("answer")
+                Some("curate") | Some("answer")
             )
         })
         .unwrap_or_else(|| panic!("the turn opens: {out:?}"));
@@ -491,9 +467,8 @@ fn the_collector_hands_the_model_the_whole_brief() {
         .to_string();
     assert!(
         !got.contains("[truncated"),
-        "the collector cut the brief at tool_chars ({}) -- the tail of the `peer` slot \
-         never reaches the model: {got}",
-        tool_chars()
+        "the collector cut the brief -- the tail of the `peer` slot never reaches the \
+         model: {got}"
     );
     assert!(
         got.contains("\"trust_rank\""),

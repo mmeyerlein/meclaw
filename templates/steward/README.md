@@ -1,6 +1,6 @@
-# `steward@2.1.1`
+# `steward@2.1.2`
 
-> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.2.1` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
+> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.2.2` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.
@@ -278,6 +278,9 @@ Whoever draws this hive's push road draws the way back beside it, onto the regis
 (`templates/llm-registry/README.md` § A refused push); without it the refusal dead-letters
 `no_route`, loudly. A refusal of anything else -- an operator's push without an address, a push
 addressed to another cell -- keeps the shape it had and the edge it always took.
+
+Since 2.1.2 ([#890](https://github.com/mmeyerlein/meclaw/issues/890)) `./judge` declares
+every hop key the `llm` cell writes into an answer, the cache keys among them; nothing else moved.
 
 ## Relationship to `llm-registry`
 

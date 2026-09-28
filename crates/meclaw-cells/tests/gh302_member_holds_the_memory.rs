@@ -214,10 +214,12 @@ fn the_level_carries_four_refs_and_three_containers() {
     // go red for a reason that has nothing to do with GH #454.
     let version = declared_version("member").unwrap_or_default();
     let mut digits = version.split('.');
-    let major = digits.next().unwrap_or_default().to_string();
+    // "Never below 1.3" is the claim: a later removal (GH #877 and GH #889 took
+    // `pack_ack` and `prune`, 2.0.0) moves the first digit and must not turn this red.
+    let major: u32 = digits.next().unwrap_or_default().parse().unwrap_or(0);
     let minor: u32 = digits.next().unwrap_or_default().parse().unwrap_or(0);
     assert!(
-        major == "1" && minor >= 3,
+        major > 1 || (major == 1 && minor >= 3),
         "templates/member/template.json says {version:?}. `channels` (GH #454) and `apps` \
          (GH #459) are new addresses with new edges around them, and nothing was taken \
          away — that is the second digit, and it must never go back below 1.3. Both \
@@ -1096,7 +1098,11 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
 /// Orchestrator ruling **W7-R5** (2026-08-25). Kept beside the assertion rather
 /// than in prose alone, because a subtraction nobody wrote down is
 /// indistinguishable from a subtraction nobody noticed.
-const NOT_CARRIED: [(&str, &str); 5] = [
+///
+/// `in_prune` stood here until GH #889: the collector keeps no window any more,
+/// so the assistant no longer accepts the lane and there is nothing left to
+/// subtract.
+const NOT_CARRIED: [(&str, &str); 4] = [
     (
         "in_advice",
         "answered inside the assistant by ./cogny; the other producer is a SECOND agent, \
@@ -1106,11 +1112,6 @@ const NOT_CARRIED: [(&str, &str); 5] = [
         "in_sweep",
         "an operator-forced session sweep -- the assistant's own `because` says it \
          \"enters at the assistant path rather than being produced by a sibling\"",
-    ),
-    (
-        "in_prune",
-        "a prune verdict from a timer or an operator, paired with the `prune` report the \
-         member DOES carry outward",
     ),
     (
         "in_round_sweep",
@@ -1270,7 +1271,7 @@ fn the_member_declares_the_lanes_that_cross_its_boundary() {
         "error",
         "write",
         "turn_write",
-        "prune",
+        // `prune` left this list with GH #889: no assistant emits it any more.
     ] {
         assert!(
             emits.contains(&lane),

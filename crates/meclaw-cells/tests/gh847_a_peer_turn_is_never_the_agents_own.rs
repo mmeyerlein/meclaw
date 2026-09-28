@@ -26,8 +26,8 @@
 //! 4. a second speaker (`roster_add`, gate-set fields) adds one line, and its
 //!    gate-set reference is kept;
 //! 5. a turn without a peer leaves rule and legend empty;
-//! 6. the drain: a peer row leaves as `origin peer` with its source, and the
-//!    opening scan waits for the speaker of the turn it opens;
+//! 6. (GH #889: moved to the curator -- the collector drains no episodes any
+//!    more; the curator's writer carries `turn_write` with the speaker);
 //! 7. the road is keyed on the origin alone: a peer `tool_call` or `image` is a
 //!    peer row or nothing, never the person's `user` row (fix round 1, I-1);
 //! 8. nobody joins the legend before the other side has spoken in the session
@@ -35,8 +35,9 @@
 //!    and the first peer turn brings the joins (OR-SN-72, I-3);
 //! 9. a repeated add leaves one row per reference (m-3);
 //! 10. a gate-set name without a reference is not overwritten (m-5);
-//! 11. the legend outlives the prune: a peer session that goes on past an aged
-//!     day close keeps every participant, in the same order (fix round 2, I-1);
+//! 11. the legend outlives the collector's cleanup: a peer session that goes on
+//!     keeps every participant, in the same order (fix round 2, I-1; since
+//!     GH #889 the cleanup is the round's drop, the prune is gone);
 //! 12. an arrival of nothing but textless peer turns still applies the gate's
 //!     `roster_leave` (fix round 2, m-1 a);
 //! 13. a gate's `roster_add` needs a WRITTEN peer row, not merely a peer turn in
@@ -149,8 +150,10 @@ fn fire(tid: &str, win: Value, roster: Value, w: Option<Value>) -> Vec<Value> {
     )
 }
 
+/// The brain call of the round. GH #889: it leaves on `curate` (to the curator)
+/// instead of `brain`.
 fn brain(out: &[Value]) -> &Value {
-    on_route(out, "brain")
+    on_route(out, "curate")
 }
 
 fn slot(b: &Value, path: &[&str]) -> String {
@@ -389,65 +392,6 @@ fn a_turn_without_a_peer_leaves_rule_and_legend_empty() {
     assert_eq!(slot(b, &["instructions", "peer"]), "");
     assert_eq!(slot(b, &["roster"]), "");
     assert!(store_ops(&c, "speaker-w").is_empty());
-}
-
-// ═════════════════════════════════════ 6. the memory keeps it, with its source
-
-#[test]
-fn a_peer_turn_drains_as_the_speakers_statement() {
-    let day = json!([
-        {"id": "0001", "turn_id": TURN, "role": "peer", "content": "I promised it",
-         "interim": 0, "recorded_at": "2026-09-25T10:00:00.000000Z",
-         "episode_written": 0, "speaker": "Jonas", "speaker_ref": JONAS_REF},
-        {"id": "0002", "turn_id": TURN, "role": "assistant", "content": "noted",
-         "interim": 0, "recorded_at": "2026-09-25T10:00:02.000000Z",
-         "episode_written": 0}
-    ]);
-    let doc = json!({
-        "header": {"context": {"session_id": SESSION, "turn_id": TURN,
-                               "col_phase": "tw-scan", "store_origin": "collector"},
-                   "hop": {"operation": "select", "rows_affected": 2}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-tw-scan",
-                      "text": day.to_string()}]
-    });
-    let out = assemble(&knob(), doc);
-    let episodes: Vec<&Value> = out
-        .iter()
-        .filter(|m| m["header"]["route"].as_str() == Some("turn_write"))
-        .collect();
-    assert_eq!(episodes.len(), 2, "{out:?}");
-    assert_eq!(
-        episodes[0]["messages"][0],
-        json!({"origin": "peer", "type": "text", "text": "I promised it",
-               "speaker": "Jonas", "speaker_ref": JONAS_REF})
-    );
-    assert_eq!(episodes[1]["messages"][0]["origin"], "assistant");
-
-    // The opening scan waits for the speaker of the turn it opens.
-    let open = bundle_reply(
-        "turn-open",
-        TURN,
-        &[
-            ("c-open-turn", Value::Null),
-            ("c-open-round", json!([])),
-            ("c-open-win", json!([])),
-            ("c-open-scope", json!([])),
-            ("c-open-roster", json!([])),
-            (
-                "c-open-day",
-                json!([{"id": "0001", "turn_id": TURN, "role": "peer",
-                        "content": "who am I", "interim": 0,
-                        "recorded_at": "2026-09-25T10:00:00.000000Z",
-                        "episode_written": 0}]),
-            ),
-        ],
-    );
-    let out = assemble(&knob(), open);
-    assert!(
-        out.iter()
-            .all(|m| m["header"]["route"].as_str() != Some("turn_write")),
-        "an unnamed peer row of the opening turn is not drained before the brief: {out:?}"
-    );
 }
 
 // ═══════════════ 7. a peer turn is a peer turn, whatever its type (rev-T2 I-1)
@@ -690,17 +634,6 @@ fn a_gate_set_speaker_without_a_reference_keeps_its_name() {
     );
 }
 
-/// A prune request's ledger read coming home: one aged close per row.
-fn prune_ledger(rows: Value) -> Value {
-    json!({
-        "header": {"context": {"session_id": "", "turn_id": "",
-                               "col_phase": "prune-ledger", "store_origin": "collector"},
-                   "hop": {"operation": "select", "rows_affected": 1}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-prune-ledger",
-                      "text": rows.to_string()}]
-    })
-}
-
 // ═══════════════ 11. the legend outlives the prune (rev-T2 fix round 1, I-1)
 //
 // Measured on `18dcaf62`: the prune chain deleted every legend row with
@@ -709,6 +642,10 @@ fn prune_ledger(rows: Value) -> Value {
 // cut -- so a participant who joined before the boundary and still speaks fell
 // out of the legend, and a gate-set `speaker_ref` framed on the wire named a
 // reference the legend no longer resolved (R-SN-2).
+//
+// GH #889: the prune is gone; the collector's cleanup is now the drop of a
+// round's rows when its answer leaves (OR-KX-V2), and it must spare the legend
+// the same way.
 
 #[test]
 fn a_peer_session_past_an_aged_close_keeps_its_legend() {
@@ -725,14 +662,9 @@ fn a_peer_session_past_an_aged_close_keeps_its_legend() {
         Some(who(JONAS_REF, "Jonas", JONAS_ID)),
     );
 
-    // The day closed on the 12th, the close aged, the prune cuts the session
-    // up to that boundary -- every join lies before it.
-    let cut = assemble(
-        &knob(),
-        prune_ledger(json!([{"session_id": SESSION,
-                             "batched_at": "2026-09-12T00:00:00.000000Z"}])),
-    );
-    let tables: Vec<Value> = calls_of(in_phase(&cut, "prune-cut"))
+    // The round answers and its rows are dropped -- every join lies before it.
+    let cut = assemble(&knob(), answer_in(TURN, "see you"));
+    let tables: Vec<Value> = calls_of(in_phase(&cut, "round-drop"))
         .into_iter()
         .map(|(_, a)| a["table"].clone())
         .collect();
@@ -861,14 +793,17 @@ fn a_deferred_peer_turn_is_named_by_its_own_brief_and_brings_the_join() {
     );
     let defer = store_ops(&a, "defer-w");
     assert_eq!(defer.len(), 1, "{a:?}");
+    // GH #889: every row of a deferred turn is stamped (no role filter any
+    // more) -- with no window behind the collector the stamp is the only way the
+    // next round finds them.
     assert_eq!(
         defer[0]["where"],
-        json!({"turn_id": TURN2, "role": {"in": ["user", "peer"]}}),
+        json!({"turn_id": TURN2}),
         "the peer rows of a deferred turn are deferred rows too"
     );
     assert!(
         a.iter()
-            .all(|m| m["header"]["route"].as_str() != Some("brain")),
+            .all(|m| m["header"]["route"].as_str() != Some("curate")),
         "{a:?}"
     );
 
@@ -885,7 +820,7 @@ fn a_deferred_peer_turn_is_named_by_its_own_brief_and_brings_the_join() {
     );
     assert!(
         c.iter()
-            .all(|m| m["header"]["route"].as_str() != Some("brain")),
+            .all(|m| m["header"]["route"].as_str() != Some("curate")),
         "a deferred turn starts no second assembly: {c:?}"
     );
     let named = store_ops(&c, "speaker-w");

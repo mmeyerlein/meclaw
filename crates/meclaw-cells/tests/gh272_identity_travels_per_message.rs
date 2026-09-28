@@ -3,9 +3,9 @@
 //! #272 asked which of three end forms a BATCH's speaker granularity should
 //! take: one speaker for the whole batch, a speaker per contained turn, or a
 //! per-turn column filled by the decomposer. The ruling answers by removing the
-//! question. After this wave there is no batch on the live path -- the collector
-//! hands out ONE message per turn -- so identity is not a property of a
-//! container any more. It is context, and context travels with a message. There
+//! question. After this wave there is no batch on the live path -- ONE message
+//! goes out per turn (from the collector until GH #889, from the curator's
+//! writer since) -- so identity is not a property of a container any more. It is context, and context travels with a message. There
 //! is nothing to give a granularity to.
 //!
 //! Nothing is built for that. What this file does is keep the dissolution
@@ -26,12 +26,15 @@
 //!    key is sitting right next to it carrying somebody else. A caller that
 //!    promotes a constant `context.speaker` onto a lane does not thereby
 //!    attribute the agent's own answers to a person.
-//! 3. **The per-turn emission mints no identity of its own.** The collector's
-//!    `turn_write` message carries the turn -- `turn_id`, `turn_index`,
-//!    `happened_at` -- and NO `speaker` hop key. Who spoke is whatever the
-//!    chain's own context already says, which is what makes two consecutive
-//!    turns of one session able to carry two different speakers: they are two
-//!    messages, not two rows of one body.
+//! 3. **The per-turn emission mints no identity of its own.** The `turn_write`
+//!    message carries the turn -- `turn_id`, `turn_index`, `happened_at` -- and
+//!    NO `speaker` hop key. Who spoke is whatever the chain's own context
+//!    already says, which is what makes two consecutive turns of one session
+//!    able to carry two different speakers: they are two messages, not two rows
+//!    of one body. GH #889 moved the emission from the collector to the
+//!    curator's writer (`curator@1.0.0`, the `turn_write` contract of
+//!    `collector@4.4.1` verbatim), and the emitting half of this fact is pinned
+//!    there; this file keeps the receiving half, (d).
 //!
 //! The hazard stays named because it is still reachable by hand: an edge that
 //! promotes a **constant** `context.speaker` onto a path carrying more than one
@@ -48,7 +51,6 @@ use std::process::{Command, Stdio};
 use meclaw_core::serde_json::{Value, json};
 
 const WRITER_CONFIG: &str = "../../templates/memory-hive/writer/config.json";
-const ASSEMBLE_CONFIG: &str = "../../templates/collector/assemble/config.json";
 
 /// `${VAR:-default}` becomes the default (or the override, when the case names
 /// one) -- the same substitution the colony performs at boot.
@@ -275,76 +277,26 @@ fn an_assistant_turn_takes_the_agent_id_not_the_speaker_beside_it() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════ the collector side
+// ═══════════════════════════════════════════════ the per-turn messages, as they arrive
 
-/// One row of the collector's `turns` table, as the store hands it back.
-fn turn_row(id: &str, role: &str, content: &str) -> Value {
-    json!({"id": id, "session_id": "s1", "turn_id": "t-".to_string() + id,
-           "role": role, "content": content,
-           "recorded_at": "2026-08-23T09:00:0".to_string() + id,
-           "interim": 0, "episode_written": 0})
-}
-
-/// The store's reply to the per-turn scan.
-fn scan_reply(rows: Value) -> Value {
+/// One per-turn message in the `turn_write` contract of `collector@4.4.1`,
+/// which the curator's writer emits verbatim since GH #889 (`curator@1.0.0`,
+/// route `turn_write`): the turn in `messages[]`, its id, index and event time
+/// on the hop, and no identity of its own.
+///
+/// GH #889: this file used to obtain these messages by running the collector's
+/// per-turn scan, and asserted there that the emission mints no `speaker`
+/// (`the_per_turn_emission_mints_no_speaker_of_its_own`). The collector writes
+/// no episodes any more (R-27-1: the curator writes the episodes to the memory
+/// hive instead of the collector); that half is the curator's to pin (plan K:
+/// `each_participant_turn_writes_one_episode`).
+fn turn_message(index: usize, text: &str) -> Value {
     json!({
-        "header": {
-            "hop": {"operation": "select",
-                    "rows_affected": rows.as_array().map_or(0, Vec::len)},
-            "context": {"session_id": "s1", "turn_id": "t1",
-                        "col_phase": "tw-scan", "store_origin": "collector"}
-        },
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-sel",
-                      "text": rows.to_string()}]
+        "header": {"route": "turn_write", "session_id": "s1",
+                   "turn_id": format!("s1#{index}"), "turn_index": index.to_string(),
+                   "happened_at": format!("2026-08-23T09:00:0{index}")},
+        "messages": [{"origin": "user", "type": "text", "text": text}]
     })
-}
-
-/// The shipped collector's per-turn emissions, in the order they leave.
-fn turn_episodes(rows: Value) -> Vec<Value> {
-    let mut doc = scan_reply(rows);
-    doc["params"] = params_of(ASSEMBLE_CONFIG);
-    run(&script_of(ASSEMBLE_CONFIG, &[]), doc)
-        .into_iter()
-        .filter(|m| hop(m, "route") == "turn_write")
-        .collect()
-}
-
-/// (c) The collector mints NO identity. Its header carries the turn -- the id,
-/// the index, the event time -- and stops there. A `speaker` hop key here would
-/// be the decomposer's column under a new name: a producer deciding who spoke
-/// from a table it read, instead of the chain's own context saying so.
-#[test]
-fn the_per_turn_emission_mints_no_speaker_of_its_own() {
-    let eps = turn_episodes(json!([
-        turn_row("0", "user", "my editor is helix"),
-        turn_row("1", "assistant", "noted"),
-    ]));
-    assert_eq!(eps.len(), 2, "one message per turn -- {eps:?}");
-
-    for ep in &eps {
-        let header = ep["header"].as_object().expect("header object");
-        for minted in ["speaker", "agent_id", "sender"] {
-            assert!(
-                !header.contains_key(minted),
-                "the collector minted {minted} -- identity is context, not a hop key: {header:?}"
-            );
-        }
-        // What it DOES carry is the turn, and every key is present rather than
-        // merely empty: a missing key makes the port edge's CEL modifier fail,
-        // and a failed modifier skips the whole edge.
-        for key in [
-            "route",
-            "session_id",
-            "turn_id",
-            "turn_index",
-            "happened_at",
-        ] {
-            assert!(
-                header.contains_key(key),
-                "hop key {key} is absent -- {header:?}"
-            );
-        }
-    }
 }
 
 /// (d) The mechanical form of "identity travels per message": two consecutive
@@ -353,22 +305,16 @@ fn the_per_turn_emission_mints_no_speaker_of_its_own() {
 /// filed against, both turns rode in one body under one context -- and the
 /// question "whose speaker is it" had no answer that was not a guess. Here the
 /// question does not arise: each message brings its own.
+///
+/// GH #889: the two messages are written here in the `turn_write` contract
+/// instead of being produced by the collector, which emits no episodes any
+/// more; the receiving half is unchanged.
 #[test]
 fn two_turns_of_one_session_carry_two_different_speakers() {
-    let eps = turn_episodes(json!([
-        turn_row("0", "user", "my editor is helix"),
-        turn_row("1", "user", "and i cook keto"),
-    ]));
-    assert_eq!(
-        eps.len(),
-        2,
-        "two turns are two messages, not one body -- {eps:?}"
-    );
-    assert_ne!(
-        hop(&eps[0], "turn_id"),
-        hop(&eps[1], "turn_id"),
-        "each message names its own turn -- {eps:?}"
-    );
+    let eps = [
+        turn_message(0, "my editor is helix"),
+        turn_message(1, "and i cook keto"),
+    ];
 
     // Two participants in one room, one turn each. The edge promotes the
     // speaker of the message it is carrying; nothing about the second turn can
@@ -410,7 +356,7 @@ fn two_turns_of_one_session_carry_two_different_speakers() {
         rows[0]["turn_id"], rows[1]["turn_id"],
         "the deterministic turn id survives the hop -- {rows:?}"
     );
-    // The event time of the ROW, not of the writer's clock: the bi-temporal
+    // The event time of the TURN, not of the writer's clock: the bi-temporal
     // split is what lets a per-message identity be re-read in order later.
     assert_eq!(rows[0]["happened_at"], json!("2026-08-23T09:00:00"));
     assert_eq!(rows[1]["happened_at"], json!("2026-08-23T09:00:01"));

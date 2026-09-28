@@ -63,6 +63,34 @@ PLANS_README = """# Plans
 | `welle-old-2026-01-01/` | An older one, and it must not win. |
 """ % WAVE_DIR
 
+# A plan part as the waves write them since wave Gate: shell blocks whose
+# `#` comments look like headings to a line reader, and a section key with
+# brackets. Gate receipt F17: `--section` cut the order at the first comment
+# of a code block and read the key as an awk regex.
+FENCED_PLAN_FILE = """# The wave plan
+
+```bash
+# Strang (R) [retro] is built last -- a comment, not a heading
+echo prepare
+```
+
+## Strang (R) [retro] -- the retro counts the planning
+
+Contracts:
+- the retro counts the planning session.
+
+```bash
+# a comment inside the section
+scripts/wave_retro.py --check
+```
+
+- and the check stays green.
+
+## Strang (S) -- something else
+
+Not this one.
+"""
+
 PLAN_FILE = """# The wave plan
 
 ### P1 -- kit and report form
@@ -221,6 +249,18 @@ class TestNew(StrandShTestCase):
                          "--plan", "plan.md")
         self.assertEqual(0, res.returncode, res.stderr)
         self.assertIn("`scripts/strand.sh new` makes the worktree.", res.stdout)
+        self.assertNotIn("Not this one.", res.stdout)
+
+    def test_new_section_skips_code_comments_and_takes_the_key_as_text(self):
+        plan = self.repo / "plan.md"
+        plan.write_text(FENCED_PLAN_FILE)
+        res = run_strand(self.repo, "new", "retro", "--issue", "891",
+                         "--plan", "plan.md", "--section", "Strang (R) [retro]")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("## Strang (R) [retro] -- the retro counts", res.stdout)
+        self.assertIn("# a comment inside the section", res.stdout)
+        self.assertIn("- and the check stays green.", res.stdout)
+        self.assertNotIn("echo prepare", res.stdout)
         self.assertNotIn("Not this one.", res.stdout)
 
     def test_new_refuses_an_existing_strand(self):

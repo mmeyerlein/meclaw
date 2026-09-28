@@ -238,7 +238,9 @@ fn main_config() -> Value {
         // cadence hands it two batches of one session at once -- the probe then
         // reads the LAST parked batch and the user turn is lost. Ruling Q11 (GH
         // #298) retracted the edge; `w9a_per_turn_colony.rs` and
-        // `member@1.5.0` draw the one below.
+        // `member@1.5.0` draw the one below. Since GH #889 the route leaves
+        // talky from its curator's writer instead of its collector, under the
+        // same contract, so this edge is unchanged.
         {"from": "./talky", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
@@ -316,7 +318,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     copy_cells(&repo("templates/talky"), &root.join("main/talky"));
     memory_hive(root);
 
-    patch(root, "main/talky/collector/assemble/config.json", |v| {
+    // GH #889: `turn_write` left the collector with R-27-1; the per-turn
+    // episodes come from the curator's writer, so the switch is set there.
+    patch(root, "main/talky/curator/writer/config.json", |v| {
         v["params"]["turn_write"] = json!("1");
     });
     patch(root, "main/talky/session-keeper/night/config.json", |v| {
@@ -342,6 +346,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
         v["params"]["async_tools"] = json!(["remember"]);
     });
     patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });

@@ -517,7 +517,8 @@ fn write_placeholder_seed(dir: &std::path::Path) {
     let gw = "https://gateway.example/api/v1";
     let models = [
         json!({"schema": {"model_id": "text", "provider": "text", "base_url": "text",
-            "wire_dialect": "text", "context_window": "int", "cost_in": "int",
+            "wire_dialect": "text", "context_window": "int", "cache_mode": "text",
+            "cache_ttl_s": "int", "cost_in": "int",
             "cost_out": "int", "caps": "json", "traits": "json", "status": "text",
             "note": "text", "package": "json", "prompt": "text", "strengths": "text"}}),
         json!({"model_id": "provider-a/model-small", "provider": "gateway", "base_url": gw,
@@ -857,6 +858,9 @@ const PACKAGE_KEYS: &[&str] = &[
     "external_timeout_ms",
     "provider_extra",
     "model_prompt",
+    "cache_mode",
+    "cache_ttl_s",
+    "context_window",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins
@@ -1187,9 +1191,16 @@ async fn a_remap_command_pushes_params_to_exactly_the_unpinned_subscribers() {
         Some(REMAP_TO),
         "the overlay carries the model: {body}"
     );
+    // GH #890: the row's window is a package key of its own column, so it
+    // travels with the model (`catalogue_plain` gives every row 32 000).
+    assert_eq!(
+        body["params"]["context_window"].as_i64(),
+        Some(32000),
+        "the window travels with the model: {body}"
+    );
     let mut rest: Vec<String> = PACKAGE_KEYS
         .iter()
-        .filter(|k| **k != "model")
+        .filter(|k| !["model", "context_window"].contains(k))
         .map(|k| k.to_string())
         .collect();
     rest.sort();
@@ -1749,7 +1760,16 @@ async fn the_precedence_is_targeted_then_global_then_tier_then_start() {
     );
     let mut want: Vec<String> = PACKAGE_KEYS
         .iter()
-        .filter(|k| !["model", "model_prompt", "max_tokens", "reasoning_effort"].contains(k))
+        .filter(|k| {
+            ![
+                "model",
+                "model_prompt",
+                "max_tokens",
+                "reasoning_effort",
+                "context_window",
+            ]
+            .contains(k)
+        })
         .map(|k| k.to_string())
         .collect();
     want.sort();

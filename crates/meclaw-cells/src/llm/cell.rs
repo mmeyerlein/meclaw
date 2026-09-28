@@ -484,6 +484,13 @@ impl LlmCell {
         package::params_line(path, &self.params, &self.overlay)
     }
 
+    /// OR-KX-C1 (GH #890): the line beside the params line when `breakpoints`
+    /// runs as `implicit` on the Responses wire; `None` otherwise.
+    #[doc(hidden)]
+    pub fn cache_note(&self, path: &str) -> Option<String> {
+        package::cache_note(path, &self.params)
+    }
+
     /// GH #853: a params update on the run-time path — `$reset`, the merge over
     /// the START value, and the run-time guards. The detail never names a
     /// value; a credential key is told it needs a mutation.
@@ -1257,6 +1264,9 @@ impl LlmCell {
                                 "{}",
                                 self.params_line(msg.target.as_str())
                             );
+                            if let Some(note) = self.cache_note(msg.target.as_str()) {
+                                tracing::warn!(target: package::PARAMS_LOG_TARGET, "{note}");
+                            }
                         }
                         Err(detail) => {
                             // GH #863: the guard or the immutable rule said no. Addressed
@@ -1725,6 +1735,13 @@ impl LlmCell {
                     &tools,
                 ) {
                     Ok(mut request_json) => {
+                        // GH #890: the cell's cache key, keyed by its own
+                        // path. No-op under `cache_mode: "off"`.
+                        translate_responses::apply_cache_wire(
+                            &mut request_json,
+                            &self.params,
+                            sink.sender_path().as_str(),
+                        );
                         // GH #94: fold the resolved images into the typed
                         // input[]. No-op for an empty vector.
                         translate_responses::attach_input_images(
@@ -1764,6 +1781,8 @@ impl LlmCell {
                             t.assistant_turn,
                             &t.finish_reason,
                             usage,
+                            // GH #890: when the cache goes cold, and the window.
+                            output::HopCache::of(&self.params),
                             &t.model,
                             &t.response_id,
                             started_at_unix_ms,
@@ -1802,6 +1821,10 @@ impl LlmCell {
                 &tools,
             ) {
                 Ok(mut r) => {
+                    // GH #890: the cache wire -- a key or two marks, by
+                    // `cache_mode`; nothing at all under `off`. Before the
+                    // images, so a mark sits on the text it closes.
+                    translate::apply_cache_wire(&mut r, &self.params, sink.sender_path().as_str());
                     // GH #87: fold the resolved images into the message of
                     // the last user turn (GH #847: never a peer turn). No-op
                     // for an empty vector.
@@ -1933,6 +1956,8 @@ impl LlmCell {
                 translated.assistant_turn,
                 &translated.finish_reason,
                 usage,
+                // GH #890: when the cache goes cold, and the window.
+                output::HopCache::of(&self.params),
                 &translated.model,
                 &translated.response_id,
                 started_at_unix_ms,
@@ -2400,6 +2425,54 @@ mod tests {
             rx.try_recv().is_err(),
             "params-only input MUST NOT emit (silence)"
         );
+    }
+
+    /// GH #890: the three cache keys travel as a model package -- a params-only
+    /// push sets all three, and `$reset` takes all three back to the start
+    /// value, so no cache setting of an earlier model survives the next one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_package_carries_the_cache_keys() {
+        use crate::llm::params::CacheMode;
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let push = |params: Value| {
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"system": {}, "params": params})))
+                .build()
+        };
+        cell.handle(
+            push(json!({"cache_mode": "breakpoints", "cache_ttl_s": 3600,
+                        "context_window": 64000})),
+            &sink,
+            &mut db,
+        )
+        .await;
+        assert_eq!(cell.params.cache_mode, CacheMode::Breakpoints);
+        assert_eq!(cell.params.cache_ttl_s, 3600);
+        assert_eq!(cell.params.context_window, 64_000);
+        assert!(rx.try_recv().is_err(), "a push is answered with silence");
+
+        cell.handle(
+            push(json!({"$reset": ["cache_mode", "cache_ttl_s", "context_window"]})),
+            &sink,
+            &mut db,
+        )
+        .await;
+        assert_eq!(cell.params.cache_mode, CacheMode::Off);
+        assert_eq!(cell.params.cache_ttl_s, 0);
+        assert_eq!(cell.params.context_window, 0);
+        let left: i64 = db
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM params", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .await;
+        assert_eq!(left, 0, "the overlay holds nothing of the old package");
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

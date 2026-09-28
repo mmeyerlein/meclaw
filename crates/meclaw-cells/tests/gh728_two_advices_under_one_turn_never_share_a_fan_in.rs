@@ -35,7 +35,8 @@ fn each_rounds_guard_is_its_own() {
     // Round A completes its fan-in: the window leg is there and unfired. The closing
     // mark it sends is scoped to round A's key — round B's guard is untouched.
     let leg = json!({"turn_id": a, "iter": 0, "role": "leg-window", "fired": 0,
-                     "turn": json!({"turns": [], "bytes": 0, "dropped": 0, "capped": 0})
+                     // GH #889: the leg's shape is `{turns, deferred, deferred_turns}`.
+                     "turn": json!({"turns": [], "deferred": 0, "deferred_turns": []})
                          .to_string()});
     let out = assemble(
         &[],

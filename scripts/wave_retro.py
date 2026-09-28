@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""The retro of a wave: eleven numbers, one table, one line of history (R-P3).
+"""The retro of a wave: thirteen numbers, one table, one line of history (R-P3).
 
-Q1..Q10 carry a threshold; Q11 (the calls after a 5-60 minute pause and the
-cache writes they cost) is a finding without a threshold yet.
+Q1..Q10 and Q12 (the cost of the wave's planning) carry a threshold; Q11 (the
+calls after a 5-60 minute pause and the cache writes they cost) and Q13 (the
+strands built without a plan part) are findings without a threshold yet.
 
 Run it as the last step of a wave, before the receipt is committed:
 
     python3 scripts/wave_retro.py welle-h3-2026-09-18
     python3 scripts/wave_retro.py welle-h3-2026-09-18 --sessions <id>,<id>
+    python3 scripts/wave_retro.py welle-h3-2026-09-18 --planning <id>
     python3 scripts/wave_retro.py --check welle-h3-2026-09-18
     python3 scripts/wave_retro.py --readme
 
@@ -15,7 +17,9 @@ It reads what the wave already produced -- the strand reports in
 `plans/<wave>/berichte/`, the gate receipts and GATE-SUMMARY lines, and the
 session transcripts -- and writes `plans/<wave>/retro.md` plus one line in
 `plans/retro/RETRO.md`. Sessions are found by the wave marker in the prompt
-that started them, or named with `--sessions`.
+that started them, or named with `--sessions`; the planning session (Q12)
+by the marker and `HANDOVER-PLANUNG` in its first prompt, or named with
+`--planning`.
 
 THE EXIT CODE IS ALWAYS 0. A breached threshold is a finding, a missing
 source is an `n/a` with its reason; neither blocks a wave. The one exception
@@ -60,7 +64,7 @@ def _default_root() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Wave retro: eleven numbers over one wave (ruling R-P3).")
+        description="Wave retro: thirteen numbers over one wave (ruling R-P3).")
     parser.add_argument("wave", nargs="?",
                         help="the wave directory under plans/, e.g. welle-h3-2026-09-18")
     parser.add_argument("--root", default=None,
@@ -69,6 +73,10 @@ def main(argv=None) -> int:
                         help="transcript root (default: this machine's Claude Code projects)")
     parser.add_argument("--sessions", default="",
                         help="comma separated session ids instead of the wave marker")
+    parser.add_argument("--planning", default="",
+                        help="comma separated session ids of the planning "
+                             "(Q12) instead of the wave marker and "
+                             "HANDOVER-PLANUNG in the first prompt")
     parser.add_argument("--gate-dir", default=None,
                         help="gate receipts of the running tree "
                              "(default: <root>/target/gate; read only while "
@@ -108,9 +116,10 @@ def main(argv=None) -> int:
         return 0
 
     sessions = [s for s in re.split(r"[,\s]+", args.sessions) if s]
+    planning = [s for s in re.split(r"[,\s]+", args.planning) if s]
     troot = transcripts.default_root(args.transcripts)
     gate_dir = Path(args.gate_dir) if args.gate_dir else root / "target" / "gate"
-    evidence = metrics.collect(wave_dir, troot, sessions, gate_dir)
+    evidence = metrics.collect(wave_dir, troot, sessions, gate_dir, planning)
     if args.since:
         evidence["agents"] = [a for a in evidence["agents"]
                               if a["first"] and str(a["first"])[:10] >= args.since]

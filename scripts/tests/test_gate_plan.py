@@ -1460,6 +1460,17 @@ class PersonaStations(unittest.TestCase):
                 self.assertIn("persona_source", gp.classify([p]))
         self.assertIn("persona_source", gp.classify(["templates/memory-hive/config.json"]))
 
+    def test_the_curator_is_matched_whole(self):
+        """GH #888/#889: the curator shapes the window and carries the summarizer's prompt."""
+        for p in ("templates/curator/config.json",
+                  "templates/curator/intake/config.json",
+                  "templates/curator/summarizer/config.json",
+                  "templates/curator/policy/config.json",
+                  "templates/curator/ledger/seed/state.jsonl",
+                  "templates/curator/template.json"):
+            with self.subTest(path=p):
+                self.assertIn("persona_source", gp.classify([p]))
+
     def test_the_surfaces_added_since_the_design_are_sources(self):
         for p in ("templates/talky/schemas/config.json",
                   "templates/cogny/schemas/config.json",

@@ -1,7 +1,7 @@
-# `member@1.10.5`
+# `member@2.0.0`
 
 One person, as a level. **Four holders, three open containers and no cell of
-its own** — seven nodes and sixty-six edges.
+its own** — seven nodes and sixty-seven edges.
 
 | holder | what it holds |
 |---|---|
@@ -61,13 +61,13 @@ further: so does the way the person is reached.
 
 ## What crosses the boundary
 
-Eight lanes in, twelve out — **plus six that are not at this rim at all**: `recall` and
+Eight lanes in, eleven out — **plus six that are not at this rim at all**: `recall` and
 `in_bundle` ([#562](https://github.com/mmeyerlein/meclaw/issues/562)) and, since 1.6.0,
 `tool`, `in_tool`, `schemas` and `in_menu` ([#552](https://github.com/mmeyerlein/meclaw/issues/552))
 carry `at: ["./assistants"]`. Both roads start inside `./assistants` and end inside
 `./memory-hive`, siblings in here; the declaration is what makes this level a hop nothing
 may skip, because this level is where the round a recall is asked in gets stamped. Every one
-of the twenty-six is a lane an occupant actually has at the version pinned above; nothing
+of the twenty-five is a lane an occupant actually has at the version pinned above; nothing
 here describes a lane a holder lost.
 
 ### The memory road has two legs (1.6.0)
@@ -107,22 +107,21 @@ road per generation, and an edge on disk is an edge an audit can read.
 | `error` | the record, a **channel**, an **app** **or** an assistant | a failure that was not a refusal. Which cell inside produced it is not the caller's business; the member is a boundary, not a consumer. The channel source arrived with #454 — a connector's own failure used to leave through the generation that held it. The app source arrived with #459, for the same reason, and so did one more case that is not an app's at all: a screen `event` or `receipt` whose owner this level cannot place leaves here, carrying the lane it was on in `hop.kind`, rather than dead-lettering where nobody would look for it |
 | `write` | an assistant | a batched conversation write, on its way past this level. It is **also** fanned onto the memory's close pass and is not consumed by that fan-out |
 | `turn_write` | an assistant | one finished turn, offered for archiving as it is produced. Like `write` it is **also** fanned down — onto the memory's `in_episode` lane since #527 — and is not consumed by that fan-out |
-| `prune` | an assistant | a housekeeping report, raised when something above fired `in_prune` |
 | `build` | an assistant | a structural wish or a submission leaving one of this person's generations, on its way to the one baumeister the colony shares. The member neither reads it nor answers it: everything between the tool surface and the OS level is transit (GH #425) |
 | `close_report` | the memory | what one close pass did to an ended session: added, sharpened, corrected, closed, restated, and the three counts that say what it could not do |
 | `export_done` | a holder, or a generation's keeper | that holder's seed set is complete on disk — every table written and `export_final.json` beside them, written last. `hop.seed_dir` says where, RELATIVE to the fence that holder's store declares, and `hop.export_hive` says which holder; three travel per export, four when a generation was named. Since 1.6.0 the holder says it ITSELF ([#555](https://github.com/mmeyerlein/meclaw/issues/555)); before that a cell of this level said it for all of them |
 | `dump` | a holder, or a generation's keeper | the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row. It is the only positive signal an import has, and since 1.6.0 it LEAVES the level — until then it ended inside the member, in the cell that existed for the export half and read a receipt without saying anything about it |
-| `pack_ack` | an assistant | the receipt of one identity pack `./affinity` pushed into a generation. Nothing here consumes it, and nothing here can (since 1.4.0, GH #458) |
 
-The `assistant` level emits **nine** lanes since `assistant@2.2.0`, and this
+The `assistant` level emits **eight** lanes at its own path since
+[#889](https://github.com/mmeyerlein/meclaw/issues/889), and this
 level places every one of them. The one lane it ACCEPTS that this member does not
-carry, beside the four operator lanes, is `in_pack` (GH #458): its producer is
+carry, beside the three operator lanes, is `in_pack` (GH #458): its producer is
 inside this level rather than above it — `<member>/affinity` is the record two
 assistants of one person read — so the push edge goes from one sibling to another.
 Since GH #561 it goes there as a **v-lane** and ends two storeys down, at
-`<member>/assistants/<agent>/talky` and `<member>/assistants/<agent>/cogny`: the
-generation declares those two rims as the connect points of the lane
-(`"at": ["./talky", "./cogny"]`) and no longer carries the pack itself. A lane at the
+`<member>/assistants/<agent>/talky`, `…/talky-chat` (since GH #877) and `…/cogny`: the
+generation declares those three rims as the connect points of the lane
+(`"at": ["./talky", "./talky-chat", "./cogny"]`) and no longer carries the pack itself. A lane at the
 member's own door would be an interface promising something nothing outside ever
 sends.
 
@@ -134,8 +133,8 @@ sends.
 | `sidecar` | consumed, and **sorted by section** (since 1.7.0, [#607](https://github.com/mmeyerlein/meclaw/issues/607)): `hop.section == 'memory'` into the memory as `in_remember`, everything else into `./apps`. `extraction` still carries the memory block on its own lane beside it |
 | `write` | **both**: fanned onto the memory's `in_close_pass` *and* out on `write` |
 | `turn_write` | **both** (since #527): fanned onto the memory's `in_episode` *and* out on `turn_write` |
-| `prune`, `error`, `build` | out, untranslated. Nothing here consumes them |
-| `pack_ack` | **out**, untranslated (GH #458). Nothing here consumes it: affinity's own record of a delivery is the `sent_at` it writes itself, and the hive has no lane that takes a receipt — so a receipt is evidence for whoever operates the colony. Two travel per pack, one per occupant of the generation. Since GH #561 each one leaves its RIM on a v-lane and stops at `./assistants`; this level's own `./assistants -> .` edge is what takes it the rest of the way out, exactly as it does for `write`, `prune` and `error` — a boundary exit rather than a hop of the identity chain, and it stands whether or not any generation subscribed |
+| `error`, `build` | out, untranslated. Nothing here consumes them |
+| `pack_ack` | **consumed** since GH #877 — every receipt, into the record as `in_pack_ack` with the row it answers for on `context.pack_sub` (which the push stamped and the curator carried back), because a pack counts as delivered only when its receipt comes back clean and affinity is where a delivery is booked; above this level nobody consumes one. A receipt naming no row (a pack this member's affinity did not send) is dropped there with a line on stderr. Three travel per pack, one per rim of the generation (`talky`, `talky-chat`, `cogny`); each leaves its RIM on a v-lane (GH #561) and stops at `./assistants` |
 
 A level that declared a lane without the edge, or carried the edge without
 declaring the lane, would be lying in one of the two directions; the pin is
@@ -597,9 +596,9 @@ later document. The four-door shape of the lane is pinned in the first of those
 two, and the keeper's own leg of it in
 `crates/meclaw-cells/tests/gh475_a_member_reaches_the_keeper_it_holds.rs`.
 
-**The three that only pass through.** `prune`, `build` and an
+**The two that only pass through.** `build` and an
 assistant's `error` get one plain exit edge each, `./assistants -> .`, and no
-translation on the way. `turn_write` was the fourth until #527 and is not one
+translation on the way. `turn_write` was another until #527 and is not one
 any more: it leaves on that same plain edge **and** is fanned onto the memory's
 `in_episode`, exactly the way `write` is fanned onto the close pass. An
 assistant's `export_done` and `dump` join them since 1.6.0: the keeper of a
@@ -750,7 +749,7 @@ several. The collector keeps the legend of the channel from them (`system.roster
 `<ref> = <name> (<identity>)` per participant), beside the counterpart its brief names itself.
 A join counts only beside a peer turn with text in the same arrival -- the legend stays empty
 until the other side has spoken -- and stamping the same participant on every turn is harmless:
-the legend keeps one row per reference, and the prune never takes it, so a join stamped once
+the legend keeps one row per reference, so a join stamped once
 holds for as long as the session goes on. The same gate may set `speaker`/`speaker_ref` on a peer turn it
 forwards, and the collector keeps them (either field set is the gate's word, and the brief names
 only a row with neither); the peer mount never lets the other side set them.
@@ -841,7 +840,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.10.5` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.0.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -951,8 +950,8 @@ back to the same screen.
 a WRITER, not something a person said, and a generation reads a turn by answering
 it: the answer went back to the screen, the screen refused it again, and the
 level had built a loop that cost one brain call per round (44 in six minutes on
-one live colony, 68 on another). The level treats it the way it already treats
-`pack_ack`: *the hive has no lane that takes a receipt*, so the receipt is
+one live colony, 68 on another). The level treats it the way it treated
+`pack_ack` until GH #877: *the hive has no lane that takes a receipt*, so the receipt is
 evidence for whoever operates the colony and leaves on `error` with the original
 lane on `hop.kind`. An APP keeps its receipts — an app declares the lane, is the
 producer of the view that was refused, and does not answer a refusal by writing
@@ -1076,7 +1075,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.10.5"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.0.0"}]
 }}
 ```
 
@@ -1085,7 +1084,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.5"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.0.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1344,8 +1343,8 @@ version its `because` names:
   `in_export` and `in_import` — the transfer lanes of the generation's session
   keeper, the only two that name a generation with `context.assistant` at the
   member's own door rather than at a channel's.
-- **out** — the **nine** an assistant emits: `answer`, `write`, `turn_write`,
-  `sidecar`, `recall`, `prune`, `error`, `build` and — since #475 — `dump`,
+- **out** — the **eight** an assistant emits: `answer`, `write`, `turn_write`,
+  `sidecar`, `recall`, `error`, `build` and — since #475 — `dump`,
   the only one of them this level consumes rather than re-emits.
 
 **What transits `./channels`** — `turn`, `error`, `event` and `receipt` up;
@@ -1571,14 +1570,14 @@ The v-lanes in are the installing manifest's, as always
 (`templates/freeswitch/README.md` § *Wiring it into a member*). What lives here is the
 DECLARATION and the way back.
 
-### Five inbound lanes this level deliberately does not carry
+### Four inbound lanes this level deliberately does not carry
 
-The `assistant` level accepts **ten** lanes. Five of them cross this level:
+The `assistant` level accepts **nine** lanes. Five of them cross this level:
 `in_turn` (handed down by the screen), `in_bundle` (handed down by the memory),
 `in_build_result` (which enters at the member's own door and is forwarded) and,
 since #475, `in_export` and `in_import` (which enter at the same door and are
-forwarded the same way). The other five — **`in_advice`**, **`in_sweep`**,
-**`in_prune`**, **`in_round_sweep`** and **`in_pack`** — are **not** lanes of
+forwarded the same way). The other four — **`in_advice`**, **`in_sweep`**,
+**`in_round_sweep`** and **`in_pack`** — are **not** lanes of
 this member, and that is a decision rather than an omission (orchestrator ruling
 W7-R5).
 
@@ -1591,9 +1590,8 @@ sits **outside** the level and addresses **through** it. These four do not:
 |---|---|
 | `in_advice` | `./cogny`, inside the assistant. The other producer is a second agent, which stands beside the first in this same container. |
 | `in_sweep` | an operator. The assistant's own `because` says it *"enters at the assistant path rather than being produced by a sibling"*. |
-| `in_prune` | a timer or an operator — paired with the `prune` report the member *does* carry outward. |
 | `in_round_sweep` | the same owner as `in_sweep`, entering the same way. |
-| `in_pack` | `<member>/affinity`, a **sibling** of the container (GH #458). Producer and consumer are both inside this member, so the push edge is drawn from one to the other — and since GH #561 it is a **v-lane** that ends at the generation's two brain rims, `<member>/assistants/<agent>/talky` and `…/cogny`, because the assistant level declares them as the lane's connect points and stopped carrying the pack itself. A lane at this level's own door would promise something nothing outside ever sends. |
+| `in_pack` | `<member>/affinity`, a **sibling** of the container (GH #458). Producer and consumer are both inside this member, so the push edge is drawn from one to the other — and since GH #561 it is a **v-lane** that ends at the generation's brain rims, `<member>/assistants/<agent>/talky`, `…/talky-chat` (since GH #877) and `…/cogny`, because the assistant level declares them as the lane's connect points and stopped carrying the pack itself. A lane at this level's own door would promise something nothing outside ever sends. |
 
 They reach the assistant at its own address, `<member>/assistants/<agent>`, and
 they may: neither this level nor the assistant declares `params.ports`, so both
@@ -1669,6 +1667,12 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`2.0.0` takes the **first** digit ([#877](https://github.com/mmeyerlein/meclaw/issues/877),
+[#889](https://github.com/mmeyerlein/meclaw/issues/889)): `pack_ack` and `prune` no longer leave this level.
+`./assistants` hands every pack receipt to `./affinity` (`in_pack_ack`), and the window `prune` cut is
+each brain's `curator` now. It pins [`affinity`](../affinity/) at 3.6.2 and [`memory-hive`](../memory-hive/)
+at 3.6.3, and `./assistants` is derived from [`assistant`](../assistant/) at 3.0.0.
 
 `1.10.5` takes the **third** digit ([#886](https://github.com/mmeyerlein/meclaw/issues/886)): no lane and no declaration of this level moved.
 `./assistants` is derived from [`assistant`](../assistant/) at 2.9.5, whose brains declare `hop.model`; nothing this level carries changed.
@@ -1812,7 +1816,7 @@ v-lanes* above.
 `1.4.0` takes the **second** digit too, and for the plain reason: a caller can now
 do two things that were never promised before. `pack_ack` leaves the level
 (GH #458) — the receipt of an identity `./affinity` pushed into a generation, which
-nothing in here consumes and nothing in here can — and `in_import` enters it
+nothing in here consumed until GH #877 — and `in_import` enters it
 (GH #467), the return leg of `in_export` against a hive that is already running.
 
 GH #527 lands in that same unreleased `1.4.0` and takes no digit of its own

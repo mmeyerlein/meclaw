@@ -11,12 +11,7 @@
       },
       {
         "name": "talky",
-        "template": "talky",
-        "override_params": {
-          "collector/assemble": {
-            "turn_write": "1"
-          }
-        }
+        "template": "talky"
       },
       {
         "name": "sink",

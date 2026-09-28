@@ -88,7 +88,7 @@ port a port rather than a function call.
 sat in the middle of the live half of that picture: the talky handed its day out
 as a batch, the drain cut it into single turns and kept a ledger so a second
 delivery wrote nothing. That is gone, and it is gone rather than moved. The
-collector now emits **one message per turn** on `turn_write`, with `hop.turn_id`,
+talky now emits **one message per turn** on `turn_write`, with `hop.turn_id`,
 `hop.turn_index` and `hop.happened_at` beside it -- which is exactly what the
 episode port reads -- so there is nothing left in between to decompose. The
 import lane never used the drain in the first place: `seed/main/replay` has
@@ -195,8 +195,8 @@ OPENROUTER_API_KEY=sk-...
 MODEL_BRAIN=openai/gpt-4o-mini
 EOF
 
-# A library you may write into. NOT for the collector's knobs -- those are params
-# and grow.json sets them (see below). This copy exists for the next step: a seed
+# A library you may write into. NOT for knobs -- those are params (see below).
+# This copy exists for the next step: a seed
 # is a FILE in the template's seed/ directory, and no override_params reaches a
 # file. Pointing --templates here leaves the shipped library untouched.
 cp -r templates examples/never-forgets/templates
@@ -244,20 +244,8 @@ EOF
                         --daemon --api 127.0.0.1:7788
 ```
 
-The collector's knobs are params, not environment, and `grow.json` sets the one
-this example needs on the `talky` node:
-
-```jsonc
-{"name": "talky", "template": "talky",
- "override_params": {"collector/assemble": {"turn_write": "1"}}}
-```
-
-Since [GH #140](https://github.com/mmeyerlein/meclaw/issues/140) an
-`override_params` on a subtree template is **addressed by the cell's path inside
-it**, so the knob is set where the declaration is read. The path is
-`collector/assemble` and not `collector`: the latter is the sub-unit's hive,
-which reads `graph`, `ports`, `required_drains` and `contract` and would take
-this key without anyone consuming it.
+Episodes are written by `./talky/curator/writer`, whose `turn_write` param ships
+`"1"`, so `grow.json` sets nothing on the `talky` node.
 
 `turn_write` is the per-turn lane: every stored turn and every
 answer hands what was said out immediately, one message per turn, so the memory
@@ -265,9 +253,8 @@ is fresh *during* the session instead of at the nightly close. Without it the
 first row appears when the session closes -- a freshness hole of up to a day, and
 a question about the last exchange gets answered out of an empty store. **Since
 [GH #298](https://github.com/mmeyerlein/meclaw/issues/298) the library ships that
-lane ON**, so the override above no longer *turns it on* -- it says out loud, in
-the declaration a reader reads, which knob this example depends on. Setting it to
-`"0"` is what would switch the lane off, and this example would lose its point.
+lane ON**; setting the writer's `turn_write` to `"0"` would switch it off, and
+this example would lose its point.
 Nothing has to be switched on for it: the call leaves the composite on the
 ordinary tool exit, and the only thing that decides whether the model makes one is
 whether it can see the schema.
@@ -391,8 +378,7 @@ applies **this** declaration -- the files, not copies of them -- against a mock
 provider, replays **this** `past.jsonl` and drives the March question through
 the whole tree. It measures what is checked in (six files, no edge in the root
 hive, both timestamp columns present), that `grow.json` names only templates
-that ship, that it sets `turn_write` on `collector/assemble` at instantiation,
-that the recall edge carries the window keys -- and then the claim
+that ship, that the recall edge carries the window keys -- and then the claim
 itself: the second inference's prompt contains the February sentence **with its
 instant**, and contains neither the January nor the March one. The counter-test
 asks about April and requires the empty answer. If the example rots, those tests

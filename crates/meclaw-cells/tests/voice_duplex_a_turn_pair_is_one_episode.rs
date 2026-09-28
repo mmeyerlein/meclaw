@@ -9,9 +9,13 @@
 //! brain had answered), and the collector wrote one row per arrival.
 //!
 //! So the pair is written as a pair: two rows under ONE `turn_id`, in front of
-//! the window read of the same bundle, and the per-turn episode lane hands out
-//! BOTH in the one emission the turn-opening reply produces. The exchange is
-//! one occasion of the day, not two halves that happen to meet in a table.
+//! the window read of the same bundle. The exchange is one occasion of the
+//! day, not two halves that happen to meet in a table.
+//!
+//! The per-turn episode lane that handed BOTH halves out in one emission left
+//! the collector with GH #889 (R-27-1): the curator's writer writes the
+//! episodes now, out of the round the collector hands it on `curate`, so that
+//! half of this file is the curator's to pin (`curator@1.0.0`, writer).
 //!
 //! A turn with only a `user` half is untouched -- that is every chat surface
 //! and the half-duplex voice pipeline, and their answer still arrives on
@@ -121,16 +125,15 @@ fn both_halves_of_a_duplex_turn_are_written_under_one_turn_id() {
         rows[0]["turn_id"], "call-1#4",
         "and it keeps the id the channel assigned"
     );
-    assert_eq!(
-        rows[1]["interim"], 0,
-        "an answer the caller has already HEARD is not an interim"
-    );
+    // GH #889: the `interim` column left `turns` together with the episode
+    // writer that read it, so only the deferral mark is left to hold.
     assert_eq!(rows[1]["deferred"], 0);
 }
 
 #[test]
 fn the_answer_half_sorts_behind_the_question() {
-    // `turns.id` is the table's time order and the window reads it descending.
+    // `turns.id` is the table's time order and the window reads the round in
+    // it (ascending since GH #889, which dropped the newest-N read).
     // Two rows minted in the same microsecond would come back in the order two
     // random hex strings happen to compare in -- so the answer's id is derived
     // from the question's instead of drawn beside it.
@@ -201,54 +204,4 @@ fn an_empty_answer_half_writes_no_row() {
         "a turn written with empty content would be an answer nobody gave: {}",
         out[0]
     );
-}
-
-#[test]
-fn the_episode_lane_hands_out_both_halves_in_one_emission() {
-    // The per-turn scan rides in the SAME reply as the round check (GH #419),
-    // and it is where R-25-10 gets its turns: `turn_write` draws from R-25-9.
-    let day = serde_json::json!([
-        {"id": "r1", "role": "user", "content": "how is the weather?",
-         "interim": 0, "recorded_at": "r1", "episode_written": 0},
-        {"id": "r1-a", "role": "assistant", "content": "sunny, sixteen degrees",
-         "interim": 0, "recorded_at": "r1", "episode_written": 0}
-    ]);
-    let bundle_legs = [
-        ("c-open-day", day),
-        ("c-open-round", serde_json::json!([])),
-        ("c-open-win", serde_json::json!([])),
-    ];
-    let doc = serde_json::json!({
-        "header": {"context": {"session_id": "s1", "turn_id": "call-1#4", "iter": "0",
-                               "col_phase": "turn-open", "store_origin": "collector"},
-                   "hop": {"operation": "bundle", "rows_affected": 2, "bundle_errors": 0}},
-        "messages": bundle_legs.iter().map(|(id, rows)| serde_json::json!(
-            {"origin": "tool", "type": "tool_result", "id": id, "text": rows.to_string()}))
-            .collect::<Vec<_>>(),
-        "results": bundle_legs.iter().map(|(id, _)| serde_json::json!(
-            {"tool_call_id": id, "operation": "select", "rows_affected": 1,
-             "duration_ms": 0})).collect::<Vec<_>>()
-    });
-    let out = emit(doc);
-
-    let episodes: Vec<&serde_json::Value> = out
-        .iter()
-        .filter(|m| m["header"]["route"] == "turn_write")
-        .collect();
-    assert_eq!(
-        episodes.len(),
-        2,
-        "the exchange is one occasion of the day, and the memory hive's writer \
-         takes ONE turn per message: {out:?}"
-    );
-    assert_eq!(episodes[0]["messages"][0]["origin"], "user");
-    assert_eq!(episodes[0]["messages"][0]["text"], "how is the weather?");
-    assert_eq!(episodes[1]["messages"][0]["origin"], "assistant");
-    assert_eq!(episodes[1]["messages"][0]["text"], "sunny, sixteen degrees");
-    assert_eq!(
-        episodes[0]["header"]["turn_id"], "s1#0",
-        "the index counts the DRAINABLE turns of the session: {}",
-        episodes[0]
-    );
-    assert_eq!(episodes[1]["header"]["turn_id"], "s1#1");
 }

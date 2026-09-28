@@ -1,13 +1,10 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@4.4.1"
+    "template": "collector@5.0.0"
   },
   "override_params": {
     "assemble": {
-      "context_window": 128000,
-      "curate_soft": 0.5,
-      "curate_hard": 0.75,
       "tools": [
         "*"
       ]

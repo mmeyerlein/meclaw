@@ -2,8 +2,8 @@
 //! table, so a conversation reaches the memory it is held in.
 //!
 //! `turn_write` is the only path in this substrate from a conversation into an
-//! `episodes` table: `templates/collector/README.md` says so in the knob row,
-//! `collector/assemble` says so beside `TURN_WRITE`, and GH #298 made it true by
+//! `episodes` table: `templates/collector/README.md` said so in the knob row,
+//! `collector/assemble` said so beside `TURN_WRITE`, and GH #298 made it true by
 //! removing everything else. **No shipped topology routed it anywhere.** It left
 //! the collector, climbed nine hops unchanged and dead-lettered at the OS root
 //! as `hive_no_route`, once per stored turn, for ever — while the collector
@@ -12,6 +12,15 @@
 //! the shipped shape, one of them live: the dead-letter count matched the
 //! emitted count exactly, and `episodes` had not grown in nine days while the
 //! colony answered questions daily.
+//!
+//! **GH #889 (R-27-1) moved the writer, not the lane.** The episodes are
+//! written by the curator inside each talky (`curator@1.0.0`, its writer) in
+//! the `turn_write` contract `collector@4.4.1` shipped, word for word; the
+//! collector writes nothing any more and its README no longer carries the
+//! sentence. The promise is read where it survives -- the member's own
+//! `turn_write` row, which has stated it since this issue -- and the talky's
+//! row names the curator's writer as the one switch. The member's edge, and
+//! everything this file measures, is unchanged.
 //!
 //! `templates/member/config.json` named the lane and declined it in one
 //! sentence — *"the member's own episode path is `extraction` → the memory
@@ -39,14 +48,14 @@
 //! 1. **The shipped shape**, off the file: the edge exists, it stamps
 //!    `in_episode`, and it promotes `turn_id` **off the hop**. `context.turn_id`
 //!    is a round uuid; `hop.turn_id` is the deterministic `<session_id>#<index>`
-//!    the collector mints, and it is what the inline bind and the queue row are
+//!    the curator's writer mints, and it is what the inline bind and the queue row are
 //!    keyed on. An edge that promoted the context key would write episodes
 //!    nothing can ever bind to — a defect that looks exactly like this one from
 //!    the outside.
 //! 2. **The lane arrives**, on a booted colony carrying the shipped
 //!    `member@1.5.0`: one turn on `turn_write` out of the member's own
 //!    `./assistants` becomes one `episodes` row in the member's own
-//!    `memory-hive/store`, with the collector's `turn_id` on it, the caller's
+//!    `memory-hive/store`, with the writer's `turn_id` on it, the caller's
 //!    `happened_at` as the event time and TODAY as `recorded_at` — the
 //!    bi-temporal split the writer performs, and the half that says the row was
 //!    written now rather than imported.
@@ -97,7 +106,9 @@ fn shipped() -> bool {
     [
         "templates/member/config.json",
         "templates/memory-hive/writer/config.json",
-        "templates/collector/assemble/config.json",
+        // GH #889: the lane's emitter is named in the talky's contract since
+        // the collector stopped writing it; the promise check reads it there.
+        "templates/talky/config.json",
         "examples/memory-import/build_import.py",
     ]
     .iter()
@@ -113,33 +124,59 @@ fn arr(v: &Value) -> Vec<Value> {
     v.as_array().cloned().unwrap_or_default()
 }
 
+/// The `because` of one declared emit of a composite, empty when it declares
+/// none under that route.
+fn emit_because(cfg: &Value, route: &str) -> String {
+    arr(&cfg["params"]["contract"]["emits"])
+        .iter()
+        .find(|e| e["route"] == json!(route))
+        .and_then(|e| e["because"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
 // ═══════════════════════════════════════════════════════ (1) the shipped shape
 
 /// The edge off the file, and the one key whose SOURCE is the whole trap.
 ///
 /// This is the drift lock GH #527 asked for in its own words — *a shipped
 /// member's graph consumes the lane its own collector emits* — and it does both
-/// halves § 2d demands: it greps the promise (the collector's knob row still
-/// calls `turn_write` the only path into an episodes table) and it asserts the
-/// mechanism (the member's graph carries the edge that receives it).
+/// halves § 2d demands: it greps the promise (the member's own `turn_write` row
+/// still calls the lane the only path into an episodes table, and the talky's
+/// row names the curator's writer that emits it since GH #889) and it asserts
+/// the mechanism (the member's graph carries the edge that receives it).
 #[test]
 fn the_shipped_member_consumes_the_only_lane_that_fills_an_episodes_table() {
     if !shipped() {
         return;
     }
 
-    // The promise, on the public surface of the cell that emits the lane.
-    let knob = std::fs::read_to_string(repo("templates/collector/README.md")).expect("readme");
+    // The promise. It was a sentence of the collector's knob row until GH #889
+    // (R-27-1) moved the lane's writer into the talky's curator, whose README
+    // carries contract tables only -- so it is read on the public surface of
+    // the level that holds the memory, the member's own `turn_write` row.
+    let member = read_json(&repo("templates/member/config.json"));
     assert!(
-        knob.contains("it is the only path from a conversation into an episodes table"),
-        "`templates/collector/README.md` no longer claims `turn_write` is the only path \
+        emit_because(&member, "turn_write").contains(
+            "the only path in the substrate from a conversation into an `episodes` table"
+        ),
+        "`templates/member/config.json` no longer claims `turn_write` is the only path \
          into an episodes table. If a second path was built, this lock is describing a \
          mechanism that moved; if the sentence was merely reworded, the reword has to come \
          here in the same commit (`docs/development-rules.md` § 2d)"
     );
+    // And whose lane it is: the talky's row names the curator's writer as the
+    // one switch of the lane since GH #889. A row that still named the
+    // collector would send a reader to a knob that no longer exists.
+    let talky = read_json(&repo("templates/talky/config.json"));
+    assert!(
+        emit_because(&talky, "turn_write").contains("`./curator`'s writer"),
+        "`templates/talky/config.json` no longer names the curator's writer as the \
+         emitter of `turn_write` (GH #889): {:?}",
+        emit_because(&talky, "turn_write")
+    );
 
     // The mechanism, in the graph of the level that holds the memory (GH #122).
-    let member = read_json(&repo("templates/member/config.json"));
     let edges = arr(&member["params"]["graph"]["edges"]);
     let episode: Vec<&Value> = edges
         .iter()
@@ -172,7 +209,7 @@ fn the_shipped_member_consumes_the_only_lane_that_fills_an_episodes_table() {
     assert!(
         turn_id.contains("hop.turn_id") && !turn_id.contains("context.turn_id"),
         "`turn_id` must be promoted off the HOP: `context.turn_id` is a round uuid, \
-         `hop.turn_id` is the deterministic `<session_id>#<index>` the collector mints, \
+         `hop.turn_id` is the deterministic `<session_id>#<index>` the curator's writer mints, \
          and it is what the inline bind and the queue row are keyed on. An edge that \
          promotes the context key writes episodes nothing can ever bind to — a defect \
          that looks exactly like the missing edge from the outside. Got: {turn_id:?}"
@@ -352,14 +389,16 @@ fn quiet_push() -> Value {
 }
 
 /// A stand-in for the generation: it takes one poke and hands out ONE message
-/// on `turn_write`, in the shape `collector/assemble.turn_episode()` writes —
-/// the deterministic `<session_id>#<index>` on `hop.turn_id`, the row's own
-/// `recorded_at` on `hop.happened_at`, and one `user` text turn in the body,
-/// because the hive's writer takes the first such turn and ignores the rest.
+/// on `turn_write`, in the shape the curator's writer emits since GH #889 (the
+/// contract `collector/assemble.turn_episode()` wrote until then, word for
+/// word) — the deterministic `<session_id>#<index>` on `hop.turn_id`, the
+/// row's own `recorded_at` on `hop.happened_at`, and one `user` text turn in
+/// the body, because the hive's writer takes the first such turn and ignores
+/// the rest.
 ///
 /// A real `talky` in its place would cost a provider and prove less: what is
-/// under test is the member's edge, and the collector's own emission is pinned
-/// where it is produced (`gh298_the_turn_writes_its_own_episode.rs`).
+/// under test is the member's edge, and the writer's own emission is pinned
+/// where it is produced (`curator@1.0.0`, strand K of GH #888).
 fn probe_template() -> (Value, Value) {
     let script = format!(
         r#"
@@ -635,7 +674,7 @@ async fn one_turn(wired: bool) -> Run {
         json!({"manifest": [{
             "scope": "/members",
             "diff": {
-                "add_nodes": [{"name": MEMBER, "template": "member@1.10.5",
+                "add_nodes": [{"name": MEMBER, "template": "member@2.0.0",
                                "override_params": {
                                    "memory-hive/clock": quiet_night(),
                                    "affinity/clock": quiet_push()}}],
@@ -753,7 +792,7 @@ async fn a_turn_becomes_an_episode_in_the_memory_of_the_member_that_produced_it(
     assert_eq!(
         row[0],
         format!("{SESSION}#0"),
-        "the episode does not carry the collector's own turn id. `<session_id>#<index>` is \
+        "the episode does not carry the writer's own turn id. `<session_id>#<index>` is \
          what the inline bind and the extraction queue are keyed on; a row minted from \
          `context.turn_id` carries a round uuid and nothing can bind to it later"
     );

@@ -25,9 +25,10 @@
 //!    instead of the `404` an empty page map answers with.
 //! 2. **A committed mutation refreshes both.** One `add_nodes` grows the tools
 //!    hive beside the agent; the receipt that follows it drives the collector's
-//!    menu ask (the brain's own `system.tools` fills up, having been EMPTY
-//!    before) and the colony view's snapshot (the new cells appear on the
-//!    screen). One mutation, both consumers, no timer.
+//!    menu ask (the agent's durable `system.tools` fills up, having been EMPTY
+//!    before — since GH #889 in its curator's ledger, which hands it to the
+//!    brain with the next call) and the colony view's snapshot (the new cells
+//!    appear on the screen). One mutation, both consumers, no timer.
 //! 3. **No timer ships in either template.** `templates/collector/menu-clock`
 //!    and `templates/colony-view/refresh` are gone, and the graphs that drew
 //!    edges from them are gone with them (rule R3).
@@ -74,9 +75,11 @@ fn repo(rel: &str) -> std::path::PathBuf {
 /// Every template this file reads, next to the path it really reads — spelled
 /// out rather than formatted, so the export's R2b check can see the names
 /// (GH #9).
-const NEEDED: [&str; 6] = [
+const NEEDED: [&str; 7] = [
     "templates/talky",
     "templates/collector",
+    // GH #889: talky refs the curator hive between its collector and its brain.
+    "templates/curator",
     "templates/session-keeper",
     "templates/dispatcher",
     "templates/colony-view",
@@ -250,6 +253,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     // `talky` REFERENCES its sub-units; a directly written tree carries them.
     for (name, rel) in [
         ("collector", "templates/collector"),
+        ("curator", "templates/curator"),
         ("session-keeper", "templates/session-keeper"),
         ("dispatcher", "templates/dispatcher"),
     ] {
@@ -270,6 +274,17 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    patch(
+        &root.join("main/agent/curator/summarizer/config.json"),
+        |v| {
+            v["params"]["base_url"] = json!(base_url);
+            v["params"]["model"] = json!("gpt-4o-mock");
+        },
+    );
     patch(
         &root.join("main/agent/collector/assemble/config.json"),
         |v| v["params"]["tools"] = json!(["web_search", "web_fetch"]),
@@ -363,26 +378,45 @@ async fn mutate(h: &ColonyHandle, payload: Value) -> meclaw_colony::mutation::Mu
     ack_rx.await.expect("mutation ack")
 }
 
-/// The names the agent's own brain holds in `system.tools` — the durable end of
-/// the menu road, one row per declaration.
-fn menu_in_the_brain(td: &tempfile::TempDir) -> BTreeSet<String> {
-    let p = td.path().join("main/agent/brain/cell.db");
+/// The names the agent holds in `system.tools` — the durable end of the menu
+/// road. Since GH #889 that end is the curator's ledger (`curator@1.0.0`, K § 1:
+/// `in_slots` writes the collector's `menu` into `slots` under owner
+/// `collector`, and the curator hands it to the brain with the next call); the
+/// brain's own `cell.db` holds nothing until a turn has run. A slot row names
+/// one declaration (`tools.<name>`) or the whole family (`tools`, the subtree in
+/// the block it points at); both forms are read.
+fn menu_in_the_agent(td: &tempfile::TempDir) -> BTreeSet<String> {
+    let p = td.path().join("main/agent/curator/ledger/cell.db");
     if !p.exists() {
         return BTreeSet::new();
     }
     let Ok(conn) = rusqlite::Connection::open(&p) else {
         return BTreeSet::new();
     };
-    let Ok(mut stmt) = conn.prepare("SELECT slot_path FROM system ORDER BY slot_path") else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.path, b.body FROM slots s LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'collector' AND (s.path = 'tools' OR s.path LIKE 'tools.%')",
+    ) else {
         return BTreeSet::new();
     };
-    match stmt.query_map([], |r| r.get::<_, String>(0)) {
-        Ok(rows) => rows
-            .filter_map(|r| r.ok())
-            .filter_map(|p| p.strip_prefix("tools.").map(str::to_string))
-            .collect(),
-        Err(_) => BTreeSet::new(),
+    let rows: Vec<(String, Option<String>)> = match stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => return BTreeSet::new(),
+    };
+    let mut names = BTreeSet::new();
+    for (path, body) in rows {
+        if let Some(rest) = path.strip_prefix("tools.") {
+            names.insert(rest.split('.').next().unwrap_or(rest).to_string());
+        } else if let Some(Value::Object(tree)) = body
+            .as_deref()
+            .and_then(|b| meclaw_core::serde_json::from_str::<Value>(b).ok())
+        {
+            names.extend(tree.keys().filter(|k| !k.starts_with('$')).cloned());
+        }
     }
+    names
 }
 
 /// GET the screen's own route until the listener answers at all.
@@ -480,10 +514,11 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
     let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     build_root(&td, &mock.base_url);
 
-    // No `timer` cell anywhere on the live path but the keeper's night close
-    // and the screen's due clock (GH #679) -- and that one is no poll: it
-    // carries no schedule of its own and strikes only when the compose cell
-    // orders a named one-shot for a moment something is due.
+    // No `timer` cell anywhere on the live path but the keeper's night close,
+    // the screen's due clock (GH #679) and the curator's clock (GH #889) -- and
+    // the last two are no poll: they carry no schedule of their own and strike
+    // only on a named one-shot somebody orders for a moment something is due
+    // (for the curator: the end of a model's prompt cache).
     let mut timers: Vec<String> = config_paths(td.path().join("main").as_path())
         .into_iter()
         .filter(|rel| read_json(&td.path().join("main").join(rel))["cell"]["type"] == "timer")
@@ -492,17 +527,23 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
     assert_eq!(
         timers,
         vec![
+            "agent/curator/clock/config.json".to_string(),
             "agent/session-keeper/night/config.json".to_string(),
             "screen/clock/config.json".to_string(),
         ],
         "the grown tree still carries a poll timer"
     );
-    assert!(
-        read_json(&td.path().join("main/screen/clock/config.json"))["params"]
-            .get("schedules")
-            .is_none(),
-        "the screen's clock carries a schedule of its own"
-    );
+    for (clock, whose) in [
+        ("main/screen/clock/config.json", "the screen's"),
+        ("main/agent/curator/clock/config.json", "the curator's"),
+    ] {
+        assert!(
+            read_json(&td.path().join(clock))["params"]
+                .get("schedules")
+                .is_none(),
+            "{whose} clock carries a schedule of its own"
+        );
+    }
 
     let (h, park) = boot(&td, &surfaces).await;
     // One listener in front of the whole colony, the way the CLI runs one.
@@ -517,12 +558,12 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
         !first.contains("tools/"),
         "precondition: the tools hive does not exist yet"
     );
-    let before = menu_in_the_brain(&td);
+    let before = menu_in_the_agent(&td);
     assert!(
         !before.contains("web_search") && !before.contains("web_fetch"),
         "precondition: no tools hive exists yet, so nothing has ANSWERED a menu \
-         question — what the brain holds is what the collector serves out of its \
-         own slate: {before:?}"
+         question — and since GH #889 the collector serves no tool of its own: \
+         {before:?}"
     );
 
     // --- claim 2: ONE ordinary mutation, and both consumers follow it.
@@ -543,13 +584,13 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let names = menu_in_the_brain(&td);
+        let names = menu_in_the_agent(&td);
         if names.contains("web_search") && names.contains("web_fetch") {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the receipt never refreshed the menu; the brain holds {names:?}"
+            "the receipt never refreshed the menu; the curator's ledger holds {names:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

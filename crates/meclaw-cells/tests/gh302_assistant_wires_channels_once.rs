@@ -317,9 +317,16 @@ fn the_level_carries_no_open_container_and_the_surface_is_the_shipped_talky() {
         .and_then(|raw| meclaw_core::serde_json::from_str::<Value>(&raw).ok())
         .and_then(|v| v["version"].as_str().map(str::to_string))
         .unwrap_or_default();
-    assert_eq!(
-        version.split('.').next().unwrap_or_default(),
-        "2",
+    // "Never below 2" is the claim: a later removal (GH #889 took `in_prune` and
+    // `prune`, 3.0.0) moves the first digit again and must not turn this red.
+    let major: u32 = version
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or(0);
+    assert!(
+        major >= 2,
         "templates/assistant/template.json says {version:?}. Removing the `channels` \
          address and the `turn` lane is a removal, and neither rule of \
          docs/development-rules.md § 4 covers one — it is the first digit, and it must \
@@ -837,13 +844,15 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
         "turn_write",
         "tool",
         "schemas",
+        // GH #877: every identity-pack receipt goes home to `./affinity`.
+        "pack_ack",
     ]
     .into_iter()
     .map(str::to_string)
     .collect();
     assert_eq!(
         consumed_by_the_member, want,
-        "the member consumes exactly the eight lanes of this level it has a holder for: the \
+        "the member consumes exactly the nine lanes of this level it has a holder for: the \
          `answer` goes to a channel of the PERSON (GH #454), `recall` and `sidecar` to \
          the memory that belongs to the person (GH #122), `write` is fanned onto the \
          memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \
@@ -856,7 +865,9 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
          `extraction` used to take, every other section goes into the person's apps container, and \
          this level neither reads a section nor could -- a section is an OFFER, and an \
          offer may be made by an app standing outside the generation. Since GH #834 `brief` \
-         goes to the person's record (`./affinity`, as `in_brief`, the asker stamped). Every \
+         goes to the person's record (`./affinity`, as `in_brief`, the asker stamped), and since \
+         GH #877 `pack_ack` goes there too (as `in_pack_ack`, where a clean receipt books the \
+         delivery). Every \
          other lane an assistant raises crosses the member and is the parent's to drain."
     );
     for lane in &consumed_by_the_member {
@@ -1246,7 +1257,8 @@ fn main_config() -> Value {
         "turn_write",
         "sidecar",
         "recall",
-        "prune",
+        // `prune` left the level with GH #889 (the collector keeps no window to
+        // prune), so it is no longer a lane this harness has to drain.
         "error",
         "build",
         // GH #552: the level emits these two now — `memory_recall` on its way to

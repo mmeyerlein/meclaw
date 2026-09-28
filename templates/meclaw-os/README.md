@@ -1,4 +1,4 @@
-# `meclaw-os@1.10.3`
+# `meclaw-os@2.0.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -23,6 +23,9 @@ only the pin moved.
 Since 1.10.3 it pins `llm-registry@2.3.2` and `builder@1.15.3` ([#886](https://github.com/mmeyerlein/meclaw/issues/886)):
 the registry's translator and every brain the builder grows declare `hop.model`; only the
 pins moved.
+Since 2.0.0 it pins `builder@1.16.0`, `llm-registry@2.4.0`, `argus@1.2.2` and `operator@1.2.4` ([#877](https://github.com/mmeyerlein/meclaw/issues/877), [#889](https://github.com/mmeyerlein/meclaw/issues/889), [#890](https://github.com/mmeyerlein/meclaw/issues/890)):
+`pack_ack` and `prune` no longer leave the shell, because no member raises them any more, and the
+derivation names the org at 2.0.0. A lane left the boundary, so it is the first digit.
 
 Between 1.7.0 and 1.9.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it was
 four and not five. The **submitter** stopped being a hive of this level and became an occupant of the
@@ -112,9 +115,7 @@ open state — so the shell draws no boundary of its own around its occupants.
 | `receipt` | what the front door answered — a submission's counts, an export's result, a refusal, or a lane nobody wired. **Drain it too:** a manifest has no rollback, so an operator who learns nothing is the one outcome there is no recovery from. |
 | `write` | an assistant's batched conversation write, handed straight out. The shell owns no archive |
 | `turn_write` | one finished turn, offered for archiving as it is produced. A **copy**: since [#527](https://github.com/mmeyerlein/meclaw/issues/527) the member that produced it also fans it into its own memory hive, so this lane is an archive offer and no longer the only place the turn could go. A distribution that wires it nowhere dead-letters it here — `examples/meclaw-os/` routes it to `./sink` |
-| `prune` | a housekeeping report raised inside an organisation. Nothing here schedules it |
 | `close_report` | what one close pass did to an ended session. Nothing here triggers the pass and nothing here reads the receipt |
-| `pack_ack` | the receipt of one identity pack a member's record pushed into one of its generations. Two travel per pack, one per occupant |
 | `catalogue` | what one reconciliation of the baumeister's corpus against the colony's own template registry did: how many names the registry holds, how many the corpus already carried, how many rows were written and which. Nothing here reads it — the shell drives the nudge, so the shell hands out the report |
 
 Both broker lanes demand a promoted `context.requester`, and the shell demands it too. A
@@ -123,9 +124,9 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The sixty-two edges
+## The sixty edges
 
-Forty-two of them are a door or an exit, and every declared lane has at least one. The
+Forty of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
@@ -259,11 +260,9 @@ counts are the only thing that tells *nothing was missing* from *the nudge never
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'write'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'turn_write'"},
-  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'prune'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_export'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_import'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'close_report'"},
-  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'pack_ack'"},
 
   {"from": "<shell>/orgs",      "to": "<shell>/builder", "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'draft'"},
   {"from": "<shell>/orgs",      "to": "<shell>/operator","condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'apply'"},
@@ -505,7 +504,7 @@ the code does rather than what the field is named.
 So the rule, and all four levels follow it: **the level declares the transit lanes, and the
 level's own edges satisfy them from birth.** `in_turn` has a door because the shell routes
 it into `./orgs`, and `orgs` lies inside the shell; `answer`, `ack`, `reject`, `error`,
-`write`, `turn_write`, `prune`, `close_report` and `pack_ack` have exits because the shell
+`write`, `turn_write` and `close_report` have exits because the shell
 routes them back out of `./orgs`. Below the container there is nothing to route to
 until an organisation is instantiated, and the mutation that grows one draws its own edges —
 but the level's promise is already true and already checkable on the day it ships.
@@ -580,7 +579,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.10.3"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.0.0"}}
 ```
 
 ```bash
@@ -664,7 +663,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.10.3"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.0.0"}],
           "add_edges": []}}
 ```
 
@@ -686,7 +685,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.4.1"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.0.0"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

@@ -1,0 +1,6 @@
+{"schema": {"key": "text", "value": "text"}}
+{"key": "last_call", "value": ""}
+{"key": "armed_call", "value": ""}
+{"key": "system_hash_sent", "value": "{}"}
+{"key": "rebuild_running", "value": ""}
+{"key": "actions_pending", "value": "[]"}

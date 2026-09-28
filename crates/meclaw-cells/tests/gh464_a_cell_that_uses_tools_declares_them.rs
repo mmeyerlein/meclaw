@@ -14,13 +14,13 @@
 //!    one is checked against the shipped table rather than trusted.
 //! 2. **The assembler asks, and knows when not to.** A tick with a declaration
 //!    produces one `schemas` request and nothing else; a tick with no
-//!    declaration, or with a typed `tool_menu`, produces silence — the knob is
-//!    the manual override and two writers on `system.tools` would fight.
+//!    declaration produces silence. (The typed `tool_menu` override left with
+//!    `collector@5.0.0`, GH #889: the collector hands everything on uncut and
+//!    keeps no second writer on `system.tools`.)
 //! 3. **The answer becomes a provider-native menu.** The hive answers
 //!    `{name, description, parameters}`; the caller wraps it, because the caller
 //!    is the one that knows its provider. `$replace` on the subtree, one leaf per
-//!    tool, the JSON verbatim in `text` — the same shape a typed `tool_menu`
-//!    produces, read by the same `fn_of`.
+//!    tool, the JSON verbatim in `text`.
 //! 4. **An unknown name is a receipt, not a silence.** It rides in
 //!    `hop.menu_unknown` and on stderr, which a `code` cell puts into
 //!    `log.jsonl` at warn level; the schemas that WERE found travel beside it.
@@ -29,10 +29,12 @@
 //!    declaration in it emits no `menu` message at all.
 //! 6. **End to end on a booted colony.** The shipped `talky` beside the shipped
 //!    `tools`, wired with the pair the `assistant` level draws: the tick fires by
-//!    itself, and exactly the two declared schemas land in the brain's OWN
-//!    `cell.db` — the durable signal, never an empty dead-letter queue.
+//!    itself, and exactly the two declared schemas become durable state of the
+//!    agent — since GH #889 in its curator's ledger (`slots`, owner
+//!    `collector`), from which the curator hands them to the brain with the next
+//!    call; the durable signal, never an empty dead-letter queue.
 //! 7. **And `["*"]` means all of them.** The shipped `cogny` asks for everything
-//!    the hive has, and both of its brains get the same menu.
+//!    the hive has, and its curator holds every one of them.
 //!
 //! Free of a real provider by construction: the brains talk to a mock OpenAI
 //! wire, and on this lane they are expected never to talk at all.
@@ -426,20 +428,6 @@ fn a_collector_that_declares_nothing_asks_nothing() {
     );
 }
 
-#[test]
-fn a_typed_menu_is_the_manual_override_and_switches_the_asking_off() {
-    let out = tick(&json!({
-        "tools": ["web_search"],
-        "tool_menu": "[{\"type\":\"function\",\"function\":{\"name\":\"typed\"}}]",
-    }));
-    assert!(
-        out.is_empty(),
-        "`tool_menu` and `tools` write the same `system.tools` path, so one of them has \
-         to win — and it is the typed one, because a knob somebody set by hand is an \
-         override rather than a second source: {out:#?}"
-    );
-}
-
 // ═══════════════════════════════════ 3.-5. the answer becomes a provider menu
 
 fn run_assembler(doc: &Value) -> (Vec<Value>, String) {
@@ -510,13 +498,12 @@ fn the_answer_is_wrapped_in_the_provider_envelope_the_hive_refuses_to_write() {
     assert_eq!(out.len(), 1, "one menu message: {out:#?}");
     let msg = &out[0];
     assert_eq!(msg["header"]["route"], "menu");
-    // Three, not two, since GH #512: the two declared names plus the one the
-    // collector answers ITSELF, which no tools hive has a declaration for.
-    // `gh512_the_collector_declares_the_tools_it_answers_itself.rs` owns that
-    // half; this file keeps measuring the wrapping and the `$replace`. It was
-    // four until GH #552 took `memory_recall` to the hive that answers it.
-    assert_eq!(msg["header"]["menu_count"], "3");
-    assert_eq!(msg["header"]["menu_self"], "thread_recall");
+    // Two again since GH #889: the collector serves no tool of its own any
+    // more, so the menu is exactly the declared names the hive answered. It was
+    // three with `thread_recall` (GH #512) and four with `memory_recall` until
+    // GH #552; `menu_self` stays on the message, empty, so no guard fails on it.
+    assert_eq!(msg["header"]["menu_count"], "2");
+    assert_eq!(msg["header"]["menu_self"], "");
     assert_eq!(msg["header"]["menu_unknown"], "");
     assert!(
         stderr.is_empty(),
@@ -566,11 +553,8 @@ fn the_answer_is_wrapped_in_the_provider_envelope_the_hive_refuses_to_write() {
         .collect();
     assert_eq!(
         leaves,
-        ["thread_recall", "web_fetch", "web_search"]
-            .into_iter()
-            .collect(),
-        "exactly the declared names and the one this cell serves itself (GH #512), and no \
-         menu somebody else typed"
+        ["web_fetch", "web_search"].into_iter().collect(),
+        "exactly the declared names, and no menu somebody else typed"
     );
 }
 
@@ -579,10 +563,8 @@ fn a_name_the_hive_does_not_have_is_reported_and_the_others_still_arrive() {
     let (out, stderr) = menu_of(&json!(["web_search", "telepathy"]));
     assert_eq!(out.len(), 1, "the partial answer is still an answer");
     let msg = &out[0];
-    assert_eq!(
-        msg["header"]["menu_count"], "2",
-        "one found, one served here"
-    );
+    // One since GH #889: the name the collector used to serve itself is gone.
+    assert_eq!(msg["header"]["menu_count"], "1", "one found");
     assert_eq!(
         msg["header"]["menu_unknown"], "telepathy",
         "a declared name nobody has is NAMED on the message: {msg:#?}"
@@ -774,9 +756,8 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
     // travel with it. Writing it here is applying that declaration by hand, and
     // `the_shipped_composites_declare_what_they_use` above is what pins the
     // value being applied.
-    // ... and so does every other knob the ref sets, `thread_recall` included: a
-    // composite that routes no lane for a name switches the tool off there, and a
-    // tree that dropped the override would measure a collector nobody ships.
+    // ... and so does every other knob the ref sets: a tree that dropped the
+    // override would measure a collector nobody ships.
     let overrides = read_json(
         &templates_root()
             .join(composite)
@@ -795,16 +776,23 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
             v["params"]["tools"] = declared.clone();
         },
     );
-    for brain in brains_of(composite) {
-        patch(
-            root,
-            &format!("main/{composite}/{brain}/config.json"),
-            |v| {
-                v["params"]["base_url"] = json!(base_url);
-                v["params"]["model"] = json!("gpt-4o-mock");
-            },
-        );
-    }
+    patch(root, &format!("main/{composite}/brain/config.json"), |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the composite carries its own curator, and the curator's
+    // summarizer is an `llm` cell whose model is `${ctx.model}` -- an
+    // instantiation-side substitution a tree booted from disk cannot resolve.
+    // It names the mock here; a run this short never reaches a rebuild, so it
+    // is never called.
+    patch(
+        root,
+        &format!("main/{composite}/curator/summarizer/config.json"),
+        |v| {
+            v["params"]["base_url"] = json!(base_url);
+            v["params"]["model"] = json!("gpt-4o-mock");
+        },
+    );
 }
 
 /// A `code` stand-in for a tool occupant this file never calls.
@@ -854,14 +842,6 @@ fn double_the_tool_cells(tools_root: &std::path::Path) {
     }
 }
 
-/// Every shipped composite carries exactly one `llm` cell since `cogny@4.4.0`
-/// took the core's lookup lane out ([#528](https://github.com/mmeyerlein/meclaw/issues/528)).
-/// The indirection stays: the menu write is a fan-out by construction, and a
-/// composite that grows a second brain must not need a second test to notice.
-fn brains_of(_composite: &str) -> &'static [&'static str] {
-    &["brain"]
-}
-
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
         vec![
@@ -890,55 +870,72 @@ async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>)
     (h, park_rx)
 }
 
-/// The brain's OWN durable state: the `system` table of its `cell.db`. This is
-/// the honest signal — what an `llm` cell upserted and what it will concatenate
-/// into its next prompt — never an empty dead-letter queue.
-fn brain_slots(td: &tempfile::TempDir, composite: &str, brain: &str) -> Vec<(String, String)> {
-    let p = td.path().join(format!("main/{composite}/{brain}/cell.db"));
+/// The agent's durable menu since GH #889: the `slots` rows its curator's
+/// ledger holds under owner `collector` (`curator@1.0.0`, K § 1 — `in_slots`
+/// writes what the collector's `menu` carried, and the curator hands it to the
+/// brain as a `$replace` root with the next call). The brain's own `cell.db`
+/// holds nothing until a turn has run, so the ledger is where a menu lands.
+///
+/// A slot row names either one declaration (`tools.<name>`) or the whole family
+/// (`tools`, the subtree in the block it points at); both forms are read, so the
+/// names come out the same whichever granularity the ledger keeps.
+fn ledger_tools(td: &tempfile::TempDir, composite: &str) -> Vec<String> {
+    let p = td
+        .path()
+        .join(format!("main/{composite}/curator/ledger/cell.db"));
     if !p.exists() {
         return Vec::new();
     }
     let Ok(conn) = rusqlite::Connection::open(&p) else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare("SELECT slot_path, value FROM system ORDER BY slot_path")
-    else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.path, b.body FROM slots s LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'collector' AND (s.path = 'tools' OR s.path LIKE 'tools.%')",
+    ) else {
         return Vec::new();
     };
-    match stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+    let rows: Vec<(String, Option<String>)> = match stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    }) {
         Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-        Err(_) => Vec::new(),
+        Err(_) => return Vec::new(),
+    };
+    let mut names = BTreeSet::new();
+    for (path, body) in rows {
+        if let Some(rest) = path.strip_prefix("tools.") {
+            names.insert(rest.split('.').next().unwrap_or(rest).to_string());
+        } else if let Some(Value::Object(tree)) = body
+            .as_deref()
+            .and_then(|b| meclaw_core::serde_json::from_str::<Value>(b).ok())
+        {
+            names.extend(tree.keys().filter(|k| !k.starts_with('$')).cloned());
+        }
     }
+    names.into_iter().collect()
 }
 
 /// Poll until the menu has landed. 30s is the failure-marker convention; the
 /// tick itself is a second away, and the 20ms step only decides how fast a
 /// green test finishes.
-async fn await_menu(
-    td: &tempfile::TempDir,
-    composite: &str,
-    brain: &str,
-    at_least: usize,
-) -> Vec<String> {
+async fn await_menu(td: &tempfile::TempDir, composite: &str, at_least: usize) -> Vec<String> {
     for _ in 0..1500 {
-        let names: Vec<String> = brain_slots(td, composite, brain)
-            .into_iter()
-            .filter_map(|(p, _)| p.strip_prefix("tools.").map(str::to_string))
-            .collect();
+        let names = ledger_tools(td, composite);
         if names.len() >= at_least {
             return names;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!(
-        "no menu ever reached {composite}/{brain}'s own cell.db; it holds {:?}",
-        brain_slots(td, composite, brain)
+        "no menu ever reached {composite}/curator's ledger; it holds {:?}",
+        ledger_tools(td, composite)
     );
 }
 
 /// Claim 6. The shipped talky, beside the shipped tools hive, wired with the
 /// pair the assistant level draws: the tick fires by itself and exactly the two
-/// declared schemas become durable state of the agent's own brain.
+/// declared schemas become durable state of the agent (its curator's ledger
+/// since GH #889).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_talky_asks_for_its_two_tools_and_gets_exactly_those_two() {
     let (Some(_), Some(_)) = (shipped("talky"), shipped("tools")) else {
@@ -954,21 +951,19 @@ async fn a_talky_asks_for_its_two_tools_and_gets_exactly_those_two() {
     );
     let (_h, _park) = boot(&td).await;
 
-    let mut names = await_menu(&td, "talky", "brain", 3).await;
-    names.retain(|n| n != "thread_recall");
-    names.sort();
+    // Two, and nothing held out: since GH #889 the collector serves no tool of
+    // its own, so what lands is exactly what the hive answered.
+    let names = await_menu(&td, "talky", 2).await;
     assert_eq!(
         names,
         vec!["web_fetch".to_string(), "web_search".to_string()],
         "a cell that uses tools declares them, and it gets the ones it declared — not \
-         the hive's whole catalogue, and not a list somebody typed into its prompt. The \
-         one the collector serves itself is held out here and measured by \
-         `gh512_the_collector_declares_the_tools_it_answers_itself.rs`"
+         the hive's whole catalogue, and not a list somebody typed into its prompt"
     );
 }
 
-/// Claim 7. `["*"]` means everything the hive has, and the core's brain gets
-/// every one of them.
+/// Claim 7. `["*"]` means everything the hive has, and the core's curator holds
+/// every one of them for its brain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cogny_asks_for_everything_and_its_brain_gets_it() {
     let (Some(_), Some(_)) = (shipped("cogny"), shipped("tools")) else {
@@ -986,22 +981,15 @@ async fn a_cogny_asks_for_everything_and_its_brain_gets_it() {
     build_tree(&td, "cogny", &json!(["*"]), &mock.base_url);
     let (_h, _park) = boot(&td).await;
 
-    for brain in brains_of("cogny") {
-        let mut names = await_menu(&td, "cogny", brain, everything.len() + 1).await;
-        // The one the collector serves ITSELF (GH #512, `collector@3.3.1`): the
-        // shipped cogny routes `thread_recall` by name, and no tools hive has a
-        // declaration for it. It is held out here and measured by
-        // `gh512_the_collector_declares_the_tools_it_answers_itself.rs`.
-        // `memory_recall` stood beside it until GH #552 and is the member's
-        // memory's own declaration now — a standalone cogny has no member.
-        names.retain(|n| n != "thread_recall");
-        names.sort();
-        let mut want = everything.clone();
-        want.sort();
-        assert_eq!(
-            names, want,
-            "`{brain}` must hold every declaration the hive has -- a reasoning core \
-             declares `[\"*\"]` precisely so nothing has to be typed twice"
-        );
-    }
+    // Nothing held out since GH #889: `thread_recall` was the one name the
+    // collector served itself, and `memory_recall` has been the member's
+    // memory's own declaration since GH #552 — a standalone cogny has no member.
+    let names = await_menu(&td, "cogny", everything.len()).await;
+    let mut want = everything.clone();
+    want.sort();
+    assert_eq!(
+        names, want,
+        "the curator must hold every declaration the hive has -- a reasoning core \
+         declares `[\"*\"]` precisely so nothing has to be typed twice"
+    );
 }

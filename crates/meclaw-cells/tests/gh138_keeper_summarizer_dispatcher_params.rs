@@ -478,7 +478,8 @@ fn turn(origin: &str, text: &str) -> Value {
     json!({"origin": origin, "type": "text", "text": text})
 }
 
-/// The write batch as the collector's close lane emits it.
+/// The write batch as a close pass emits it: the shape of `collector@4.4.1`'s
+/// `write`, which the curator's writer carries on unchanged since GH #889.
 fn batch_doc(turns: Vec<Value>) -> Value {
     json!({
         "header": {"context": {},

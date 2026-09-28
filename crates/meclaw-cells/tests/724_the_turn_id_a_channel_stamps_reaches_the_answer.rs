@@ -61,9 +61,10 @@ const KEEPER: &str = "../../templates/session-keeper/config.json";
 const ASSEMBLE: &str = "../../templates/collector/assemble/config.json";
 
 /// The id a channel stamps. `#` on purpose: BOTH shipped channels put one in
-/// (`<session>#<seq>` for voice, `chat#<hex>` for the typed one), and `#` is the one
-/// separator the collector's composite ids do NOT use — `|` is (`turn|call|kind|ref`),
-/// which is why the adoption below has to refuse it.
+/// (`<session>#<seq>` for voice, `chat#<hex>` for the typed one), and `#` is a
+/// separator the collector's composite ids do NOT use — `~` is (the event key
+/// `<label>~<deadline>~<hex>`), which is why the adoption below has to disarm it.
+/// (GH #889: the `|` composites went with thread_recall and prune.)
 const T: &str = "chat#0f1e2d3c4b5a6978";
 
 // ───────────────────────────────────────────────────────────── running a shipped script
@@ -560,20 +561,21 @@ fn an_advisors_return_never_adopts_the_id_on_its_hop() {
 
 #[test]
 fn a_stamped_id_can_never_collide_with_a_composite_one() {
-    // `tr-sel` and `prune-cut` read a COMPOSITE id back apart on `|`
-    // (`turn|call|kind|ref`, `prune|<boundary>`). A channel is free to stamp whatever it
-    // likes, so an id carrying that separator has to be disarmed on adoption rather than
-    // trusted — otherwise one channel's choice of id silently reroutes a tool round.
+    // GH #889: the `|` composites (`tr-sel`, `prune-cut`) went with thread_recall and
+    // prune; the composite left is the event key `<label>~<deadline>~<hex>` (GH #728),
+    // read back apart on `~`. A channel is free to stamp whatever it likes, so an id
+    // carrying that separator has to be disarmed on adoption rather than trusted —
+    // otherwise one channel's choice of id hands its answer a label nobody gave it.
     let out = emit(
         ASSEMBLE,
-        collector_turn("in_turn", Some("weird|id|here|now")),
+        collector_turn("in_turn", Some("weird~1~here~now")),
     );
     let got = turn_id_of(
         on_route(&out, "cstore", "collector/assemble"),
         "collector turn-open",
     );
     assert!(
-        !got.contains('|'),
+        !got.contains('~'),
         "an adopted id still carries the composite separator: {got:?}"
     );
     assert!(
@@ -600,24 +602,5 @@ fn a_stamped_id_is_capped_in_length() {
     assert!(
         got.starts_with('x'),
         "the id was replaced rather than capped: {got:?}"
-    );
-}
-
-#[test]
-fn a_stamped_id_may_not_wear_the_reserved_close_shape() {
-    // `CLOSE_ID` is `"close-" + session`: the bookkeeping row of a session's end. An id
-    // in that shape would write into it, so it is refused outright rather than disarmed —
-    // there is no character to replace, the whole shape is the collision.
-    let out = emit(
-        ASSEMBLE,
-        collector_turn("in_turn", Some("close-chat-2026-01-02T03:04:05.000000Z")),
-    );
-    let got = turn_id_of(
-        on_route(&out, "cstore", "collector/assemble"),
-        "collector turn-open",
-    );
-    assert!(
-        !got.starts_with("close-"),
-        "a turn opened a round on the session-close row's own key: {got:?}"
     );
 }

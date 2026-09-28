@@ -346,6 +346,26 @@ def sessions_for(root: Path, wave_token: str, explicit=()) -> list[Path]:
             if marker.search(first_prompt(p))]
 
 
+#: What the first prompt of a planning session names (Q12). Every planning
+#: since wave Gate starts from the wave's hand-over file of that name; a
+#: build session names its `DISPATCH-BAU` instead (ruling OR-KX-R2).
+PLANNING = "HANDOVER-PLANUNG"
+
+
+def planning_sessions(root: Path, wave_token: str, explicit=()) -> list[Path]:
+    """The planning session(s) of a wave (Q12).
+
+    Named with `--planning`, or found by the wave marker AND the hand-over
+    file in the first user message. The second half of a split wave finds
+    nothing here: its planning ran in the first half's session, whose prompt
+    names the first half's folder only -- so it is `n/a` or named.
+    """
+    if explicit:
+        return sessions_for(root, wave_token, explicit)
+    return [p for p in sessions_for(root, wave_token)
+            if PLANNING in first_prompt(p)]
+
+
 def agents_of(session: Path) -> list[Path]:
     folder = session.parent / session.stem / "subagents"
     return sorted(folder.glob("agent-*.jsonl")) if folder.is_dir() else []

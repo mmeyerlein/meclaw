@@ -19,7 +19,9 @@
 
 use crate::llm::params::{AuthMode, LlmParams};
 use crate::llm::sanitize::strip_provider_annotations;
-use crate::llm::translate::{TranslateError, TranslatedResponse, usage_cost, usage_tokens_cached};
+use crate::llm::translate::{
+    TranslateError, TranslatedResponse, usage_cost, usage_tokens_cache_write, usage_tokens_cached,
+};
 use serde_json::Value;
 
 /// Build a Responses-API request body from UBF input.
@@ -78,6 +80,24 @@ pub(crate) fn build_responses_request(
         body.insert(k.clone(), v.clone());
     }
     Ok(Value::Object(body))
+}
+
+/// GH #890: lay the cache wire over a built Responses request.
+///
+/// The Responses API caches on its own and takes a routing hint, the root
+/// `prompt_cache_key`; it has no block marks. So `implicit` and `breakpoints`
+/// both send the cell's one key (`translate::prompt_cache_key`), and `off`
+/// sends nothing -- the request of before, byte for byte. That `breakpoints`
+/// runs as `implicit` here is said on the params line's side
+/// (`package::cache_note`, OR-KX-C1). A key in `provider_extra` is kept.
+pub(crate) fn apply_cache_wire(request: &mut Value, params: &LlmParams, cell_path: &str) {
+    if params.cache_mode == crate::llm::params::CacheMode::Off {
+        return;
+    }
+    if let Some(body) = request.as_object_mut() {
+        body.entry("prompt_cache_key")
+            .or_insert_with(|| Value::String(crate::llm::translate::prompt_cache_key(cell_path)));
+    }
 }
 
 /// Chat-completions carries the tool schema bare; Responses tags it inline
@@ -284,6 +304,7 @@ pub(crate) fn parse_responses_sse(body: &str) -> Result<TranslatedResponse, Tran
     let mut tokens_prompt = None;
     let mut tokens_completion = None;
     let mut tokens_cached = None;
+    let mut tokens_cache_write = None;
     let mut cost = None;
     let mut completed = false;
     let mut incomplete_reason: Option<String> = None;
@@ -313,6 +334,7 @@ pub(crate) fn parse_responses_sse(body: &str) -> Result<TranslatedResponse, Tran
                     tokens_prompt = u.get("input_tokens").and_then(|v| v.as_u64());
                     tokens_completion = u.get("output_tokens").and_then(|v| v.as_u64());
                     tokens_cached = usage_tokens_cached(Some(u));
+                    tokens_cache_write = usage_tokens_cache_write(Some(u));
                     cost = usage_cost(Some(u));
                 }
                 if event.get("type").and_then(|v| v.as_str()) == Some("response.completed") {
@@ -359,6 +381,7 @@ pub(crate) fn parse_responses_sse(body: &str) -> Result<TranslatedResponse, Tran
             tokens_prompt,
             tokens_completion,
             tokens_cached,
+            tokens_cache_write,
             cost,
         },
         incomplete_reason,
@@ -396,6 +419,7 @@ pub(crate) fn parse_responses_response(json: &Value) -> Result<TranslatedRespons
                 .and_then(|u| u.get("output_tokens"))
                 .and_then(|v| v.as_u64()),
             tokens_cached: usage_tokens_cached(usage),
+            tokens_cache_write: usage_tokens_cache_write(usage),
             cost: usage_cost(usage),
         },
         json.get("incomplete_details")
@@ -409,10 +433,10 @@ pub(crate) fn parse_responses_response(json: &Value) -> Result<TranslatedRespons
 ///
 /// Order mirrors the chat-completions dialect: tool-call turns first, then the
 /// text turn, so downstream topologies see one shape regardless of dialect.
-/// The four usage figures the Responses lane carries from wire to hop header,
-/// bundled so `build_translated` keeps one parameter per concept instead of
-/// four positional `Option`s that are trivially swappable at a call site
-/// (GH #463).
+/// The usage figures the Responses lane carries from wire to hop header (four
+/// since GH #463, five since GH #890), bundled so `build_translated` keeps one
+/// parameter per concept instead of positional `Option`s that are trivially
+/// swappable at a call site.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct UsageFigures {
     /// `usage.input_tokens`.
@@ -421,6 +445,8 @@ pub(crate) struct UsageFigures {
     pub(crate) tokens_completion: Option<u64>,
     /// Cache-read tokens (`usage.input_tokens_details.cached_tokens`).
     pub(crate) tokens_cached: Option<u64>,
+    /// GH #890: cache-write tokens, in whichever spelling arrived.
+    pub(crate) tokens_cache_write: Option<u64>,
     /// The provider's own cost figure, when it reports one.
     pub(crate) cost: Option<f64>,
 }
@@ -508,6 +534,7 @@ fn build_translated(
         tokens_prompt: usage.tokens_prompt,
         tokens_completion: usage.tokens_completion,
         tokens_cached: usage.tokens_cached,
+        tokens_cache_write: usage.tokens_cache_write,
         cost: usage.cost,
         model,
         response_id,
@@ -576,6 +603,71 @@ mod tests {
         let b = build_responses_request(&params(false), "be terse", &[], &[]).unwrap();
         assert_eq!(b["temperature"], 0.3, "the official Responses API takes it");
         assert_eq!(b["max_output_tokens"], 512);
+    }
+
+    // ───── GH #890: the cache wire ─────
+
+    fn cached(mode: &str) -> LlmParams {
+        LlmParams::parse(&json!({"provider":"openai","model":"gpt-5","api_key":"k",
+            "wire_dialect":"responses","cache_mode": mode, "cache_ttl_s": 3600}))
+        .unwrap()
+    }
+
+    /// GH #890: the Responses spelling of the cache-write figure, on both the
+    /// plain and the streamed answer.
+    #[test]
+    fn the_responses_cache_write_figure_is_read() {
+        let usage = json!({"input_tokens": 11, "output_tokens": 3,
+                           "input_tokens_details": {"cached_tokens": 4,
+                                                    "cache_creation_tokens": 6}});
+        let plain = parse_responses_response(&json!({
+            "id": "r1", "model": "gpt-5", "usage": usage,
+            "output": [{"type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hi"}]}]
+        }))
+        .unwrap();
+        assert_eq!(plain.tokens_cache_write, Some(6));
+        assert_eq!(plain.tokens_cached, Some(4));
+        let sse = format!(
+            "data: {}\n\ndata: {}\n\n",
+            json!({"type": "response.output_item.done", "item": {"type": "message",
+                   "role": "assistant", "content": [{"type": "output_text", "text": "hi"}]}}),
+            json!({"type": "response.completed",
+                   "response": {"id": "r1", "model": "gpt-5", "usage": usage}})
+        );
+        let streamed = parse_responses_sse(&sse).unwrap();
+        assert_eq!(streamed.tokens_cache_write, Some(6));
+    }
+
+    /// OR-KX-C1: this wire has no block marks, so `breakpoints` sends exactly
+    /// what `implicit` sends -- the cell's one key -- and no `cache_control`.
+    #[test]
+    fn responses_breakpoints_falls_back_to_implicit() {
+        let turns = [json!({"origin":"user","type":"text","text":"hi"})];
+        let wire = |mode: &str, path: &str| {
+            let p = cached(mode);
+            let mut b = build_responses_request(&p, "be terse", &turns, &[]).unwrap();
+            apply_cache_wire(&mut b, &p, path);
+            b
+        };
+        let implicit = wire("implicit", "/a/brain");
+        let breakpoints = wire("breakpoints", "/a/brain");
+        assert_eq!(
+            serde_json::to_string(&breakpoints).unwrap(),
+            serde_json::to_string(&implicit).unwrap()
+        );
+        assert_eq!(
+            implicit["prompt_cache_key"],
+            crate::llm::translate::prompt_cache_key("/a/brain").as_str()
+        );
+        assert!(!breakpoints.to_string().contains("cache_control"));
+        let off = wire("off", "/a/brain");
+        let plain = build_responses_request(&cached("off"), "be terse", &turns, &[]).unwrap();
+        assert_eq!(
+            serde_json::to_string(&off).unwrap(),
+            serde_json::to_string(&plain).unwrap(),
+            "off sends the request of before"
+        );
     }
 
     /// Regression guard for the R3 escape hatch, green before AND after the

@@ -22,17 +22,18 @@
 //! This file runs both ends in one go:
 //!
 //!   colony A   shipped affinity + shipped talky, one active self-subscription
-//!              -> the brain's `cell.db` holds `identity.soul` and
-//!                 `instructions.reply`
+//!              -> the talky holds `identity.soul` and `instructions.reply`
+//!                 (since GH #889 in its curator's ledger, which hands them to
+//!                 the brain with the next call)
 //!   export     `in_export` into the affinity hive; since GH #555 its own store
 //!              writes the seed set into the fence it declares, and the hive
 //!              says `export_done` when it is whole
 //!   colony B   the same two templates with EMPTY affinity seeds — anonymous,
 //!              exactly as a freshly grown one is — fed the nine parts on
 //!              `in_import`
-//!   proof      B's brain holds the same two slot paths with BYTE-IDENTICAL
-//!              values, and a turn taken in B carries both of them into the
-//!              system prompt the provider is handed.
+//!   proof      a turn taken in B carries both of them into the system prompt
+//!              the provider is handed, and B's brain holds the same two slot
+//!              paths with BYTE-IDENTICAL values once that call delivered them.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -235,6 +236,12 @@ fn build_tree(
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // GH #889: the curator in front of the brain carries an `llm` cell of its
+    // own; it is never expected to talk here, and it may only ever reach the mock.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
     // GH #555 — the one thing an instance says about files: the fence this
     // store writes its own seed set inside.
     let fence_s = fence.to_str().expect("a utf-8 fence").to_string();
@@ -373,6 +380,67 @@ async fn wait_for_slots(td: &tempfile::TempDir, want: &[&str]) -> Vec<(String, S
     slots
 }
 
+/// The pack-owned slots of the talky curator's ledger, as `(path, body)`.
+///
+/// GH #889: an accepted pack no longer lands in the brain's `cell.db` on
+/// arrival. `./curator` holds it in its ledger — table `slots`, owner `pack`
+/// (`curator@1.0.0`) — and hands it to the brain as a `$replace` root with the
+/// NEXT call; the body is read from `blocks` by the slot's hash.
+fn ledger_slots(td: &tempfile::TempDir) -> Vec<(String, String)> {
+    let p = td.path().join("main/talky/curator/ledger/cell.db");
+    if !p.exists() {
+        return Vec::new();
+    }
+    let Ok(conn) = rusqlite::Connection::open(&p) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.path, COALESCE(b.body, '') FROM slots s \
+         LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'pack' ORDER BY s.path",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
+    match rows {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// A ledger path belongs to a family when it IS the family or lies under it.
+/// The ledger may hold a family whole (`identity`) or leaf by leaf
+/// (`identity.soul`); what is pinned is the family and its text.
+fn in_family(path: &str, family: &str) -> bool {
+    path == family
+        || path
+            .strip_prefix(family)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
+}
+
+/// Poll the talky curator's ledger until both families of the record stand in
+/// it carrying the record's own text. 30s is the failure marker.
+async fn await_ledger(td: &tempfile::TempDir, soul: &str, reply: &str) {
+    let mut slots = Vec::new();
+    for _ in 0..1500 {
+        slots = ledger_slots(td);
+        let holds = |family: &str, text: &str| {
+            slots
+                .iter()
+                .any(|(p, v)| in_family(p, family) && v.contains(text))
+        };
+        if holds("identity", soul) && holds("instructions", reply) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "the pack never stood in the talky curator's ledger (`slots`, owner \
+         `pack`) with the record's soul and reply; it holds {:?}",
+        names(&slots)
+    );
+}
+
 fn slot(slots: &[(String, String)], path: &str) -> String {
     slots
         .iter()
@@ -453,25 +521,16 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
         hop_of(&receipt, "error_code"),
         "",
         "the pack the shipped record rendered must be ACCEPTED by the door — a \
-         family outside `PACK_SLOTS` refuses the whole pack: {:?}",
+         family outside the closed list refuses the whole pack: {:?}",
         receipt.headers.hop
     );
 
-    let a_slots = wait_for_slots(&a_td, &["identity.soul", "instructions.reply"]).await;
-    assert_eq!(
-        slot(&a_slots, "identity.soul"),
-        want_soul,
-        "the agent's soul must stand in its brain's own cell.db under the slot \
-         path the record names. Slots: {:?}",
-        names(&a_slots)
-    );
-    assert_eq!(
-        slot(&a_slots, "instructions.reply"),
-        want_reply,
-        "and its reply instructions beside it — the half GH #458 had closed the \
-         lane to. Slots: {:?}",
-        names(&a_slots)
-    );
+    // GH #889: no call follows the pack in colony A, so the receiver is the
+    // talky curator's ledger — the agent's soul and, beside it, its reply
+    // instructions, the half GH #458 had closed the lane to. The byte
+    // comparison against the record moved to colony B's brain, after the call
+    // that delivers the two slots.
+    await_ledger(&a_td, &soul, &reply).await;
 
     // ── the export: one word, one walk, nine parts ──────────────────────────
     let mut hop = Map::new();
@@ -608,21 +667,8 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
         "the first pack after an import must be ACCEPTED: {:?}",
         receipt.headers.hop
     );
-    let b_slots = wait_for_slots(&b_td, &["identity.soul", "instructions.reply"]).await;
-    assert_eq!(
-        slot(&b_slots, "identity.soul"),
-        want_soul,
-        "BYTE-IDENTICAL, or the transfer re-rendered the agent instead of \
-         moving it. Slots: {:?}",
-        names(&b_slots)
-    );
-    assert_eq!(
-        slot(&b_slots, "instructions.reply"),
-        want_reply,
-        "BYTE-IDENTICAL, and this is the half no lane carried at all before \
-         GH #488. Slots: {:?}",
-        names(&b_slots)
-    );
+    // GH #889: the pack waits in the curator's ledger until the turn below.
+    await_ledger(&b_td, &soul, &reply).await;
 
     // ── the point of all of it: a turn answers as the agent ─────────────────
     let mut ctx = Map::new();
@@ -680,6 +726,24 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
     assert!(
         prompt.contains(&reply),
         "and the imported reply instructions. Prompt: {prompt:?}"
+    );
+
+    // GH #889: read after the turn instead of right after the ack — the call
+    // that carried the pack is what writes the brain's own copy now.
+    let b_slots = wait_for_slots(&b_td, &["identity.soul", "instructions.reply"]).await;
+    assert_eq!(
+        slot(&b_slots, "identity.soul"),
+        want_soul,
+        "BYTE-IDENTICAL, or the transfer re-rendered the agent instead of \
+         moving it. Slots: {:?}",
+        names(&b_slots)
+    );
+    assert_eq!(
+        slot(&b_slots, "instructions.reply"),
+        want_reply,
+        "BYTE-IDENTICAL, and this is the half no lane carried at all before \
+         GH #488. Slots: {:?}",
+        names(&b_slots)
     );
 
     b.shutdown().await;

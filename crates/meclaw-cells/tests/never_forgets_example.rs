@@ -27,8 +27,9 @@
 //!      is asked twice in one conversation can answer about the first time.
 //!
 //! Free of a real provider by construction: the ingest leg is `code` and
-//! `store` cells end to end, and the only `llm` cell in the tree talks to the
-//! mock OpenAI wire. The file spends nothing.
+//! `store` cells end to end, and both `llm` cells in the tree -- the brain and,
+//! since GH #889, the summarizer of the talky's curator -- talk to the mock
+//! OpenAI wire. The file spends nothing.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -81,17 +82,24 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// The collector's `menu-clock` was the thirteenth from `talky` between
 /// collector@3.3.0 (GH #464) and collector@4.0.0 (GH #553), which asks the menu
 /// on the mutation receipt instead. MEASURED.
-const CELLS_AFTER_GROW: usize = 17;
+///
+/// GH #889 put the curator between collector and brain: six more cells from
+/// `talky` (`intake`, `policy`, `writer`, `ledger`, `summarizer`, `clock` --
+/// the cells of `curator@1.0.0`, GH #888), so eighteen from `talky` and
+/// twenty-three in all. Derived from the curator's declared cells, to be
+/// confirmed by the first run after its merge.
+const CELLS_AFTER_GROW: usize = 23;
 
-/// GH #277: `talky` REFERENCES its three sub-units instead of carrying copies
-/// of them, so the library the colony scans has to hold them next to it. They
-/// are NOT `grow.json` entries -- the mutation still names `talky` alone, and
-/// the registry resolves the rest. The `summarizer` left the set with
-/// `talky@4.3.0` (GH #447).
-const REFERENCED_SUB_UNITS: [(&str, &str); 3] = [
+/// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
+/// them, so the library the colony scans has to hold them next to it. They are
+/// NOT `grow.json` entries -- the mutation still names `talky` alone, and the
+/// registry resolves the rest. The `summarizer` left the set with
+/// `talky@4.3.0` (GH #447); the `curator` joined it with GH #889.
+const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
     ("collector", "templates/collector"),
     ("session-keeper", "templates/session-keeper"),
     ("dispatcher", "templates/dispatcher"),
+    ("curator", "templates/curator"),
 ];
 
 /// The three months of the story live in `past.jsonl`, next to the seed -- the
@@ -259,63 +267,13 @@ fn grow_json_only_names_templates_that_ship() {
     );
 }
 
-/// GH #220: the per-turn lane is named IN the declaration, not by forking the
-/// library -- and since GH #298 it is named there rather than switched on there,
-/// because the library ships it on.
-///
-/// `turn_write` is what makes the memory fresh during a session instead of at
-/// the nightly close, and the example used to set it by copying the whole
-/// template library and editing one `config.json`. Since GH #140
-/// `override_params` on a subtree template is addressed by the cell's path
-/// inside it, so one key on the `talky` node does the same thing where the
-/// reader can see it.
-///
-/// This is pinned rather than left to the freshness assertion alone because of
-/// how GH #203 failed: a documented setup step that writes a key nothing reads
-/// brings the example up with NO per-turn writes and says nothing about it. The
-/// path `collector/assemble` is the one that must survive here -- `collector`
-/// alone is the sub-unit's hive, and a hive reads `graph`/`ports`/
-/// `required_drains`/`contract` and would swallow this key in silence (GH #212).
-#[test]
-fn grow_json_sets_the_per_turn_lane_at_instantiation() {
-    let grow = read_json(&example_path("grow.json"));
-    let talky = grow["diff"]["add_nodes"]
-        .as_array()
-        .expect("add_nodes")
-        .iter()
-        .find(|n| n["template"] == json!("talky"))
-        .expect("the talky node");
-    assert_eq!(
-        talky["override_params"]["collector/assemble"]["turn_write"],
-        json!("1"),
-        "the per-turn lane left the declaration -- either it moved somewhere a \
-         reader can see, or this example is back to a freshness hole of up to a day"
-    );
-
-    // Since GH #298 the library ships the lane ON, so the override no longer
-    // MAKES the difference -- it declares, where the reader reads, which knob
-    // this example depends on. What it must never do is disagree with the
-    // shipped value: a `"0"` here would switch the example's own subject off.
-    let shipped = read_json(&repo_path("templates/collector/assemble/config.json"));
-    assert_eq!(
-        shipped["params"]["turn_write"],
-        json!("1"),
-        "the library stopped shipping the per-turn lane on -- then this example \
-         depends on its override again and the README paragraph must say so"
-    );
-    assert_eq!(
-        talky["override_params"]["collector/assemble"]["turn_write"],
-        shipped["params"]["turn_write"],
-        "the declaration and the library disagree about the example's own lane"
-    );
-}
-
 /// GH #298, ruling Q11: `memory-drain` left the live stack.
 ///
 /// The decomposer between the talky and the memory is gone from this
 /// declaration -- not bypassed, not renamed: no edge of the file names
 /// `./drain` any more, and the per-turn route speaks the episode port itself.
-/// Since GH #298 the collector emits ONE turn per message on `turn_write`, with
+/// Since GH #298 ONE turn per message leaves on `turn_write` (written by the
+/// curator's writer since GH #889, by the collector before), with
 /// `turn_id`/`turn_index`/`happened_at` on the hop, which is exactly the shape
 /// the port reads -- so a decomposer in between has nothing left to decompose.
 ///
@@ -396,15 +354,23 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     patch(&root.join("templates/talky/brain/config.json"), |v| {
         v["params"]["base_url"] = json!(base_url)
     });
-    // The per-turn lane is NOT patched here any more (GH #220). It is a
-    // collector param, and since GH #140 `override_params` reaches a subtree
-    // template's sub-cells by path, so `grow.json` carries
-    // `{"collector/assemble": {"turn_write": "1"}}` on the talky node -- the
-    // declaration the reader POSTs is the whole setting, and this test applies
-    // that file verbatim. `grow_json_sets_the_per_turn_lane_at_instantiation`
-    // pins the key; the freshness assertion at the end of the main test is what
-    // proves it arrived. `memory_call_tier` needs no setting: `"1"` is the
-    // shipped default.
+    // GH #889: the talky's curator carries the second `llm` cell of the tree
+    // (the summarizer of its rebuilds). It is pointed at the same mock, with a
+    // model of its own, so nothing here can reach a paid endpoint; nothing in
+    // this run triggers a rebuild, so it is never asked -- the two-request
+    // count below would say so if it were.
+    patch(
+        &root.join("templates/curator/summarizer/config.json"),
+        |v| {
+            v["params"]["base_url"] = json!(base_url);
+            v["params"]["model"] = json!("gpt-4o-mock");
+        },
+    );
+    // The per-turn lane is NOT patched here (GH #220), and since GH #889 it is
+    // no collector param any more: the curator's writer carries `turn_write`
+    // and ships it `"1"`. The freshness assertion at the end of the main test is
+    // what proves the lane is on. `memory_call_tier` needs no setting: `"1"` is
+    // the shipped default.
     //
     // The library copy above stays, and not for this: WALKTHROUGH step 2 writes
     // the brain's `system.jsonl` INTO it. A seed is a file in the template's
@@ -684,6 +650,9 @@ async fn a_january_sentence_is_still_there_in_march_with_its_date() {
         "/door",
         "/talky/session-keeper/stamp",
         "/talky/collector/assemble",
+        // GH #889: the curator between collector and brain, and the writer
+        // that turns the question below into an episode.
+        "/talky/curator/writer",
         "/talky/dispatcher",
         "/talky/splitter",
         "/talky/brain",

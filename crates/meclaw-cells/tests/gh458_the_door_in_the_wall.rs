@@ -9,20 +9,20 @@
 //! `in_pack` is that entrance. Every claim below is measured on the SHIPPED
 //! tree in a running colony, and every one of them is positive:
 //!
-//! 1. an accepted slot is READ BACK out of the brain's own `cell.db` — the
-//!    durable state an `llm` cell upserts (the honest signal
-//!    `gh258_the_push_lane_reaches_the_prompt.rs` established), never an empty
-//!    dead-letter queue;
-//! 2. the `pack` message the collector emits carries NO `messages[]`, so the
-//!    brain upserts and returns without calling a provider;
+//! 1. an accepted slot is READ BACK out of the agent's own durable state —
+//!    since GH #889 the ledger of the composite's `./curator` (`slots`, owner
+//!    `pack`), which holds the pack and hands it to the brain as a `$replace`
+//!    root with the next call — never an empty dead-letter queue;
+//! 2. the pack costs the agent a write and not an inference: the provider is
+//!    never called on this lane;
 //! 3. a slot outside the closed list refuses the WHOLE pack — asserted on the
-//!    brain's state, not only on the receipt, because a test that reads the ack
-//!    alone would pass over a half write;
+//!    ledger, not only on the receipt, because a test that reads the ack alone
+//!    would pass over a half write;
 //! 4. an empty pack is a refusal, not a no-op;
 //! 5. the receipt answers on success too;
 //! 6. the single-slot body shape is the same door;
 //! 7. the owner comes off the envelope and a body cannot move it;
-//! 8. a `cogny` tells BOTH of its brains and still answers exactly once.
+//! 8. a `cogny` tells its curator who it is and still answers exactly once.
 //!
 //! Free of a real provider by construction: the brain talks to a mock OpenAI
 //! wire, and on this lane it is expected never to talk at all.
@@ -217,19 +217,25 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, src: &std::path::Path, ba
             |v| v["params"]["idle_ms"] = json!(0),
         );
     }
-    for brain in brains_of(composite) {
-        patch(
-            root,
-            &format!("main/{composite}/{brain}/config.json"),
-            |v| {
-                v["params"]["base_url"] = json!(base_url);
-                v["params"]["model"] = json!("gpt-4o-mock");
-            },
-        );
+    for cell in llm_cells_of(composite) {
+        patch(root, &format!("main/{composite}/{cell}/config.json"), |v| {
+            v["params"]["base_url"] = json!(base_url);
+            v["params"]["model"] = json!("gpt-4o-mock");
+        });
     }
 }
 
-/// Which `llm` cells the composite carries. Every shipped one has exactly one
+/// Every `llm` cell the composite carries: its brain, and since GH #889 the
+/// summarizer of the `./curator` in front of it. Neither is expected to talk on
+/// this lane; both point at the mock so the tree is provider-free by
+/// construction and not by luck.
+fn llm_cells_of(composite: &str) -> Vec<String> {
+    let mut cells: Vec<String> = brains_of(composite).iter().map(|b| b.to_string()).collect();
+    cells.push("curator/summarizer".to_string());
+    cells
+}
+
+/// Which brains the composite carries. Every shipped one has exactly one
 /// since `cogny@4.4.0` ([#528](https://github.com/mmeyerlein/meclaw/issues/528))
 /// took the core's lookup lane out; the indirection stays because the door is a
 /// FAN-OUT by construction and a composite that grows a second brain must not
@@ -305,13 +311,6 @@ fn hop_of(m: &Message, key: &str) -> String {
         .to_string()
 }
 
-fn body_of(m: &Message) -> &Value {
-    match &m.body {
-        Body::Inline(v) => v,
-        Body::Blob(_) => panic!("inline expected"),
-    }
-}
-
 /// Failure-marker timeout: 30s is the convention in this tree.
 async fn recv_ack(rx: &mut mpsc::Receiver<Message>) -> Message {
     tokio::time::timeout(Duration::from_secs(30), rx.recv())
@@ -321,20 +320,31 @@ async fn recv_ack(rx: &mut mpsc::Receiver<Message>) -> Message {
         .expect("the pack lane answers unconditionally — no receipt arrived at all")
 }
 
-/// The brain's OWN durable state: the `system` table of its `cell.db`, as
-/// `(slot_path, value)` pairs. This is the signal
-/// `gh258_the_push_lane_reaches_the_prompt.rs` established as honest — what an
-/// `llm` cell upserted and what it will concatenate into its next prompt.
-fn brain_slots(td: &tempfile::TempDir, composite: &str, brain: &str) -> Vec<(String, String)> {
-    let p = td.path().join(format!("main/{composite}/{brain}/cell.db"));
+/// The agent's OWN durable state for this lane: the pack-owned slots of its
+/// curator's ledger, as `(path, body)` pairs.
+///
+/// GH #889: the pack no longer lands in the brain's `cell.db` on arrival.
+/// `./curator` holds it in its ledger — table `slots`, owner `pack`
+/// (`curator@1.0.0`) — and hands it to the brain as a `$replace` root with the
+/// NEXT call; the body is read from `blocks` by the slot's hash. This is what
+/// the next system prompt is built from, which is what made the brain's
+/// `system` table the honest signal before
+/// (`gh258_the_push_lane_reaches_the_prompt.rs`).
+fn ledger_slots(td: &tempfile::TempDir, composite: &str) -> Vec<(String, String)> {
+    let p = td
+        .path()
+        .join(format!("main/{composite}/curator/ledger/cell.db"));
     if !p.exists() {
         return Vec::new();
     }
     let Ok(conn) = rusqlite::Connection::open(&p) else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare("SELECT slot_path, value FROM system ORDER BY slot_path")
-    else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.path, COALESCE(b.body, '') FROM slots s \
+         LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'pack' ORDER BY s.path",
+    ) else {
         return Vec::new();
     };
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
@@ -344,26 +354,46 @@ fn brain_slots(td: &tempfile::TempDir, composite: &str, brain: &str) -> Vec<(Str
     }
 }
 
-/// Poll the brain's `cell.db` until a slot path appears. The write is the
-/// LAST thing that happens on this lane and it happens off the receipt's
+/// A ledger path belongs to a family when it IS the family or lies under it.
+/// The ledger may hold a family whole (`identity`) or leaf by leaf
+/// (`identity.text`); what is pinned is the family, not the granularity.
+fn in_family(path: &str, family: &str) -> bool {
+    path == family
+        || path
+            .strip_prefix(family)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
+}
+
+/// Every body the ledger holds under one family, joined.
+fn family_body(slots: &[(String, String)], family: &str) -> String {
+    slots
+        .iter()
+        .filter(|(p, _)| in_family(p, family))
+        .map(|(_, v)| v.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Poll the curator's ledger until a slot of `family` appears. The write is the
+/// LAST thing that happens on this lane and it may land off the receipt's
 /// thread, so a positive read needs a window; 30s is the failure marker, the
 /// 20ms step only decides how fast a green test finishes.
 async fn await_slot(
     td: &tempfile::TempDir,
     composite: &str,
-    brain: &str,
-    slot_path: &str,
+    family: &str,
 ) -> Vec<(String, String)> {
     for _ in 0..1500 {
-        let slots = brain_slots(td, composite, brain);
-        if slots.iter().any(|(p, _)| p == slot_path) {
+        let slots = ledger_slots(td, composite);
+        if slots.iter().any(|(p, _)| in_family(p, family)) {
             return slots;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!(
-        "`{slot_path}` never reached {composite}/{brain}'s own cell.db; it holds {:?}",
-        brain_slots(td, composite, brain)
+        "`{family}` never reached {composite}/curator's ledger (`slots`, owner `pack`); \
+         it holds {:?}",
+        ledger_slots(td, composite)
     );
 }
 
@@ -389,7 +419,8 @@ async fn await_dead_letter(td: &tempfile::TempDir) -> String {
 // ═══════════════════════════════════════════════════════════════════════ pins
 
 /// Claim 1. A whitelisted slot travels the door edges and lands as durable
-/// state of the agent's OWN brain.
+/// state of the agent's OWN brain — since GH #889 in its curator's ledger,
+/// from which the brain's next call is built.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_whitelisted_slot_lands_in_the_brains_own_prompt() {
     let Some(src) = shipped("talky") else {
@@ -413,30 +444,26 @@ async fn a_whitelisted_slot_lands_in_the_brains_own_prompt() {
         ack.headers.hop
     );
 
-    let slots = await_slot(&td, "talky", "brain", "identity").await;
-    let identity = slots
-        .iter()
-        .find(|(p, _)| p == "identity")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
+    let slots = await_slot(&td, "talky", "identity").await;
+    let identity = family_body(&slots, "identity");
     assert!(
         identity.contains("You are Ada, the ledger keeper."),
         "the slot must land with the sender's own text, because that text is \
-         what the brain concatenates into its next system prompt; the row \
-         holds {identity:?} and the table holds {slots:?}"
+         what the curator hands the brain for its next system prompt; the \
+         family holds {identity:?} and the ledger holds {slots:?}"
     );
 
     h.shutdown().await;
 }
 
-/// Claim 2. The `pack` message the collector emits carries no `messages[]`, so
-/// the brain upserts and returns: a changed identity costs the agent a write
-/// and never an inference.
+/// Claim 2. A changed identity costs the agent a write and never an inference.
 ///
-/// Measured twice over. The SHAPE is read off the message a bare collector
-/// emits on its `pack` route — the one place it is observable, because the
-/// agent composites are sealed and no edge may name their `./brain`. The
-/// CONSEQUENCE is read off the sealed tree: the provider was never called.
+/// Until GH #889 this was measured twice over: the SHAPE off the `pack` message
+/// a bare collector emitted (no `messages[]`, so the brain upserted and
+/// returned), and the CONSEQUENCE off the sealed tree. The shape half left with
+/// the collector's `pack` route — `./curator` holds the pack and sends it to
+/// the brain only with the next call (`curator@1.0.0`, route `brain`) — so the
+/// consequence is the claim: the provider was never called.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_pack_costs_the_agent_a_write_and_not_an_inference() {
     let Some(src) = shipped("talky") else {
@@ -453,10 +480,10 @@ async fn the_pack_costs_the_agent_a_write_and_not_an_inference() {
     .await;
     let ack = recv_ack(&mut ports.ack).await;
     assert_eq!(hop_of(&ack, "error_code"), "", "{:?}", ack.headers.hop);
-    await_slot(&td, "talky", "brain", "persona").await;
+    await_slot(&td, "talky", "persona").await;
 
-    // The write has landed, so the brain has seen everything this lane sends
-    // it. A provider call would already have been recorded.
+    // The write has landed, so the composite has done everything this lane
+    // asks of it. A provider call would already have been recorded.
     let calls = mock.recorded_requests().await;
     assert!(
         calls.is_empty(),
@@ -477,67 +504,9 @@ async fn the_pack_costs_the_agent_a_write_and_not_an_inference() {
     h.shutdown().await;
 }
 
-/// Claim 2, the shape half — asserted where it is observable: a bare
-/// `collector`, wired by this file, whose `pack` route is drained into a sink.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_emitted_pack_carries_slots_and_no_turn() {
-    let Some(src) = shipped("collector") else {
-        return;
-    };
-    let td = tempfile::TempDir::new().unwrap();
-    let root = td.path();
-    std::fs::write(root.join(".env"), "").unwrap();
-    write(
-        root,
-        "main/config.json",
-        &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-            {"from": "./sender", "to": "./collector",
-             "condition": "has(hop.route) && hop.route == 'pack_out'",
-             "modifier": {"set_hop": {"route": "'in_pack'"}}},
-            {"from": "./collector", "to": "/sink",
-             "condition": "has(hop.route) && hop.route == 'pack'"},
-            {"from": "./collector", "to": "/park",
-             "condition": "has(hop.route) && hop.route != 'pack'"}
-        ]}}}),
-    );
-    write(root, "main/sender/config.json", &sender_config());
-    copy_cells(&src, &root.join("main/collector"));
-    let (h, mut ports) = boot(&td).await;
-
-    h.send(pack(
-        &json!({"system": {"handover": {"text": "the night shift note"}}}),
-    ))
-    .await;
-
-    let emitted = tokio::time::timeout(Duration::from_secs(30), ports.ack.recv())
-        .await
-        .ok()
-        .flatten()
-        .expect("an accepted pack must leave the collector on the `pack` route");
-    let body = body_of(&emitted);
-    assert_eq!(
-        body["system"]["handover"]["text"].as_str(),
-        Some("the night shift note"),
-        "the pack carries the slots it was given: {body}"
-    );
-    assert!(
-        body.get("messages").is_none(),
-        "the pack must carry NO messages[] — an `llm` cell handed a turn beside \
-         the slots calls the provider instead of upserting and returning: {body}"
-    );
-    assert_eq!(
-        hop_of(&emitted, "route"),
-        "pack",
-        "and it travels its own route, not the turn-bounded `brain` one: {:?}",
-        emitted.headers.hop
-    );
-
-    h.shutdown().await;
-}
-
 /// Claim 3. One unknown slot refuses the WHOLE pack — and the proof is the
-/// brain's state, not the receipt: a half write would ack exactly the same way
-/// if the ack were all this test read.
+/// agent's state (since GH #889 its curator's ledger), not the receipt: a half
+/// write would ack exactly the same way if the ack were all this test read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slot_outside_the_list_refuses_the_whole_pack() {
     let Some(src) = shipped("talky") else {
@@ -556,7 +525,7 @@ async fn a_slot_outside_the_list_refuses_the_whole_pack() {
     .await;
     let first = recv_ack(&mut ports.ack).await;
     assert_eq!(hop_of(&first, "error_code"), "", "{:?}", first.headers.hop);
-    await_slot(&td, "talky", "brain", "identity").await;
+    await_slot(&td, "talky", "identity").await;
 
     // Now the mixed pack: one slot the list knows, one it does not.
     h.send(pack(&json!({"system": {
@@ -587,20 +556,16 @@ async fn a_slot_outside_the_list_refuses_the_whole_pack() {
 
     // All or nothing. The identity slot still carries the FIRST text — the
     // understood half of a refused pack must not have been written.
-    let slots = brain_slots(&td, "talky", "brain");
-    let identity = slots
-        .iter()
-        .find(|(p, _)| p == "identity")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
+    let slots = ledger_slots(&td, "talky");
+    let identity = family_body(&slots, "identity");
     assert!(
         identity.contains("the first identity"),
         "the refused pack wrote its understood half anyway: `identity` holds \
-         {identity:?}, and the whole table is {slots:?}"
+         {identity:?}, and the whole ledger is {slots:?}"
     );
     assert!(
-        !slots.iter().any(|(p, _)| p.starts_with("channel")),
-        "and the unknown slot reached the brain: {slots:?}"
+        !slots.iter().any(|(p, _)| in_family(p, "channel")),
+        "and the unknown slot reached the curator's ledger: {slots:?}"
     );
 
     h.shutdown().await;
@@ -701,7 +666,7 @@ async fn the_receipt_answers_on_success_too() {
 /// away. `meclaw-core`'s `validate_ubf_body` requires a body to carry
 /// `messages` OR `system`, so `{"slot": …, "content": …}` on its own is not a
 /// UBF body at all: it is dead-lettered as `invalid_ubf_body` at the delivery
-/// boundary and never reaches the collector. The single slot is a CONVENIENCE
+/// boundary and never reaches the pack lane. The single slot is a CONVENIENCE
 /// over a pack, not a body shape of its own — it is merged over whatever
 /// `system` carried, and an empty tree is what "nothing to merge over" looks
 /// like. The test below this one pins that rule from the other side.
@@ -731,12 +696,8 @@ async fn the_single_slot_form_is_the_same_door() {
         ack.headers.hop
     );
 
-    let slots = await_slot(&td, "talky", "brain", "persona").await;
-    let persona = slots
-        .iter()
-        .find(|(p, _)| p == "persona")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
+    let slots = await_slot(&td, "talky", "persona").await;
+    let persona = family_body(&slots, "persona");
     assert!(
         persona.contains("terse, never chatty"),
         "the single-slot form lands under `system.persona` like the tree form \
@@ -780,16 +741,17 @@ async fn the_owner_comes_off_the_envelope_and_not_out_of_the_body() {
     h.shutdown().await;
 }
 
-/// Claim 8. The pack reaches the core's brain and answers ONCE, so a caller
-/// counts packs and not cores.
+/// Claim 8. The pack reaches the core and answers ONCE, so a caller counts
+/// packs and not cores.
 ///
 /// Until `cogny@4.4.0` this claim had a second half: the core was two brains and
 /// one agent, the pack reached BOTH — a core whose thinking lane knew who it was
 /// while its lookup lane did not would answer as two different people — and one
 /// receipt still came back, because the collector answers before the fan-out.
 /// The lookup lane is gone ([#528](https://github.com/mmeyerlein/meclaw/issues/528))
-/// and the receipt half is the half that survives it: the ack is emitted where
-/// it always was, and the count is what says so.
+/// and the receipt half is the half that survives it: the count is what says
+/// so. Since GH #889 the ack comes from the core's `./curator`, which holds
+/// the pack for its one brain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_core_tells_its_brain_who_it_is_and_answers_once() {
     let Some(src) = shipped("cogny") else {
@@ -808,21 +770,16 @@ async fn the_core_tells_its_brain_who_it_is_and_answers_once() {
     let ack = recv_ack(&mut ports.ack).await;
     assert_eq!(hop_of(&ack, "error_code"), "", "{:?}", ack.headers.hop);
 
-    for brain in brains_of("cogny") {
-        let slots = await_slot(&td, "cogny", brain, "identity").await;
-        let identity = slots
-            .iter()
-            .find(|(p, _)| p == "identity")
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
-        assert!(
-            identity.contains("You are Ada, one core."),
-            "{brain} must carry the identity the pack named; it holds {slots:?}"
-        );
-    }
+    let slots = await_slot(&td, "cogny", "identity").await;
+    let identity = family_body(&slots, "identity");
+    assert!(
+        identity.contains("You are Ada, one core."),
+        "the core's curator must hold the identity the pack named; its ledger \
+         holds {slots:?}"
+    );
 
-    // ONE receipt. The collector answers BEFORE any fan-out, so a composite
-    // with two brains would still not produce two acks.
+    // ONE receipt. The curator answers once per pack (GH #889 moved the receipt
+    // from the collector to it), never once per slot or per brain.
     let second = tokio::time::timeout(Duration::from_secs(2), ports.ack.recv()).await;
     assert!(
         second.is_err(),

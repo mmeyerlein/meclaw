@@ -301,7 +301,8 @@ async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandl
         "error",
         "write",
         "turn_write",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "build",
         "close_report",
         "export_done",
@@ -536,7 +537,7 @@ fn member_manifest(export_dir: Option<&std::path::Path>) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.10.5",
+            "add_nodes": [{"name": MEMBER, "template": "member@2.0.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }

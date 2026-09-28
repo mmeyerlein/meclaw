@@ -22,4 +22,7 @@ pub mod wire;
 
 pub use cell::LlmCell;
 pub use factory::LlmCellFactory;
+/// GH #890: the hop keys the cell writes, read by the template sweep
+/// `gh890_every_llm_cell_declares_what_output_writes`.
+pub use output::HOP_KEYS;
 pub use params::{AuthMode, LlmParams, WireDialect};

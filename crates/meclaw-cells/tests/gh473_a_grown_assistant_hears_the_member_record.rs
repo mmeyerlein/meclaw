@@ -25,9 +25,11 @@
 //!   (b) THE DOOR CARRIES A RECORD. A second colony boots `affinity` beside a
 //!       grown assistant and wires them with the edge set the SAME render
 //!       produced — read out of the manifest, not written down here — and an
-//!       affinity push crosses it: it lands as a durable `system.identity` row
-//!       in the assistant's own `cell.db` AND it is readable in the system
-//!       prompt the assistant's next turn sends to the provider.
+//!       affinity push crosses it: it lands as a durable `identity` slot of the
+//!       assistant — since GH #889 in the ledger of its talky's `./curator`,
+//!       which hands it to the brain with the next call — AND it is readable in
+//!       the system prompt the assistant's next turn sends to the provider,
+//!       after which the brain's own `cell.db` holds the delivered copy.
 //!
 //! BOTH SIDES ARE POSITIVE SIGNALS
 //! ===============================
@@ -353,11 +355,12 @@ fn identity_door() -> Vec<Value> {
         .collect();
     assert_eq!(
         door.len(),
-        4,
-        "`subscribe` must add exactly the four v-lanes of the door — one push \
+        6,
+        "`subscribe` must add exactly the six v-lanes of the door — one push \
          per brain rim and one receipt drain per rim, because a lane and its \
-         receipt are ONE decision (GH #458) and since GH #561 the pack ends at \
-         the rims rather than at the generation's own path: {door:?}"
+         receipt are ONE decision (GH #458), since GH #561 the pack ends at \
+         the rims rather than at the generation's own path, and since GH #877 \
+         at all three of them: {door:?}"
     );
     door
 }
@@ -1092,22 +1095,64 @@ async fn one_turn(h: &ColonyHandle, sink: &mut mpsc::Receiver<Message>, text: &s
     recv_route(sink, "answer").await
 }
 
-/// Poll the brain's own `cell.db` until the pushed slot appears. The write is
-/// the LAST thing that happens on this lane and it happens off the receipt's
-/// thread; 30s is the failure marker, the 20ms step only decides how fast a
-/// green run finishes.
+/// The pack-owned slots of the generation's talky curator, as `(path, body)`.
+///
+/// GH #889: the pack no longer lands in the brain's `cell.db` on arrival.
+/// `./curator` holds it in its ledger — table `slots`, owner `pack`
+/// (`curator@1.0.0`) — and hands it to the brain as a `$replace` root with the
+/// NEXT call; the body is read from `blocks` by the slot's hash.
+fn ledger_slots(td: &tempfile::TempDir, rel: &str) -> Vec<(String, String)> {
+    let p = td.path().join(rel).join("talky/curator/ledger/cell.db");
+    if !p.exists() {
+        return Vec::new();
+    }
+    let Ok(conn) = rusqlite::Connection::open(&p) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.path, COALESCE(b.body, '') FROM slots s \
+         LEFT JOIN blocks b ON b.hash = s.hash \
+         WHERE s.owner = 'pack' ORDER BY s.path",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
+    match rows {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// A ledger path belongs to the `identity` family when it IS the family or
+/// lies under it: the ledger may hold it whole or leaf by leaf.
+fn is_identity(path: &str) -> bool {
+    path == "identity"
+        || path
+            .strip_prefix("identity")
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
+}
+
+/// Poll the talky curator's ledger until the pushed identity appears. The
+/// write may land off the receipt's thread; 30s is the failure marker, the 20ms
+/// step only decides how fast a green run finishes. GH #889: this polled the
+/// brain's `cell.db` until the pack moved to the curator.
 async fn await_identity(td: &tempfile::TempDir, rel: &str) -> String {
     for _ in 0..1500 {
-        let slots = brain_slots(td, rel);
-        if let Some((_, v)) = slots.iter().find(|(p, _)| p == "identity") {
-            return v.clone();
+        let slots = ledger_slots(td, rel);
+        if slots.iter().any(|(p, _)| is_identity(p)) {
+            return slots
+                .iter()
+                .filter(|(p, _)| is_identity(p))
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!(
-        "the pushed identity never reached the generation's own cell.db; it holds \
-         {:?}",
-        brain_slots(td, rel)
+        "the pushed identity never reached the generation's curator ledger \
+         (`slots`, owner `pack`); it holds {:?}",
+        ledger_slots(td, rel)
     );
 }
 
@@ -1139,7 +1184,9 @@ fn shipped_pair() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
 ///    ticks, the door restamps the push as `in_pack` and the receipt comes back
 ///    on the drain the same render provided.
 /// 3. AFTER. A second real turn, a second real request — and the disclosed
-///    material is readable in the system prompt the model was sent.
+///    material is readable in the system prompt the model was sent. Since
+///    GH #889 the pack waits in the curator's ledger until this call, so the
+///    brain's own `cell.db` holds the delivered copy only from here on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_grown_assistant_hears_the_member_record() {
     let Some((affinity, agent)) = shipped_pair() else {
@@ -1204,9 +1251,22 @@ async fn a_grown_assistant_hears_the_member_record() {
     let after = composed_system_prompt(&mock, 1).await;
     assert!(
         after.contains(DISCLOSED),
-        "the pushed identity must reach the PROMPT, not merely the cell.db — a \
+        "the pushed identity must reach the PROMPT, not merely the ledger — a \
          row nobody concatenates is an agent that still answers as a generic \
          model: {after}"
+    );
+    // GH #889: the call that carried the pack left the delivered copy in the
+    // brain's own state, which is what the prompt above was composed from.
+    let delivered = brain_slots(&td, &rel)
+        .into_iter()
+        .find(|(p, _)| is_identity(p))
+        .map(|(_, v)| v)
+        .unwrap_or_default();
+    assert!(
+        delivered.contains(DISCLOSED),
+        "the brain's own cell.db must hold the delivered identity after the call \
+         that carried it; it holds {:?}",
+        brain_slots(&td, &rel)
     );
 
     h.shutdown().await;
@@ -1269,6 +1329,14 @@ async fn without_the_rendered_door_the_same_push_reaches_no_brain() {
         "without the door nothing may have been written into the generation's \
          own cell.db; it holds {:?}",
         brain_slots(&td, &rel)
+    );
+    // GH #889: nor into the curator's ledger, where a pack waits for the next
+    // call since the curator took the lane over.
+    assert!(
+        !ledger_slots(&td, &rel).iter().any(|(p, _)| is_identity(p)),
+        "without the door no pack may stand in the generation's curator ledger; \
+         it holds {:?}",
+        ledger_slots(&td, &rel)
     );
 
     h.shutdown().await;

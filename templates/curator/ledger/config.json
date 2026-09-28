@@ -1,0 +1,126 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "blocks": {
+        "hash": "text",
+        "kind": "text",
+        "chars": "int",
+        "body": "text",
+        "first_seen": "text"
+      },
+      "wall": {
+        "seq": "int",
+        "session_id": "text",
+        "turn_id": "text",
+        "iter": "int",
+        "kind": "text",
+        "hash": "text",
+        "nth": "int",
+        "final": "int",
+        "episode_idx": "int",
+        "at": "text"
+      },
+      "calls": {
+        "call_id": "text",
+        "session_id": "text",
+        "turn_id": "text",
+        "iter": "int",
+        "trigger": "text",
+        "started_at": "text",
+        "model": "text",
+        "tokens_prompt": "int",
+        "tokens_completion": "int",
+        "tokens_cached": "int",
+        "tokens_cache_write": "int",
+        "cost": "json",
+        "cache_expires_at": "text",
+        "system_hash": "text",
+        "actions": "json"
+      },
+      "call_blocks": {
+        "call_id": "text",
+        "pos": "int",
+        "hash": "text"
+      },
+      "summaries": {
+        "id": "text",
+        "covers_to_seq": "int",
+        "hash": "text",
+        "sources": "json",
+        "model": "text",
+        "at": "text"
+      },
+      "slots": {
+        "path": "text",
+        "hash": "text",
+        "owner": "text",
+        "at": "text"
+      },
+      "state": {
+        "key": "text",
+        "value": "text"
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The ledger of one model's window. `blocks` holds every element once, keyed by the sha256 of its canonical JSON (keys sorted, UTF-8, no whitespace; the first 12 hex digits are its short id); `wall` is the endless, append-only order in which elements entered (`seq` is minted by `./intake`, microseconds since the epoch, strictly increasing); `calls` is one row per call with its usage, `call_blocks` the ordered block list of exactly what that call carried; `summaries` the condensations (the newest counts), `slots` the system part the hive owns, `state` the hive's few pointers.",
+    "use_when": "Inside the curator only; `write_surface` is internal, so nothing outside the hive writes here.",
+    "not_in_scope": "No constraints (a core defer of the cell type): the keys named in the README are kept by the one writer of each table, read before it writes. No deletes except parked payloads, retired slot leaves and the pointers in `state`.",
+    "emits_meaning": "ONE answer per inbound message: a tool_result per operation, `hop.operation` `bundle` with `results[]` for two or more.",
+    "consumes_meaning": "tool_call turns whose text is a store operation."
+  }
+}

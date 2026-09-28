@@ -10,6 +10,13 @@
 //! Free by construction: the brain is a `code` cell that reports what it was
 //! given rather than a model that guesses it, so every assertion is about the
 //! context that was ASSEMBLED, not about what an LLM made of it.
+//!
+//! **GH #889.** The question above is no longer the collector's to answer. It
+//! hands on the running round only, whole, on `curate`; the conversation window,
+//! the close batch and the pruning belong to the curator (R-27-1). The trees
+//! below wire `curate` straight into the reporting brain, so what they pin is the
+//! round itself: its tool fan-in, its iteration cap, its idle exit, its deferred
+//! turns, the memory tool and the hive boundary.
 
 #[path = "support_14b.rs"]
 mod support;
@@ -97,16 +104,16 @@ fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
     })
 }
 
-/// Turns a harness message into an inbound turn -- or, on the magic texts,
-/// into the close request a session keeper would send or the prune request a
-/// timer would send. The lane name is set by the PORT EDGE, which is what
-/// makes this a port test and not a script test.
+/// Turns a harness message into an inbound turn -- or, on the magic text, into
+/// the round sweep a timer would send. The lane name is set by the PORT EDGE,
+/// which is what makes this a port test and not a script test. (GH #889: the
+/// close and prune requests left with the collector's `in_close`/`in_prune`.)
 const PROBE: &str = r#"
 import sys, json
 d = json.load(sys.stdin)["body"]
 msgs = d.get("messages", [])
 last = str(msgs[-1].get("text", "")) if msgs else ""
-route = {"/close": "close", "/prune": "prune", "/sweep": "sweep"}.get(last, "turn")
+route = {"/sweep": "sweep"}.get(last, "turn")
 sys.stdout.write(json.dumps({"header": {"route": route}, "messages": msgs}))
 "#;
 
@@ -203,40 +210,6 @@ sys.stdout.write(json.dumps({"header": {"route": "res"},
                                            "text": "result-alpha"}]}))
 "#;
 
-/// A brain that reports the SIZE of what it was handed: the only thing a cap
-/// can be measured by from the outside.
-const MEASURE_BRAIN: &str = r#"
-import sys, json
-doc = json.load(sys.stdin)
-d = doc["body"]
-envelope = doc["envelope"]
-ctx = (envelope.get("header") or {}).get("context") or {}
-it = int(ctx.get("iter", 0) or 0)
-msgs = d.get("messages", [])
-if it == 0:
-    out = {"header": {"finish_reason": "tool_calls"},
-           "messages": [{"origin": "assistant", "type": "tool_call", "id": "c1", "text": "alpha"}]}
-else:
-    res = [len(str(m.get("text", ""))) for m in msgs if m.get("type") == "tool_result"]
-    out = {"header": {"finish_reason": "stop"},
-           "messages": [{"origin": "assistant", "type": "text",
-                         "text": "tools=%d|chars=%s" % (len(res),
-                                                        ",".join(str(x) for x in res))}]}
-sys.stdout.write(json.dumps(out))
-"#;
-
-/// A tool whose answer is larger than any context window it could enter.
-const BIG_TOOL: &str = r#"
-import sys, json
-d = json.load(sys.stdin)["body"]
-msgs = d.get("messages", [])
-c = msgs[0] if msgs else {}
-sys.stdout.write(json.dumps({"header": {"route": "res"},
-                             "messages": [{"origin": "tool", "type": "tool_result",
-                                           "id": c.get("id", ""),
-                                           "text": "z" * 100000}]}))
-"#;
-
 const DISPATCH: &str = r#"
 import sys, json
 d = json.load(sys.stdin)["body"]
@@ -293,28 +266,19 @@ fn main_config(with_tools: bool) -> Value {
         json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'turn'",
                "modifier": {"set_hop": {"route": "'in_turn'"}}}),
-        // The close port and the batch it produces. A tree that never closes a
-        // session simply never takes these two edges.
-        json!({"from": "./probe", "to": "./collector",
-               "condition": "hop.route == 'close'",
-               "modifier": {"set_hop": {"route": "'in_close'"}}}),
-        json!({"from": "./collector", "to": "/sink",
-               "condition": "hop.route == 'write'"}),
-        // The prune port and its report (GH #76). The template never fires
-        // this itself; here the probe stands in for the timer a parent tree
-        // would wire to the lane.
-        json!({"from": "./probe", "to": "./collector",
-               "condition": "hop.route == 'prune'",
-               "modifier": {"set_hop": {"route": "'in_prune'"}}}),
-        // The round sweep port (GH #103): the same timer stand-in asks
-        // whether any tool round is stuck behind the idle window.
+        // GH #889: the close port with its batch and the prune port with its
+        // report left the collector (R-27-1) -- the curator batches a closed
+        // session, and there is no window left to prune.
+        //
+        // The round sweep port (GH #103): the timer stand-in asks whether any
+        // tool round is stuck behind the idle window.
         json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'sweep'",
                "modifier": {"set_hop": {"route": "'in_round_sweep'"}}}),
-        json!({"from": "./collector", "to": "/sink",
-               "condition": "hop.route == 'prune'"}),
+        // GH #889: the seam is `curate` now; with no curator in this tree it
+        // goes straight to the reporting brain, which then sees the round alone.
         json!({"from": "./collector", "to": "./brain",
-               "condition": "hop.route == 'brain'",
+               "condition": "hop.route == 'curate'",
                "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                             "session_id": "hop.session_id",
                                             "iter": "hop.iter"}}}),
@@ -410,7 +374,7 @@ fn build_base(td: &tempfile::TempDir, knobs: &[(&str, &str)], with_tools: bool) 
     write(
         root,
         "main/probe/config.json",
-        &code_cell(PROBE, &["turn", "close", "prune", "sweep"], json!({})),
+        &code_cell(PROBE, &["turn", "sweep"], json!({})),
     );
 }
 
@@ -483,15 +447,6 @@ async fn say(
     text: &str,
 ) -> String {
     answer_text(&round_trip(h, rx, text).await)
-}
-
-async fn say_in(
-    h: &meclaw_testing::ColonyHandle,
-    rx: &mut mpsc::Receiver<Message>,
-    session: &str,
-    text: &str,
-) -> String {
-    answer_text(&round_trip_in(h, rx, session, text).await)
 }
 
 /// The idle window the GH #103 colony cases configure. It is the one SEMANTIC
@@ -590,113 +545,9 @@ async fn await_parked_round(td: &tempfile::TempDir) -> String {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_conversation_can_reference_its_own_first_turn() {
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &[], false);
-    let (h, mut sink_rx, _park_rx) = boot(&td).await;
-
-    let a1 = say(&h, &mut sink_rx, "my editor is helix").await;
-    assert!(
-        a1.starts_with("seen=1|"),
-        "the first turn stands alone: {a1}"
-    );
-
-    let a2 = say(&h, &mut sink_rx, "and my shell is fish").await;
-    assert!(
-        a2.starts_with("seen=3|first=my editor is helix|"),
-        "turn 2 sees turn 1 AND the answer to it: {a2}"
-    );
-
-    // The question the issue is about. There is no memory hive in this colony,
-    // so a correct answer can only have come from the window.
-    let a3 = say(&h, &mut sink_rx, "what did i say first?").await;
-    assert!(
-        a3.contains("first=my editor is helix"),
-        "turn 3 must be able to name turn 1 without retrieval: {a3}"
-    );
-    assert!(
-        a3.starts_with("seen=5|"),
-        "three user turns and the two answers to them: {a3}"
-    );
-    assert!(a3.ends_with("|last=what did i say first?"), "{a3}");
-
-    h.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_window_evicts_the_oldest_turns_when_the_turn_cap_is_reached() {
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &[("window_turns", "3")], false);
-    let (h, mut sink_rx, _park_rx) = boot(&td).await;
-
-    say(&h, &mut sink_rx, "alpha").await;
-    say(&h, &mut sink_rx, "beta").await;
-    say(&h, &mut sink_rx, "gamma").await;
-    let a4 = say(&h, &mut sink_rx, "delta").await;
-
-    // Seven rows exist by now (four user turns, three answers). The window is
-    // three, and it is the NEWEST three: the oldest turns left, whole.
-    assert!(a4.starts_with("seen=3|"), "the cap holds: {a4}");
-    assert!(
-        a4.contains("first=gamma"),
-        "the oldest survivor is a whole turn, not a fragment: {a4}"
-    );
-    assert!(
-        !a4.contains("alpha"),
-        "the evicted turn is gone, not truncated: {a4}"
-    );
-    assert!(
-        a4.ends_with("|last=delta"),
-        "the turn being answered never leaves: {a4}"
-    );
-
-    h.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_window_evicts_the_oldest_turns_when_the_byte_cap_is_reached() {
-    let td = tempfile::TempDir::new().unwrap();
-    // Generous turn cap, tight byte cap: the two policies are independent and
-    // this colony proves the second one alone.
-    build_tree(
-        &td,
-        &[("window_turns", "50"), ("window_bytes", "40")],
-        false,
-    );
-    let (h, mut sink_rx, _park_rx) = boot(&td).await;
-
-    say(&h, &mut sink_rx, "aaaaaaaaaaaaaaaaaaaa").await;
-    let a2 = say(&h, &mut sink_rx, "bbbbbbbbbbbbbbbbbbbb").await;
-
-    // Rows: the 20-byte user turn, an answer of its own length, the new 20-byte
-    // turn. Forty bytes buy the newest turn and nothing that would exceed them.
-    assert!(
-        a2.starts_with("seen=1|"),
-        "the byte cap cut the older turns whole: {a2}"
-    );
-    assert!(a2.contains("first=bbbbbbbbbbbbbbbbbbbb"), "{a2}");
-    assert!(!a2.contains("aaaaaaaaaaaaaaaaaaaa"), "{a2}");
-
-    h.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_tool_result_larger_than_the_window_reaches_the_brain_capped() {
-    let td = tempfile::TempDir::new().unwrap();
-    build_tool_tree(&td, &[("tool_chars", "50")], MEASURE_BRAIN, BIG_TOOL);
-    let (h, mut sink_rx, _park_rx) = boot(&td).await;
-
-    // The tool answers with 100 KB. Without the cap that is what the brain
-    // gets, and every window knob above it is decoration.
-    let a1 = say(&h, &mut sink_rx, "look it up").await;
-    assert_eq!(
-        a1, "tools=1|chars=50",
-        "the seam handed on a bounded preview, not the whole environment: {a1}"
-    );
-
-    h.shutdown().await;
-}
+// GH #889: the conversation window (a turn naming an earlier one, the turn and
+// byte caps) and the preview cap on a tool result left the collector -- the
+// window is the curator's, and R-27-1 hands the round on uncut.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_runaway_tool_round_is_ended_by_the_seam_that_opened_it() {
@@ -735,53 +586,8 @@ async fn a_runaway_tool_round_is_ended_by_the_seam_that_opened_it() {
     h.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_closed_session_leaves_the_collector_as_one_batch() {
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &[], false);
-    let (h, mut sink_rx, _park_rx) = boot(&td).await;
-
-    say(&h, &mut sink_rx, "alpha").await;
-    say(&h, &mut sink_rx, "beta").await;
-    say(&h, &mut sink_rx, "gamma").await;
-
-    // The keeper's close request. The collector reads its own store back --
-    // the window store IS the durable record of the session (R-OS-6).
-    let batch = round_trip(&h, &mut sink_rx, "/close").await;
-    assert_eq!(hop_of(&batch, "route"), "write");
-    assert_eq!(hop_of(&batch, "session_id"), "s1");
-    assert_eq!(
-        hop_of(&batch, "turn_count"),
-        "6",
-        "three questions and the three answers to them"
-    );
-    let body = body_of(&batch);
-    let texts: Vec<String> = body["messages"]
-        .as_array()
-        .expect("messages")
-        .iter()
-        .map(|m| m["text"].as_str().unwrap_or_default().to_string())
-        .collect();
-    assert_eq!(
-        texts.len(),
-        6,
-        "the whole day, not a window of it: {texts:?}"
-    );
-    assert_eq!(texts[0], "alpha", "in the order it happened");
-    assert_eq!(texts[4], "gamma");
-    assert_eq!(body["messages"][1]["origin"], "assistant");
-    // The rounds ride along raw: with no tools in this tree they are the
-    // per-turn assembly legs, which is what an eviction report is.
-    let rounds = body["rounds"].as_array().expect("rounds slot");
-    assert_eq!(rounds.len(), 3, "one slate per turn");
-    assert_eq!(hop_of(&batch, "round_count"), "3");
-    assert!(
-        rounds.iter().all(|r| r["role"] == "leg-window"),
-        "the collector's own bookkeeping row is not part of the batch: {rounds:?}"
-    );
-
-    h.shutdown().await;
-}
+// GH #889: the close batch (`in_close` -> `write`) is the curator's now; it
+// builds the batch from its own ledger.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tool_round_re_enters_the_brain_through_the_same_seam() {
@@ -790,12 +596,12 @@ async fn a_tool_round_re_enters_the_brain_through_the_same_seam() {
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     let a1 = say(&h, &mut sink_rx, "look it up").await;
-    // The re-entry is not a fresh prompt: it carries the conversation window in
-    // front of the tool round, which is the whole point of doing the fan-in
-    // HERE rather than in a cell that only knows the round.
+    // The re-entry is not a fresh prompt: it carries the round's opening turn in
+    // front of the tool round. GH #889: earlier turns are the curator's to add,
+    // so the opening turn is all of the conversation this seam carries.
     assert!(
         a1.contains("first=look it up"),
-        "the window leads the re-entry: {a1}"
+        "the opening turn leads the re-entry: {a1}"
     );
     assert!(
         a1.contains("|tools=2|"),
@@ -807,19 +613,16 @@ async fn a_tool_round_re_enters_the_brain_through_the_same_seam() {
     );
     assert!(
         a1.starts_with("seen=5|"),
-        "window turn + the assistant turn that asked (2 calls) + 2 results: {a1}"
+        "the opening turn + the assistant turn that asked (2 calls) + 2 results: {a1}"
     );
 
-    // And the round did not leak into the rolling window: the next turn sees
-    // the conversation, not the tool traffic.
+    // And the round did not leak into the next one. GH #889: a round's rows
+    // drop when its answer leaves, so the second turn's round carries its own
+    // opening turn and its own two results -- nothing of the first round.
     let a2 = say(&h, &mut sink_rx, "thanks").await;
     assert!(
-        a2.contains("|tools=0|") || a2.contains("tools=2|"),
-        "second turn ran its own round: {a2}"
-    );
-    assert!(
-        !a2.contains("result-alpha,result-beta,result-alpha"),
-        "{a2}"
+        a2.starts_with("seen=5|first=thanks|tools=2|"),
+        "second turn ran its own round, alone: {a2}"
     );
 
     h.shutdown().await;
@@ -848,7 +651,7 @@ async fn one_message_answering_two_calls_completes_the_round() {
     );
     assert!(
         a1.starts_with("seen=5|"),
-        "window turn + the assistant turn that asked (2 calls) + 2 results: {a1}"
+        "the opening turn + the assistant turn that asked (2 calls) + 2 results: {a1}"
     );
 
     h.shutdown().await;
@@ -935,12 +738,12 @@ async fn a_mid_round_turn_defers_and_rides_with_the_next_assembly() {
 
     // The mid-round turn IS the occasion. It closes the stale round -- and
     // the answer that comes back belongs to the ROUND's turn, with the
-    // round's own window: the deferred turn did not leak into it.
+    // round's own turns: the deferred turn did not leak into it.
     let got = round_trip(&h, &mut sink_rx, "second question").await;
     let ans = answer_text(&got);
     assert!(
         ans.contains("users=look it up|"),
-        "the running round answers from ITS window, not the new turn's: {ans}"
+        "the running round answers from ITS turns, not the new turn's: {ans}"
     );
     assert!(ans.contains("|stale=1|"), "{ans}");
 
@@ -953,12 +756,17 @@ async fn a_mid_round_turn_defers_and_rides_with_the_next_assembly() {
         "a deferred turn asks nothing while it waits"
     );
 
-    // The next regular turn carries the deferred one in its window and says
-    // so on the seam.
+    // The next regular turn carries the deferred one and says so on the seam.
+    // GH #889: only the running round rides on `curate` -- the deferred turn
+    // and the new one, in order; the earlier round's turn is the curator's.
     let a3 = say(&h, &mut sink_rx, "third question").await;
     assert!(
-        a3.contains("users=look it up;second question;third question|"),
+        a3.contains("users=second question;third question|"),
         "the deferred turn rides with the next assembly, in order: {a3}"
+    );
+    assert!(
+        !a3.contains("look it up"),
+        "an ended round's turn does not ride again: {a3}"
     );
     assert!(
         a3.contains("|deferred=1"),
@@ -975,74 +783,8 @@ async fn a_mid_round_turn_defers_and_rides_with_the_next_assembly() {
     h.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_batched_session_is_pruned_and_the_living_session_is_not() {
-    // GH #76 end to end. Two sessions share the store; one is closed and
-    // pruned, the other must stay byte for byte -- its answers are the proof,
-    // because this tree has no memory hive to hide a loss behind.
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &[("prune_after_ms", "0")], false);
-    let (h, mut sink_rx, _park_rx) = boot(&td).await;
-
-    say_in(&h, &mut sink_rx, "s1", "alpha").await;
-    say_in(&h, &mut sink_rx, "s1", "beta").await;
-    say_in(&h, &mut sink_rx, "s2", "gamma").await;
-
-    // A prune BEFORE any close finds no evidence and cuts nothing -- and says
-    // so, instead of dying in silence.
-    let r0 = round_trip_in(&h, &mut sink_rx, "s1", "/prune").await;
-    assert_eq!(hop_of(&r0, "route"), "prune");
-    assert_eq!(hop_of(&r0, "pruned_turns"), "0", "no ledger, no cut");
-    assert_eq!(hop_of(&r0, "pruned_rounds"), "0");
-
-    // Nothing fell: s1 still remembers its first turn.
-    let a = say_in(&h, &mut sink_rx, "s1", "still there?").await;
-    assert!(a.contains("first=alpha"), "no evidence, no loss: {a}");
-
-    // The keeper closes s1: the batch leaves, the ledger row is the evidence.
-    let batch = round_trip_in(&h, &mut sink_rx, "s1", "/close").await;
-    assert_eq!(hop_of(&batch, "route"), "write");
-    assert_eq!(hop_of(&batch, "turn_count"), "6");
-
-    // Now the prune has evidence AND, with a zero gate, age.
-    let r1 = round_trip_in(&h, &mut sink_rx, "s1", "/prune").await;
-    assert_eq!(hop_of(&r1, "route"), "prune");
-    assert_eq!(hop_of(&r1, "session_id"), "s1");
-    assert_eq!(
-        hop_of(&r1, "pruned_turns"),
-        "6",
-        "three questions and their answers -- exactly what the batch carried"
-    );
-    assert_eq!(
-        hop_of(&r1, "pruned_rounds"),
-        "4",
-        "three assembly legs and the backdated parked day"
-    );
-
-    // The pruned session starts empty: its durable record left with the batch.
-    let a1 = say_in(&h, &mut sink_rx, "s1", "anyone home?").await;
-    assert!(
-        a1.starts_with("seen=1|"),
-        "the batched history left the window store: {a1}"
-    );
-
-    // The living session lost NOTHING -- it was never named by the ledger.
-    let a2 = say_in(&h, &mut sink_rx, "s2", "what did i say first?").await;
-    assert!(
-        a2.starts_with("seen=3|first=gamma|"),
-        "a session without a close batch is never touched: {a2}"
-    );
-
-    // And the evidence does not fire twice: the mark makes prune idempotent.
-    let r2 = round_trip_in(&h, &mut sink_rx, "s1", "/prune").await;
-    assert_eq!(
-        hop_of(&r2, "pruned_turns"),
-        "0",
-        "used evidence is marked, not re-spent"
-    );
-
-    h.shutdown().await;
-}
+// GH #889: pruning a batched session (`in_prune`, GH #76) left with the window
+// store it cut; the curator's ledger is append-only (R-27-2 point 1).
 
 // ==================================================== THE MEMORY TOOL (GH #78)
 //
@@ -1136,8 +878,9 @@ fn memory_main_config(with_memo: bool) -> Value {
         json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'sweep'",
                "modifier": {"set_hop": {"route": "'in_round_sweep'"}}}),
+        // GH #889: the seam is `curate`, straight into the brain here.
         json!({"from": "./collector", "to": "./brain",
-               "condition": "hop.route == 'brain'",
+               "condition": "hop.route == 'curate'",
                "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                             "session_id": "hop.session_id",
                                             "iter": "hop.iter"}}}),
@@ -1179,7 +922,7 @@ fn build_memory_tree(td: &tempfile::TempDir, knobs: &[(&str, &str)], with_memo: 
     write(
         root,
         "main/probe/config.json",
-        &code_cell(PROBE, &["turn", "close", "prune", "sweep"], json!({})),
+        &code_cell(PROBE, &["turn", "sweep"], json!({})),
     );
     write(
         root,
@@ -1226,7 +969,7 @@ async fn a_memory_recall_call_is_answered_elsewhere_and_completes_the_round() {
     );
     assert!(
         ans.contains("first=what did we decide on the first?"),
-        "and the round re-entered through the seam, window first: {ans}"
+        "and the round re-entered through the seam, its opening turn first: {ans}"
     );
     assert!(
         ans.ends_with("|stale=0"),
@@ -1293,8 +1036,9 @@ fn main_config_via_hive() -> Value {
             {"from": "./probe", "to": "./collector",
              "condition": "hop.route == 'turn'",
              "modifier": {"set_hop": {"route": "'in_turn'"}}},
+            // GH #889: the seam is `curate`.
             {"from": "./collector", "to": "./brain",
-             "condition": "hop.route == 'brain'",
+             "condition": "hop.route == 'curate'",
              "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                           "session_id": "hop.session_id",
                                           "iter": "hop.iter"}}},
@@ -1326,7 +1070,7 @@ async fn a_turn_crosses_the_collector_at_its_hive_path() {
     write(
         root,
         "main/probe/config.json",
-        &code_cell(PROBE, &["turn", "close", "prune", "sweep"], json!({})),
+        &code_cell(PROBE, &["turn", "sweep"], json!({})),
     );
     write(
         root,

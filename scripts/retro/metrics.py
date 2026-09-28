@@ -1,7 +1,8 @@
 """The numbers of ruling R-P3, and what they are measured from.
 
-Q1..Q10 carry a threshold and a verdict; Q11 is a finding without one
-(`BEFUND`) until a wave has measured what the other cache lifetime saves.
+Q1..Q10 and Q12 carry a threshold and a verdict; Q11 and Q13 are findings
+without one (`BEFUND`): Q11 until a wave has measured what the other cache
+lifetime saves, Q13 until a ruling sets a value.
 
 Every metric answers in one of three ways: a value with a verdict, or `n/a`
 with the reason its source is missing. A missing source is never an abort and
@@ -27,12 +28,16 @@ def load_thresholds(path: Path | None = None) -> dict:
 
 
 def collect(wave_dir: Path, transcript_root: Path, sessions=(),
-            gate_dir: Path | None = None) -> dict:
+            gate_dir: Path | None = None, planning=()) -> dict:
     """All evidence of one wave, gathered once.
 
     `gate_dir` is the second receipt source of the contract (`target/gate/`),
     read only while the wave kept no receipts of its own -- that is the wave
     measuring itself before its receipts are archived (review M2).
+
+    `planning` names the planning session(s) instead of the marker (Q12).
+    A planning session is found by its own rule, independent of `sessions`:
+    naming the build sessions of a wave does not name its planning.
     """
     token = wave_dir.name.split("-20")[0]
     found = transcripts.sessions_for(transcript_root, token, sessions)
@@ -40,6 +45,13 @@ def collect(wave_dir: Path, transcript_root: Path, sessions=(),
     agents = [transcripts.scan(p) for s in found
               for p in transcripts.agents_of(s)]
     builders = [a for a in agents if a["role"] == "Bauer"] or agents
+    # The planning session carries the marker too, so it may already be
+    # scanned; a transcript is read once.
+    seen = {s["path"]: s for s in orchestrators + agents}
+    planned = [[seen.get(str(p)) or transcripts.scan(p)
+                for p in [session] + transcripts.agents_of(session)]
+               for session in transcripts.planning_sessions(
+                   transcript_root, token, planning)]
     runs = gates.runs_of(wave_dir, "strand", gate_dir)
     return {
         "wave": wave_dir.name,
@@ -53,6 +65,10 @@ def collect(wave_dir: Path, transcript_root: Path, sessions=(),
         "groups": _groups(agents, builders),
         "findings": reports.findings(wave_dir),
         "undocumented": gates.undocumented(wave_dir),
+        "planning": planned,
+        "planning_named": bool(planning),
+        "plan_parts": reports.plan_parts(wave_dir),
+        "reported": reports.reported(wave_dir),
     }
 
 
@@ -204,9 +220,109 @@ def _q11(e):
             100.0 * got["long_writes"] / got["writes"]), None
 
 
+def input_equivalents(calls, weights: dict) -> float:
+    """What the calls cost, in uncached input tokens of their own model.
+
+    The formula of `plans/welle-fix-2026-09-27/cache_ttl_calc.py` `units`:
+    input + 5-minute writes x 1,25 + one-hour writes x 2 + reads x the read
+    factor of the model's family + output x 5. Ratios, never prices -- the
+    prices stay out of a public file (`cache.py`), and the ratios live in
+    `thresholds.json`. The calls are the ones `transcripts.scan` counts, one
+    per request id with its longest output; Q12 counts no second way.
+    """
+    total = 0.0
+    for c in calls:
+        short, long_ = c["cc5"], c["cc1h"]
+        if not (short or long_):
+            # A transcript without the split of its writes: every write was
+            # a 5-minute write, as `cache_ttl_calc.py` `cost_real` reads it.
+            short = c["cc"]
+        total += (c["inp"] + short * weights["cache_write_5m"]
+                  + long_ * weights["cache_write_1h"]
+                  + c["cr"] * _read_factor(c["model"], weights["cache_read"])
+                  + c["out"] * weights["output"])
+    return total
+
+
+def _read_factor(model: str, reads: dict) -> float:
+    name = (model or "").lower()
+    for family, factor in reads.items():
+        if family != "default" and family in name:
+            return factor
+    return reads["default"]
+
+
+def _span(session: list) -> float:
+    """Wall clock of one session with its agents, first to last line.
+
+    Timestamps, not clock times: a planning that runs over midnight is one
+    span. Two sessions are two spans, never the hours that lie between them.
+    """
+    firsts = [s["first"] for s in session if s["first"]]
+    lasts = [s["last"] for s in session if s["last"]]
+    return (max(lasts) - min(firsts)).total_seconds() if firsts else 0.0
+
+
+def _q12(e, metric):
+    """The planning of the wave: its input equivalents, its wall clock, and
+    its share of the build tokens (GH #891; ceiling PLANUNG.md rule 8).
+
+    The share is measured over the sessions of the wave that are NOT the
+    planning -- the planning session carries the wave marker as well, and
+    counted on both sides the share would measure itself.
+    """
+    sessions = e.get("planning") or []
+    if not sessions:
+        return None, ("keine Planungssitzung unter --planning"
+                      if e.get("planning_named")
+                      else "keine Planungssitzung am Marker")
+    weights = metric["weights"]
+    units = sum(input_equivalents(s["calls"], weights)
+                for session in sessions for s in session)
+    hours = sum(_span(session) for session in sessions) / 3600.0
+    own = {s["path"] for session in sessions for s in session}
+    build = sum(input_equivalents(s["calls"], weights)
+                for s in (e.get("orchestrators") or []) + (e.get("agents") or [])
+                if s["path"] not in own)
+    return (units, hours, 100.0 * units / build if build else None), None
+
+
+def _q12_note(value, metric) -> str:
+    """The share of the build tokens: a text beside the verdict, never a
+    second threshold (plan R, contract Q12)."""
+    target = metric["share_target"]
+    if value[2] is None:
+        return f"Bau-Token n/a, keine Bau-Sitzung am Marker (Ziel ≤ {target} %)"
+    return f"{value[2]:.0f} % der Bau-Token (Ziel ≤ {target} %)"
+
+
+def _q13(e):
+    """Strands with a report but without a plan part, over the plan parts.
+
+    The plan names its parts `plan-parts/<S>-<topic>.md`; a strand the build
+    had to add -- a second half, a repair, a measurement -- reports without
+    one. A struck strand (a part without a report) stays in the count and
+    adds nothing; a file without a head block is no strand at all.
+    """
+    parts = e.get("plan_parts")
+    if parts is None:
+        return None, "kein plan-parts/ in der Welle"
+    if not parts:
+        return None, "keine Plan-Teile in plan-parts/"
+    planned = set(parts)
+    return ([s for s in e.get("reported") or [] if s not in planned],
+            len(parts)), None
+
+
 RULES = {"Q1": _q1, "Q2": _q2, "Q3": _q3, "Q4": _q4, "Q5": _q5,
          "Q6": _q6, "Q7": _q7, "Q8": _q8, "Q9": _q9, "Q10": _q10,
-         "Q11": _q11}
+         "Q11": _q11, "Q12": _q12, "Q13": _q13}
+
+#: Rules that read their own entry of `thresholds.json` (Q12's weights).
+WITH_SPEC = frozenset(("Q12",))
+
+#: A text the suggestion column carries whatever the verdict.
+NOTES = {"Q12": _q12_note}
 
 
 def _value_text(spec, value) -> str:
@@ -221,6 +337,12 @@ def _value_text(spec, value) -> str:
         return f"{_k(value[0])} / {value[1]}"
     if unit == "% / %":
         return f"{_de(value[0])} % / {value[1]:.0f} % (1 h: {value[2]:.0f} %)"
+    if unit == "input equivalents / h":
+        return f"{_de(value[0] / 1e6)} Mio / {_de(value[1])} h"
+    if unit == "supplements / plan parts":
+        extra, parts = value
+        names = f": {', '.join(extra)}" if extra else ""
+        return f"{_de(len(extra) / parts, 2)} ({len(extra)}/{parts}{names})"
     return _de(value)
 
 
@@ -236,6 +358,8 @@ def _threshold_text(spec) -> str:
         return "= 0" if limit == 0 else f"≤ {limit:.0f}"
     if unit == "tokens / count":
         return f"≤ {_k(int(limit))} / {spec['threshold_secondary']}"
+    if unit == "input equivalents / h":
+        return f"≤ {limit / 1e6:g} Mio".replace(".", ",")
     return f"≤ {_de(limit)}"
 
 
@@ -244,6 +368,8 @@ def _breached(spec, value) -> bool:
         return False
     if spec["unit"] == "tokens / count":
         return value[0] > spec["threshold"] or value[1] > spec["threshold_secondary"]
+    if spec["unit"] == "input equivalents / h":
+        return value[0] > spec["threshold"]
     return value > spec["threshold"]
 
 
@@ -262,7 +388,9 @@ def rows(evidence: dict, spec: dict) -> list[dict]:
     """One row per metric, ready for the table."""
     out = []
     for metric in spec["metrics"]:
-        value, reason = RULES[metric["id"]](evidence)
+        rule = RULES[metric["id"]]
+        value, reason = (rule(evidence, metric) if metric["id"] in WITH_SPEC
+                         else rule(evidence))
         if value is None:
             out.append({
                 "id": metric["id"],
@@ -282,12 +410,16 @@ def rows(evidence: dict, spec: dict) -> list[dict]:
             verdict = "BEFUND"
         else:
             verdict = "VERSTOSS" if breached else "OK"
+        advice = metric["advice_de"] if breached else "—"
+        if metric["id"] in NOTES:
+            note = NOTES[metric["id"]](value, metric)
+            advice = note if advice == "—" else f"{note}. {advice}"
         out.append({
             "id": metric["id"],
             "title": metric["title_de"],
             "value": text,
             "threshold": _threshold_text(metric),
             "verdict": verdict,
-            "advice": metric["advice_de"] if breached else "—",
+            "advice": advice,
         })
     return out

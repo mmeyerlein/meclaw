@@ -1,4 +1,4 @@
-# `affinity@3.6.1`
+# `affinity@3.6.2`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -12,7 +12,7 @@ Six cells:
 | `store` | `store` | the domain: entities, relations, trust, disclosure, subscribers, proposals, audit -- plus `port_scratch`, which is not domain at all (§ The seed) |
 | `brief` | `code` | the only reader of the domain -- audience filter and pack rendering. Appends its own `audit` row per brief |
 | `gate` | `code` | the only writer of the domain -- AIeOS validation, minting, audit. Runs `warm` since 3.6.0 (#852): it sits under every member door, keeps no state between messages and reads stdin as text only |
-| `push` | `code` | push-on-change: hashes what a subscriber would get, and stays silent when it did not move. Writes that hash and `sent_at` back onto the subscriber row, plus an `audit` row |
+| `push` | `code` | push-on-change: hashes what a subscriber would get, and stays silent when it did not move. Writes that hash and `sent_at` back onto the subscriber row only when the pack's receipt comes back clean on `in_pack_ack` (GH #877); until then it resends on the next tick and then after a wait that doubles up to six hours, and a refused receipt parks the pack until it changes (`subscribers.retry`). Plus an `audit` row per tick |
 | `clock` | `timer` | the push tick (6-field Quartz cron, **UTC**) |
 | `porter` | `code` | the transfer lane: walks the record out as a versioned document, takes one part back into a running hive. It transfers and decides nothing (§ Taking the record out) |
 
@@ -171,7 +171,8 @@ round trip *is* the cell's memory. That is why this hive has ten internal edges 
 | `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the `system.*` slots the request asked for **and** the same pack as JSON in the `tool_result` (its structure without the per-slot `text` rendering, since 3.6.1, #864), under the id of the call being answered, plus the body slot `who {ref, name, identity, known}` -- on the served brief and on every refusal after the subject was read whose subject is in the round (§ Who is speaking, since 3.6.0) |
 | `in_propose` | in -> the **hive path** | the proposal as a `tool_call` turn (`{op, ...}`); the edge **MUST** promote the writer to `context.actor` and, for `subscribe`, the subscribing cell's address to `context.subscriber` |
 | `out_ack` | `./gate` -> the proposer | `hop.route == 'ack'`, `accepted` or `rejected` plus a `reason_code` |
-| `out_push` | `./brief` -> each subscribed `llm` cell | `hop.route == 'answer' && hop.subscriber == '<cell path>'`: the `system.*` slots the subscription asked for and **no** turn beside them, so the update costs a write and not an inference (GH #263; the `llm` cell returns without calling when a body carries no `messages[]`) |
+| `out_push` | `./brief` -> each subscribed `llm` cell | `hop.route == 'answer' && hop.subscriber == '<cell path>'`: the `system.*` slots the subscription asked for and **no** turn beside them, so the update costs a write and not an inference (GH #263; the `llm` cell returns without calling when a body carries no `messages[]`). Since #877 it also carries `hop.pack_sub` (the subscriber row) and `hop.pack_hash` (the hash of what is sent); the delivering edge promotes both into context. The delivery is booked only when the receiving side answers `pack_ack` with both keys on an edge back into `in_pack_ack`, as the curator behind a generation's rims does; an `llm` cell answers none, so a pack pushed straight at one goes again on the retry schedule for as long as its row is active |
+| `in_pack_ack` | in -> the **hive path** | the receipt of one pushed pack (GH #877), with `context.pack_sub` and `context.pack_hash` as the delivering edge promoted them. A clean one books the delivery (`pack_hash`, `sent_at`) onto that row while it is active; one with `hop.error_code` set books no delivery and parks that hash in `subscribers.retry`, so the pack goes again only once it changes; one without `pack_sub` is dropped with a line on stderr |
 | `out_error` | `./gate`, `./brief`, `./push` -> a drain | `hop.route == 'error'` -- the parent MUST wire it |
 | `in_export` | in -> the **hive path** | a demand that this hive hand out everything it holds. No keys travel with it: an export is about the whole hive, never about a round (§ Taking the record out) |
 | `in_import` | in -> the **hive path** | ONE part of such a document, for a hive that is already running. Applying the same part twice leaves the same state |
@@ -179,7 +180,7 @@ round trip *is* the cell's memory. That is why this hive has ten internal edges 
 | `out_dump` | `./porter` -> a drain | `hop.route == 'dump'`: the receipt of one applied import part (`hop.rows_written`, `hop.export_final == "1"` on the last). Since #555 that is all it carries. The edge that satisfies the gate must be **plain** -- see below |
 | `out_reject` | `./porter` -> a drain | `hop.route == 'reject'`: a transfer this hive would not carry out, with `hop.reject_reason` naming the case. `reject` is new in `affinity@3.2.0`; before it the hive spoke only `answer`, `ack` and `error` |
 
-All four in-lanes are asserted at the hive path and not at a cell behind it: `params.ports`
+All five in-lanes are asserted at the hive path and not at a cell behind it: `params.ports`
 is empty, so a wiring that names `./brief` or `./gate` is refused with
 `hive_port_boundary`. Which cell serves a lane is the template's business, which is what
 makes it replaceable.
@@ -243,7 +244,10 @@ the answer runs, and the parent draws it at instantiation. Two edges, no new con
 of its own subscription row, so the condition compares it against the very path the edge
 ends at. Two subscribers are two edges. There is no fan-out form and there is nothing to
 add inside the hive -- the subscriber list lives in the store, the delivery list lives in
-the graph, and the push only travels where both agree.
+the graph, and the push only travels where both agree. That edge delivers and confirms
+nothing: a delivery is booked only when the subscriber answers `pack_ack` on an edge back into
+`in_pack_ack` with `pack_sub`/`pack_hash` in context (GH #877), which a bare `llm` cell never
+does -- so a brain is subscribed through the curator in front of it, as below.
 
 **When the subscriber is a COMPOSITION and not a cell** (GH #561). A generation is one
 agent with two brains behind two sealed rims, and since the `assistant` level stopped
@@ -254,15 +258,16 @@ plus one back for each receipt:
 ```json
 {"from": "<affinity>", "to": "<generation>/talky", "lane": "in_pack",
  "condition": "has(hop.route) && hop.route == 'answer' && hop.subscriber == '<generation>'",
- "modifier": {"set_hop": {"route": "'in_pack'"}}},
+ "modifier": {"set_hop": {"route": "'in_pack'"},
+              "set_context": {"pack_sub": "hop.pack_sub", "pack_hash": "hop.pack_hash"}}},
 {"from": "<generation>/talky", "to": "<the container>", "lane": "pack_ack",
  "condition": "has(hop.route) && hop.route == 'pack_ack'"}
 ```
 
 The row is still ONE row and it still names the GENERATION: a subscription is a statement
 about an agent, and the fan-out is the edges. The `lane` field is what makes the edge legal
--- the level it skips declares the two rims as connect points (`"at": ["./talky",
-"./cogny"]`), and an edge that ended anywhere else is refused `v_lane_no_connect_point`
+-- the level it skips declares the three rims as connect points (`"at": ["./talky",
+"./talky-chat", "./cogny"]`), and an edge that ended anywhere else is refused `v_lane_no_connect_point`
 (GH #559). The rule of the paragraph above is unchanged and only reads one level deeper:
 the guard names what the row names, and every rim that is to receive the pack is an edge.
 
@@ -275,7 +280,7 @@ nothing it can notice. That comparison is safe because `./brief` sets `subscribe
 than leaving the key off, so the emptiness is a value and not an absence. Both facts are
 asserted together in `the_two_answer_lanes_are_told_apart_by_the_subscriber_key`
 (`crates/meclaw-cells/tests/affinity_template.rs`), which provokes both lanes in one colony
-and drains each sink to the end to prove neither saw the other's message.
+and drains each sink until it falls quiet to prove neither saw the other's message.
 
 **A `subscribe` cannot draw its own edge.** Writing an edge is a mutation, and mutation
 authority belongs to the colony alone -- a cell has none, a hive has none, and a `subscribe`
@@ -302,7 +307,11 @@ row will name and re-stamped onto the subscriber's `in_pack` lane -- and only th
 pack, so the intermediate state is inert and invisible. A row with no edge behind it is the
 opposite -- accepted, written and **silently undeliverable**, which is exactly the failure
 [#289](https://github.com/mmeyerlein/meclaw/issues/289) named and could not refuse. The
-order is chosen so that the half-finished state is the harmless one.
+order is chosen so that the half-finished state is the harmless one. Since 3.6.2
+([#877](https://github.com/mmeyerlein/meclaw/issues/877)) the wrong order no longer loses the pack
+either: a row counts as served only when a clean receipt comes back. Until then the pack goes
+again on the next tick and after that on a wait that doubles each time, capped at six hours
+(`subscribers.retry`); a receipt that refuses the pack parks it until it changes.
 
 **Nobody mints the token.** `hop.subscriber` carries the row's own `cell_path`, so the
 subscriber's **address is** the token -- both halves can name it before either has run, and
@@ -354,8 +363,11 @@ The `cell_path` in it is a **birth-state token**, exactly as `entity:alex` is: t
 that instantiates the member either draws the push edge conditioned on that token, or
 rewrites the row through `./gate` with a `subscribe` naming the real address. Either way
 the two edges above are drawn by that mutation, one per subscribing cell -- and `./gate`
-mints the live row under an id of its own (`sub:<subscriber>|<subject>`), so the seeded one
-stays the inactive example it was born as.
+mints the live row under the id it derives (`sub:<subscriber>|<subject>`). The seeded row
+carries that same id since [#877](https://github.com/mmeyerlein/meclaw/issues/877) (F19), so a
+`subscribe` for the seeded address supersedes the example by status, exactly as a second
+`subscribe` supersedes the first: one active row per id, the old one kept inactive beside it,
+nothing deleted.
 
 **What the silence means is written on the row.** An untouched hive ticks and says nothing
 because **nothing has subscribed**, not because nothing changed -- and the two are told
@@ -397,9 +409,9 @@ composite's `in_pack` lane upserts it into the brain -- the same two halves as a
 subscription (§ Subscribing is one act with two halves), and the same closed list of
 families the pack lane accepts (`identity`, `persona`, `handover`, `instructions`; see
 `templates/collector/README.md` § "The door in the wall"). One consequence worth knowing on
-a rebuild: `subscribers.pack_hash` and `sent_at` are cleared by `./porter` on import, which
-is why the first identity pack after a rebuild fires at all instead of being read as
-already delivered.
+a rebuild: `subscribers.pack_hash`, `sent_at` and `retry` are cleared by `./porter` on import,
+which is why the first identity pack after a rebuild fires at all instead of being read as
+already delivered or parked.
 
 **And the disclosure filter applies unchanged.** `mx.brain` is a field path like any other:
 without a `disclosure` row naming it for the asking audience the renderer delivers nothing
@@ -615,11 +627,13 @@ proposals:
 - **`brief` inserts `audit`.** Every brief, granted or denied, files its own row (`actor`,
   `action: "brief"`, `subject`, `outcome`, `reason_code`). A disclosure ledger that only
   the writer may append to would record nothing about who read what.
-- **`push` updates `subscribers` and inserts `audit`.** The push tick writes back
-  `pack_hash` and `sent_at` on the row it just served -- that hash **is** the
+- **`push` updates `subscribers` and inserts `audit`.** The clean receipt of a pack
+  (`in_pack_ack`, GH #877) writes back `pack_hash` and `sent_at` on the row it names -- that hash **is** the
   push-on-change mechanism: without persisting it there is nothing to compare the next
-  tick against, and every tick would resend. Neither column is domain content and neither
-  is reachable from a proposal.
+  tick against, and every tick would resend. Each send notes its try in `retry`, and a
+  refused receipt parks the hash there; that note is what bounds the resend of a pack
+  nobody confirms. None of the three is domain content, and none is reachable from a
+  proposal.
 - **`porter` writes `port_scratch` and the two alias tables.** The notepad is the transfer
   lane's own state and no reader takes it as truth; `set_alias` and `reject_pair` re-derive
   an identity binding the source hive had already decided, from a table that travelled in the
@@ -632,7 +646,7 @@ How far that is *enforced* rather than agreed:
 
 | layer | mechanism | does it hold? |
 |---|---|---|
-| internal edges | only `gate`, `brief`, `push` and `porter` have an edge to `./store`. `brief` reads with `select`/`traverse` and appends its own `audit` row; `push` reads, appends `audit`, and updates `pack_hash`/`sent_at` on the subscriber row it served; `porter` reads every domain table and writes only `port_scratch` plus the two tables the store keys itself. None of them touches domain content | template convention. The store does not check which op came from whom. |
+| internal edges | only `gate`, `brief`, `push` and `porter` have an edge to `./store`. `brief` reads with `select`/`traverse` and appends its own `audit` row; `push` reads, appends `audit`, and updates `pack_hash`/`sent_at` on the subscriber row a clean receipt names; `porter` reads every domain table and writes only `port_scratch` plus the two tables the store keys itself. None of them touches domain content | template convention. The store does not check which op came from whom. |
 | external access | a parent scope can no longer wire a deep endpoint into `affinity/store` **by mutation**: `params.ports` is empty, so every path inside the hive is rejected with `hive_port_boundary` (GH #133) and the two lanes are asserted at the hive path itself (`in_brief`, `in_propose`). A **bootstrap** `params.graph` of a parent still can — the birth topology is the colony author's sovereign design; the seal guards against runtime mutation. | **prevented for mutations, by design not for boot.** |
 | writing | the store declares `write_surface: "internal"` (GH #132): a write op from a sender outside `/…/affinity` is refused with `write_denied` before it reaches the database, whatever the wiring path. Reads stay free from anywhere — which is what keeps a debug probe straight into `./store` a legitimate move. | **prevented.** |
 | `capabilities` | a discovery hint | no. There is no permission layer: whoever can route, may. |
@@ -645,7 +659,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.6.1` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.6.2` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -915,11 +929,11 @@ and re-derived from the alias table that arrived in the same document -- a deter
 of transferred data, which is the line this lane runs on: *transfer what was decided, do not
 decide it again.*
 
-**`subscribers.pack_hash` and `sent_at` are RESET to `""` on the way in**, the one place a column
-is blanked rather than copied. They do not say what the source **decided**, they say what it had
-already **delivered** -- to a cell path in a colony that no longer exists. Carried over, the
-receiving push lane compares a fresh pack against a hash it never sent and stays silent for ever
-(`templates/affinity/push/config.json`), so a reborn member would never get its first identity
+**`subscribers.pack_hash`, `sent_at` and `retry` are RESET to `""` on the way in**, the one place a
+column is blanked rather than copied. They do not say what the source **decided**, they say what it had
+already **delivered** or tried -- to a cell path in a colony that no longer exists. Carried over, the
+receiving push lane compares a fresh pack against a hash it never sent, or finds it parked, and
+stays silent for ever (`templates/affinity/push/config.json`), so a reborn member would never get its first identity
 pack. The subscription *decision* travels untouched: who, which subject, which slots, which
 channel, and `status`.
 
@@ -959,7 +973,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.6.1`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.6.2`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

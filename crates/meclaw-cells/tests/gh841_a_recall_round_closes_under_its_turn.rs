@@ -18,8 +18,10 @@
 //! and stays that way — OR-SN-5). So the hive was asked under `turn_id = ''`,
 //! answered under it, and `assemble` parked the result in silence: the round's
 //! `assistant` row stayed open and every later turn of the session was deferred
-//! behind it. The context of the round DOES carry the key — `collector -> brain`
-//! promotes `hop.turn_id` into `context.turn_id` — so the door falls back to it.
+//! behind it. The context of the round DOES carry the key — `curator -> brain`
+//! promotes `hop.turn_id` into `context.turn_id` (GH #889 put the curator
+//! between collector and brain; the promotion moved with the edge, unchanged) —
+//! so the door falls back to it.
 //!
 //! What this file proves, at the receiver:
 //!
@@ -47,7 +49,7 @@ const BOX: &str = "/m/assistants";
 const GEN: &str = "/m/assistants/scribe";
 const HIVE: &str = "/m/memory-hive";
 
-/// The round's key as `collector -> brain` promotes it (a uuid, not the
+/// The round's key as `curator -> brain` promotes it (a uuid, not the
 /// deterministic `<session>#<n>` of the hop — the two are different keys).
 const ROUND: &str = "0199aa00-0000-7000-8000-000000000841";
 
@@ -214,7 +216,7 @@ fn walk(table: &EdgeTable, from: &str, headers: Headers) -> (Vec<String>, Header
     panic!("the walk did not settle in 24 hops: {trace:?}");
 }
 
-/// The context a round's dispatcher runs under: what `collector -> brain`
+/// The context a round's dispatcher runs under: what `curator -> brain`
 /// promoted (`turn_id`, `session_id`, `iter`) plus what the turn came in with.
 fn round_context() -> Value {
     json!({

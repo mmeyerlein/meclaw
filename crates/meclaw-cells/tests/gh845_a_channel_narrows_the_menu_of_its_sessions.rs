@@ -13,8 +13,10 @@
 //! session. The collector reads the two keys on `in_turn` and nowhere else,
 //! keeps them in the `session` row of its own store, and sends them with every
 //! brain call of the session as the body key `tool_scope` (the `llm` cell filters
-//! that one request, L1). Advice and delegation never state one; the round they
-//! open still carries the scope of the session it belongs to. A change inside a
+//! that one request, L1). Since GH #889 that call leaves on `curate` and the
+//! curator hands `tool_scope` on to the brain unchanged. Advice and delegation
+//! never state one; the round they open still carries the scope of the session
+//! it belongs to. A change inside a
 //! session is taken over and SAID -- a stderr line and `hop.scope_changed`.
 //!
 //! What is pinned here, over the SHIPPED `script_inline` on stdin:
@@ -36,9 +38,10 @@
 //! 8. an advice round of a scoped session carries the session's scope (m-7);
 //! 9. on the shipped road from the member to the spoken collector only the two
 //!    consult edges drop the keys (m-7);
-//! 10. the session row outlives the prune: a session that goes on past an aged
-//!     day close restates the same scope as no change -- no `none -> X` out of a
-//!     row the prune took (fix round 2, m-3).
+//! 10. the session row outlives the collector's cleanup: a session that goes on
+//!     restates the same scope as no change -- no `none -> X` out of a row the
+//!     cleanup took (fix round 2, m-3; since GH #889 the cleanup is the round's
+//!     drop, the prune is gone).
 
 #[path = "support/assemble_cell.rs"]
 mod assemble_cell;
@@ -121,8 +124,10 @@ fn collect(tid: &str, window: Value) -> Vec<Value> {
     )
 }
 
-fn brain(out: &[Value]) -> &Value {
-    on_route(out, "brain")
+/// The brain call of the round. GH #889: it leaves on `curate` (to the curator,
+/// which hands `tool_scope` and the hop on to the brain unchanged) instead of `brain`.
+fn curate(out: &[Value]) -> &Value {
+    on_route(out, "curate")
 }
 
 fn no_menu_write(out: &[Value]) {
@@ -180,7 +185,7 @@ fn a_turn_on_a_scoped_channel_carries_the_scope_to_the_brain() {
         json!([session_row(json!([]), json!(["x"]))]),
         Some(json!([])),
     );
-    let b = brain(&c);
+    let b = curate(&c);
     assert_eq!(b["tool_scope"], json!({"deny": ["x"]}), "{b}");
     assert_eq!(
         hop_str(b, "scope_changed"),
@@ -257,7 +262,7 @@ fn a_tool_result_and_the_next_turn_carry_the_scope_of_the_session() {
         &[],
         bundle_reply("round-check", TURN, &[("c-round-check-read", rows)]),
     );
-    let b = brain(&back);
+    let b = curate(&back);
     assert_eq!(b["tool_scope"], json!({"deny": ["x"]}), "{b}");
     assert_eq!(hop_str(b, "iter"), "1", "this is the re-entry: {b}");
     no_menu_write(&back);
@@ -281,7 +286,7 @@ fn a_tool_result_and_the_next_turn_carry_the_scope_of_the_session() {
         json!([session_row(json!([]), json!(["x"]))]),
         None,
     );
-    assert_eq!(brain(&c)["tool_scope"], json!({"deny": ["x"]}));
+    assert_eq!(curate(&c)["tool_scope"], json!({"deny": ["x"]}));
 }
 
 // ═══════════════════════════════════════ 3. advice states nothing
@@ -315,7 +320,7 @@ fn an_advice_never_states_a_scope() {
     );
     let c = collect(&key, window_row(&reply));
     assert!(
-        brain(&c).get("tool_scope").is_none(),
+        curate(&c).get("tool_scope").is_none(),
         "no session scope, no tool_scope -- whatever the advice's context says: {c:?}"
     );
 }
@@ -362,13 +367,13 @@ fn a_changed_scope_is_taken_over_and_said() {
         "old and new: {stderr}"
     );
     let c = collect(TURN2, window_row(&b));
-    let brain = brain(&c);
+    let cur = curate(&c);
     assert_eq!(
-        brain["tool_scope"],
+        cur["tool_scope"],
         json!({"deny": ["y"]}),
         "the new scope wins"
     );
-    assert_eq!(hop_str(brain, "scope_changed"), "1", "{brain}");
+    assert_eq!(hop_str(cur, "scope_changed"), "1", "{cur}");
 
     // A repeat of the same scope is not a change.
     let (_, quiet) = run_cell(
@@ -389,7 +394,7 @@ fn a_changed_scope_is_taken_over_and_said() {
 #[test]
 fn a_session_without_a_scope_carries_no_tool_scope() {
     let (c, _) = round_of(TURN, json!({}), json!([]), None);
-    let b = brain(&c);
+    let b = curate(&c);
     assert!(b.get("tool_scope").is_none(), "{b}");
     assert_eq!(hop_str(b, "scope_changed"), "0");
 }
@@ -469,8 +474,8 @@ fn a_scope_first_stated_in_a_running_session_is_a_change() {
         "a first statement in a running session is a change from none: {stderr}"
     );
     let c = collect(TURN2, window_row(&b));
-    assert_eq!(hop_str(brain(&c), "scope_changed"), "1", "{c:?}");
-    assert_eq!(brain(&c)["tool_scope"], json!({"deny": ["x"]}));
+    assert_eq!(hop_str(curate(&c), "scope_changed"), "1", "{c:?}");
+    assert_eq!(curate(&c)["tool_scope"], json!({"deny": ["x"]}));
 
     // An empty statement where none stood is no change either.
     let quiet_reply = bundle_reply(
@@ -514,13 +519,13 @@ fn an_advice_round_of_a_scoped_session_carries_the_sessions_scope() {
         ),
     );
     let c = collect(&key, window_row(&reply));
-    let brain = brain(&c);
+    let cur = curate(&c);
     assert_eq!(
-        brain["tool_scope"],
+        cur["tool_scope"],
         json!({"deny": ["x"]}),
-        "R-SN-1: an insertion inherits the channel's scope: {brain}"
+        "R-SN-1: an insertion inherits the channel's scope: {cur}"
     );
-    assert_eq!(hop_str(brain, "scope_changed"), "0");
+    assert_eq!(hop_str(cur, "scope_changed"), "0");
 }
 
 // ═════ 9. nothing on the road from the channel to the collector drops it (m-7 a)
@@ -577,7 +582,7 @@ fn only_the_consult_edges_on_the_road_drop_the_scope() {
     );
 }
 
-// ═══ 10. the session row outlives the prune (rev-T2 fix round 1, m-3)
+// ═══ 10. the session row outlives the cleanup (rev-T2 fix round 1, m-3)
 //
 // Measured on `18dcaf62`: the prune chain deleted the session row with
 // `recorded_at <= boundary` while window rows younger than the boundary stayed.
@@ -585,20 +590,15 @@ fn only_the_consult_edges_on_the_road_drop_the_scope() {
 // the window -- the shape of a first statement in a running session -- and
 // reported `none -> X`, a change that never happened. Without the stamp on the
 // next turn the session would even have lost its scope in silence.
+//
+// GH #889: the prune is gone; the collector's cleanup is now the drop of a
+// round's rows when its answer leaves (OR-KX-V2), and it must spare the session
+// row the same way.
 
 #[test]
 fn a_session_past_its_prune_keeps_its_scope_and_reports_no_change() {
-    let ledger = json!({
-        "header": {"context": {"session_id": "", "turn_id": "",
-                               "col_phase": "prune-ledger", "store_origin": "collector"},
-                   "hop": {"operation": "select", "rows_affected": 1}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-prune-ledger",
-                      "text": json!([{"session_id": SESSION,
-                                      "batched_at": "2026-09-12T00:00:00.000000Z"}])
-                                  .to_string()}]
-    });
-    let cut = assemble(&[], ledger);
-    let tables: Vec<Value> = calls_of(in_phase(&cut, "prune-cut"))
+    let cut = assemble(&[], answer_in(TURN, "sunny"));
+    let tables: Vec<Value> = calls_of(in_phase(&cut, "round-drop"))
         .into_iter()
         .map(|(_, a)| a["table"].clone())
         .collect();
@@ -632,6 +632,6 @@ fn a_session_past_its_prune_keeps_its_scope_and_reports_no_change() {
     let (b, stderr) = run_cell(ASSEMBLE, &[], reply);
     assert!(!stderr.contains("tool scope"), "{stderr}");
     let c = collect(TURN2, window_row(&b));
-    assert_eq!(hop_str(brain(&c), "scope_changed"), "0", "{c:?}");
-    assert_eq!(brain(&c)["tool_scope"], json!({"deny": ["x"]}));
+    assert_eq!(hop_str(curate(&c), "scope_changed"), "0", "{c:?}");
+    assert_eq!(curate(&c)["tool_scope"], json!({"deny": ["x"]}));
 }

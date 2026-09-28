@@ -13,10 +13,11 @@
 //! What decides is the engine behind the call, promoted into `context.engine`
 //! by the member's firewall edge.
 //!
-//! WHY IT IS ALWAYS WRITTEN. `system.*` is durable state in the brain cell,
-//! upserted per slot path -- a path that is not sent is a path that is not
-//! TOUCHED. A slot that is only ever set keeps saying `advise` for the rest of
-//! the agent's life after one duplex call, so a non-duplex turn writes the slot
+//! WHY IT IS ALWAYS WRITTEN. `system.*` is durable state behind the seam (held
+//! by the curator and then the brain cell since GH #889), upserted per slot
+//! path -- a path that is not sent is a path that is not TOUCHED. A slot that
+//! is only ever set keeps saying `advise` for the rest of the agent's life
+//! after one duplex call, so a non-duplex turn writes the slot
 //! EMPTY. Durable state is revoked, never merely abandoned; it is the argument
 //! `system.consult` is already built on.
 //!
@@ -73,7 +74,7 @@ fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
 }
 
 /// The reply that fires the seam: the window leg parked and the round table was
-/// read back in the SAME message (GH #419), so this is where the brain message
+/// read back in the SAME message (GH #419), so this is where the `curate` message
 /// is assembled -- and the context of a store reply is the context of the turn,
 /// because `context` travels the whole message lifecycle.
 fn seam_with(ctx_extra: &[(&str, &str)]) -> serde_json::Value {
@@ -81,7 +82,9 @@ fn seam_with(ctx_extra: &[(&str, &str)]) -> serde_json::Value {
         {"role": "user", "text": "how is the weather?"},
         {"role": "assistant", "text": "sunny"}
     ]);
-    let payload = serde_json::json!({"turns": turns, "bytes": 0, "dropped": 0, "capped": 0});
+    // GH #889: the window leg of collector@5.0.0 carries the round's turns and
+    // the deferral marks, and no `bytes`/`dropped`/`capped` -- there is no cap.
+    let payload = serde_json::json!({"turns": turns, "deferred": 0, "deferred_turns": []});
     let rows = serde_json::json!([{"turn_id": "t1", "iter": 0, "role": "leg-window",
                                    "turn": payload.to_string(), "fired": 0}]);
     let mut doc = serde_json::json!({
@@ -99,11 +102,12 @@ fn seam_with(ctx_extra: &[(&str, &str)]) -> serde_json::Value {
     doc
 }
 
-/// The mode slot of the brain message -- the one path this cell writes into the
-/// `instructions` family, beside a charter it never touches.
+/// The mode slot of the seam message -- the one path this cell writes into the
+/// `instructions` family, beside a charter it never touches. GH #889: the seam
+/// route is `curate` (it was `brain`), and the curator behind it carries the slot on.
 fn mode_text(out: &[serde_json::Value]) -> String {
     assert_eq!(
-        out[0]["header"]["route"], "brain",
+        out[0]["header"]["route"], "curate",
         "the seam is the first message of the emission: {out:?}"
     );
     let slot = &out[0]["system"]["instructions"]["mode"];

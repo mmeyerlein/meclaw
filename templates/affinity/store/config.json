@@ -59,7 +59,8 @@
         "slots": "json",
         "pack_hash": "text",
         "status": "text",
-        "sent_at": "text"
+        "sent_at": "text",
+        "retry": "json"
       },
       "proposals": {
         "id": "text",

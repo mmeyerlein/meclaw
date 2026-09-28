@@ -190,10 +190,10 @@ def run_retro(case, root, troot, *extra):
 
 class ThresholdTests(unittest.TestCase):
     def test_every_metric_has_a_threshold_from_the_one_file(self):
-        """Eleven metrics, one file, and the file is what the code reads."""
+        """Thirteen metrics, one file, and the file is what the code reads."""
         spec = wr.load_thresholds()
         ids = [m["id"] for m in spec["metrics"]]
-        self.assertEqual(ids, [f"Q{n}" for n in range(1, 12)])
+        self.assertEqual(ids, [f"Q{n}" for n in range(1, 14)])
         for m in spec["metrics"]:
             self.assertIn("threshold", m)
             self.assertIn("title", m)
@@ -536,8 +536,8 @@ class MetricTests(unittest.TestCase):
         self.retro = (self.root / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
         self.verlauf = (self.root / "plans" / "retro" / "RETRO.md").read_text(encoding="utf-8")
 
-    def test_all_eleven_metrics_are_in_the_report(self):
-        for n in range(1, 12):
+    def test_every_metric_is_in_the_report(self):
+        for n in range(1, len(wr.load_thresholds()["metrics"]) + 1):
             self.assertRegex(self.retro, rf"\|\s*Q{n}\s*\|")
 
     def test_report_stays_under_forty_lines(self):
@@ -623,10 +623,12 @@ class MetricTests(unittest.TestCase):
         q = wr.metric_row(self.retro, "Q10")
         self.assertTrue(q["wert"].endswith("%"))
 
-    def test_verlauf_line_carries_the_wave_and_all_eleven_columns(self):
+    def test_verlauf_line_carries_the_wave_and_every_column(self):
         row = [l for l in self.verlauf.splitlines() if WAVE in l]
         self.assertEqual(len(row), 1)
-        self.assertEqual(row[0].count("|"), 15)
+        # Date, wave, one cell per metric, breaches: that many cells + 1.
+        self.assertEqual(row[0].count("|"),
+                         len(wr.load_thresholds()["metrics"]) + 4)
 
     def test_verlauf_line_is_idempotent(self):
         run_retro(self, self.root, self.troot)
@@ -931,10 +933,252 @@ class CacheTests(unittest.TestCase):
             root / "plans" / WAVE, troot, [SESSION]), wr.load_thresholds())
         render.update_history(path, WAVE, rows)
         lines = path.read_text(encoding="utf-8").splitlines()
-        self.assertIn("| Q10 | Q11 | Verstoesse |", "\n".join(lines))
+        self.assertIn("| Q10 | Q11 |", "\n".join(lines))
         padded = [l for l in lines if "welle-alt" in l][0]
-        self.assertEqual(padded.count("|"), 15)
+        self.assertEqual(padded.count("|"),
+                         len(wr.load_thresholds()["metrics"]) + 4)
         self.assertTrue(padded.endswith("| n/a | Q7 |"), padded)
+
+
+PLAN_SESSION = "99999999-0000-0000-0000-000000000001"
+BUILD_SESSION = "99999999-0000-0000-0000-000000000002"
+OPUS, HAIKU = "claude-opus-x", "claude-haiku-x"
+
+
+def _session(troot, sid, prompt, lines, agents=None):
+    """A session transcript in `troot`, with its subagents beside it.
+
+    `agents` maps an agent id to the lines of its transcript; the first line
+    of every transcript is the prompt that started it.
+    """
+    troot.mkdir(parents=True, exist_ok=True)
+    (troot / (sid + ".jsonl")).write_text(
+        "\n".join([_user(lines[0][0], prompt)] + [l[1] for l in lines]) + "\n",
+        encoding="utf-8")
+    subs = troot / sid / "subagents"
+    for aid, agent_lines in (agents or {}).items():
+        subs.mkdir(parents=True, exist_ok=True)
+        (subs / f"agent-{aid}.jsonl").write_text(
+            "\n".join([_user(agent_lines[0][0], "Du liest den Code fuer den Planer.")]
+                      + [l[1] for l in agent_lines]) + "\n", encoding="utf-8")
+
+
+def _planning_wave(case, units_scale=1):
+    """The fixture wave plus a planning session and a build session.
+
+    Known numbers (the formula of `cache_ttl_calc.py` `units`):
+
+    * planning session, Opus: 100k input + 2M 5-minute writes x 1,25 + 20M
+      reads x 0,05 + 80k output x 5 = 4,0M; its reader, Haiku: 200k input +
+      1M one-hour writes x 2 + 6M reads x 0,1 + 40k output x 5 = 3,0M.
+      Together 7,0M, from 22:30 to 01:30 over midnight: 3,0 h.
+    * build session, Opus: 1M input + 8M writes x 1,25 + 400M reads x 0,05
+      + 800k output x 5 = 35M -- the planning is 20 % of it. Counted
+      together with the planning it would read 17 %.
+    """
+    root, troot = fixture_wave(case)
+    s = units_scale
+    _session(troot, PLAN_SESSION,
+             f"Du planst die Welle T: plans/{WAVE}/HANDOVER-PLANUNG.md zuerst lesen.",
+             [("2025-12-31T22:30:00Z",
+               _turn("2025-12-31T22:30:10Z", "req_p1", 100_000 * s, 2_000_000 * s,
+                     20_000_000 * s, 1, model=OPUS)),
+              # The same call streamed a second block: one call, not two.
+              ("2025-12-31T22:30:11Z",
+               _turn("2025-12-31T22:30:11Z", "req_p1", 100_000 * s, 2_000_000 * s,
+                     20_000_000 * s, 80_000 * s, model=OPUS)),
+              ("2026-01-01T01:30:00Z",
+               _turn("2026-01-01T01:30:00Z", "req_p2", 0, 0, 0, 0, model=OPUS))],
+             agents={"ppp1": [
+                 ("2025-12-31T23:00:00Z",
+                  _turn("2025-12-31T23:00:05Z", "req_r1", 200_000 * s, 1_000_000 * s,
+                        6_000_000 * s, 40_000 * s, model=HAIKU,
+                        cc1h=1_000_000 * s))]})
+    _session(troot, BUILD_SESSION,
+             f"Du faehrst plans/{WAVE}/DISPATCH-BAU.md.",
+             [("2026-01-01T09:00:00Z",
+               _turn("2026-01-01T09:00:05Z", "req_x1", 1_000_000, 8_000_000,
+                     400_000_000, 800_000, model=OPUS))])
+    return root, troot
+
+
+def _retro_text(root):
+    return (root / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
+
+
+class PlanningTests(unittest.TestCase):
+    """Q12: what the planning of a wave cost (GH #891, PLANUNG.md rule 8).
+
+    The planning of wave Gate ran 22 agents for about 69 million input
+    equivalents; since 28.09. one planner plans in one session under a
+    ceiling of 15 million. The number says whether the rule holds.
+    """
+
+    def test_q12_counts_the_planning_session_and_its_agents(self):
+        root, troot = _planning_wave(self)
+        self.assertEqual(wr.main([WAVE, "--root", str(root),
+                                  "--transcripts", str(troot)]), 0)
+        q = wr.metric_row(_retro_text(root), "Q12")
+        self.assertEqual(q["wert"], "7,0 Mio / 3,0 h")
+        self.assertEqual(q["schwelle"], "≤ 15 Mio")
+        self.assertEqual(q["verdikt"], "OK")
+        # The planning session and its reader are no build tokens.
+        self.assertIn("20 % der Bau-Token (Ziel ≤ 20 %)", q["vorschlag"])
+
+    def test_q12_uses_the_one_call_count_of_scan(self):
+        """Exact, below the rounding of the table: 7 000 000 units."""
+        root, troot = _planning_wave(self)
+        evidence = wr.metrics.collect(root / "plans" / WAVE, troot)
+        spec = [m for m in wr.load_thresholds()["metrics"] if m["id"] == "Q12"][0]
+        units = sum(wr.metrics.input_equivalents(s["calls"], spec["weights"])
+                    for session in evidence["planning"] for s in session)
+        self.assertEqual(units, 7_000_000)
+
+    def test_q12_named_with_planning_option(self):
+        """The second half of a split wave: its planning session names the
+        first half's folder only, so the marker cannot find it."""
+        root, troot = _planning_wave(self)
+        other = "99999999-0000-0000-0000-000000000003"
+        _session(troot, other, "Du planst die Welle T2 gleich mit.",
+                 [("2026-01-02T08:00:00Z",
+                   _turn("2026-01-02T08:00:00Z", "req_o", 1_000_000, 0, 0, 0,
+                         model=OPUS)),
+                  ("2026-01-02T08:30:00Z",
+                   _turn("2026-01-02T08:30:00Z", "req_o2", 1_000_000, 0, 0, 0,
+                         model=OPUS))])
+        wr.main([WAVE, "--root", str(root), "--transcripts", str(troot),
+                 "--planning", other])
+        q = wr.metric_row(_retro_text(root), "Q12")
+        self.assertEqual(q["wert"], "2,0 Mio / 0,5 h")
+        wr.main([WAVE, "--root", str(root), "--transcripts", str(troot),
+                 "--planning", f"{other},{PLAN_SESSION}"])
+        q = wr.metric_row(_retro_text(root), "Q12")
+        # Two sessions are two wall clocks, not the day and a half between.
+        self.assertEqual(q["wert"], "9,0 Mio / 3,5 h")
+
+    def test_q12_na_without_a_planning_session(self):
+        root, troot = fixture_wave(self)
+        run_retro(self, root, troot)
+        q = wr.metric_row(_retro_text(root), "Q12")
+        self.assertEqual(q["wert"], "n/a")
+        self.assertEqual(q["verdikt"], "n/a")
+        self.assertEqual(q["vorschlag"], "keine Planungssitzung am Marker")
+
+    def test_q12_breach_above_15m(self):
+        root, troot = _planning_wave(self, units_scale=3)
+        wr.main([WAVE, "--root", str(root), "--transcripts", str(troot)])
+        text = _retro_text(root)
+        q = wr.metric_row(text, "Q12")
+        self.assertEqual(q["wert"], "21,0 Mio / 3,0 h")
+        self.assertEqual(q["verdikt"], "VERSTOSS")
+        self.assertIn("60 % der Bau-Token (Ziel ≤ 20 %)", q["vorschlag"])
+        self.assertIn("PLANUNG.md", q["vorschlag"])
+        verstoss = [l for l in text.splitlines() if l.startswith("Verstöße")][0]
+        self.assertIn("Q12", verstoss)
+
+
+def _head(strand):
+    return (f"---\nstrang: {strand}\nbranch: welle-t/{strand}\nissues: [#1]\n"
+            f"basis: abc1234\ngate: \"\"\ncommits: []\n---\n\n# Strang {strand}\n")
+
+
+def _supplement_wave(case, parts, reports, extra=None):
+    """A wave with plan parts `<S>-...md` and reports `berichte/<S>.md`;
+    returns the Q13 row of its retro."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    root = pathlib.Path(tmp.name)
+    wave = root / "plans" / WAVE
+    (wave / "berichte").mkdir(parents=True)
+    if parts is not None:
+        (wave / "plan-parts").mkdir()
+        for name in parts:
+            (wave / "plan-parts" / name).write_text("# Strang\n", encoding="utf-8")
+    for strand in reports:
+        (wave / "berichte" / f"{strand}.md").write_text(_head(strand), encoding="utf-8")
+    for name, text in (extra or {}).items():
+        (wave / "berichte" / name).write_text(text, encoding="utf-8")
+    wr.main([WAVE, "--root", str(root), "--transcripts", str(root / "nowhere")])
+    return wr.metric_row(_retro_text(root), "Q13"), _retro_text(root)
+
+
+class SupplementTests(unittest.TestCase):
+    """Q13: strands that ran without a plan part of their own (GH #891).
+
+    Wave Gate planned eleven parts and built two strands more (C2, M4) --
+    a planning that has to be patched during the build did not plan.
+    """
+
+    PARTS = ["A-abstention-878.md", "L-lokaler-pfad-879.md", "R-pipeline-880.md"]
+
+    def test_q13_counts_reports_without_a_plan_part(self):
+        q, _ = _supplement_wave(
+            self, self.PARTS, ["A", "L", "R", "C2"],
+            # A report without a head block is no strand (review focus 3).
+            extra={"minors.md": "# Minors\n\n- N1 ein Satz.\n"})
+        self.assertEqual(q["wert"], "0,33 (1/3: C2)")
+
+    def test_q13_a_struck_strand_is_no_supplement(self):
+        """A plan part without a report (the strand was struck) still counts
+        as planned, and nothing was added (review focus 2)."""
+        q, _ = _supplement_wave(self, self.PARTS, ["A", "R"])
+        self.assertEqual(q["wert"], "0,00 (0/3)")
+
+    def test_q13_names_every_supplement_in_order(self):
+        parts = [f"{s}-x.md" for s in "ACHJLMNPRSZ"]
+        q, _ = _supplement_wave(self, parts, list("ACHJLMNPRS") + ["M4", "C2"])
+        self.assertEqual(q["wert"], "0,18 (2/11: C2, M4)")
+
+    def test_q13_na_without_plan_parts(self):
+        q, _ = _supplement_wave(self, None, ["A", "C2"])
+        self.assertEqual(q["wert"], "n/a")
+        self.assertEqual(q["vorschlag"], "kein plan-parts/ in der Welle")
+
+    def test_q13_has_no_threshold(self):
+        spec = [m for m in wr.load_thresholds()["metrics"] if m["id"] == "Q13"][0]
+        self.assertIsNone(spec["threshold"])
+        q, text = _supplement_wave(self, self.PARTS, ["A", "L", "R", "C2", "D9"])
+        self.assertEqual(q["verdikt"], "BEFUND")
+        self.assertEqual(q["schwelle"], "—")
+        self.assertEqual(q["vorschlag"], "—")
+        verstoss = [l for l in text.splitlines() if l.startswith("Verstöße")][0]
+        self.assertNotIn("Q13", verstoss)
+
+
+def _cells(line):
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+class HistoryColumnTests(unittest.TestCase):
+    """The history carries Q12 and Q13 right of Q11 (GH #891)."""
+
+    def test_retro_table_has_q12_and_q13_columns(self):
+        from retro import render
+        self.assertIn("| Q11 | Q12 | Q13 | Verstoesse |", render.HISTORY_HEAD[-2])
+        root, troot = _planning_wave(self)
+        wr.main([WAVE, "--root", str(root), "--transcripts", str(troot)])
+        lines = (root / "plans" / "retro" / "RETRO.md").read_text(
+            encoding="utf-8").splitlines()
+        head = _cells(render.HISTORY_HEAD[-2])
+        row = dict(zip(head, _cells([l for l in lines if WAVE in l][0])))
+        self.assertEqual(row["Q12"], "7,0 Mio / 3,0 h")
+        self.assertEqual(row["Q13"], "n/a")
+        # The breaches stay the last column, not under Q13.
+        self.assertRegex(row["Verstoesse"], r"^Q\d+( Q\d+)*$")
+
+    def test_the_committed_history_has_the_same_columns(self):
+        """Every line of `plans/retro/RETRO.md` stands under the head it is
+        written for -- the lines older than Q12 and Q13 carry `–` there."""
+        from retro import render
+        committed = REPO / "plans" / "retro" / "RETRO.md"
+        if not committed.is_file():
+            self.skipTest("plans/retro/RETRO.md not in this tree")
+        table = [l for l in committed.read_text(encoding="utf-8").splitlines()
+                 if l.startswith("|")]
+        self.assertEqual(table[0], render.HISTORY_HEAD[-2])
+        width = len(_cells(table[0]))
+        for line in table[2:]:
+            self.assertEqual(len(_cells(line)), width, line)
 
 
 class MissingSourceTests(unittest.TestCase):
@@ -946,7 +1190,7 @@ class MissingSourceTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         text = (root / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
         self.assertIn("n/a", text)
-        for n in (6, 7, 9, 10, 11):
+        for n in (6, 7, 9, 10, 11, 12, 13):
             self.assertEqual(wr.metric_row(text, f"Q{n}")["wert"], "n/a")
 
     def test_an_empty_wave_directory_is_not_an_error(self):
@@ -981,6 +1225,14 @@ class CheckAndReadmeTests(unittest.TestCase):
             self.assertIn(m["id"], text)
             self.assertIn(m["title"], text)
         self.assertIn(spec["decided"], text)
+
+    def test_readme_writes_the_planning_ceiling_in_full(self):
+        """`15000000` formatted with `:g` reads `1.5e+07` -- a rule nobody
+        should have to decode (Q12)."""
+        from retro import render
+        text = render.readme(wr.load_thresholds())
+        self.assertIn("| <= 15000000 |", text)
+        self.assertNotIn("e+0", text)
 
     def test_the_committed_readme_matches_the_thresholds_file(self):
         """The README is generated, so a hand edit to either half is drift."""

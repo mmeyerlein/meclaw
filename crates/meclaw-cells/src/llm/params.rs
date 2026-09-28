@@ -87,6 +87,27 @@ pub enum ReasoningWire {
     TopLevel,
 }
 
+/// How the cell marks the provider's prompt cache (GH #890).
+///
+/// The cell that calls the provider is the one that knows what it sent, so it
+/// is the one that steers the cache and stamps when it goes cold (H-27-1); the
+/// curator sets its alarm on that stamp (OR-KX-G2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheMode {
+    /// No marking: the request is byte-identical to one from before the param
+    /// existed, and no expiry is stamped.
+    #[default]
+    Off,
+    /// The provider caches on its own; the cell sends one stable
+    /// `prompt_cache_key` per cell (derived from its path) on both wires.
+    Implicit,
+    /// Chat-completions: `cache_control` marks at the end of the system
+    /// message and at the end of the stable history. The Responses wire has no
+    /// block marks and falls back to `implicit` (OR-KX-C1).
+    Breakpoints,
+}
+
 /// Which provider wire format the cell speaks (P10).
 ///
 /// Deliberately orthogonal to `provider`: the Responses API is the SAME vendor
@@ -308,6 +329,75 @@ pub struct LlmParams {
     /// [`REQUIREMENT_MAX_BYTES`].
     #[serde(default)]
     pub requirement: Option<String>,
+    /// GH #890: how the cell marks the provider's prompt cache. Default `off`
+    /// = the request of before, byte for byte, and no expiry stamp. A package
+    /// key: the registry pushes it with the model it belongs to.
+    #[serde(default)]
+    pub cache_mode: CacheMode,
+    /// GH #890: how long the provider keeps a written prefix warm, in seconds.
+    /// With `cache_mode` not `off` and a value above 0, every answer carries
+    /// `hop.cache_expires_at` = the end of the provider call + this. 0 (the
+    /// default) = the expiry is unknown and nothing is stamped -- a local
+    /// engine's prefix cache has no deadline. `≥ 3600` asks for the one-hour
+    /// mark under `breakpoints`. A package key.
+    #[serde(default)]
+    pub cache_ttl_s: u64,
+    /// GH #890: the model's context window in tokens. The cell does nothing
+    /// with it but stamp it (`hop.context_window`, only above 0); the curator
+    /// computes its compression point from it. A package key.
+    #[serde(default)]
+    pub context_window: u64,
+}
+
+/// GH #890: the values `cache_mode` takes, as the refusal names them.
+const CACHE_MODES: &[&str] = &["off", "implicit", "breakpoints"];
+
+/// GH #890: a whole-number param as the cell takes it -- a JSON integer ≥ 0,
+/// or a string of 1 to 20 ASCII digits. The string form exists because
+/// `${VAR}` substitution only ever yields a string, and a TTL is a knob an
+/// instance may well set from its environment (review focus (2) of the plan;
+/// OR-KX.C.1). Anything else is refused by the param's name and never echoed.
+fn whole_number(key: &str, value: &Value) -> Result<u64, String> {
+    let parsed = match value {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s)
+            if (1..=20).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            s.parse::<u64>().ok()
+        }
+        _ => None,
+    };
+    parsed.ok_or_else(|| {
+        format!("{key} must be a whole number of at least 0 (a JSON integer or a string of digits)")
+    })
+}
+
+/// GH #890: the raw params with the cache knobs checked BY NAME before serde
+/// sees them. A serde refusal of an enum names the variant it did not know,
+/// never the field, and would not take the digit strings `whole_number`
+/// accepts -- so both are settled here, on a copy.
+fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
+    let mut raw = raw.clone();
+    if let Some(obj) = raw.as_object_mut() {
+        if let Some(mode) = obj.get("cache_mode")
+            && !mode.as_str().is_some_and(|m| CACHE_MODES.contains(&m))
+        {
+            return Err(format!(
+                "cache_mode must be one of {}",
+                CACHE_MODES
+                    .iter()
+                    .map(|m| format!("'{m}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        for key in ["cache_ttl_s", "context_window"] {
+            if let Some(v) = obj.get_mut(key) {
+                *v = Value::from(whole_number(key, v)?);
+            }
+        }
+    }
+    Ok(raw)
 }
 
 /// GH #853: the upper bound of `model_prompt`, in bytes. A model's quirks are
@@ -326,7 +416,8 @@ pub const REQUIREMENT_MAX_BYTES: usize = 2 * 1024;
 /// `reasoning` is in the set because it outranks `reasoning_effort`; leaving
 /// it out would let a turn change the deliberation after all. This list is
 /// the contract the registry pushes against — a change here is a contract
-/// change.
+/// change. GH #890 adds the three that belong to a model as much as its name
+/// does: how its provider caches, for how long, and how large its window is.
 pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "model",
     "base_url",
@@ -340,6 +431,9 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "external_timeout_ms",
     "provider_extra",
     "model_prompt",
+    "cache_mode",
+    "cache_ttl_s",
+    "context_window",
 ];
 
 /// GH #853: the absolute floor of the backstop margin, in ms.
@@ -429,8 +523,8 @@ impl LlmParams {
     /// message never echoes the `api_key` value (Plan § 12-API_KEY).
     #[doc(hidden)]
     pub fn parse(raw: &serde_json::Value) -> Result<Self, String> {
-        let p: Self =
-            serde_json::from_value(raw.clone()).map_err(|e| format!("invalid LlmParams: {e}"))?;
+        let raw = with_cache_knobs_checked(raw)?;
+        let p: Self = serde_json::from_value(raw).map_err(|e| format!("invalid LlmParams: {e}"))?;
         // `provider` is the wire protocol, not the vendor: `"openai"` is the
         // OpenAI-compatible HTTP API and so far the only protocol with a
         // translate behind it. A vendor swap happens through `base_url`.
@@ -691,6 +785,10 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "base_url_allow",
     // GH #858: the prose requirement the registry translates.
     "requirement",
+    // GH #890: the provider cache and the window, three package keys.
+    "cache_mode",
+    "cache_ttl_s",
+    "context_window",
     // P10 auth dimension.
     "auth",
     "auth_ref",
@@ -1497,5 +1595,97 @@ mod tests {
             err.contains("openai"),
             "error must mention provider constraint: {err}"
         );
+    }
+
+    // ───── GH #890: the provider cache and the window ─────
+
+    #[test]
+    fn cache_params_parse_and_default_off() {
+        let p = LlmParams::parse(&api_key_raw()).unwrap();
+        assert_eq!(p.cache_mode, CacheMode::Off, "no cache marking by default");
+        assert_eq!(p.cache_ttl_s, 0, "0 = the expiry is unknown");
+        assert_eq!(p.context_window, 0, "0 = no window stated");
+        for (mode, want) in [
+            ("off", CacheMode::Off),
+            ("implicit", CacheMode::Implicit),
+            ("breakpoints", CacheMode::Breakpoints),
+        ] {
+            let mut raw = api_key_raw();
+            raw["cache_mode"] = json!(mode);
+            raw["cache_ttl_s"] = json!(300);
+            raw["context_window"] = json!(128_000);
+            let p = LlmParams::parse(&raw).unwrap();
+            assert_eq!(p.cache_mode, want, "{mode}");
+            assert_eq!(p.cache_ttl_s, 300);
+            assert_eq!(p.context_window, 128_000);
+        }
+    }
+
+    #[test]
+    fn an_unknown_cache_mode_is_refused() {
+        for bad in [json!("sometimes"), json!("OFF"), json!(1), json!(null)] {
+            let mut raw = api_key_raw();
+            raw["cache_mode"] = bad.clone();
+            let err = LlmParams::parse(&raw).unwrap_err();
+            assert!(
+                err.contains("cache_mode"),
+                "{bad}: the error names the param: {err}"
+            );
+        }
+    }
+
+    /// Review focus (2): `${VAR}` substitution only ever yields a string, so a
+    /// TTL or a window from the environment arrives as `"300"`. Digits are read
+    /// as the number; anything else is refused by name, never guessed.
+    #[test]
+    fn a_ttl_or_window_from_an_env_substitution_is_read_as_a_number() {
+        let mut raw = api_key_raw();
+        raw["cache_ttl_s"] = json!("3600");
+        raw["context_window"] = json!("200000");
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(p.cache_ttl_s, 3600);
+        assert_eq!(p.context_window, 200_000);
+        for key in ["cache_ttl_s", "context_window"] {
+            for bad in [
+                json!("3OO"),
+                json!(""),
+                json!(" 300"),
+                json!(-1),
+                json!(1.5),
+                json!(true),
+            ] {
+                let mut raw = api_key_raw();
+                raw[key] = bad.clone();
+                let err = LlmParams::parse(&raw).unwrap_err();
+                assert!(
+                    err.contains(key),
+                    "{key}={bad}: the error names the param: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cache_keys_are_package_keys() {
+        for key in ["cache_mode", "cache_ttl_s", "context_window"] {
+            assert!(MODEL_PACKAGE_KEYS.contains(&key), "{key} is no package key");
+            assert!(KNOWN_PARAM_KEYS.contains(&key), "{key} unknown");
+            assert!(!IMMUTABLE_PARAM_KEYS.contains(&key), "{key} immutable");
+        }
+        let p = LlmParams::parse(&api_key_raw()).unwrap();
+        let upd = json!({"cache_mode": "implicit", "cache_ttl_s": 300, "context_window": 64000})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, overlay) = p.apply_update(&upd).unwrap();
+        assert_eq!(merged.cache_mode, CacheMode::Implicit);
+        assert_eq!(merged.cache_ttl_s, 300);
+        assert_eq!(merged.context_window, 64_000);
+        assert_eq!(overlay.len(), 3, "{overlay:?}");
+        let bad = json!({"cache_mode": "always"}).as_object().unwrap().clone();
+        assert!(matches!(
+            p.apply_update(&bad),
+            Err(super::ParamUpdateError::Invalid(_))
+        ));
     }
 }

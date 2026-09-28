@@ -979,8 +979,10 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
         "the live tree draws a different number of member-to-container edges than the \
          `member` template on disk declares"
     );
+    // 35 -> 34 with GH #889: the `./assistants -> .` exit on `prune` left the
+    // member together with the lane (no assistant emits `prune` any more).
     assert_eq!(
-        declared, 35,
+        declared, 34,
         "the member's own edges to and from its assistants container are the member \
          template's, drawn ONCE at member instantiation. SIXTEEN reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
@@ -1016,7 +1018,7 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          `in_delegation`, which does NOT pass the firewall: its exit stamps `in_turn`, and a \
          delegation is no turn of the conversation, and \u{2014} since GH #834 \u{2014} \
          `./affinity`'s answer to a generation's brief, answer and error alike, re-stamped \
-         to `in_briefing` when the member's own reply-to token says `inside`. NINETEEN \
+         to `in_briefing` when the member's own reply-to token says `inside`. EIGHTEEN \
          leave it: recall, `sidecar` THREE times \u{2014} TWICE since GH #607 \u{2014} the one lane \
          this level SORTS rather than forwards, the memory section onto the very door \
          `extraction` used to take and every other section into `./apps`, on a section-blind edge \
@@ -1025,16 +1027,19 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          since member@1.9.0, onto `./channels` as `in_advise` for the three sections a live \
          channel takes (`fact`, `context`, `correction`) \u{2014} a fan-out and not a switch, so \
          the app edge is untouched and an app that offered one of them still gets it \u{2014} \
-         write, turn_write, prune, error, `build`, the \
+         write, turn_write, error, `build`, the \
          second fan-out of `write` that fires the close pass into the memory hive since \
          GH #447, the second fan-out of `turn_write` that writes the EPISODE into that same \
          hive since GH #527 \u{2014} the only path in this substrate from a conversation into \
          an `episodes` table, and the one this level declined until then \u{2014} the TWO exits \
          an `answer` has since GH #454 (one down to `./channels` \
          guarded on `context.channel_node`, one out at the rim as the guarded default for a \
-         turn that arrived through the member's own door), `pack_ack` since GH #458 \
-         \u{2014} the receipt of an identity ./affinity pushed INTO a generation, which nothing \
-         at this level consumes and nothing at this level can \u{2014} and, since GH #555, \
+         turn that arrived through the member's own door), `pack_ack` ONCE \u{2014} since \
+         GH #877 every receipt goes into `./affinity` as `in_pack_ack` and none leaves at \
+         the rim, because a pack counts as delivered only when its receipt comes back clean \
+         and above this level nobody consumes one; a receipt that names no row \
+         (`context.pack_sub`) arrives with an empty one and `./push` drops it \
+         \u{2014} and, since GH #555, \
          the TWO receipt lanes of that generation's session keeper: `export_done`, which \
          says the keeper wrote its own ledger out and where, and `dump`, the receipt of one \
          applied import part. Neither is consumed here any more \u{2014} the cell that read \

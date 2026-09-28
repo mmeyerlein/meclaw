@@ -1,0 +1,64 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "event_id": {
+          "type": "string",
+          "required": false
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": false
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": false
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": false
+        },
+        "fired_at": {
+          "type": "string",
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The moment the model's cache goes cold. It carries no schedule of its own: `./policy` orders one one-shot schedule named `cache` per call (and removes the order of the call before), for the `cache_expires_at` the tap stamped.",
+    "use_when": "Always, as part of the curator. It is not a poll (GH #553): every strike has a name and a time, and a model nobody calls stays silent.",
+    "not_in_scope": "No cron, no recurring schedule. What a strike means is the `in_cache_expired` lane the hive's edge stamps on it; a strike for a call that is no longer the newest is dropped by `./policy`."
+  }
+}

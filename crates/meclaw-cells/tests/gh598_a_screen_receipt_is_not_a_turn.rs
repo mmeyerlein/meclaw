@@ -22,9 +22,8 @@
 //!    screen is grown from and refuses the `answer` clause by name.
 //! 2. **A receipt raises no turn.** The member carries a receipt it cannot hand
 //!    to an app out of the level on `error`, with the original lane on
-//!    `hop.kind` — the treatment `pack_ack` already documents: a hive that has
-//!    no lane for a receipt does not grow one, the receipt is evidence for
-//!    whoever operates the colony.
+//!    `hop.kind`: a hive that has no lane for a receipt does not grow one, the
+//!    receipt is evidence for whoever operates the colony.
 //!
 //! # What is booted
 //!
@@ -306,7 +305,8 @@ fn assistant_edges(name: &str) -> Vec<Value> {
 }
 
 /// The colony around the member: one driver, and a drain for every lane the
-/// member emits. Draining all ten is the point — an undrained lane is a dead
+/// member emits. Draining all nine is the point (ten until GH #889 took `prune`
+/// out of the chain) — an undrained lane is a dead
 /// letter, and this test would then be reading a silence.
 fn main_config() -> Value {
     let mut edges = vec![
@@ -331,7 +331,8 @@ fn main_config() -> Value {
         "error",
         "write",
         "turn_write",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "build",
         "close_report",
         "export_done",

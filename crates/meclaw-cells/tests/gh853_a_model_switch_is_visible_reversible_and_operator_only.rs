@@ -428,6 +428,11 @@ fn the_package_keys_are_the_contract() {
             "external_timeout_ms",
             "provider_extra",
             "model_prompt",
+            // GH #890: how the model's provider caches, for how long, and how
+            // large its window is -- a contract change, made on purpose.
+            "cache_mode",
+            "cache_ttl_s",
+            "context_window",
         ]
     );
     // Every package key is a known, run-time-mutable param.

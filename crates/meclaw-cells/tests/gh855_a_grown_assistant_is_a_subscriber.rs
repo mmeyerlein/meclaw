@@ -6,14 +6,15 @@
 //! Two halves, the cheap one first:
 //!
 //! 1. **The recipe.** `grow_level assistant` renders a SECOND declaration at
-//!    the builder's `model_registry_scope` -- three push edges, one per brain,
-//!    and one announcement edge -- only when that setting is set, only for the
+//!    the builder's `model_registry_scope` -- six push edges, one per brain and
+//!    since GH #877 one per curator summarizer, and one announcement edge --
+//!    only when that setting is set, only for the
 //!    shipped `assistant` template, and only for a generation under that scope.
 //!    Without it the manifest is the level and nothing else, byte for byte the
 //!    one `gh466` pins. And `meclaw-os` turns it on for its own builder.
 //! 2. **The tree.** The shipped shell, grown into the organism's empty seed:
 //!    the rendered declarations commit at the door, the edges stand in the
-//!    edge table, and the receipt that follows lands three `subscribers` rows
+//!    edge table, and the receipt that follows lands six `subscribers` rows
 //!    in the registry's own store, read back out of its `cell.db` -- and,
 //!    since GH #858, a member grown by the same recipe lands four more, one per
 //!    memory cell, on the tokens the environment binds.
@@ -177,12 +178,26 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
             )
         })
         .collect();
-    assert_eq!(pushes.len(), 3, "one push edge per brain: {pushes:?}");
-    for (rim, (to, cond)) in ["talky", "talky-chat", "cogny"].iter().zip(&pushes) {
+    assert_eq!(
+        pushes.len(),
+        6,
+        "one push edge per brain, and since GH #877 one per curator summarizer: {pushes:?}"
+    );
+    let cells = [
+        ("talky", "brain"),
+        ("talky-chat", "brain"),
+        ("cogny", "brain"),
+        ("talky", "curator/summarizer"),
+        ("talky-chat", "curator/summarizer"),
+        ("cogny", "curator/summarizer"),
+    ];
+    for ((rim, cell), (to, cond)) in cells.iter().zip(&pushes) {
+        // A summarizer's push rides onto the rim it stands behind; that rim's
+        // `in_model` door hands it on to the curator (OR-KX-P5).
         assert_eq!(to, &format!("./acme/members/alex/assistants/scribe/{rim}"));
         assert!(
             cond.contains("hop.route == 'in_model'")
-                && cond.contains(&format!("hop.subscriber == '{GEN}/{rim}/brain'")),
+                && cond.contains(&format!("hop.subscriber == '{GEN}/{rim}/{cell}'")),
             "{cond}"
         );
     }
@@ -258,13 +273,19 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
             {"cell_path": format!("{GEN}/talky-chat/brain"), "start_model": "${MODEL_SURFACE}",
              "requirement": need("talky/brain")},
             {"cell_path": format!("{GEN}/cogny/brain"), "start_model": "${MODEL_CORE}",
-             "requirement": need("cogny/brain")}
+             "requirement": need("cogny/brain")},
+            {"cell_path": format!("{GEN}/talky/curator/summarizer"), "start_model": "${MODEL_CORE}",
+             "requirement": need("curator/summarizer")},
+            {"cell_path": format!("{GEN}/talky-chat/curator/summarizer"),
+             "start_model": "${MODEL_CORE}", "requirement": need("curator/summarizer")},
+            {"cell_path": format!("{GEN}/cogny/curator/summarizer"), "start_model": "${MODEL_CORE}",
+             "requirement": need("curator/summarizer")}
         ])
     );
 
     // A template that is not the shipped generation names its own brains, and
     // the recipe does not guess them.
-    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.1");
+    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.2");
     assert_eq!(other.len(), 1, "{other:?}");
     // And a scope the generation does not lie under renders nothing either.
     let elsewhere = render(json!({"model_registry_scope": "/elsewhere"}), &template);
@@ -562,8 +583,20 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
     let want = vec![
         ("/os/argus/judge".to_string(), String::new()),
         (format!("{GEN}/cogny/brain"), "m-core".to_string()),
+        (
+            format!("{GEN}/cogny/curator/summarizer"),
+            "m-core".to_string(),
+        ),
         (format!("{GEN}/talky-chat/brain"), "m-surface".to_string()),
+        (
+            format!("{GEN}/talky-chat/curator/summarizer"),
+            "m-core".to_string(),
+        ),
         (format!("{GEN}/talky/brain"), "m-surface".to_string()),
+        (
+            format!("{GEN}/talky/curator/summarizer"),
+            "m-core".to_string(),
+        ),
         (
             format!("{MEMBER}/memory-hive/closer"),
             "m-closer".to_string(),
@@ -591,8 +624,8 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
     }
     assert_eq!(
         got, want,
-        "the grown generation's three brains and the member's four memory cells are \
-         subscribers, with the start values the substitution resolved, beside the shell's own \
+        "the grown generation's three brains and three curator summarizers (GH #877) and \
+         the member's four memory cells are subscribers, with the start values the substitution resolved, beside the shell's own \
          judge"
     );
     // GH #863: and each composite has its way back in the edge table -- three
@@ -860,10 +893,11 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
     let mut moved = false;
     for _ in 0..10 {
         let before = mock.recorded_requests().await.len();
-        // Sent as the composite's own collector, the one sender the seal lets
-        // reach the brain; what is measured is the brain's wire, not the turn.
+        // Sent as the composite's own curator, the cell that feeds the brain
+        // since GH #889 (it was the collector before); what is measured is the
+        // brain's wire, not the turn.
         h.send_from(
-            Path::new(&format!("{GEN}/talky/collector")),
+            Path::new(&format!("{GEN}/talky/curator")),
             MessageBuilder::new(Path::new(&brain))
                 .body(Body::Inline(json!({"messages": [
                     {"origin": "user", "type": "text", "text": "which model?"}]})))

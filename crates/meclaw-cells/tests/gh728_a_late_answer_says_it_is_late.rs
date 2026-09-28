@@ -48,11 +48,13 @@ fn an_ordinary_turns_answer_carries_the_keys_empty() {
 fn only_the_answer_route_hands_out_the_label() {
     let (key, _) = open_advice("k-7", json!([{"turn_id": T, "deadline_ms": 1_000}]));
     let out = assemble(&[], answer_in(&key, "It is 21C."));
-    let store = in_phase(&out, "ans-w");
+    // GH #889: the answer is no longer stored; the store op beside it is the
+    // round's drop (`round-drop`), and that one stays on the key too.
+    let store = in_phase(&out, "round-drop");
     assert_eq!(
         hop_str(store, "turn_id"),
         key,
-        "the store write stays on the key"
+        "the store op stays on the key"
     );
     assert!(store["header"].get("late").is_none(), "{store}");
 }

@@ -21,10 +21,12 @@
 //!   ref chain, because a level may declare on behalf of the composite it
 //!   references (`assistant` declares `consult_cogny` for its surface: the
 //!   errand is the level's topology and standalone there is no core to consult);
-//! * the names the collector serves ITSELF, under the two switches that already
-//!   decide whether the lane is answered instead of refused (GH #512);
 //! * `["*"]`, which asks for everything an answerer has and therefore declares
 //!   no name at all.
+//!
+//! The names the collector served ITSELF (GH #512) are no third source any
+//! more: `memory_recall` went to the member's memory hive in GH #552 and
+//! `thread_recall` went with the collector's round table in GH #889.
 //!
 //! And an answerer is derivable too: the tool hive answers whatever its own
 //! `schemas` cell answers for `["*"]`, and a composite answers the names its own
@@ -144,14 +146,6 @@ fn param(c: &Composite, key: &str) -> Option<Value> {
     found
 }
 
-/// The default a knob carries when no layer overrides it — read off the shipped
-/// cell, so a changed default moves this gate with it.
-fn assemble_default(key: &str) -> Value {
-    read("collector/assemble/config.json")
-        .map(|c| c["params"][key].clone())
-        .unwrap_or(Value::Null)
-}
-
 fn declared(c: &Composite) -> Vec<String> {
     param(c, "tools")
         .and_then(|v| v.as_array().cloned())
@@ -161,34 +155,6 @@ fn declared(c: &Composite) -> Vec<String> {
         // `["*"]` asks for everything an answerer has and names nothing.
         .filter(|s| s != "*")
         .collect()
-}
-
-fn on(c: &Composite, key: &str) -> bool {
-    let v = param(c, key).unwrap_or_else(|| assemble_default(key));
-    match v.as_str() {
-        // The two switches are strings, and "" is how a template says OFF: the
-        // lane answers a typed refusal instead of a result, so the tool must not
-        // be on the menu either (GH #512).
-        Some(s) => !s.trim().is_empty(),
-        None => !v.is_null(),
-    }
-}
-
-/// The names the collector answers ITSELF (GH #512), decided by the switch that
-/// already decides whether the lane is answered instead of refused.
-///
-/// It was two until GH #552. `memory_call_tier` decided the second, and the
-/// second was `memory_recall` — served out of the collector's own recall port
-/// under a schema it had typed by hand against a contract one level up. The
-/// member's memory hive declares and answers it now, so it reaches this
-/// composite's menu the ordinary way: DECLARED in `params.tools` and routed by an
-/// edge, which is what `menu` below already measures.
-fn self_served(c: &Composite) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    if on(c, "thread_recall") {
-        out.insert("thread_recall".to_string());
-    }
-    out
 }
 
 /// Every `hop.tool_name == '<name>'` an edge of this composite is conditioned on:
@@ -221,16 +187,15 @@ fn routed(c: &Composite) -> BTreeSet<String> {
     out
 }
 
-/// The menu this composite can carry: what it declares AND somebody answers,
-/// plus what it answers itself.
+/// The menu this composite can carry: what it declares AND somebody answers.
+/// Since GH #889 the collector answers nothing itself, so nothing is added to
+/// it on the collector's behalf.
 fn menu(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
     let routed = routed(c);
-    let mut out: BTreeSet<String> = declared(c)
+    declared(c)
         .into_iter()
         .filter(|n| hive.contains(n) || routed.contains(n))
-        .collect();
-    out.extend(self_served(c));
-    out
+        .collect()
 }
 
 // ───────────────────────────────────────── the charter texts a model is given
@@ -340,7 +305,6 @@ fn vocabulary(hive: &BTreeSet<String>) -> BTreeSet<String> {
     for c in COMPOSITES {
         v.extend(routed(c));
         v.extend(declared(c));
-        v.extend(self_served(c));
     }
     v
 }

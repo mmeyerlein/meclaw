@@ -1,36 +1,27 @@
-//! GH #55 — a talky instantiated from the shipped library carries the schema of
-//! the tool it serves, and the model's time-range arguments survive the trip.
+//! GH #55 — a talky instantiated from the shipped library carries the model's
+//! time-range arguments out of the composite intact.
 //!
 //! The issue's done-when had two halves. The edge half (Task 14) was that the
-//! composite serves its reserved names itself; this file carries the SCHEMA
-//! half: `templates/talky/brain/seed/system.jsonl` ships the schema of the tool
-//! the composite implements, so the model is told the tool exists before any
-//! menu tick has run.
+//! composite serves its reserved names itself; the SCHEMA half was that
+//! `templates/talky/brain/seed/system.jsonl` shipped the schema of the tool the
+//! composite implemented. Both are gone: `memory_recall` left in `talky@5.0.0`
+//! (GH #552, the member's memory hive declares and answers it), and
+//! `thread_recall` -- the last name the composite served itself, and with it the
+//! whole brain seed -- left in `talky@6.0.0` (GH #889, R-27-1: the curator owns
+//! the window, so no recall over the collector's own round table remains).
 //!
-//! **Since `talky@5.0.0` that is ONE tool, not two** (GH #552). `memory_recall`
-//! was the other, and it was seeded here as a hand-typed projection of the memory
-//! hive's own contract — a template that answers no recall declaring the schema of
-//! one. The hive declares it now, and a standalone talky (which is what this file
-//! boots) has no memory beside it and is right not to offer the name at all. What
-//! is left to measure here is the seed that DOES ship, and the other half of the
-//! time-range question: the two window arguments the model produced leave the
-//! composite intact, on the ordinary tool lane, addressed to whoever wired the
-//! memory. `gh552_the_memory_hive_declares_the_recall_it_answers.rs` carries the
+//! What is left to measure is the other half of the time-range question: the two
+//! window arguments the model produced leave the composite intact, on the
+//! ordinary tool lane, addressed to whoever wired the memory.
+//! `gh552_the_memory_hive_declares_the_recall_it_answers.rs` carries the
 //! declaration half from the hive's side.
-//!
-//! Without the seed the brain arrives at the provider with no `tools[]` at all,
-//! and a model that is never shown a tool cannot call it.
 //!
 //! # Why this goes to the wire and reads the shipped bytes
 //!
 //! The chain here is the shipped one: the bytes of `templates/talky/` (every
-//! `config.json` **and** the brain's `seed/`), `bootstrap_from_filesystem`, and
-//! the real `LlmCellFactory`, which loads the seed exactly the way a boot loads
-//! it. The assertion is on what the provider recorded and on what came out of
-//! the composite — never on the seed file's own text, which would pass on a
-//! seed the loader never reads. The sibling pin for that pattern is
-//! `gh342_the_shipped_judge_tool_reaches_the_wire.rs`, whose seed this one
-//! copies the form of.
+//! `config.json` and every `seed/` beside it), `bootstrap_from_filesystem`, and
+//! the real `LlmCellFactory`. The assertion is on what came out of the
+//! composite, never on a file's own text.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -61,10 +52,8 @@ fn shipped() -> bool {
     templates_root().join("talky/config.json").is_file()
 }
 
-/// The shipped template, copied cell by cell. Unlike `talky_composite.rs` this
-/// copy takes the `seed/*.jsonl` files as well — they are exactly what is under
-/// test here, and a harness that dropped them would prove nothing about the
-/// library it claims to boot.
+/// The shipped template, copied cell by cell, with the `seed/*.jsonl` files
+/// beside each config — the way instantiation lays a template out.
 fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
     let src = &resolve_template_ref(src);
     std::fs::create_dir_all(dst).unwrap();
@@ -129,10 +118,6 @@ const NEVER: &str = "0 0 0 1 1 *";
 /// The round these turns are spoken in, in the affinity vocabulary the audience
 /// gate speaks (ADR-0002 E8).
 const AUDIENCE_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
-
-/// The two tools the composite serves itself, in the alphabetical order
-/// `extract_tools` puts them on the wire in.
-const SERVED_TOOLS: [&str; 1] = ["thread_recall"];
 
 /// The time range the model asks about. These are the MODEL's own argument
 /// values: they exist nowhere in the tree, so seeing them come out of the
@@ -204,11 +189,12 @@ fn main_config() -> Value {
         // reply exit
         {"from": "./talky", "to": "/park",
          "condition": "has(hop.route) && hop.route == 'answer'"},
-        // the remaining declared exits, drained so nothing dead-letters
+        // the remaining declared exits, drained so nothing dead-letters.
+        // GH #889: `prune` left the list -- talky no longer takes `in_prune`
+        // and so never emits the report.
         {"from": "./talky", "to": "/park",
          "condition": "has(hop.route) && (hop.route == 'write' || hop.route == 'turn_write' \
-          || hop.route == 'sidecar' || hop.route == 'prune' || hop.route == 'error' \
-          || hop.route == 'tool')"}
+          || hop.route == 'sidecar' || hop.route == 'error' || hop.route == 'tool')"}
     ]}}})
 }
 
@@ -248,7 +234,22 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // GH #889: the curator hive carries a second `llm` cell, its summarizer.
+    // It is pointed at a closed local port, so nothing here can reach a real
+    // provider and nothing it asks can take a scripted answer meant for the
+    // brain.
+    if root.join(SUMMARIZER).is_file() {
+        patch(root, SUMMARIZER, |v| {
+            v["params"]["base_url"] = json!(CLOSED_PORT);
+            v["params"]["model"] = json!("summarizer-mock");
+        });
+    }
 }
+
+/// The curator's summarizer inside the copied talky (`curator@1.0.0`, GH #888).
+const SUMMARIZER: &str = "main/talky/curator/summarizer/config.json";
+/// An endpoint nothing listens on: a call there fails at once and costs nothing.
+const CLOSED_PORT: &str = "http://127.0.0.1:9/v1";
 
 async fn boot(
     td: &tempfile::TempDir,
@@ -338,54 +339,10 @@ fn asks_about_the_window() -> meclaw_testing::mock_http::MockResponse {
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
-/// **The assertion GH #55 turns on.** The shipped tree, booted as shipped: the
-/// very first request the brain makes carries a `tools[]` array in which the tool
-/// this composite serves is declared. Nobody wrote a schema — the seed did.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_shipped_talky_declares_the_tool_it_serves_to_the_provider() {
-    if !shipped() {
-        return;
-    }
-    let mock = MockOpenAI::start(vec![asks_about_the_window()]).await;
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &mock.base_url);
-    let (h, _recall_rx, mut park_rx) = boot(&td).await;
-
-    h.send(turn("what did we talk about in the first week of august?"))
-        .await;
-    // The tool call leaving the composite is what proves the round got as far as
-    // the provider AND back; it is asserted properly in the sibling test below.
-    let _ = leaving_on_the_tool_lane(&mut park_rx).await;
-
-    let reqs = mock.recorded_requests().await;
-    assert!(
-        !reqs.is_empty(),
-        "the brain must have reached the provider at all"
-    );
-    let tools = reqs[0].tools().expect(
-        "the shipped talky's request must carry tools[] — without it the model is never \
-                 shown the tool this composite serves and the owner is back to \
-                 hand-writing a schema",
-    );
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["function"]["name"].as_str())
-        .collect();
-    assert_eq!(
-        names, SERVED_TOOLS,
-        "the composite declares exactly the tool it serves itself. `memory_recall` is \
-         NOT among them since GH #552: a standalone talky has no member beside it, so \
-         there is no memory to answer the call and no declaration to offer: {tools:?}"
-    );
-
-    h.shutdown().await;
-}
-
-/// The other half of the time-range question: the two window ARGUMENTS the model
-/// produced leave the composite intact. A schema that declared `memory_recall`
-/// without `window_from`/`window_to` would pass the test above and still leave
-/// every time-range question answered out of a point query — so the values are
-/// asserted, not the shape.
+/// The time-range question: the two window ARGUMENTS the model produced leave
+/// the composite intact. A road that dropped `window_from`/`window_to` on the
+/// way would still carry a call, and leave every time-range question answered
+/// out of a point query — so the values are asserted, not the shape.
 ///
 /// Since GH #552 the call leaves on the ORDINARY tool lane, which is the entire
 /// change: the dispatcher names the tool, an edge OUTSIDE this composite knows
@@ -431,50 +388,4 @@ async fn the_models_own_window_leaves_the_composite_intact() {
     );
 
     h.shutdown().await;
-}
-
-/// GH #55 Step 3: the seed carries the tool the composite serves itself
-/// and **nothing else**. No identity, no instructions, no persona — the
-/// retraction the README carries draws the line at tools the composite serves,
-/// and a seeded persona would cross it: the composite carries the topology, the
-/// instance carries the agent.
-#[test]
-fn the_brain_seed_carries_tools_and_nothing_else() {
-    if !shipped() {
-        return;
-    }
-    let seed = templates_root().join("talky/brain/seed/system.jsonl");
-    let text = std::fs::read_to_string(&seed).expect("the shipped brain seed is on disk");
-    let rows: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(
-        rows.len(),
-        2,
-        "the schema header plus exactly one tool row. It was two until GH #552: the \
-         second was `memory_recall`, seeded here as a hand-typed copy of a contract \
-         one level up, and a seed is written once at birth so the first menu tick \
-         replaced it anyway: {rows:?}"
-    );
-
-    let header: Value = meclaw_core::serde_json::from_str(rows[0]).expect("line 1 parses");
-    assert!(
-        header["schema"].is_object(),
-        "line 1 is the schema header: {}",
-        rows[0]
-    );
-
-    let slots: Vec<String> = rows[1..]
-        .iter()
-        .map(|l| {
-            let row: Value = meclaw_core::serde_json::from_str(l).expect("a data row parses");
-            row["slot_path"].as_str().unwrap_or_default().to_string()
-        })
-        .collect();
-    for slot in &slots {
-        assert!(
-            slot.starts_with("tools."),
-            "the talky brain seeds tools and nothing else — {slot} is not a tool"
-        );
-    }
-    let expected: Vec<String> = SERVED_TOOLS.iter().map(|t| format!("tools.{t}")).collect();
-    assert_eq!(slots, expected, "the one tool the composite serves itself");
 }

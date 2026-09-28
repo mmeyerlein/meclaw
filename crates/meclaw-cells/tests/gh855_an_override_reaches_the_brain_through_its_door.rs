@@ -17,7 +17,9 @@
 //! 4. the seal still holds: an edge from outside onto `./brain` is refused
 //!    at the mutation door with `hive_port_boundary`, so the door is the only
 //!    way in;
-//! 5. both composites carry the door, and it bypasses their collector;
+//! 5. both composites carry the door, and it bypasses their collector; since
+//!    GH #889 a second door beside it takes exactly the pushes for the
+//!    curator's own summarizer onto `./curator`;
 //! 6. the hand's package key list IS the llm cell's.
 //!
 //! Free of a paid call by construction: the only provider is the in-process
@@ -33,7 +35,7 @@ use meclaw_cells::timer::TimerCellFactory;
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, MutationOutcome, bootstrap_from_filesystem,
 };
-use meclaw_core::serde_json::{Value, json};
+use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
@@ -259,6 +261,15 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!(START);
     });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    // No push of this file names it: the road above takes `/talky/brain` only.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!(START);
+    });
 }
 
 struct Ports {
@@ -481,8 +492,29 @@ async fn an_edge_from_outside_onto_the_brain_is_still_refused() {
     h.shutdown().await;
 }
 
+/// Whether an edge condition takes a message with this hop, asked of the
+/// colony's own CEL evaluator.
+fn takes(condition: Option<&str>, hop: &Map<String, Value>) -> bool {
+    let Some(src) = condition else {
+        return true;
+    };
+    let cond = meclaw_colony::cel_eval::parse_condition(src)
+        .unwrap_or_else(|e| panic!("condition {src:?}: {e}"));
+    matches!(
+        meclaw_colony::cel_eval::evaluate_condition(&cond, &Map::new(), hop),
+        Ok(true)
+    )
+}
+
 /// Both composites carry the door, it goes straight to `./brain`, and no edge
 /// of theirs hands `in_model` to the collector: a params body is not a turn.
+///
+/// GH #889 puts a second `llm` cell into each of them, the summarizer of the
+/// curator hive, and with it a second door: a push addressed to
+/// `<composite>/curator/summarizer` goes onto `./curator` and nowhere else,
+/// and the brain's door lets exactly that push pass. Measured with the colony's
+/// CEL over every edge from `.`, so a door that took every `in_` lane would be
+/// caught as well.
 #[test]
 fn both_composites_open_the_door_straight_onto_their_brain() {
     if !shipped() {
@@ -502,17 +534,30 @@ fn both_composites_open_the_door_straight_onto_their_brain() {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        let doors: Vec<&Value> = edges
-            .iter()
-            .filter(|e| {
-                e["from"] == "."
-                    && e["condition"]
-                        .as_str()
-                        .is_some_and(|c| c.contains("'in_model'"))
-            })
-            .collect();
-        assert_eq!(doors.len(), 1, "{composite}: {doors:?}");
-        assert_eq!(doors[0]["to"], "./brain", "{composite}: {doors:?}");
+        let reached = |cell: &str| -> Vec<String> {
+            let hop = json!({"route": "in_model",
+                             "subscriber": format!("/x/{composite}/{cell}")})
+            .as_object()
+            .cloned()
+            .unwrap();
+            edges
+                .iter()
+                .filter(|e| e["from"] == ".")
+                .filter(|e| takes(e["condition"].as_str(), &hop))
+                .map(|e| e["to"].as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+        assert_eq!(
+            reached("brain"),
+            vec!["./brain".to_string()],
+            "{composite}: a push for the brain goes straight onto it, past the collector"
+        );
+        assert_eq!(
+            reached("curator/summarizer"),
+            vec!["./curator".to_string()],
+            "{composite}: a push for the curator's summarizer goes onto `./curator` and \
+             never onto the brain or the collector"
+        );
         let brain = read_json(&templates_root().join(composite).join("brain/config.json"));
         assert!(
             brain["contract"]["consumes"]["body"]["params"].is_object(),

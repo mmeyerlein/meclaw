@@ -272,8 +272,11 @@ fn main_config() -> Value {
                "condition": "has(hop.route) && hop.route == 'turn'",
                "modifier": {"set_hop": {"route": "'in_turn'"}}}),
         // THE seam: collector → brain, iteration promoted, budget restored.
+        // GH #889: the collector's seam route is `curate` since collector@5.0.0
+        // (it was `brain`); this tree has no curator, so the brain stand-in takes
+        // the whole, uncut round straight off the seam.
         json!({"from": "./collect", "to": "./brain",
-               "condition": "has(hop.route) && hop.route == 'brain'",
+               "condition": "has(hop.route) && hop.route == 'curate'",
                "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                             "session_id": "hop.session_id",
                                             "iter": "hop.iter"},
@@ -404,21 +407,15 @@ async fn boot_workshop() -> Workshop {
     write(root, "main/config.json", &main_config());
     copy_cells(&template_dir("dispatcher"), &root.join("main/dispatcher"));
     copy_cells(&template_dir("collector"), &root.join("main/collect"));
-    // The workshop turn takes ten brain entries, so the seam cap gets headroom;
-    // the round slate must carry every result of the turn for the final report.
-    // `turn_write` is switched OFF: it ships on since GH #298 because a shipped
-    // agent has to remember something, and this workshop is the other case --
-    // there is no memory anywhere in this tree, so every per-turn episode would
-    // leave through a route nothing routes and dead-letter once per turn.
+    // The workshop turn takes ten brain entries, so the seam cap gets headroom.
+    // GH #889: that is the only knob left to turn. collector@5.0.0 hands the
+    // round on uncut, so `round_bytes`/`tool_chars` are gone and the slate
+    // carries every result of the turn by construction; and it writes no
+    // episodes (the curator does), so there is no `turn_write` to switch off.
     tune_collector(
         root,
         "main/collect/assemble/config.json",
-        &[
-            ("max_iter", "16"),
-            ("round_bytes", "200000"),
-            ("tool_chars", "8000"),
-            ("turn_write", "0"),
-        ],
+        &[("max_iter", "16")],
     );
     write(
         root,

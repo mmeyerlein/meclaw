@@ -1,20 +1,21 @@
-//! meclaw-os 1 -- the collector hive assembles a context window (GitHub #27).
+//! meclaw-os 1 -- the collector hive assembles the running round (GitHub #27).
 //!
 //! The collector grew from an example pattern (a code cell that fans tool
-//! results back in) into a hive class: the one place that decides what enters
-//! an agent's context window. Three claims are pinned here, one per group:
+//! results back in) into a hive class: the fan-in of an agent's round. Two
+//! claims are pinned here, one per group:
 //!
-//! 1. ASSEMBLY -- a turn is written into the rolling window BEFORE the window
-//!    is read, so the context a brain gets ends with the turn it is answering
-//!    and begins with what was said before it. That is the whole "an agent
-//!    knows only its current turn" gap, closed by a table instead of by luck.
-//! 2. EVICTION -- what leaves the window is deterministic policy: a turn cap
-//!    that runs in the store and a byte cap that runs here, both configuration,
-//!    neither a model judgement. Whole turns leave, never halves, and the turn
-//!    being answered is never the one evicted.
-//! 3. THE SEAM -- everything the brain sees leaves through ONE message on ONE
-//!    route. Window, memory bundle and tool round meet there and nowhere else,
-//!    which is what lets a later agent split happen behind the seam.
+//! 1. ASSEMBLY -- a turn is written BEFORE its round is read back, so the round
+//!    a brain gets carries the turn it is answering, and every leg the round
+//!    declared (window, memory, brief) is waited for and nothing else.
+//! 2. THE SEAM -- everything the brain sees of a round leaves through ONE
+//!    message on ONE route. Turn, memory bundle and tool round meet there and
+//!    nowhere else, which is what lets the curator stand behind the seam.
+//!
+//! GH #889 (`collector@5.0.0`) took the third claim away: the rolling window,
+//! its turn and byte caps and the eviction policy over them now belong to the
+//! curator hive behind `curate` (R-27-1), so the seam is named `curate` and
+//! carries the running round uncut, without an earlier turn. The close, prune
+//! and episode lanes went with the history they read.
 //!
 //! Everything runs the shipped `params.script_inline` against real stdin
 //! documents, so nothing is mocked and nothing is spent.
@@ -187,28 +188,6 @@ fn emitted(out: &[serde_json::Value]) -> usize {
         .count()
 }
 
-/// A bundle reply whose legs carry their OWN `rows_affected` — the shape the
-/// prune report reads its two counts out of since GH #419.
-fn reply_as_bundle(
-    phase: &str,
-    legs: &[(&str, i64)],
-    session: &str,
-    turn: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "header": {"context": {"session_id": session, "turn_id": turn, "iter": "0",
-                               "col_phase": phase, "store_origin": "collector"},
-                   "hop": {"operation": "bundle", "bundle_errors": 0,
-                           "rows_affected": legs.iter().map(|(_, n)| n).sum::<i64>()}},
-        "messages": legs.iter().map(|(id, _)| serde_json::json!(
-            {"origin": "tool", "type": "tool_result", "id": id, "text": "null"}))
-            .collect::<Vec<_>>(),
-        "results": legs.iter().map(|(id, n)| serde_json::json!(
-            {"tool_call_id": id, "operation": "delete", "rows_affected": n,
-             "duration_ms": 0})).collect::<Vec<_>>()
-    })
-}
-
 /// The reply of the ONE message a turn opens with (GH #419).
 ///
 /// `turn-w` (the row), `turn-open` (the open-round check) and `win` (the
@@ -236,7 +215,6 @@ fn read_back_id(phase: &str) -> &'static str {
     match phase {
         "collect" => "c-collect-read",
         "round-check" => "c-round-check-read",
-        "close-fire" => "c-close-read",
         other => panic!("no read-back id for phase `{other}`"),
     }
 }
@@ -259,10 +237,13 @@ fn turn_row(id: &str, role: &str, content: &str) -> serde_json::Value {
                        "content": content, "recorded_at": id})
 }
 
-/// A materialised `leg-window` row, as the `win` step writes it.
-fn leg_window_row(turns: serde_json::Value, dropped: i64, capped: i64) -> serde_json::Value {
-    let payload = serde_json::json!({"turns": turns, "bytes": 0,
-                                     "dropped": dropped, "capped": capped});
+/// A materialised `leg-window` row, as the `turn-open` step writes it.
+///
+/// GH #889: the leg carries the round's turns and its deferral bookkeeping and
+/// nothing of a cap -- `bytes`, `dropped` and `capped` went with the window.
+fn leg_window_row(turns: serde_json::Value) -> serde_json::Value {
+    let payload = serde_json::json!({"turns": turns, "deferred": 0,
+                                     "deferred_turns": []});
     serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-window",
                        "turn": payload.to_string(), "fired": 0})
 }
@@ -315,11 +296,19 @@ fn an_inbound_turn_is_written_before_the_window_is_read() {
         .iter()
         .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("args"))
         .collect();
+    // GH #889: the per-turn episode scan left with `turn_write` -- episodes are
+    // the curator's to write now -- so the bundle ends on the legend. OR-KX-63/68:
+    // the departures' own cut and the two age reads (turns, round) run in front
+    // of the open-round check, and the session's departures are read behind the
+    // round read.
     assert_eq!(
         calls.iter().map(|a| a["table"].clone()).collect::<Vec<_>>(),
-        ["turns", "round", "turns", "session", "roster", "turns"],
-        "the row, the open-round check, the window, the session row and the legend \
-         (GH #845/#847), the per-turn scan: {calls:?}"
+        [
+            "turns", "round", "turns", "round", "round", "turns", "round", "session", "roster"
+        ],
+        "the row, the departures' cut, the two age reads, the open-round check, the \
+         round read, the departures, the session row and the legend (GH #845/#847): \
+         {calls:?}"
     );
     let op = calls[0].clone();
     assert_eq!(op["operation"], "insert");
@@ -354,13 +343,29 @@ fn the_turn_chain_asks_for_open_rounds_before_it_reads_the_window() {
         .iter()
         .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("args"))
         .collect();
-    // Four calls since GH #298: the row, the round check, the window, and --
-    // `turn_write` ships ON -- the per-turn episode scan, deliberately NEXT to
-    // the machine rather than inside it (the round check keeps deciding what
-    // happens to this turn). Six since GH #845/#847: the session row and the
-    // legend are read beside the window, in front of the scan.
-    assert_eq!(calls.len(), 6, "{calls:?}");
-    let check = calls[1].clone();
+    // Four calls since GH #298: the row, the round check, the window, and the
+    // per-turn episode scan. Six since GH #845/#847: the session row and the
+    // legend are read beside the window. Five since GH #889: the episode scan
+    // went with `turn_write` (the curator writes episodes now). Nine since
+    // OR-KX-63/68: the departures' cut and the two age reads in front of the
+    // check and the read of the session's departures behind the window.
+    assert_eq!(calls.len(), 9, "{calls:?}");
+    let ids: Vec<&str> = out[0]["messages"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .map(|t| t["id"].as_str().expect("call id"))
+        .collect();
+    let at = |id: &str| {
+        ids.iter()
+            .position(|i| *i == id)
+            .unwrap_or_else(|| panic!("no `{id}` in {ids:?}"))
+    };
+    assert!(
+        at("c-open-turn") < at("c-open-round") && at("c-open-round") < at("c-open-win"),
+        "the row, then the check, then the window: {ids:?}"
+    );
+    let check = calls[at("c-open-round")].clone();
     assert_eq!(check["operation"], "select");
     assert_eq!(check["table"], "round");
     assert_eq!(check["where"]["session_id"], "s1");
@@ -372,14 +377,25 @@ fn the_turn_chain_asks_for_open_rounds_before_it_reads_the_window() {
 }
 
 #[test]
-fn the_window_read_carries_the_turn_cap_into_the_store() {
+fn the_round_read_is_session_scoped_and_carries_no_turn_cap() {
     // No open round: the chain continues exactly as before #103.
+    //
+    // GH #889: this read used to carry `window_turns` into the store as a
+    // `limit`, newest first. The window is the curator's now (R-27-1), so the
+    // read takes the session's rows oldest first and uncut, and the script keeps
+    // the round's own turn and the deferred ones riding in it (`round_turns`).
     let out = emit(lane_doc(
         "in_turn",
         serde_json::json!([{"origin": "user", "type": "text", "text": "hello"}]),
     ));
+    // Found by its id, not its index: OR-KX-68 put three ops in front.
     let op: serde_json::Value = serde_json::from_str(
-        out[0]["messages"][2]["text"]
+        out[0]["messages"]
+            .as_array()
+            .expect("calls")
+            .iter()
+            .find(|t| t["id"] == "c-open-win")
+            .expect("the window call")["text"]
             .as_str()
             .expect("the window call"),
     )
@@ -392,22 +408,26 @@ fn the_window_read_carries_the_turn_cap_into_the_store() {
             .expect("columns")
             .iter()
             .any(|c| c == "deferred"),
-        "the window read carries the deferral stamp along"
+        "the round read carries the deferral stamp along"
     );
     assert_eq!(
         op["where"]["session_id"], "s1",
-        "the window is session-scoped"
+        "the round read is session-scoped"
     );
     assert_eq!(op["order_by"][0]["col"], "id");
-    assert_eq!(op["order_by"][0]["dir"], "desc");
-    assert_eq!(op["limit"], 12, "window_turns default");
+    assert_eq!(op["order_by"][0]["dir"], "asc");
+    assert!(
+        op["limit"].is_null(),
+        "no turn cap reaches the store -- the collector cuts nothing (GH #889): {op}"
+    );
 }
 
 #[test]
 fn the_window_leg_is_chronological_and_carries_both_roles() {
-    // The store answers newest first (order by id desc); a conversation is read
-    // oldest first, and BOTH roles are in it -- an assistant turn the agent
-    // cannot see is how a conversation loses its own thread.
+    // Whatever order the store answers in, a round is read oldest first, and
+    // BOTH roles are in it -- an assistant turn the agent cannot see is how a
+    // conversation loses its own thread. (GH #889: the read is ascending now,
+    // and the script still sorts by id rather than trust the reply's order.)
     let rows = serde_json::json!([
         turn_row("3", "user", "third"),
         turn_row("2", "assistant", "second"),
@@ -431,7 +451,7 @@ fn the_window_leg_is_chronological_and_carries_both_roles() {
 fn the_gate_waits_for_every_declared_leg_and_only_for_those() {
     // Without a memory tier the window leg is the whole expectation, so a gate
     // that sees it fires. The counter-direction is the next test.
-    let rows = serde_json::json!([leg_window_row(serde_json::json!([]), 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(serde_json::json!([]))]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
     assert_eq!(emitted(&out), 1);
     // GH #419: what a complete read-back produces is the ASSEMBLY itself, not a
@@ -439,8 +459,10 @@ fn the_gate_waits_for_every_declared_leg_and_only_for_those() {
     // trailing select of this very bundle -- of two legs parking concurrently
     // exactly one reads a complete set -- so the three messages the decision
     // used to cost (`gate`, `fire-guard`, `fire`) are gone with it.
+    // GH #889: the seam is `curate` -- the curator stands between the
+    // collector and the brain.
     assert_eq!(
-        out[0]["header"]["route"], "brain",
+        out[0]["header"]["route"], "curate",
         "a complete round assembles: {}",
         out[0]
     );
@@ -449,14 +471,14 @@ fn the_gate_waits_for_every_declared_leg_and_only_for_those() {
 #[test]
 fn a_configured_memory_leg_is_waited_for() {
     let over = [("memory_tier", "0")];
-    let rows = serde_json::json!([leg_window_row(serde_json::json!([]), 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(serde_json::json!([]))]);
     let out = emit_with(&over, reply_doc("collect", "bundle", 1, rows));
     assert!(
         out.is_empty(),
         "with the memory leg on, a window-only gate is incomplete and terminal"
     );
     let both = serde_json::json!([
-        leg_window_row(serde_json::json!([]), 0, 0),
+        leg_window_row(serde_json::json!([])),
         {"turn_id": "t1", "iter": 0, "role": "leg-memory", "turn": "{}", "fired": 0}
     ]);
     let out = emit_with(&over, reply_doc("collect", "bundle", 2, both));
@@ -475,156 +497,22 @@ fn a_lost_election_emits_nothing() {
         out.is_empty(),
         "an incomplete read-back means another hop owns the fire"
     );
-    let rows = serde_json::json!([leg_window_row(serde_json::json!([]), 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(serde_json::json!([]))]);
     let out = emit(reply_doc("collect", "bundle", 1, rows.clone()));
     assert_eq!(emitted(&out), 1, "a complete read-back assembles");
-    assert_eq!(out[0]["header"]["route"], "brain");
+    // GH #889: the seam is `curate`, not `brain`.
+    assert_eq!(out[0]["header"]["route"], "curate");
 
     // ... and exactly once: a leg the store handed back TWICE is a redelivery,
     // not a complete set, and firing on it would assemble the same turn twice.
     let twice = serde_json::json!([
-        leg_window_row(serde_json::json!([]), 0, 0),
-        leg_window_row(serde_json::json!([]), 0, 0)
+        leg_window_row(serde_json::json!([])),
+        leg_window_row(serde_json::json!([]))
     ]);
     assert!(
         emit(reply_doc("collect", "bundle", 2, twice)).is_empty(),
         "a redelivered leg must park"
     );
-}
-
-// ===================================================================== EVICTION
-
-#[test]
-fn the_byte_cap_drops_whole_turns_from_the_oldest_end() {
-    let over = [("window_bytes", "20")];
-    // Four turns of ten characters each: the newest two fit in twenty bytes,
-    // the third would be thirty and everything from there is dropped.
-    let rows = serde_json::json!([
-        turn_row("4", "user", "dddddddddd"),
-        turn_row("3", "assistant", "cccccccccc"),
-        turn_row("2", "user", "bbbbbbbbbb"),
-        turn_row("1", "user", "aaaaaaaaaa")
-    ]);
-    let out = emit_with(&over, open_reply(serde_json::json!([]), rows));
-    let payload: serde_json::Value =
-        serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
-            .expect("payload");
-    let turns = payload["turns"].as_array().expect("turns");
-    assert_eq!(turns.len(), 2, "two whole turns fit");
-    assert_eq!(
-        turns[0]["text"], "cccccccccc",
-        "the oldest SURVIVOR, not a half"
-    );
-    assert_eq!(
-        turns[1]["text"], "dddddddddd",
-        "the newest turn is still last"
-    );
-    assert_eq!(
-        payload["dropped"], 2,
-        "what left is counted, not silently gone"
-    );
-}
-
-#[test]
-fn the_turn_being_answered_is_never_the_one_evicted() {
-    let over = [("window_bytes", "5")];
-    let rows = serde_json::json!([
-        turn_row("2", "user", "a turn far larger than the whole byte cap"),
-        turn_row("1", "user", "older")
-    ]);
-    let out = emit_with(&over, open_reply(serde_json::json!([]), rows));
-    let payload: serde_json::Value =
-        serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
-            .expect("payload");
-    let turns = payload["turns"].as_array().expect("turns");
-    assert_eq!(turns.len(), 1);
-    assert_eq!(
-        turns[0]["text"],
-        "a turn far larger than the whole byte cap"
-    );
-    assert_eq!(payload["dropped"], 1);
-}
-
-#[test]
-fn a_single_pathological_turn_cannot_eat_the_window() {
-    let over = [("turn_chars", "8"), ("window_bytes", "24")];
-    let rows = serde_json::json!([
-        turn_row("2", "user", "0123456789abcdef"),
-        turn_row("1", "user", "short")
-    ]);
-    let out = emit_with(&over, open_reply(serde_json::json!([]), rows));
-    let payload: serde_json::Value =
-        serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
-            .expect("payload");
-    let turns = payload["turns"].as_array().expect("turns");
-    assert_eq!(
-        turns.len(),
-        2,
-        "the truncated turn leaves room for its predecessor"
-    );
-    assert_eq!(
-        turns[1]["text"], "01234567",
-        "per-turn cap applied before the byte cap"
-    );
-}
-
-#[test]
-fn a_full_window_says_that_it_is_full() {
-    let over = [("window_turns", "2")];
-    // The store honoured the limit, so the reader cannot tell from the rows
-    // alone whether older turns exist. The marker says it did cut.
-    let rows = serde_json::json!([turn_row("2", "user", "b"), turn_row("1", "user", "a")]);
-    let out = emit_with(&over, open_reply(serde_json::json!([]), rows));
-    let payload: serde_json::Value =
-        serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
-            .expect("payload");
-    assert_eq!(payload["capped"], 1);
-    assert_eq!(payload["dropped"], 0, "the turn cap is not a byte-cap drop");
-
-    let rows = serde_json::json!([turn_row("1", "user", "a")]);
-    let out = emit_with(&over, open_reply(serde_json::json!([]), rows));
-    let payload: serde_json::Value =
-        serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
-            .expect("payload");
-    assert_eq!(payload["capped"], 0, "a window under the cap says so too");
-}
-
-#[test]
-fn eviction_never_deletes() {
-    // The whole read path of a turn, step by step: not one emission is a delete
-    // or touches a row of `turns` other than by appending to it. The durable
-    // record of a conversation belongs to the memory hive; this window is a cut.
-    let rows = serde_json::json!([turn_row("2", "user", "b"), turn_row("1", "user", "a")]);
-    let steps = vec![
-        emit(lane_doc(
-            "in_turn",
-            serde_json::json!([{"origin": "user", "type": "text", "text": "hi"}]),
-        )),
-        emit_with(
-            &[("window_turns", "1")],
-            open_reply(serde_json::json!([]), rows),
-        ),
-        emit(reply_doc("collect", "bundle", 1, serde_json::json!("ok"))),
-    ];
-    for step in steps {
-        for msg in step {
-            if msg["header"]["route"] != "cstore" {
-                continue;
-            }
-            let op = op_of(&msg);
-            assert_ne!(
-                op["operation"], "delete",
-                "no step of the read path deletes"
-            );
-            if op["table"] == "turns" {
-                assert!(
-                    op["operation"] == "insert" || op["operation"] == "select",
-                    "the turn table is append-only and read-only: {}",
-                    op["operation"]
-                );
-            }
-        }
-    }
 }
 
 // ========================================================================= SEAM
@@ -636,30 +524,33 @@ fn the_brain_is_handed_one_assembled_context_over_one_route() {
         {"role": "assistant", "text": "second"},
         {"role": "user", "text": "what did i say first?"}
     ]);
-    let rows = serde_json::json!([leg_window_row(turns, 1, 1)]);
+    let rows = serde_json::json!([leg_window_row(turns)]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
     assert_eq!(
         emitted(&out),
         1,
-        "ONE seam: one message, one route, one brain edge"
+        "ONE seam: one message, one route, one curator edge"
     );
     let msg = &out[0];
-    assert_eq!(msg["header"]["route"], "brain");
+    // GH #889: the seam is `curate`; the curator behind it calls the brain.
+    assert_eq!(msg["header"]["route"], "curate");
     assert_eq!(
         texts_of(msg),
         vec!["first", "second", "what did i say first?"]
     );
     assert_eq!(msg["messages"][1]["origin"], "assistant");
-    // What the eviction policy did travels WITH the context, so a router or an
-    // operator can see a cut without reading the store.
+    // GH #889: there is no eviction policy here any more, so nothing is cut --
+    // but the marks stay on the seam, zero-valued, because a CEL modifier that
+    // reads a missing key fails and a failed modifier skips the edge.
     assert_eq!(msg["header"]["window_turns"], "3");
-    assert_eq!(msg["header"]["window_dropped"], "1");
-    assert_eq!(msg["header"]["window_capped"], "1");
+    assert_eq!(msg["header"]["window_dropped"], "0");
+    assert_eq!(msg["header"]["window_capped"], "0");
     assert_eq!(msg["header"]["iter"], "0", "the first call of the turn");
 }
 
 /// The memory leg end to end: asked once per turn, filed as a leg, and handed
-/// to the brain VERBATIM up to its cap.
+/// on VERBATIM (GH #889 removed its cap, `memory_chars`: the curator owns the
+/// window).
 ///
 /// The last third moved with GH #278. The bundle used to reach the brain in
 /// `system.memory` — durable state, upserted per slot path, sitting where the
@@ -710,11 +601,7 @@ fn the_memory_bundle_enters_through_the_collector_and_verbatim() {
         "turn": op["row"]["turn"], "fired": 0
     });
     let rows = serde_json::json!([
-        leg_window_row(
-            serde_json::json!([{"role": "user", "text": "and my editor?"}]),
-            0,
-            0
-        ),
+        leg_window_row(serde_json::json!([{"role": "user", "text": "and my editor?"}])),
         leg_memory
     ]);
     let out = emit_with(&over, reply_doc("collect", "bundle", 2, rows.clone()));
@@ -771,11 +658,7 @@ fn the_memory_bundle_enters_through_the_collector_and_verbatim() {
 #[test]
 fn a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before() {
     let over = [("memory_tier", "0")];
-    let window = leg_window_row(
-        serde_json::json!([{"role": "user", "text": "and my editor?"}]),
-        0,
-        0,
-    );
+    let window = leg_window_row(serde_json::json!([{"role": "user", "text": "and my editor?"}]));
     let leg = |payload: serde_json::Value| {
         serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-memory",
                            "turn": payload.to_string(), "fired": 0})
@@ -869,11 +752,7 @@ fn a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before() {
 #[test]
 fn a_json_key_the_next_turn_does_not_name_is_revoked_with_the_bundle() {
     let over = [("memory_tier", "0"), ("memory_form", "json")];
-    let window = leg_window_row(
-        serde_json::json!([{"role": "user", "text": "and my editor?"}]),
-        0,
-        0,
-    );
+    let window = leg_window_row(serde_json::json!([{"role": "user", "text": "and my editor?"}]));
     let leg = |payload: serde_json::Value| {
         serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-memory",
                            "turn": payload.to_string(), "fired": 0})
@@ -939,11 +818,7 @@ fn a_json_key_the_next_turn_does_not_name_is_revoked_with_the_bundle() {
 #[test]
 fn under_both_forms_one_marker_covers_the_whole_memory_subtree() {
     let over = [("memory_tier", "0"), ("memory_form", "both")];
-    let window = leg_window_row(
-        serde_json::json!([{"role": "user", "text": "and my editor?"}]),
-        0,
-        0,
-    );
+    let window = leg_window_row(serde_json::json!([{"role": "user", "text": "and my editor?"}]));
     let leg = |payload: serde_json::Value| {
         serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-memory",
                            "turn": payload.to_string(), "fired": 0})
@@ -1022,12 +897,8 @@ fn under_both_forms_one_marker_covers_the_whole_memory_subtree() {
 fn the_marker_sits_on_the_memory_node_and_on_nothing_else() {
     let over = [("memory_tier", "0"), ("memory_form", "both")];
     let rows = serde_json::json!([
-        leg_window_row(
-            serde_json::json!([{"role": "user", "text": "and my editor?",
-                                "consult_id": "c1"}]),
-            0,
-            0
-        ),
+        leg_window_row(serde_json::json!([{"role": "user", "text": "and my editor?",
+                                "consult_id": "c1"}])),
         {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
          "turn": serde_json::json!({
              "system": {"memory": {"bundle": {"text": "{}"}}},
@@ -1076,11 +947,7 @@ fn a_bundle_that_found_nothing_revokes_under_every_form() {
     for form in ["readable", "json", "both"] {
         let over = [("memory_tier", "0"), ("memory_form", form)];
         let rows = serde_json::json!([
-            leg_window_row(
-                serde_json::json!([{"role": "user", "text": "and my editor?"}]),
-                0,
-                0
-            ),
+            leg_window_row(serde_json::json!([{"role": "user", "text": "and my editor?"}])),
             {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
              "turn": serde_json::json!({"system": {}, "messages": []}).to_string()}
         ]);
@@ -1108,11 +975,7 @@ fn a_bundle_that_found_nothing_revokes_under_every_form() {
 fn a_bundle_key_cannot_overwrite_the_marker() {
     let over = [("memory_tier", "0"), ("memory_form", "json")];
     let rows = serde_json::json!([
-        leg_window_row(
-            serde_json::json!([{"role": "user", "text": "and my editor?"}]),
-            0,
-            0
-        ),
+        leg_window_row(serde_json::json!([{"role": "user", "text": "and my editor?"}])),
         {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
          "turn": serde_json::json!({
              "system": {"memory": {"$replace": false,
@@ -1177,8 +1040,6 @@ fn the_tool_round_fires_once_and_re_enters_through_the_same_seam() {
     let mut rows = full.as_array().expect("rows").clone();
     rows.push(leg_window_row(
         serde_json::json!([{"role": "user", "text": "the question"}]),
-        0,
-        0,
     ));
     let out = emit(reply_doc(
         "round-check",
@@ -1188,8 +1049,9 @@ fn the_tool_round_fires_once_and_re_enters_through_the_same_seam() {
     ));
     assert_eq!(emitted(&out), 1);
     let msg = &out[0];
+    // GH #889: the seam is `curate`, for the first call and the re-entry alike.
     assert_eq!(
-        msg["header"]["route"], "brain",
+        msg["header"]["route"], "curate",
         "the same route as the first call"
     );
     assert_eq!(msg["header"]["iter"], "1", "the loop counter moved");
@@ -1297,7 +1159,10 @@ fn a_tool_result_leaves_its_system_slot_at_the_door() {
     );
 }
 
-// ======================================================== CAPS AT THE SEAM (#91)
+// ================================================ NO CAP AT THE SEAM (#91, #889)
+//
+// GH #91 capped what reached the brain; GH #889 gave the window to the curator
+// behind `curate` (R-27-1), so the collector hands every item on whole.
 
 /// One assistant `tool_call` row and one `tool_result` row of the same
 /// iteration, as the round table holds them.
@@ -1336,10 +1201,13 @@ fn named_round_pair(iter: i64, id: &str, name: &str, result: &str) -> Vec<serde_
 }
 
 #[test]
-fn a_huge_tool_result_reaches_the_seam_capped_and_stays_whole_in_the_store() {
-    // The environment keeps the value, the context window gets a bounded
-    // preview -- the truncated-output discipline of #91. First half: what the
-    // lane writes is NOT cut, so the full text stays addressable.
+fn a_huge_tool_result_stays_whole_in_the_store_and_on_the_seam() {
+    // First half, unchanged since #91: what the lane writes is NOT cut, so the
+    // full text stays addressable.
+    //
+    // GH #889: the second half used to pin the `tool_chars` preview on the way
+    // to the brain. The knob is gone -- the curator owns the window (R-27-1) --
+    // so the same row now reaches `curate` whole.
     let huge = "x".repeat(100_000);
     let out = emit(lane_doc(
         "in_tool",
@@ -1355,67 +1223,35 @@ fn a_huge_tool_result_reaches_the_seam_capped_and_stays_whole_in_the_store() {
         "the round store keeps the whole result: a cap is a preview, not a delete"
     );
 
-    // Second half: the same row on its way to the brain is bounded.
+    // Second half: the same row on its way to the curator is whole.
     let mut rows = round_pair(0, "c1", &huge);
     rows.push(leg_window_row(
         serde_json::json!([{"role": "user", "text": "q"}]),
-        0,
-        0,
     ));
-    let out = emit_with(
-        &[("tool_chars", "50")],
-        reply_doc("round-check", "bundle", 3, serde_json::Value::Array(rows)),
-    );
+    let out = emit(reply_doc(
+        "round-check",
+        "bundle",
+        3,
+        serde_json::Value::Array(rows),
+    ));
     assert_eq!(emitted(&out), 1);
+    assert_eq!(out[0]["header"]["route"], "curate");
     let texts = texts_of(&out[0]);
-    assert_eq!(texts.len(), 3, "window turn + call + result: {texts:?}");
+    assert_eq!(texts.len(), 3, "round turn + call + result: {texts:?}");
     assert_eq!(
         texts[2].len(),
-        50,
-        "the per-item cap ran before the seam, not after it"
+        100_000,
+        "no per-item cap runs in front of the seam any more (GH #889)"
     );
     assert_eq!(
-        out[0]["header"]["round_capped"], "1",
-        "a capped preview says that it was capped"
+        out[0]["header"]["round_capped"], "0",
+        "nothing was capped, and the seam says so"
     );
-}
-
-#[test]
-fn the_round_byte_cap_drops_whole_iterations_from_the_oldest_end() {
-    // Three iterations of twelve characters each (a two-character call plus a
-    // ten-character result). A budget of twenty-five buys two of them and
-    // cannot afford the third, so the OLDEST iteration falls -- whole, with
-    // its own call.
-    let mut rows = vec![leg_window_row(serde_json::json!([]), 0, 0)];
-    for i in 0..3 {
-        rows.extend(round_pair(i, &format!("c{i}"), "bbbbbbbbbb"));
-    }
-    let out = emit_with(
-        &[("round_bytes", "25")],
-        reply_doc("round-check", "bundle", 7, serde_json::Value::Array(rows)),
-    );
-    let msg = &out[0];
-    let texts = texts_of(msg);
-    assert_eq!(
-        texts.len(),
-        4,
-        "two whole iterations survive, calls included: {texts:?}"
-    );
-    assert_eq!(
-        msg["messages"][0]["id"], "c1",
-        "the oldest survivor is a CALL"
-    );
-    assert_eq!(msg["messages"][3]["id"], "c2", "the newest round is last");
-    assert_eq!(
-        msg["header"]["round_dropped"], "2",
-        "what left is counted, not silently gone"
-    );
-    assert_eq!(msg["header"]["round_capped"], "1");
 }
 
 #[test]
 fn an_uncapped_round_says_so() {
-    let mut rows = vec![leg_window_row(serde_json::json!([]), 0, 0)];
+    let mut rows = vec![leg_window_row(serde_json::json!([]))];
     rows.extend(round_pair(0, "c1", "short"));
     let out = emit(reply_doc(
         "round-check",
@@ -1434,8 +1270,6 @@ fn an_uncapped_round_says_so() {
 fn the_iteration_cap_ends_the_round_at_the_seam_and_not_at_the_dispatcher() {
     let mut rows = vec![leg_window_row(
         serde_json::json!([{"role": "user", "text": "look it up"}]),
-        0,
-        0,
     )];
     rows.extend(round_pair(1, "c1", "found"));
     let rows = serde_json::Value::Array(rows);
@@ -1446,7 +1280,8 @@ fn the_iteration_cap_ends_the_round_at_the_seam_and_not_at_the_dispatcher() {
         reply_at("round-check", "bundle", 3, rows.clone(), 1),
     );
     assert_eq!(emitted(&out), 1);
-    assert_eq!(out[0]["header"]["route"], "brain");
+    // GH #889: the seam under the cap is `curate`.
+    assert_eq!(out[0]["header"]["route"], "curate");
     assert_eq!(out[0]["header"]["iter"], "2");
 
     // At the cap the SAME phase leaves through the answer lane instead. The
@@ -1466,11 +1301,18 @@ fn the_iteration_cap_ends_the_round_at_the_seam_and_not_at_the_dispatcher() {
             2,
         ),
     );
-    assert_eq!(emitted(&out), 1, "one seam, and it is not a brain call");
+    // GH #889 (OR-KX-V2): the answer ends the round, so its rows leave with it
+    // -- one `round-drop` bundle beside the seam, bookkeeping like the mark.
+    assert_eq!(
+        emitted(&out),
+        2,
+        "one seam, and it is not a curator call -- plus the drop: {out:?}"
+    );
     assert_eq!(out[0]["header"]["route"], "answer");
     assert_eq!(out[0]["header"]["round_capped"], "1");
+    assert_eq!(out[1]["header"]["phase"], "round-drop", "{out:?}");
     assert!(
-        !out.iter().any(|m| m["header"]["route"] == "brain"),
+        !out.iter().any(|m| m["header"]["route"] == "curate"),
         "a capped turn asks nothing more"
     );
     let texts = texts_of(&out[0]);
@@ -1493,9 +1335,10 @@ fn the_iteration_cap_ends_the_round_at_the_seam_and_not_at_the_dispatcher() {
 /// with a raw `web_search` `tool_result`; the surface in front of it takes the
 /// LAST text (`any_text`) and writes it into the conversation, so the person
 /// was shown a search payload. Nothing is lost by fixing it here -- the raw
-/// round stays in the `round` table, reachable by `thread_recall`. What changes
-/// is the last WORD of the projection, because that is the one a consumer
-/// reads.
+/// round travelled to the curator on every `curate` of it (GH #889: the
+/// collector drops its round rows when the answer leaves, and `thread_recall`
+/// is gone). What changes is the last WORD of the projection, because that is
+/// the one a consumer reads.
 ///
 /// THE ZERO-CALL SHAPE IS NOT PINNED HERE, and that is a finding rather than a
 /// gap: a spent round whose thread is empty cannot be reached through any
@@ -1503,8 +1346,8 @@ fn the_iteration_cap_ends_the_round_at_the_seam_and_not_at_the_dispatcher() {
 /// only fires on a round it read rows for, and with no round rows the fan-in
 /// PARKS and emits nothing at all (measured against the shipped script: an
 /// `iter=2`/`max_iter=2` reply carrying only the window row emits zero
-/// messages). The byte cap cannot empty a non-empty thread either -- it keeps
-/// the newest group unconditionally. The script still answers the shape
+/// messages). Nothing cuts a non-empty thread either -- GH #889 removed the
+/// byte cap. The script still answers the shape
 /// honestly (`PARTIAL_ANSWER_EMPTY`, "No tool call was made.", no invented
 /// "last result") rather than printing three empty clauses, because an
 /// unreachable branch is exactly the one nobody will read again.
@@ -1512,8 +1355,6 @@ fn the_iteration_cap_ends_the_round_at_the_seam_and_not_at_the_dispatcher() {
 fn the_capped_round_ends_on_a_partial_answer_not_on_a_raw_tool_result() {
     let mut rows = vec![leg_window_row(
         serde_json::json!([{"role": "user", "text": "look it up"}]),
-        0,
-        0,
     )];
     rows.extend(named_round_pair(1, "c1", "web_search", "found"));
     rows.extend(named_round_pair(
@@ -1532,7 +1373,10 @@ fn the_capped_round_ends_on_a_partial_answer_not_on_a_raw_tool_result() {
             2,
         ),
     );
-    assert_eq!(emitted(&out), 1);
+    // GH #889 (OR-KX-V2): the answer and the `round-drop` bundle that takes the
+    // round's rows with it.
+    assert_eq!(emitted(&out), 2, "{out:?}");
+    assert_eq!(out[1]["header"]["phase"], "round-drop", "{out:?}");
     assert_eq!(out[0]["header"]["route"], "answer");
     assert_eq!(out[0]["header"]["round_capped"], "1");
     assert_eq!(
@@ -1566,117 +1410,57 @@ fn the_capped_round_ends_on_a_partial_answer_not_on_a_raw_tool_result() {
     assert_eq!(closing["type"], "text");
 }
 
-/// GH #570: the byte cap is NOT the iteration cap, and the two must stay
-/// tellable apart. `round_bytes` trims whole iterations off an otherwise
-/// healthy round and keeps asking the brain, so it stamps `round_capped` and
-/// `partial == "0"` -- present, like every hop key this seam writes, so a CEL
-/// modifier reading it never fails and skips the edge.
-#[test]
-fn the_byte_cap_is_not_a_partial_answer() {
-    let mut rows = vec![leg_window_row(serde_json::json!([]), 0, 0)];
-    for i in 0..3 {
-        rows.extend(round_pair(i, &format!("c{i}"), "bbbbbbbbbb"));
-    }
-    let out = emit_with(
-        &[("round_bytes", "25")],
-        reply_doc("round-check", "bundle", 7, serde_json::Value::Array(rows)),
-    );
-    assert_eq!(out[0]["header"]["route"], "brain", "the round goes on");
-    assert_eq!(out[0]["header"]["round_capped"], "1");
-    assert_eq!(
-        out[0]["header"]["partial"], "0",
-        "trimmed bytes are not a partial answer: {out:?}"
-    );
-    let texts = texts_of(&out[0]);
-    assert_eq!(
-        texts.len(),
-        4,
-        "two whole iterations, and nothing appended: {texts:?}"
-    );
-}
-
 #[test]
 fn the_first_assembly_of_a_turn_is_never_the_capped_one() {
     // iter 0 against the default of 8: the cap is a bound on the ROUND, not a
     // tax on every turn.
     let rows = serde_json::json!([leg_window_row(
-        serde_json::json!([{"role": "user", "text": "hi"}]),
-        0,
-        0
+        serde_json::json!([{"role": "user", "text": "hi"}])
     )]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
-    assert_eq!(out[0]["header"]["route"], "brain");
+    // GH #889: the seam is `curate`.
+    assert_eq!(out[0]["header"]["route"], "curate");
     assert_eq!(out[0]["header"]["round_capped"], "0");
 }
 
-/// GH #91, re-pointed by GH #278: `memory_chars` caps the bundle where the
-/// bundle now travels — the tool result of the round, not a `system` leaf. Same
-/// knob, same discipline, same reason: an oversized bundle would otherwise pass
-/// every other window knob uncapped, and the full text stays addressable in the
-/// `round` table either way. `hop.memory_capped` keeps its meaning and is
-/// measured on the result.
 #[test]
-fn the_rendered_memory_bundle_is_capped_before_it_enters_the_round() {
-    let big = "m".repeat(500);
-    let bundle = serde_json::json!({
-        "system": {"memory": {"bundle": {"text": big}}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "r", "text": big}]
-    });
-    let rows = serde_json::json!([
-        leg_window_row(serde_json::json!([]), 0, 0),
-        {"turn_id": "t1", "iter": 0, "role": "leg-memory",
-         "turn": bundle.to_string(), "fired": 0}
-    ]);
-    let capped_len = |out: &[serde_json::Value]| {
-        let msgs = out[0]["messages"].as_array().expect("messages").clone();
-        msgs[msgs.len() - 1]["text"]
-            .as_str()
-            .expect("result text")
-            .len()
-    };
-    let out = emit_with(
-        &[("memory_tier", "0"), ("memory_chars", "20")],
-        reply_doc("collect", "bundle", 2, rows.clone()),
-    );
-    assert_eq!(
-        capped_len(&out),
-        20,
-        "an oversized bundle cannot flood the window past every other knob: {}",
-        out[0]
-    );
-    assert_eq!(out[0]["header"]["memory_capped"], "1");
-
-    // The machine-readable half answers to the same knob.
-    let out = emit_with(
-        &[
-            ("memory_tier", "0"),
-            ("memory_chars", "20"),
-            ("memory_form", "json"),
-        ],
-        reply_doc("collect", "bundle", 2, rows),
-    );
-    assert_eq!(capped_len(&out), 20, "{}", out[0]);
-    assert_eq!(out[0]["header"]["memory_capped"], "1");
-}
-
-#[test]
-fn the_answer_is_written_into_the_window_before_it_leaves() {
+fn the_answer_leaves_and_takes_its_round_with_it() {
+    // GH #889: the answer used to be written into the window before it left.
+    // The history is the curator's now (it hears the brain's answer on its own
+    // tap, R-27-1), so no turn row is written here; what leaves beside the
+    // answer is the `round-drop` bundle -- the round's rows fall when its
+    // answer leaves (OR-KX-V2), and the `depart` rows stay for a late consult
+    // (GH #728).
     let out = emit(lane_doc(
         "in_answer",
         serde_json::json!([{"origin": "assistant", "type": "text", "text": "you said first"}]),
     ));
-    assert_eq!(out.len(), 2, "the write and the way out, in one multi-send");
-    let write = out
+    assert_eq!(out.len(), 2, "the way out and the drop, in one multi-send");
+    let dropped = out
         .iter()
         .find(|m| m["header"]["route"] == "cstore")
-        .expect("the assistant turn is persisted");
-    let op = op_of(write);
-    assert_eq!(op["table"], "turns");
-    assert_eq!(op["row"]["role"], "assistant");
-    assert_eq!(op["row"]["content"], "you said first");
+        .expect("the round is dropped");
+    assert_eq!(dropped["header"]["phase"], "round-drop");
+    let calls: Vec<serde_json::Value> = dropped["messages"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("args"))
+        .collect();
+    assert!(
+        calls.iter().all(|a| a["operation"] == "delete"),
+        "nothing is written, only dropped: {calls:?}"
+    );
+    assert_eq!(calls[0]["table"], "turns");
     assert_eq!(
-        op["row"]["turn_id"], "t1",
-        "written under the turn it answers"
+        calls[0]["where"]["turn_id"], "t1",
+        "the turn it answers, and only that turn"
+    );
+    assert_eq!(calls[1]["table"], "round");
+    assert_eq!(
+        calls[1]["where"]["role"],
+        serde_json::json!({"neq": "depart"}),
+        "the departures stay for a late consult (GH #728)"
     );
     let answer = out
         .iter()
@@ -1800,8 +1584,9 @@ fn a_stale_round_is_closed_with_synthetic_error_results_for_the_missing_calls() 
 #[test]
 fn an_undatable_round_never_goes_stale() {
     // Rows from before `recorded_at` cannot be dated; they keep the pre-#103
-    // behaviour (park and wait) -- symmetric to the prune lane's R-P3, where
-    // a row the policy cannot date is a row the policy never touches.
+    // behaviour (park and wait) -- a row the policy cannot date is a row the
+    // policy never touches (the R-P3 direction of the prune lane GH #889
+    // removed).
     let rows = serde_json::json!([asst_row(0, &["c1", "c2"], ""), tool_row(0, "c1", "a", "")]);
     assert!(emit(reply_doc("round-check", "select", 2, rows)).is_empty());
 }
@@ -1809,7 +1594,7 @@ fn an_undatable_round_never_goes_stale() {
 #[test]
 fn a_stale_closed_round_fires_with_round_stale_on_the_seam() {
     let rows = serde_json::json!([
-        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}]), 0, 0),
+        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}])),
         asst_row(0, &["c1", "c2"], STALE),
         tool_row(0, "c1", "found", STALE),
         lost_row(0, "c2")
@@ -1817,8 +1602,9 @@ fn a_stale_closed_round_fires_with_round_stale_on_the_seam() {
     let out = emit(reply_doc("round-check", "bundle", 4, rows));
     assert_eq!(emitted(&out), 1);
     let msg = &out[0];
+    // GH #889: the regular route is `curate`.
     assert_eq!(
-        msg["header"]["route"], "brain",
+        msg["header"]["route"], "curate",
         "the round fires through its regular route, stale or not"
     );
     assert_eq!(
@@ -1839,7 +1625,7 @@ fn a_stale_closed_round_fires_with_round_stale_on_the_seam() {
 
     // The control direction: a round that completed on its own is not stale.
     let rows = serde_json::json!([
-        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}]), 0, 0),
+        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}])),
         asst_row(0, &["c1", "c2"], STALE),
         tool_row(0, "c1", "found", STALE),
         tool_row(0, "c2", "also found", STALE)
@@ -1854,14 +1640,15 @@ fn a_lost_marker_from_an_older_iteration_does_not_stick() {
     // fire of iteration 1 carries the old stand-in as history, but does not
     // call ITSELF stale.
     let rows = serde_json::json!([
-        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}]), 0, 0),
+        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}])),
         asst_row(0, &["c1"], STALE),
         lost_row(0, "c1"),
         asst_row(1, &["c2"], STALE),
         tool_row(1, "c2", "found", STALE)
     ]);
     let out = emit(reply_at("round-check", "bundle", 5, rows, 1));
-    assert_eq!(out[0]["header"]["route"], "brain");
+    // GH #889: the seam is `curate`.
+    assert_eq!(out[0]["header"]["route"], "curate");
     assert_eq!(
         out[0]["header"]["round_stale"], "0",
         "the flag belongs to the round being fired, not to the whole thread"
@@ -1880,7 +1667,7 @@ fn a_late_real_result_wins_over_its_synthetic_stand_in() {
     // stale detection and the fire. Both rows exist; the wire carries the
     // real one and only the real one.
     let rows = serde_json::json!([
-        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}]), 0, 0),
+        leg_window_row(serde_json::json!([{"role": "user", "text": "q"}])),
         asst_row(0, &["c1"], STALE),
         lost_row(0, "c1"),
         tool_row(0, "c1", "late but real", STALE)
@@ -1926,10 +1713,12 @@ fn a_mid_round_turn_is_deferred_not_assembled() {
         op["where"]["turn_id"], "t1",
         "the NEW turn is the one stamped, not the round's turn"
     );
-    assert_eq!(
-        op["where"]["role"],
-        serde_json::json!({"in": ["user", "peer"]}),
-        "a deferred turn's peer rows are deferred rows too (GH #847)"
+    // GH #889: EVERY row of a deferred turn is a deferred row -- with no window
+    // behind this cell the stamp is the only way the next round finds them, so
+    // the update names no role (it used to name the user and peer rows only).
+    assert!(
+        op["where"].get("role").is_none(),
+        "every row of the deferred turn is stamped, whatever its role: {op}"
     );
 }
 
@@ -1976,13 +1765,16 @@ fn an_undatable_open_round_does_not_defer_the_turn() {
 
 #[test]
 fn a_deferred_turn_rides_with_the_next_assembly_and_is_cleared() {
-    // 1. The window read sees the stamp and counts it into the leg.
-    let rows = serde_json::json!([
-        turn_row("2", "user", "the deferred one"),
-        turn_row("1", "user", "first")
+    // 1. The round read sees the stamp and counts it into the leg. GH #889: the
+    //    read keeps the round's own turn and the deferred rows riding in it, and
+    //    NAMES the turns those rows belong to, so the seam can drop them once
+    //    they rode -- the deferred turn is an earlier one (`t0`), not this one.
+    let mut rows = serde_json::json!([
+        turn_row("2", "user", "the new one"),
+        turn_row("1", "user", "the deferred one")
     ]);
-    let mut rows = rows;
-    rows[0]["deferred"] = serde_json::json!(1);
+    rows[1]["turn_id"] = serde_json::json!("t0");
+    rows[1]["deferred"] = serde_json::json!(1);
     let out = emit(open_reply(serde_json::json!([]), rows));
     let payload: serde_json::Value =
         serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
@@ -1991,12 +1783,29 @@ fn a_deferred_turn_rides_with_the_next_assembly_and_is_cleared() {
         payload["deferred"], 1,
         "the leg carries how many deferred turns it holds"
     );
+    assert_eq!(
+        payload["deferred_turns"],
+        serde_json::json!(["t0"]),
+        "and which turns they belong to: {payload}"
+    );
+    let texts: Vec<&str> = payload["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .map(|t| t["text"].as_str().expect("text"))
+        .collect();
+    assert_eq!(
+        texts,
+        ["the deferred one", "the new one"],
+        "in the order they arrived: {payload}"
+    );
 
-    // 2. The fire that carries a deferred turn says so on the seam and clears
-    //    the stamp in the same multi-send -- round_deferred marks the ARRIVAL,
-    //    not every later window that still contains the turn.
+    // 2. The fire that carries a deferred turn says so on the seam and, in the
+    //    same multi-send, DROPS the deferred turn's rows -- GH #889 (OR-KX-V2):
+    //    its words travelled on `curate`, the curator keeps them from here on.
+    //    It used to only clear the stamp, since the window read them again.
     let leg = serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-window",
-        "turn": "{\"turns\":[{\"role\":\"user\",\"text\":\"the deferred one\"}],\"dropped\":0,\"capped\":0,\"deferred\":1}",
+        "turn": "{\"turns\":[{\"role\":\"user\",\"text\":\"the deferred one\"}],\"deferred\":1,\"deferred_turns\":[\"t0\"]}",
         "fired": 0});
     let out = emit(reply_doc("collect", "bundle", 1, serde_json::json!([leg])));
     assert_eq!(
@@ -2004,17 +1813,34 @@ fn a_deferred_turn_rides_with_the_next_assembly_and_is_cleared() {
         3,
         "the seam, the clear and the closing mark: {out:?}"
     );
-    let brain = &out[0];
-    assert_eq!(brain["header"]["route"], "brain");
-    assert_eq!(brain["header"]["round_deferred"], "1");
+    let seam = &out[0];
+    assert_eq!(seam["header"]["route"], "curate");
+    assert_eq!(seam["header"]["round_deferred"], "1");
     let clear = &out[1];
     assert_eq!(clear["header"]["phase"], "defer-clear");
-    let op = op_of(clear);
-    assert_eq!(op["operation"], "update");
-    assert_eq!(op["table"], "turns");
-    assert_eq!(op["set"]["deferred"], 0);
-    assert_eq!(op["where"]["session_id"], "s1");
-    assert_eq!(op["where"]["deferred"], 1);
+    let calls: Vec<serde_json::Value> = clear["messages"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("args"))
+        .collect();
+    assert_eq!(calls.len(), 2, "the turns and their legs: {calls:?}");
+    assert!(
+        calls.iter().all(|a| a["operation"] == "delete"),
+        "{calls:?}"
+    );
+    assert_eq!(calls[0]["table"], "turns");
+    assert_eq!(calls[0]["where"]["session_id"], "s1");
+    assert_eq!(
+        calls[0]["where"]["turn_id"],
+        serde_json::json!({"in": ["t0"]}),
+        "the deferred turn's rows and no other turn's"
+    );
+    assert_eq!(calls[1]["table"], "round");
+    assert_eq!(
+        calls[1]["where"]["turn_id"],
+        serde_json::json!({"in": ["t0"]})
+    );
 
     // 3. An assembly without a deferred turn is a single emission, flag 0.
     let out = emit(reply_doc(
@@ -2022,9 +1848,7 @@ fn a_deferred_turn_rides_with_the_next_assembly_and_is_cleared() {
         "bundle",
         1,
         serde_json::json!([leg_window_row(
-            serde_json::json!([{"role": "user", "text": "hi"}]),
-            0,
-            0
+            serde_json::json!([{"role": "user", "text": "hi"}])
         )]),
     ));
     assert_eq!(emitted(&out), 1);
@@ -2033,22 +1857,15 @@ fn a_deferred_turn_rides_with_the_next_assembly_and_is_cleared() {
 
 #[test]
 fn the_fresh_turn_write_stamps_the_deferred_column() {
-    // Both writers of `turns` stamp the flag explicitly, so a row is never
-    // ambiguous between "not deferred" and "predates the column".
+    // The writer of `turns` stamps the flag explicitly, so a row is never
+    // ambiguous between "not deferred" and "predates the column". GH #889 left
+    // one writer: `in_answer` no longer writes the answer (the history is the
+    // curator's), so only the turn's own row is measured.
     let out = emit(lane_doc(
         "in_turn",
         serde_json::json!([{"origin": "user", "type": "text", "text": "hello"}]),
     ));
     assert_eq!(op_of(&out[0])["row"]["deferred"], 0);
-    let out = emit(lane_doc(
-        "in_answer",
-        serde_json::json!([{"origin": "assistant", "type": "text", "text": "hi"}]),
-    ));
-    let write = out
-        .iter()
-        .find(|m| m["header"]["route"] == "cstore")
-        .expect("the answer write");
-    assert_eq!(op_of(write)["row"]["deferred"], 0);
 }
 
 #[test]
@@ -2102,13 +1919,19 @@ fn the_sweep_spawns_a_re_check_for_stale_rounds_and_only_for_those() {
     assert!(emit(reply_doc("sweep", "select", 0, serde_json::json!([]))).is_empty());
 }
 
-// ================================================== THE CLOSE LANE (R-OS-6)
+// ============================================== THE ROUND ROWS AND THE ECHO GUARD
+//
+// GH #889: the close lane (R-OS-6) and the prune lane (GH #76) left with the
+// history they read -- the close batch is the curator's `write` now, and a
+// collector that drops a round's rows when its answer leaves has nothing left
+// to prune. What stays is what the round rows carry for #103.
 
 #[test]
 fn every_round_row_carries_the_session_it_belongs_to() {
-    // The close lane finds a whole session's rounds by one column, so every
-    // writer of the round table stamps it -- from the first assembly leg to
-    // the last tool result.
+    // Every writer of the round table stamps the session -- from the first
+    // assembly leg to the last tool result -- because the idle sweep's re-check
+    // runs under the session it reads off the row (GH #103). (It used to be
+    // the close lane that read it; GH #889 removed that lane.)
     let out = emit(lane_doc(
         "in_calls",
         serde_json::json!([{"origin": "assistant", "type": "tool_call", "id": "c1",
@@ -2117,116 +1940,6 @@ fn every_round_row_carries_the_session_it_belongs_to() {
     assert_eq!(op_of(&out[0])["row"]["session_id"], "s1");
     let out = emit(open_reply(serde_json::json!([]), serde_json::json!([])));
     assert_eq!(op_of(&out[0])["row"]["session_id"], "s1");
-}
-
-#[test]
-fn the_close_request_reads_the_whole_session_oldest_first() {
-    let out = emit(lane_doc("in_close", serde_json::json!([])));
-    assert_eq!(emitted(&out), 1);
-    let op = op_of(&out[0]);
-    assert_eq!(op["operation"], "select");
-    assert_eq!(op["table"], "turns");
-    assert_eq!(op["where"]["session_id"], "s1");
-    assert_eq!(
-        op["order_by"][0]["dir"], "asc",
-        "a day is handed on in the order it happened"
-    );
-    assert!(
-        op["limit"].is_null(),
-        "the batch is the whole session; the caps above bound a CONTEXT window and this is not one"
-    );
-    assert_eq!(out[0]["header"]["phase"], "close-turns");
-}
-
-#[test]
-fn the_close_batch_carries_the_session_and_its_rounds_in_one_emission() {
-    // 1. The turns are parked as their own leg, so the round select can meet
-    //    them again in the same reply -- the script holds no state between hops.
-    let rows = serde_json::json!([
-        turn_row("1", "user", "first"),
-        turn_row("2", "assistant", "second")
-    ]);
-    let out = emit(reply_doc("close-turns", "select", 2, rows));
-    let op = op_of(&out[0]);
-    assert_eq!(op["operation"], "insert");
-    assert_eq!(op["table"], "round");
-    assert_eq!(op["row"]["role"], "leg-close");
-    assert_eq!(op["row"]["session_id"], "s1");
-    assert_eq!(
-        op["row"]["turn_id"], "close-s1",
-        "the bookkeeping row belongs to no turn, so it pollutes no turn's slate"
-    );
-    assert_eq!(out[0]["header"]["phase"], "close-fire");
-    let parked = op["row"]["turn"].as_str().expect("turn").to_string();
-
-    // 2. ... and the whole round table of the session is read back in the SAME
-    //    message (GH #419): the park is in front of the select, so the select
-    //    sees it. Two messages became two calls.
-    let calls = out[0]["messages"].as_array().expect("calls");
-    assert_eq!(
-        calls.len(),
-        2,
-        "park and read-back in one message: {calls:?}"
-    );
-    let read: serde_json::Value =
-        serde_json::from_str(calls[1]["text"].as_str().expect("op text")).expect("op args");
-    assert_eq!(read["operation"], "select");
-    assert_eq!(read["table"], "round");
-    assert_eq!(read["where"]["session_id"], "s1");
-
-    // 3. And ONE batch leaves on route write: append-all, no judgement. Since
-    //    GH #76 the delivery ledger row travels in the same multi-send -- the
-    //    batch is still ONE message, the evidence rides beside it.
-    let slate = serde_json::json!([
-        {"turn_id": "close-s1", "iter": 0, "role": "leg-close",
-         "turn": parked, "fired": 0},
-        {"turn_id": "t1", "iter": 0, "role": "leg-window",
-         "turn": "{\"turns\":[],\"dropped\":3,\"capped\":1}", "fired": 1},
-        {"turn_id": "t1", "iter": 0, "role": "tool",
-         "turn": "{\"origin\":\"tool\",\"type\":\"tool_result\",\"id\":\"c1\",\"text\":\"r\"}",
-         "fired": 0}
-    ]);
-    let out = emit(reply_doc("close-fire", "bundle", 3, slate));
-    assert_eq!(
-        out.len(),
-        2,
-        "ONE batch plus its ledger row, never one message per turn"
-    );
-    let msg = &out[0];
-    assert_eq!(msg["header"]["route"], "write");
-    assert_eq!(msg["header"]["session_id"], "s1");
-    assert_eq!(msg["header"]["turn_count"], "2");
-    assert_eq!(msg["header"]["round_count"], "2");
-    assert_eq!(texts_of(msg), vec!["first", "second"]);
-    assert_eq!(msg["messages"][1]["origin"], "assistant");
-    assert_eq!(
-        msg["rounds"][0]["turn"]["dropped"], 3,
-        "the eviction reports of the day travel raw, next to the tool rounds"
-    );
-    assert_eq!(msg["rounds"][1]["turn"]["id"], "c1");
-    assert!(
-        !msg["rounds"]
-            .as_array()
-            .expect("rounds")
-            .iter()
-            .any(|r| r["role"] == "leg-close"),
-        "the bookkeeping row is the collector's, not the batch's"
-    );
-}
-
-#[test]
-fn a_close_request_is_read_as_a_close_even_with_a_stale_step_in_context() {
-    // The echo guard again: a close request arrives over a port edge and
-    // carries whatever col_phase the sending chain left behind.
-    let stale = serde_json::json!({
-        "header": {"context": {"session_id": "s1", "turn_id": "t1", "iter": "0",
-                               "col_phase": "collect"},
-                   "hop": {"route": "in_close"}},
-        "messages": []
-    });
-    let out = emit(stale);
-    assert_eq!(emitted(&out), 1);
-    assert_eq!(out[0]["header"]["phase"], "close-turns");
 }
 
 #[test]
@@ -2248,123 +1961,18 @@ fn a_message_without_a_lane_and_without_a_step_is_terminal() {
         "messages": [{"origin": "assistant", "type": "text", "text": "done"}]
     });
     let out = emit(stale);
+    // The answer and, since GH #889, the `round-drop` beside it (it used to be
+    // the answer's write into the window).
     assert_eq!(out.len(), 2, "the lane wins over the stale step");
     assert!(out.iter().any(|m| m["header"]["route"] == "answer"));
 }
 
-// ==================================================== THE PRUNE LANE (GH #76)
-//
-// Housekeeping over the two session tables, gated on EVIDENCE: a session is
-// prunable only when a close batch left the collector (the `batched` ledger
-// row written beside the write emission) and that delivery is older than
-// prune_after_ms. Without a ledger row nothing is ever pruned --
-// rather grow than silently lose a turn.
-
-/// A store reply on a chosen chain: the prune and close chains carry their
-/// state (boundary, then counts) in the promoted hop id, because the script
-/// keeps no state between hops.
-fn reply_as(
-    phase: &str,
-    op: &str,
-    rows_affected: i64,
-    payload: serde_json::Value,
-    session: &str,
-    turn_id: &str,
-) -> serde_json::Value {
-    let mut doc = reply_doc(phase, op, rows_affected, payload);
-    doc["header"]["context"]["session_id"] = serde_json::json!(session);
-    doc["header"]["context"]["turn_id"] = serde_json::json!(turn_id);
-    doc
-}
-
-#[test]
-fn the_prune_boundary_is_minted_when_the_close_arrives() {
-    // The hop id of the close chain carries the ARRIVAL time of the close
-    // request. Every turn this cell processed before the close is in the batch
-    // (one actor, ordered mailbox); every later one is stamped younger than
-    // this boundary and survives a prune.
-    let out = emit(lane_doc("in_close", serde_json::json!([])));
-    let tid = out[0]["header"]["turn_id"].as_str().expect("turn_id");
-    assert!(
-        tid.starts_with("close-s1|"),
-        "the boundary rides behind the bookkeeping id: {tid}"
-    );
-    assert!(
-        tid.len() > "close-s1|".len(),
-        "an empty boundary would date nothing: {tid}"
-    );
-
-    // The parked day is BACKDATED to that boundary -- its content is exactly
-    // the session up to the close, so the next prune takes the copy along with
-    // the day it copies. The row itself stays under the plain id (R-C5).
-    let rows = serde_json::json!([turn_row("1", "user", "first")]);
-    let out = emit(reply_as(
-        "close-turns",
-        "select",
-        1,
-        rows,
-        "s1",
-        "close-s1|2026-01-01T00:00:00.000000Z",
-    ));
-    let op = op_of(&out[0]);
-    assert_eq!(op["row"]["turn_id"], "close-s1");
-    assert_eq!(op["row"]["recorded_at"], "2026-01-01T00:00:00.000000Z");
-    assert_eq!(
-        out[0]["header"]["turn_id"], "close-s1|2026-01-01T00:00:00.000000Z",
-        "the boundary keeps travelling to the ledger write"
-    );
-
-    // ... and it is already ON the message that reads the round table back:
-    // GH #419 made the park and the read ONE bundle, so there is no second step
-    // for the boundary to survive. What it has to survive is the emission it
-    // travels on, and that is asserted above.
-    assert_eq!(
-        out[0]["header"]["phase"], "close-fire",
-        "the park and the read-back are one message: {}",
-        out[0]
-    );
-}
-
-#[test]
-fn the_close_emission_writes_the_delivery_ledger_beside_the_batch() {
-    let slate = serde_json::json!([
-        {"turn_id": "close-s1", "iter": 0, "role": "leg-close",
-         "turn": "[{\"role\":\"user\",\"text\":\"first\"}]", "fired": 0},
-        {"turn_id": "t1", "iter": 0, "role": "leg-window",
-         "turn": "{\"turns\":[],\"dropped\":0,\"capped\":0}", "fired": 1}
-    ]);
-    let out = emit(reply_as(
-        "close-fire",
-        "bundle",
-        2,
-        slate,
-        "s1",
-        "close-s1|2026-01-01T00:00:00.000000Z",
-    ));
-    assert_eq!(
-        out.len(),
-        2,
-        "the delivery and its evidence leave in ONE multi-send"
-    );
-    assert_eq!(out[0]["header"]["route"], "write", "the batch goes first");
-    let ledger = &out[1];
-    assert_eq!(ledger["header"]["route"], "cstore");
-    assert_eq!(ledger["header"]["phase"], "close-ledger");
-    let op = op_of(ledger);
-    assert_eq!(op["operation"], "insert");
-    assert_eq!(op["table"], "batched");
-    assert_eq!(op["row"]["session_id"], "s1");
-    assert_eq!(
-        op["row"]["batched_at"], "2026-01-01T00:00:00.000000Z",
-        "the evidence is dated to the close ARRIVAL, not to this emission"
-    );
-}
-
 #[test]
 fn every_round_row_carries_its_write_time() {
-    // A row the prune lane cannot date is a row it will never cut, so every
-    // writer of the round table stamps recorded_at -- assembly legs and tool
-    // rounds alike.
+    // A row the idle policy cannot date is a round it will never close
+    // (GH #103), so every writer of the round table stamps recorded_at --
+    // assembly legs and tool rounds alike. (GH #889 removed the prune lane,
+    // the other reader of the stamp.)
     let out = emit(open_reply(serde_json::json!([]), serde_json::json!([])));
     let leg = op_of(&out[0]);
     assert!(
@@ -2385,203 +1993,6 @@ fn every_round_row_carries_its_write_time() {
             .unwrap_or_default()
             .is_empty(),
         "the tool round is dated"
-    );
-}
-
-#[test]
-fn a_prune_request_reads_the_ledger_and_only_the_ledger() {
-    let out = emit(lane_doc("in_prune", serde_json::json!([])));
-    assert_eq!(emitted(&out), 1);
-    assert_eq!(out[0]["header"]["route"], "cstore");
-    assert_eq!(out[0]["header"]["phase"], "prune-ledger");
-    let op = op_of(&out[0]);
-    assert_eq!(op["operation"], "select");
-    assert_eq!(
-        op["table"], "batched",
-        "eligibility is the ledger, nothing else"
-    );
-    let cut = op["where"]["batched_at"]["lte"]
-        .as_str()
-        .expect("age gate")
-        .to_string();
-    assert!(!cut.is_empty());
-    assert_eq!(
-        op["where"]["pruned_at"]["is_null"], true,
-        "evidence already used does not fire twice"
-    );
-
-    // The default gate is seven days; a zero gate cuts at (approximately) now.
-    // Both cutoffs are minted from the same clock, so they order.
-    let out = emit_with(
-        &[("prune_after_ms", "0")],
-        lane_doc("in_prune", serde_json::json!([])),
-    );
-    let cut0 = op_of(&out[0])["where"]["batched_at"]["lte"]
-        .as_str()
-        .expect("zero gate")
-        .to_string();
-    assert!(
-        cut < cut0,
-        "the seven-day default cutoff lies before the zero-gate cutoff: {cut} vs {cut0}"
-    );
-}
-
-#[test]
-fn a_prune_without_ledger_evidence_deletes_nothing_and_says_so() {
-    let out = emit(reply_doc(
-        "prune-ledger",
-        "select",
-        0,
-        serde_json::json!([]),
-    ));
-    assert_eq!(emitted(&out), 1, "no evidence: no delete op leaves at all");
-    let msg = &out[0];
-    assert_eq!(
-        msg["header"]["route"], "prune",
-        "the operator lane asked, the operator lane gets an answer"
-    );
-    assert_eq!(msg["header"]["pruned_turns"], "0");
-    assert_eq!(msg["header"]["pruned_rounds"], "0");
-    assert_eq!(msg["header"]["session_id"], "");
-}
-
-#[test]
-fn an_aged_batched_session_is_cut_exactly_at_its_evidence() {
-    // Three ledger rows, two sessions -- s7 was closed twice. One turn cut per
-    // SESSION, scoped to its own youngest delivered boundary; the chains run
-    // in parallel and never name a session the ledger did not.
-    let rows = serde_json::json!([
-        {"session_id": "s7", "batched_at": "2026-01-01T00:00:00.000000Z"},
-        {"session_id": "s7", "batched_at": "2026-01-05T00:00:00.000000Z"},
-        {"session_id": "s9", "batched_at": "2026-01-03T00:00:00.000000Z"}
-    ]);
-    let out = emit(reply_doc("prune-ledger", "select", 3, rows));
-    assert_eq!(
-        out.len(),
-        2,
-        "one cut per session, whatever the ledger row count"
-    );
-    for msg in &out {
-        // GH #419: the two deletes of one session are ONE message. Neither
-        // reads the other -- they cut at the same boundary, and the boundary
-        // comes from the ledger -- so the chain of two hops only ever bought
-        // two replies to add up.
-        assert_eq!(msg["header"]["phase"], "prune-cut");
-        let calls: Vec<serde_json::Value> = msg["messages"]
-            .as_array()
-            .expect("calls")
-            .iter()
-            .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("op args"))
-            .collect();
-        assert_eq!(
-            calls.iter().map(|a| a["table"].clone()).collect::<Vec<_>>(),
-            ["turns", "round"],
-            "the turns and their rounds, in one message -- and nothing else: the \
-             session's scope row and its legend (GH #845/#847) are the channel's \
-             state, not the window's, and a session goes on past its cut: {calls:?}"
-        );
-        assert!(
-            calls.iter().all(|a| a["operation"] == "delete"),
-            "{calls:?}"
-        );
-    }
-    let s7 = out
-        .iter()
-        .find(|m| m["header"]["session_id"] == "s7")
-        .expect("s7 chain");
-    let op = op_of(s7);
-    assert_eq!(op["where"]["session_id"], "s7");
-    assert_eq!(
-        op["where"]["recorded_at"]["lte"], "2026-01-05T00:00:00.000000Z",
-        "a re-closed session is cut at its YOUNGEST delivered boundary"
-    );
-    assert_eq!(
-        s7["header"]["turn_id"], "prune|2026-01-05T00:00:00.000000Z",
-        "the boundary rides in the hop id to the round cut"
-    );
-    let s9 = out
-        .iter()
-        .find(|m| m["header"]["session_id"] == "s9")
-        .expect("s9 chain");
-    assert_eq!(
-        op_of(s9)["where"]["recorded_at"]["lte"],
-        "2026-01-03T00:00:00.000000Z"
-    );
-}
-
-#[test]
-fn the_prune_chain_cuts_rounds_with_the_same_boundary_and_reports_the_cut() {
-    // The round cut carries the SAME boundary as the turn cut. Strictly `lte`,
-    // never or_null: a row without a write time predates the policy and is
-    // never pruned.
-    let rows = serde_json::json!([
-        {"session_id": "s7", "batched_at": "2026-01-05T00:00:00.000000Z"}
-    ]);
-    let cut = emit(reply_doc("prune-ledger", "select", 1, rows));
-    let calls: Vec<serde_json::Value> = cut[0]["messages"]
-        .as_array()
-        .expect("calls")
-        .iter()
-        .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("args"))
-        .collect();
-    let op = &calls[1];
-    assert_eq!(op["operation"], "delete");
-    assert_eq!(op["table"], "round");
-    assert_eq!(op["where"]["session_id"], "s7");
-    let by_age = op["where"]["recorded_at"]
-        .as_object()
-        .expect("operator object");
-    assert_eq!(
-        by_age.len(),
-        1,
-        "exactly lte -- an undatable row never falls"
-    );
-    assert_eq!(by_age["lte"], "2026-01-05T00:00:00.000000Z");
-    assert_eq!(
-        cut[0]["header"]["turn_id"], "prune|2026-01-05T00:00:00.000000Z",
-        "the boundary rides in the hop id to the report"
-    );
-
-    // Step 2: the evidence is marked used and the cut is reported, in ONE
-    // multi-send. The report reads the two `rows_affected` out of `results[]`
-    // -- the deletes' own counts, not a re-read of what is no longer there.
-    let out = emit(reply_as_bundle(
-        "prune-cut",
-        &[("c-prune-turns", 4), ("c-prune-rounds", 3)],
-        "s7",
-        "prune|2026-01-05T00:00:00.000000Z",
-    ));
-    assert_eq!(out.len(), 2, "the mark and the report");
-    let mark = out
-        .iter()
-        .find(|m| m["header"]["route"] == "cstore")
-        .expect("mark");
-    assert_eq!(mark["header"]["phase"], "prune-mark");
-    let op = op_of(mark);
-    assert_eq!(op["operation"], "update");
-    assert_eq!(op["table"], "batched");
-    assert!(
-        !op["set"]["pruned_at"]
-            .as_str()
-            .unwrap_or_default()
-            .is_empty(),
-        "used evidence is dated, not deleted"
-    );
-    assert_eq!(op["where"]["session_id"], "s7");
-    assert_eq!(
-        op["where"]["batched_at"]["lte"],
-        "2026-01-05T00:00:00.000000Z"
-    );
-    let report = out
-        .iter()
-        .find(|m| m["header"]["route"] == "prune")
-        .expect("report");
-    assert_eq!(report["header"]["session_id"], "s7");
-    assert_eq!(report["header"]["pruned_turns"], "4");
-    assert_eq!(report["header"]["pruned_rounds"], "3");
-    assert_eq!(
-        report["header"]["prune_boundary"],
-        "2026-01-05T00:00:00.000000Z"
     );
 }
 
@@ -2629,7 +2040,8 @@ fn the_ambient_ask_names_no_window_and_says_so() {
 fn a_memory_result_fans_in_beside_a_normal_tool_result_and_the_round_fires() {
     // The bundle the issue describes: one memory_recall and one ordinary tool
     // in ONE brain answer. The memory call is a normal member of the
-    // expectation set -- it is counted, waited for and capped like any other.
+    // expectation set -- it is counted and waited for like any other (and, since
+    // GH #889, passed on uncut like any other).
     let calls = serde_json::json!([
         {"origin": "assistant", "type": "tool_call", "id": "c1", "text": "{}"},
         {"origin": "assistant", "type": "tool_call", "id": "m1", "text": "{}"}
@@ -2659,7 +2071,8 @@ fn a_memory_result_fans_in_beside_a_normal_tool_result_and_the_round_fires() {
     // the mark is not a guard any more (nothing reads its `rows_affected`), it
     // is what tells `turn-open` and the idle sweep that this round has answered.
     let out = emit(reply_doc("round-check", "bundle", 3, full.clone()));
-    assert_eq!(out[0]["header"]["route"], "brain", "the round completed");
+    // GH #889: the seam is `curate`.
+    assert_eq!(out[0]["header"]["route"], "curate", "the round completed");
     let mark = out.last().expect("the closing mark travels with the seam");
     assert_eq!(op_of(mark)["operation"], "update", "{mark}");
     assert_eq!(op_of(mark)["set"]["fired"], 1, "{mark}");
@@ -2667,8 +2080,6 @@ fn a_memory_result_fans_in_beside_a_normal_tool_result_and_the_round_fires() {
     let mut rows = full.as_array().expect("rows").clone();
     rows.push(leg_window_row(
         serde_json::json!([{"role": "user", "text": "what about the roof?"}]),
-        0,
-        0,
     ));
     let out = emit(reply_doc(
         "round-check",
@@ -2681,40 +2092,10 @@ fn a_memory_result_fans_in_beside_a_normal_tool_result_and_the_round_fires() {
     assert!(
         texts.contains(&"the weather".to_string())
             && texts.contains(&"MEMORY: the roof".to_string()),
-        "both results reach the brain through the ONE seam: {texts:?}"
+        "both results reach the curator through the ONE seam: {texts:?}"
     );
-    assert_eq!(out[0]["header"]["route"], "brain");
+    assert_eq!(out[0]["header"]["route"], "curate");
     assert_eq!(out[0]["header"]["iter"], "1");
-}
-
-#[test]
-fn the_memory_result_is_capped_like_every_other_tool_result() {
-    // GH #91's discipline, unchanged: the recall bundle of a TOOL call enters
-    // the window through the round, so the round's per-item cap runs on it.
-    let big = "m".repeat(9000);
-    let calls = serde_json::json!([
-        {"origin": "assistant", "type": "tool_call", "id": "m1", "text": "{}"}
-    ]);
-    let res = serde_json::json!(
-        {"origin": "tool", "type": "tool_result", "id": "m1", "text": big}
-    );
-    let rows = serde_json::json!([
-        {"turn_id": "t1", "iter": 0, "role": "assistant",
-         "turn": calls.to_string(), "fired": 0},
-        {"turn_id": "t1", "iter": 0, "role": "tool",
-         "turn": res.to_string(), "fired": 0}
-    ]);
-    let out = emit(reply_doc("round-check", "bundle", 2, rows));
-    let texts = texts_of(&out[0]);
-    assert_eq!(
-        texts[1].len(),
-        4000,
-        "tool_chars, exactly as for a web search result"
-    );
-    assert_eq!(
-        out[0]["header"]["round_capped"], "1",
-        "and the cut is reported"
-    );
 }
 
 // ===================================== THE ADVISOR CONNECTION (GH #28, R-CG-3)
@@ -2774,7 +2155,14 @@ fn an_all_async_bundle_closes_its_round_at_once_and_waits_for_nothing() {
         messages,
     ));
 
-    assert_eq!(out.len(), 2, "the assistant row plus one ack: {out:?}");
+    // GH #889 (OR-KX-V2): a round filed as fired is over on the spot, so its
+    // rows leave with it -- the `round-drop` bundle rides behind the ack.
+    assert_eq!(
+        out.len(),
+        3,
+        "the assistant row, one ack and the drop: {out:?}"
+    );
+    assert_eq!(out[2]["header"]["phase"], "round-drop", "{out:?}");
     let asst = op_of(&out[0]);
     assert_eq!(asst["row"]["role"], "assistant");
     assert_eq!(
@@ -2838,7 +2226,9 @@ fn a_handoff_call_closes_its_round_without_a_word() {
         call_bundle(&["c1"]),
     ));
 
-    assert_eq!(out.len(), 2, "{out:?}");
+    // GH #889 (OR-KX-V2): the round is over, so the `round-drop` rides along.
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert_eq!(out[2]["header"]["phase"], "round-drop", "{out:?}");
     assert_eq!(
         op_of(&out[0])["row"]["fired"],
         1,
@@ -2862,7 +2252,9 @@ fn a_sentence_beside_the_bundle_closes_the_round_without_a_handoff() {
         messages,
     ));
 
-    assert_eq!(out.len(), 2, "{out:?}");
+    // GH #889 (OR-KX-V2): the round is over, so the `round-drop` rides along.
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert_eq!(out[2]["header"]["phase"], "round-drop", "{out:?}");
     assert_eq!(op_of(&out[0])["row"]["fired"], 1);
 }
 
@@ -3107,10 +2499,11 @@ fn the_open_consults_of_the_window_reach_the_brain_as_data() {
         {"role": "assistant", "text": "one moment, asking"},
         {"role": "advice", "text": "which city?", "consult_id": "k-7"}
     ]);
-    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(turns)]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
 
-    assert_eq!(out[0]["header"]["route"], "brain");
+    // GH #889: the seam is `curate`; the curator passes the slot on.
+    assert_eq!(out[0]["header"]["route"], "curate");
     assert_eq!(
         out[0]["system"]["consult"]["open"],
         serde_json::json!(["k-7"]),
@@ -3151,7 +2544,7 @@ fn an_advice_turn_says_on_the_wire_that_it_is_one() {
         {"role": "assistant", "text": "one moment, I am putting two options together"},
         {"role": "advice", "text": "cheap: flight 180, hostel 3x40", "consult_id": "k-7"}
     ]);
-    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(turns)]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
     let msgs = out[0]["messages"].as_array().expect("messages");
     assert_eq!(msgs.len(), 3);
@@ -3184,7 +2577,7 @@ fn an_advice_without_a_correlation_is_still_framed_but_names_no_id() {
     let turns = serde_json::json!([
         {"role": "advice", "text": "the fare is 180 EUR", "consult_id": ""}
     ]);
-    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(turns)]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
     let msgs = out[0]["messages"].as_array().expect("messages");
     assert_eq!(
@@ -3206,7 +2599,7 @@ fn the_open_consult_slot_says_what_an_advice_is_for() {
     let turns = serde_json::json!([
         {"role": "advice", "text": "which city?", "consult_id": "k-7"}
     ]);
-    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(turns)]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
     let text = out[0]["system"]["consult"]["text"]
         .as_str()
@@ -3229,13 +2622,18 @@ fn the_open_consult_slot_says_what_an_advice_is_for() {
 /// out has to be taken back, and `system.*` is the one slot family where
 /// "stop sending it" does not do that. The receiving `llm` cell UPSERTS per
 /// slot path into its own `cell.db`, so a path that is not sent is a path that
-/// is not touched: an id set once outlives every window that no longer holds
+/// is not touched: an id set once outlives every round that no longer holds
 /// the event it belongs to.
 ///
-/// Two rounds, and the SECOND one is the test. Round one only shows that the
-/// slot is written, which was never in doubt.
+/// OR-KX-63 (GH #889): the round no longer reads a history, so an id outlives
+/// the round that showed it on the session's `depart` row instead -- the
+/// question the core asks back is answered by the person in a LATER round, and
+/// the window leg carries the id there (`consults`). The revocation moved with
+/// it: the id goes when its departure falls.
+///
+/// Three rounds, and the LAST one is the test.
 #[test]
-fn a_consult_that_left_the_window_is_revoked_in_the_next_projection() {
+fn a_consult_whose_departure_fell_is_revoked_in_the_next_projection() {
     let with_advice = serde_json::json!([
         {"role": "user", "text": "what is the weather?"},
         {"role": "advice", "text": "which city?", "consult_id": "k-7"}
@@ -3244,37 +2642,56 @@ fn a_consult_that_left_the_window_is_revoked_in_the_next_projection() {
         "collect",
         "bundle",
         1,
-        serde_json::json!([leg_window_row(with_advice, 0, 0)]),
+        serde_json::json!([leg_window_row(with_advice)]),
     ));
     assert_eq!(
         first[0]["system"]["consult"]["open"],
         serde_json::json!(["k-7"]),
-        "round one: the id travels while its event is in the window"
+        "round one: the id travels while its event is in the round"
     );
 
-    // Round two: the window has rolled on and the advice turn is gone. The
-    // consultation is closed, and the projection has to SAY so.
-    let without_advice = serde_json::json!([
-        {"role": "user", "text": "and tomorrow?"},
-        {"role": "assistant", "text": "sunny"}
-    ]);
+    // Round two: the person answers the core's question. No advice turn in
+    // the round -- the answered departure still stands, and the id with it.
+    let held = serde_json::json!({
+        "turns": [{"role": "user", "text": "berlin"}],
+        "deferred": 0, "deferred_turns": [], "consults": ["k-7"]});
     let second = emit(reply_doc(
         "collect",
         "bundle",
         1,
-        serde_json::json!([leg_window_row(without_advice, 0, 0)]),
+        serde_json::json!([{"turn_id": "t1", "iter": 0, "role": "leg-window",
+                             "turn": held.to_string(), "fired": 0}]),
     ));
     assert_eq!(
         second[0]["system"]["consult"]["open"],
+        serde_json::json!(["k-7"]),
+        "round two: the id rides on its departure into the next round: {}",
+        second[0]
+    );
+
+    // Round three: the departure fell (a newer one replaced it, or the frist
+    // passed). The consultation is closed, and the projection has to SAY so.
+    let without_advice = serde_json::json!([
+        {"role": "user", "text": "and tomorrow?"},
+        {"role": "assistant", "text": "sunny"}
+    ]);
+    let third = emit(reply_doc(
+        "collect",
+        "bundle",
+        1,
+        serde_json::json!([leg_window_row(without_advice)]),
+    ));
+    assert_eq!(
+        third[0]["system"]["consult"]["open"],
         serde_json::json!([]),
         "an omitted path is an untouched path -- the empty slot must be SENT: {}",
-        second[0]
+        third[0]
     );
     // `flatten_to_leaves` stops at `text`: a slot offered WITHOUT one produces
     // no leaf, hence no upsert, and the stale row would stand exactly as
     // before. The empty rendering is what makes the overwrite happen.
     assert_eq!(
-        second[0]["system"]["consult"]["text"], "",
+        third[0]["system"]["consult"]["text"], "",
         "the emptied slot still needs its `text` leaf -- that is what gets overwritten"
     );
 }
@@ -3282,7 +2699,7 @@ fn a_consult_that_left_the_window_is_revoked_in_the_next_projection() {
 #[test]
 fn a_window_without_advice_carries_the_consult_slot_emptied() {
     let turns = serde_json::json!([{"role": "user", "text": "hi"}]);
-    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let rows = serde_json::json!([leg_window_row(turns)]);
     let out = emit(reply_doc("collect", "bundle", 1, rows));
     assert_eq!(
         out[0]["system"],
@@ -3339,21 +2756,25 @@ fn an_interim_answer_stays_an_interim_answer_on_its_way_out() {
         serde_json::json!([{"origin": "assistant", "type": "text",
                             "text": "one moment, asking"}]),
     ));
-    assert_eq!(out.len(), 2, "the write plus the reply: {out:?}");
-    assert_eq!(out[1]["header"]["route"], "answer");
+    // GH #889: `in_answer` no longer writes the answer into a window, and an
+    // interim ends no round (its calls are still out), so the reply is all.
+    assert_eq!(out.len(), 1, "the reply alone: {out:?}");
+    assert_eq!(out[0]["header"]["route"], "answer");
     assert_eq!(
-        out[1]["header"]["interim"], "1",
+        out[0]["header"]["interim"], "1",
         "a channel must be able to tell the two apart: {}",
-        out[1]
+        out[0]
     );
+    // A final answer ends its round: the reply first, the `round-drop` behind it.
     let plain = emit(lane_doc(
         "in_answer",
         serde_json::json!([{"origin": "assistant", "type": "text", "text": "42"}]),
     ));
+    assert_eq!(plain[0]["header"]["route"], "answer", "{plain:?}");
     assert!(
-        plain[1]["header"].get("interim").is_none(),
+        plain[0]["header"].get("interim").is_none(),
         "a final answer carries no marker: {}",
-        plain[1]
+        plain[0]
     );
 }
 

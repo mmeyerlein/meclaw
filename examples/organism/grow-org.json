@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "acme",
-        "template": "org@1.4.1"
+        "template": "org@2.0.0"
       }
     ],
     "add_edges": [
@@ -81,11 +81,6 @@
       {
         "from": "./acme",
         "to": ".",
-        "condition": "has(hop.route) && hop.route == 'prune'"
-      },
-      {
-        "from": "./acme",
-        "to": ".",
         "condition": "has(hop.route) && hop.route == 'build'"
       },
       {
@@ -102,11 +97,6 @@
         "from": "./acme",
         "to": ".",
         "condition": "has(hop.route) && hop.route == 'dump'"
-      },
-      {
-        "from": "./acme",
-        "to": ".",
-        "condition": "has(hop.route) && hop.route == 'pack_ack'"
       }
     ]
   }

@@ -1,0 +1,238 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_curate",
+          "because": "one call of the model this hive serves: `messages[]` is the whole running round as it stands (the opening turn, the evidence pairs, every tool iteration so far), never history; `system` the per-round slots; `tool_scope` passes through; `hop.session_id`, `hop.turn_id`, `hop.iter` name the round. Answered by exactly one `brain`"
+        },
+        {
+          "route": "in_slots",
+          "because": "durable system slots of the caller's own making (the tool menu, the sidecar contract): kept as the caller's slots and sent to the model with the next call whose system changed, never on their own"
+        },
+        {
+          "route": "in_llm",
+          "because": "the tap: every output of the model this hive serves, raw, with its usage and the four keys the parent's edge promoted onto `brain` (`context.curator_call`, `context.session_id`, `context.turn_id`, `context.iter`); without a session it is session `default`, without a turn the round of its call. A final answer (`stop`, `length`) enters the ledger from here and from nowhere else; the usage fills the call record and a stamped `cache_expires_at` sets the clock. An output without `context.curator_call` is dropped and said"
+        },
+        {
+          "route": "in_pack",
+          "because": "an identity pack: `system.{identity,persona,handover,instructions}` and nothing else, answered on `pack_ack` with the context passed through untouched. An unknown family refuses the whole pack (`slot_unknown`), an empty one is `pack_empty`"
+        },
+        {
+          "route": "in_close",
+          "because": "a closed session (`context.session_id`): answered by one `write` batch in the collector's close contract, empty when the session left nothing"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package for `./summarizer`, pushed by the colony's llm-registry (GH #858): a params-only body the llm cell merges into its live params and answers with nothing; it goes from this path straight to that cell and past every other"
+        }
+      ],
+      "emits": [
+        {
+          "route": "brain",
+          "because": "the call: `messages[]` the window, `system` only when a family changed (each changed family one `$replace` root), `tool_scope` unchanged, the hop of `in_curate` unchanged plus `curator_call`. The parent's edge onto the model promotes `curator_call`, `turn_id`, `session_id` and `iter` into context, so the tap comes back with them"
+        },
+        {
+          "route": "turn_write",
+          "because": "one participant turn (the person's, the model's final answer, a peer's) for whoever keeps episodes, one per message, in the collector's per-turn contract: `hop.turn_id` `<session_id>#<index>`, `hop.turn_index`, `hop.happened_at`. Off with `./writer` `turn_write` = \"0\""
+        },
+        {
+          "route": "write",
+          "because": "a closed session as ONE batch in the collector's close contract: `messages[]` the participant turns, `rounds` everything else raw, `hop.turn_count`/`hop.round_count`"
+        },
+        {
+          "route": "pack_ack",
+          "because": "the receipt of one pack: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown`, `pack_empty`), `hop.pack_unknown`; the context of the pack rides on"
+        },
+        {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that `./summarizer` refused (GH #863): its error, with the cell's own path in `hop.refused_subscriber`, leaves here for the registry's way back"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./intake",
+          "condition": "has(hop.route) && (hop.route == 'in_curate' || hop.route == 'in_slots' || hop.route == 'in_llm' || hop.route == 'in_pack')"
+        },
+        {
+          "from": ".",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'in_close'"
+        },
+        {
+          "from": ".",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/summarizer'))"
+        },
+        {
+          "from": "./intake",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./writer",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./intake",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-intake'"
+        },
+        {
+          "from": "./ledger",
+          "to": "./policy",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-policy'"
+        },
+        {
+          "from": "./ledger",
+          "to": "./writer",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-writer'"
+        },
+        {
+          "from": "./intake",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'episode'"
+        },
+        {
+          "from": "./policy",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'clock'"
+        },
+        {
+          "from": "./clock",
+          "to": "./policy",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'cache'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_cache_expired'"
+            }
+          }
+        },
+        {
+          "from": "./clock",
+          "to": "./policy",
+          "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_clock_error'"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'summarize'"
+        },
+        {
+          "from": "./summarizer",
+          "to": "./policy",
+          "condition": "!has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_summary'"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'brain'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'pack_ack'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        },
+        {
+          "from": "./writer",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'turn_write' || hop.route == 'write')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        },
+        {
+          "from": "./summarizer",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the curator hive: the window of ONE model and the ledger of every call it got. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
+    "use_when": "One per model whose window has to be owned: in front of a conversation brain, wired between the context collector and the `llm` cell. Nothing in the contract assumes a conversation -- any `llm` cell can sit behind it.",
+    "not_in_scope": "No retrieval, no tool fan-out, no persona of its own, no policy per role. It keeps what the model saw and decides what it sees next; what is worth remembering is the memory's business.",
+    "contract_in": "Six lanes on `hop.route`: in_curate, in_slots, in_llm, in_pack, in_close, in_model.",
+    "contract_out": "Five routes on `hop.route`, leaving through the hive path: brain, turn_write, write, pack_ack, model_refused."
+  }
+}

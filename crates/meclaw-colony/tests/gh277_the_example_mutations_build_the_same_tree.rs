@@ -461,7 +461,12 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// Moved 44 -> 46 with GH #783: `talky` grew a `schemas` cell, which declares
 /// the sidecar sections that agent asks its own model for, and two of the five
 /// declarations instantiate a `talky`.
-const TEMPLATE_BORN_ROWS: usize = 46;
+///
+/// Moved 46 -> 64 with GH #889: `talky` and `cogny` reference a `curator`
+/// hive (`intake`, `policy`, `writer`, `ledger`, `summarizer`, `clock` -- six
+/// cells), and three of the instantiated composites carry one (two `talky`s
+/// and one `cogny`), so that is 3 x 6. RE-MEASURED with [`print_the_measurement`].
+const TEMPLATE_BORN_ROWS: usize = 64;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -476,7 +481,10 @@ const TEMPLATE_BORN_ROWS: usize = 46;
 ///
 /// Moved 10 -> 9 with GH #447 (ruling R1): `summarizer` left `talky`'s
 /// composition, and it was the only route by which a row could claim it.
-const DISTINCT_TEMPLATES: usize = 9;
+///
+/// Moved 9 -> 10 with GH #889: `curator` arrives through the `talky`s' and the
+/// `cogny`'s ref cell.
+const DISTINCT_TEMPLATES: usize = 10;
 
 /// The sub-units that appear in the registry although NO declaration names
 /// them: they arrive through `talky`'s and `cogny`'s `cell.type: "ref"` cells.
@@ -486,7 +494,10 @@ const DISTINCT_TEMPLATES: usize = 9;
 /// Moved from four to three with GH #447 (ruling R1): `summarizer` is no longer
 /// one of `talky`'s refs. `session-keeper` stays — it is the clock, the
 /// generation ledger and the ingress stamp, and none of those is memory work.
-const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-keeper"];
+///
+/// Moved from three to four with GH #889: `talky` and `cogny` reference a
+/// `curator` between their collector and their brain.
+const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "session-keeper"];
 
 /// Rows in `colony.db`'s `edges` table after all five declarations — the
 /// declarations' own wiring plus every edge the instantiated composites draw
@@ -564,7 +575,11 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// or the shell, so each of them declares it and lets it out — and the example
 /// stack grows exactly one edge for that on the path this count walks. The door
 /// term is folded into an existing edge's condition in every composite and
-/// costs no edge at all. No declaration changed.
+/// costs no edge at all. No declaration changed. That exit is gone again since
+/// GH #877: every receipt now ends at the member's own `./affinity`, so neither
+/// the member nor the org nor the shell declares `pack_ack` or lets it out. The
+/// count does not move for it -- none of the five declarations instantiates a
+/// member, an org or the shell, and no example declaration draws the lane.
 ///
 /// Moved 153 -> 154 with GH #462, the `steward` -> `argus` rename, and the whole
 /// of the move is ONE edge in the control loop's own graph. Three edges changed
@@ -686,7 +701,13 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// declarations grow two talkies, one cogny and one argus, so that is
 /// 2 x 1 + 1 x 1 + 1 x 1. The exclusion on the error and verdict edges is a
 /// condition and costs no edge.
-const EDGES: usize = 208;
+///
+/// Moved 208 -> 272 with GH #889: every `talky` and `cogny` carries a
+/// `curator` with 19 inner edges; `talky@6.0.0`'s own wiring grew 37 -> 39
+/// and `cogny`'s 22 -> 25 (the round goes collector -> curator -> brain, the
+/// brain taps the curator, pack/close/summarizer doors). Two talkies and one
+/// cogny: 2 x (19 + 2) + 1 x (19 + 3). RE-MEASURED with [`print_the_measurement`].
+const EDGES: usize = 272;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

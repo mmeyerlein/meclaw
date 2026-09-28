@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "alex",
-        "template": "member@1.10.5"
+        "template": "member@2.0.0"
       }
     ],
     "add_edges": [
@@ -81,11 +81,6 @@
       {
         "from": "./alex",
         "to": ".",
-        "condition": "has(hop.route) && hop.route == 'prune'"
-      },
-      {
-        "from": "./alex",
-        "to": ".",
         "condition": "has(hop.route) && hop.route == 'build'"
       },
       {
@@ -102,11 +97,6 @@
         "from": "./alex",
         "to": ".",
         "condition": "has(hop.route) && hop.route == 'dump'"
-      },
-      {
-        "from": "./alex",
-        "to": ".",
-        "condition": "has(hop.route) && hop.route == 'pack_ack'"
       }
     ]
   }

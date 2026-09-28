@@ -1,35 +1,23 @@
-//! GH #55 / GH #283 — the shipped `talky` serves the one tool that is its own.
+//! GH #55 / GH #283 — every tool call of the shipped `talky` leaves on its tool
+//! lane, and the round it opened closes when the answer comes back.
 //!
-//! `thread_recall` is not the parent's tool. The collector inside this composite
-//! SERVES it — it owns the round table a `thread_recall` stub points at, in its
-//! own `cell.db`, which no other cell in the substrate may read — and yet until
-//! GH #55 the wiring that reached it had to be drawn from outside: the README
-//! asked every parent to draw a self-loop at `./talky`, and a parent that forgot
-//! got a tool call that left the composite, found no cell and stalled its round
-//! until the idle window closed it.
+//! Until GH #55 the wiring for the names the composite served itself had to be
+//! drawn from outside. `memory_recall` stopped being one of them in
+//! `talky@5.0.0` (GH #552): the memory belongs to the MEMBER and its hive
+//! declares and answers the call. `thread_recall`, the last one, is gone since
+//! `talky@6.0.0` (GH #889, R-27-1): the curator owns the window, so the
+//! collector keeps no round table to recall from. No name is reserved here any
+//! more, and the composite does with every name what it does with `weather` —
+//! it lets the call leave on the tool lane through the guarded default edge of
+//! GH #283.
 //!
-//! `memory_recall` stood beside it until `talky@5.0.0`. It does not any more
-//! (GH #552): the memory belongs to the MEMBER, the rules a recall obeys are
-//! enforced in the memory hive, and serving the call here meant typing that
-//! hive's schema by hand. So the composite now does with that name what it does
-//! with `weather` — it lets it leave on the tool lane — and the third test below,
-//! which used to be the positive control, is a claim about `memory_recall` too.
-//!
-//! This file asks the two questions that turn the remaining recipe into topology:
-//!
-//! 1. does a `thread_recall` call reach the collector's own lane
-//!    (`in_thread_call`) with **no** edge drawn by the parent, and
-//! 2. does it stay inside — nothing on the composite's `tool` lane for that
-//!    call.
-//!
-//! The second question is only worth asking beside a positive control, so the
-//! remaining tests drive an ordinary tool name and `memory_recall` through the
-//! same tree and assert both DO leave: that is the guarded default edge of
-//! GH #283 firing, and it is what proves the silence in test one is the reserved
-//! name being claimed rather than the lane being dead.
+//! This file drives an ordinary tool name and `memory_recall` through the
+//! shipped tree and asserts both DO leave, and that the ordinary round
+//! re-enters the seam when its result comes back.
 //!
 //! Free of a real provider by construction: the brain talks to the mock OpenAI
-//! wire, every other cell is a `code`/`store`/`timer` cell.
+//! wire, the curator's summarizer to a closed local port, and every other cell
+//! is a `code`/`store`/`timer` cell.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -176,6 +164,8 @@ sys.stdout.write(json.dumps({
 /// The port wiring a parent draws around the composite. Deliberately WITHOUT
 /// the two self-loops the README used to demand: this harness is the parent
 /// that never heard of `memory_recall`, which is the whole point of #55.
+/// GH #889 took the prune pair out as well: talky neither takes `in_prune` nor
+/// emits its report any more.
 ///
 /// `./talky` is the only endpoint named from outside — the composite's own
 /// address — so no edge here shares a sender with an edge inside the composite
@@ -191,12 +181,6 @@ fn main_config() -> Value {
         // reply exit
         {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
-        // the housekeeping pair the composite's required_drains obliges
-        {"from": "./surface", "to": "./talky",
-         "condition": "has(hop.route) && hop.route == 'prune'",
-         "modifier": {"set_hop": {"route": "'in_prune'"}}},
-        {"from": "./talky", "to": "/park",
-         "condition": "has(hop.route) && hop.route == 'prune'"},
         // the error drain and the sidecar lane
         {"from": "./talky", "to": "/park",
          "condition": "has(hop.route) && hop.route == 'error'"},
@@ -206,16 +190,13 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && (hop.route == 'write' || hop.route == 'turn_write')"},
         // THE TWO PROBES. Both take a lane of the composite's public contract
         // and nothing else: `tool` is what a call that LEFT travels on,
-        // `recall` is what the collector asks memory with when it served a
-        // `memory_recall` call itself.
+        // `recall` is the collector's ambient memory leg.
         {"from": "./talky", "to": "/tool_port",
          "condition": "has(hop.route) && hop.route == 'tool'"},
         {"from": "./talky", "to": "/recall_port",
          "condition": "has(hop.route) && hop.route == 'recall'"},
         // the one per-instance tool lane, wired at the composite's own address
-        // and named: a parent answers the tools it wired and NOTHING else, so a
-        // reserved name that escaped would find no cell — which is exactly the
-        // stall #55 is about.
+        // and named: a parent answers the tools it wired and NOTHING else.
         {"from": "./talky", "to": "./weather",
          "condition": "has(hop.tool_name) && hop.tool_name == 'weather'"},
         {"from": "./weather", "to": "./talky",
@@ -233,7 +214,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         "main/surface/config.json",
         &code_cell(
             SURFACE,
-            &["turn", "prune"],
+            &["turn"],
             json!({"chat_id": {"type": "string", "required": false}}),
         ),
     );
@@ -265,15 +246,30 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // GH #889: the curator hive carries a second `llm` cell, its summarizer.
+    // It is pointed at a closed local port, so nothing here can reach a real
+    // provider and nothing it asks can take a scripted answer meant for the
+    // brain.
+    if root.join(SUMMARIZER).is_file() {
+        patch(root, SUMMARIZER, |v| {
+            v["params"]["base_url"] = json!(CLOSED_PORT);
+            v["params"]["model"] = json!("summarizer-mock");
+        });
+    }
 }
+
+/// The curator's summarizer inside the copied talky (`curator@1.0.0`, GH #888).
+const SUMMARIZER: &str = "main/talky/curator/summarizer/config.json";
+/// An endpoint nothing listens on: a call there fails at once and costs nothing.
+const CLOSED_PORT: &str = "http://127.0.0.1:9/v1";
 
 struct Ports {
     sink: mpsc::Receiver<Message>,
     tool: mpsc::Receiver<Message>,
     recall: mpsc::Receiver<Message>,
     /// The drain of everything this file does not assert on (the write lanes,
-    /// the error lane, the prune report). Held rather than dropped: a capture
-    /// whose receiver is gone turns every delivery into a send error.
+    /// the error lane, the sidecar). Held rather than dropped: a capture whose
+    /// receiver is gone turns every delivery into a send error.
     _park: mpsc::Receiver<Message>,
 }
 
@@ -353,10 +349,10 @@ async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
         .flatten()
 }
 
-/// The negative half of #55, and it is only ever asked AFTER a positive receipt
-/// of the same fan-out has arrived: the dispatcher decides both edges in one
-/// pass, so a call that reached the collector internally has already had its
-/// chance to leave. Two seconds past that point is a settled tree, not a race.
+/// A negative probe, only ever asked AFTER a positive receipt of the same
+/// fan-out has arrived: the dispatcher decides every edge in one pass, so a
+/// message that was going to reach the port has already had its chance. Two
+/// seconds past that point is a settled tree, not a race.
 async fn nothing_on(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
     tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await
@@ -366,77 +362,9 @@ async fn nothing_on(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
-/// `thread_recall` (GH #245) is served inside, and its answer re-enters the
-/// running round: the receipt is the SECOND provider call, whose conversation
-/// carries the tool result under the original call id. Nothing about that is
-/// possible unless the call reached `in_thread_call`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn thread_recall_is_served_inside_and_never_leaves_on_the_tool_lane() {
-    let mock = MockOpenAI::start(vec![
-        canned_tool_calls(vec![("call-t1", "thread_recall", r#"{"query":"berlin"}"#)]),
-        canned_chat_completion("Here is what the turn held.", "stop"),
-    ])
-    .await;
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &mock.base_url);
-    let (h, mut ports) = boot(&td).await;
-
-    h.send(turn("what did that tool actually return?")).await;
-
-    let answer = recv_bounded(&mut ports.sink)
-        .await
-        .expect("the round closed, so the served call answered the fan-in");
-    assert_eq!(hop_of(&answer, "route"), "answer");
-    assert_eq!(
-        hop_of(&answer, "iter"),
-        "1",
-        "the round re-entered the seam: {:?}",
-        answer.headers.hop
-    );
-
-    // The receipt: the second call's conversation carries a tool RESULT under
-    // the original call id. Nothing in this tree can produce one but the
-    // collector — the only tool cell the parent wired answers to `weather`, and
-    // the composite's tool lane never carried this call at all.
-    let reqs = mock.recorded_requests().await;
-    assert_eq!(reqs.len(), 2, "one round: ask for the tool, then answer");
-    let wire = reqs[1].messages().expect("wire messages");
-    let result = wire
-        .iter()
-        .find(|m| m["role"] == "tool" && m["tool_call_id"] == "call-t1")
-        .unwrap_or_else(|| {
-            panic!(
-                "no tool result for the served call reached the brain: {}",
-                meclaw_core::serde_json::to_string(wire).unwrap_or_default()
-            )
-        });
-    let text = result["content"].as_str().unwrap_or_default();
-    // Both of `thread_payload`'s answers are its own vocabulary and nothing
-    // else in the tree writes either: the bracketed slate header when the turn
-    // held a matching row, the "found nothing" sentence when the select ran
-    // before the assistant turn was filed. Which of the two arrives is a race
-    // this test has no reason to pin — that the ANSWER came from the collector
-    // is the claim.
-    assert!(
-        text.starts_with('[') || text.starts_with("thread recall"),
-        "the result is `thread_payload`'s own answer, not a stand-in tool's: {text:?}"
-    );
-
-    let leaked = nothing_on(&mut ports.tool).await;
-    assert!(
-        leaked.is_none(),
-        "a reserved tool name must not also leave on the tool lane: {:?}",
-        leaked.map(|m| m.headers.hop)
-    );
-
-    h.shutdown().await;
-}
-
-/// The positive control for the guarded default edge (GH #283). An ordinary
-/// tool name fires no regular out-edge of the dispatcher, so the default
-/// carries it outward exactly as the unconditional edge used to — which is
-/// what makes the silence in the test above a claim about the one reserved
-/// name and not about a dead lane.
+/// The guarded default edge (GH #283). An ordinary tool name fires no regular
+/// out-edge of the dispatcher, so the default carries it outward exactly as the
+/// unconditional edge used to, and the result closes the round.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ordinary_tool_call_still_leaves_on_the_tool_lane() {
     let mock = MockOpenAI::start(vec![
@@ -464,8 +392,7 @@ async fn an_ordinary_tool_call_still_leaves_on_the_tool_lane() {
     h.shutdown().await;
 }
 
-/// The second positive control, and it is a claim of GH #552 rather than a
-/// control: `memory_recall` is an ORDINARY tool name here now. It fires no
+/// A claim of GH #552: `memory_recall` is an ORDINARY tool name here now. It fires no
 /// regular out-edge of the dispatcher any more, so the guarded default carries it
 /// out of the composite — to the member's memory, which declares the schema and
 /// answers the call. Before `talky@5.0.0` this exact message stayed inside and

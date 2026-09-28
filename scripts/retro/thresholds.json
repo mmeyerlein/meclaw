@@ -1,8 +1,8 @@
 {
   "ruling": "R-P3",
   "decided": "2026-09-19",
-  "title": "Wave retro -- the eleven numbers",
-  "title_de": "Wellen-Retro — die elf Kennzahlen",
+  "title": "Wave retro -- the thirteen numbers",
+  "title_de": "Wellen-Retro — die dreizehn Kennzahlen",
   "note": "A breach is a finding, never a blocker. Thresholds change by ruling only, and the ruling carries a date.",
   "note_de": "Ein Verstoß ist ein Befund, nie ein Blocker. Schwellen ändern sich nur per Ruling, und das Ruling trägt ein Datum.",
   "metrics": [
@@ -138,6 +138,41 @@
       "source_de": "Calls aller Agenten, dedupliziert über requestId, deren Start 5–60 min nach dem Start des vorigen Calls desselben Agenten an dasselbe Modell lag; Writes = cache_creation_input_tokens, 1-h-Anteil = ephemeral_1h_input_tokens an allen Writes",
       "advice": "Calls that come back after the five-minute cache expired rewrite the whole context: keep the waiting agents on the one-hour cache, or wake them sooner.",
       "advice_de": "Calls nach abgelaufenem 5-min-Cache schreiben den ganzen Kontext neu: wartende Agenten auf den 1-h-Cache legen oder früher wecken."
+    },
+    {
+      "id": "Q12",
+      "title": "planning cost: input equivalents / wall clock",
+      "title_de": "Planungsaufwand: Input-Äquivalente / Wanduhr",
+      "unit": "input equivalents / h",
+      "cmp": "<=",
+      "threshold": 15000000,
+      "share_target": 20,
+      "weights": {
+        "note": "Ratios to one uncached input token, never prices: the formula of plans/welle-fix-2026-09-27/cache_ttl_calc.py units.",
+        "cache_write_5m": 1.25,
+        "cache_write_1h": 2.0,
+        "output": 5.0,
+        "cache_read": {
+          "opus": 0.05,
+          "default": 0.1
+        }
+      },
+      "source": "the session whose first prompt names the wave marker and HANDOVER-PLANUNG (or --planning), with its subagents, calls de-duplicated by requestId: input + 5-minute writes x 1.25 + one-hour writes x 2 + reads x read factor + output x 5; wall clock first to last line of each session",
+      "source_de": "die Sitzung, deren erster Prompt den Wellen-Marker und HANDOVER-PLANUNG nennt (oder --planning), samt Subagenten, Calls dedupliziert über requestId: input + 5-min-Writes × 1,25 + 1-h-Writes × 2 + Reads × Lesefaktor + output × 5; Wanduhr erste bis letzte Zeile je Sitzung",
+      "advice": "A planning above its ceiling fanned out: one planner, one session, two readers and one reviewer at most (plans/PLANUNG.md).",
+      "advice_de": "Eine Planung über dem Deckel hat aufgefächert: ein Planer, eine Sitzung, höchstens zwei Leser und ein Reviewer (plans/PLANUNG.md)."
+    },
+    {
+      "id": "Q13",
+      "title": "strands added to the plan: reports without a plan part / plan parts",
+      "title_de": "Nachträge je geplantem Strang: Berichte ohne Plan-Teil / Plan-Teile",
+      "unit": "supplements / plan parts",
+      "cmp": "<=",
+      "threshold": null,
+      "source": "reports in berichte/ with a head block whose strang has no plan part plan-parts/<strang>-<topic>.md, over the number of plan parts; a report without a head block is no strand, a plan part without a report no supplement",
+      "source_de": "Berichte in berichte/ mit Kopfblock, deren strang keinen Plan-Teil plan-parts/<strang>-<thema>.md hat, geteilt durch die Zahl der Plan-Teile; ein Bericht ohne Kopfblock ist kein Strang, ein Plan-Teil ohne Bericht kein Nachtrag",
+      "advice": "A strand the build had to add is a question the planning left open: read the supplements before the next planning.",
+      "advice_de": "Ein Strang, den der Bau nachschieben musste, ist eine Frage, die die Planung offen ließ: die Nachträge vor der nächsten Planung lesen."
     }
   ]
 }

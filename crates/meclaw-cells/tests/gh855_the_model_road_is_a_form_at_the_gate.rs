@@ -22,7 +22,9 @@
 //!   * a PUSH edge (`in_model`) starts at the declaration's own container,
 //!     ends at one composite under it, and carries only the pushes addressed
 //!     to one llm cell standing directly in that composite (`hop.subscriber == '<to>/<cell>'`,
-//!     one segment: a talky's brain, or since GH #858 a memory hive's four cells);
+//!     one segment: a talky's brain, or since GH #858 a memory hive's four cells), or
+//!     since GH #877 to the summarizer of the curator the composite stands in front of
+//!     (`'<to>/curator/<cell>'` -- a name, not a depth);
 //!   * an ANNOUNCEMENT edge (`model_subscribe`) starts at a generation the SAME
 //!     manifest brings into the world, fires on its mutation receipt only, and
 //!     announces brains inside that generation, stamping the generation into
@@ -460,6 +462,34 @@ fn a_push_edge_whose_path_breaks_its_literal_is_refused() {
     assert_eq!(refused(&out), "model_push_form", "{edge}: {out:?}");
 }
 
+/// GH #877 (OR-KX-P5) -- the one push that reaches a hive deeper: the curator
+/// summarizer behind a rim. The rendered road carries three of them and passes
+/// (`the_road_the_builder_renders_passes_the_gate_and_is_asked_about`); the
+/// exception is a NAME, so the same depth under any other name, or one storey
+/// more under the curator, is still the refused form.
+#[test]
+fn a_push_reaches_the_curator_behind_a_rim_and_nothing_else_that_deep() {
+    if !shipped() {
+        return;
+    }
+    let to = "./acme/members/alex/assistants/scribe/talky";
+    let push = |leaf: &str| {
+        json!({"from": ".", "to": to,
+               "condition": format!("{PUSH_COND}{GEN}/talky/{leaf}'"),
+               "modifier": {"set_hop": {"route": "'in_model'"}}})
+    };
+    let out = submit(&at_scope(json!([push("curator/summarizer")])), AGENT);
+    assert!(
+        parked_and_asked(&out),
+        "the curator summarizer's push is the builder's own form: {out:?}"
+    );
+    for leaf in ["tools/summarizer", "curator/x/summarizer", "curator/"] {
+        let edge = push(leaf);
+        let out = submit(&at_scope(json!([edge.clone()])), AGENT);
+        assert_eq!(refused(&out), "model_push_form", "{edge}: {out:?}");
+    }
+}
+
 /// OR-SN.L2a.14 -- the residue, pinned so the README sentence stays measured:
 /// an edge that leaves the road's keys and its route as they are names nothing
 /// the gate reads, so it is a broker question like any other edge -- with no
@@ -606,11 +636,31 @@ fn a_brain_whose_announcement_is_no_literal_is_left_out_and_said() {
         .cloned()
         .expect("the road still stands for the brain that is a literal");
     let pushes: Vec<&Value> = road.iter().filter(|e| e["to"] != ".").collect();
-    assert_eq!(pushes.len(), 1, "only cogny's push edge: {road:?}");
+    let aimed_at = |cell: &str| -> Vec<&Value> {
+        pushes
+            .iter()
+            .copied()
+            .filter(|e| {
+                e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.ends_with(&format!("/{cell}'")))
+            })
+            .collect()
+    };
+    let brains = aimed_at("brain");
+    assert_eq!(brains.len(), 1, "only cogny's brain push edge: {road:?}");
     assert_eq!(
-        pushes[0]["to"],
+        brains[0]["to"],
         "./acme/members/alex/assistants/scribe/cogny"
     );
+    // OR-KX-P5 (GH #877): each rim's curator summarizer starts on `model`,
+    // which is a literal here, so all three stay on the road.
+    assert_eq!(
+        aimed_at("curator/summarizer").len(),
+        3,
+        "the curator summarizers keep their push edges: {road:?}"
+    );
+    assert_eq!(pushes.len(), 4, "nothing else on the road: {road:?}");
     let announced = road
         .iter()
         .find(|e| e["to"] == ".")

@@ -96,6 +96,17 @@ fn deliveries(t: &EdgeTable, from: &str, hop: Value) -> Vec<(String, Map<String,
         .collect()
 }
 
+/// The same, minus the curator's tap. GH #889: every completion of the brain
+/// also reaches `./curator` on `in_llm`, the ledger's copy of what the model
+/// said; that copy is not a road toward an answer, so the claims below measure
+/// the roads beside it.
+fn roads(t: &EdgeTable, from: &str, hop: Value) -> Vec<(String, Map<String, Value>)> {
+    deliveries(t, from, hop)
+        .into_iter()
+        .filter(|(to, _)| !to.ends_with("/curator"))
+        .collect()
+}
+
 /// A cut completion as the llm cell hands it on: the reason on the hop, the
 /// text — ending in a sidecar the model began — in the body.
 fn cut_completion() -> Value {
@@ -133,7 +144,18 @@ fn a_length_finish_goes_through_the_splitter_and_never_into_the_dispatcher() {
         return;
     }
     let t = table(TALKY, "templates/talky/config.json");
-    let from_brain = deliveries(&t, "/t/brain", json!({"finish_reason": "length"}));
+    // GH #889: the tap is there, once, and it is the only delivery `roads`
+    // leaves out.
+    let tapped = deliveries(&t, "/t/brain", json!({"finish_reason": "length"}));
+    assert_eq!(
+        tapped
+            .iter()
+            .filter(|(to, hop)| to == "/t/curator" && hop["route"] == "in_llm")
+            .count(),
+        1,
+        "the curator reads the cut completion off the brain's tap: {tapped:?}"
+    );
+    let from_brain = roads(&t, "/t/brain", json!({"finish_reason": "length"}));
     let targets: Vec<&str> = from_brain.iter().map(|(to, _)| to.as_str()).collect();
     assert_eq!(
         targets,
@@ -162,7 +184,7 @@ fn a_length_finish_goes_through_the_splitter_and_never_into_the_dispatcher() {
             "`{finish}` still dispatches"
         );
     }
-    let d = deliveries(&t, "/t/brain", json!({"finish_reason": "content_filter"}));
+    let d = roads(&t, "/t/brain", json!({"finish_reason": "content_filter"}));
     let targets: Vec<&str> = d.iter().map(|(to, _)| to.as_str()).collect();
     assert_eq!(targets, vec!["/t/errors"], "content_filter stays an error");
 }
@@ -279,7 +301,9 @@ fn the_cogny_length_edge_is_marked_as_well() {
         return;
     }
     let t = table(COGNY, "templates/cogny/config.json");
-    let d = deliveries(&t, "/c/brain", json!({"finish_reason": "length"}));
+    // GH #889: cogny's brain is tapped by its curator as well; `roads` leaves
+    // that copy out.
+    let d = roads(&t, "/c/brain", json!({"finish_reason": "length"}));
     let targets: Vec<&str> = d.iter().map(|(to, _)| to.as_str()).collect();
     assert_eq!(
         targets,

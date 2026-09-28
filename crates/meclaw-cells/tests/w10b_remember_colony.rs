@@ -15,6 +15,11 @@
 //!                                        \--> dispatcher --route 'answer'--> the channel
 //!                    -> route turn_write -> memory/writer -> episodes
 //!
+//! Since GH #889 (R-27-1) the `turn_write` route of that last line is written
+//! by the talky's curator (its writer), no longer by the collector; it leaves
+//! the talky under the same name and in the same shape, so the wiring below
+//! and both claims are unchanged.
+//!
 //! `memory-drain` used to sit in the middle of that last line and does not any
 //! more (GH #523): its ledger is a per-session high-water mark over ONE closed
 //! batch, and a per-turn cadence hands it two batches of one session at a time.
@@ -52,7 +57,8 @@
 //! the lane's behaviour when the episode is genuinely missing is the reject, and
 //! `w10b_inline_gate.rs` pins that directly.
 //!
-//! No provider is paid: the only wire in this tree is `MockOpenAI`.
+//! No provider is paid: the only wire in this tree is `MockOpenAI` -- the
+//! brain and, since GH #889, the curator's summarizer both point at it.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -297,8 +303,8 @@ fn main_config() -> Value {
         // `templates/memory-drain/README.md` says not to draw this edge; this
         // file was the last place still drawing it.
         //
-        // The three keys the collector mints per turn (`turn_id`,
-        // `happened_at`, `session_id`) are promoted here, together with the
+        // The three keys the curator's writer mints per turn since GH #889
+        // (`turn_id`, `happened_at`, `session_id`) are promoted here, together with the
         // provenance the writer refuses to guess (#244/#269): `audience_set`
         // says who was in the round and `speaker`/`agent_id` who said it;
         // `channel` is not set here -- it travels from the connector seam above
@@ -414,12 +420,10 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     copy_cells(&repo("templates/talky"), &root.join("main/talky"));
     memory_hive(root);
 
-    // The per-turn lane is off by default; a parent that wires it says so HERE,
-    // in the instance's own params. A colony-global `.env` key is not the
-    // mechanism any more (`collector@1.2.0`, wave 13).
-    patch(root, "main/talky/collector/assemble/config.json", |v| {
-        v["params"]["turn_write"] = json!("1");
-    });
+    // Nothing patches `turn_write` here any more. It used to be switched on in
+    // the collector's own params; GH #298 made the lane ship ON, and GH #889
+    // moved the knob to the curator's writer (default "1"), so the collector
+    // has no such param left and what runs below is the shipped instance.
     patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
@@ -434,6 +438,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
         v["params"]["idle_ms"] = json!(0);
     });
     patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the curator between collector and brain carries an `llm` cell
+    // of its own (the summarizer of its rebuilds). It is pointed at the same
+    // mock so the tree has no way to a real provider; nothing in this short
+    // run triggers a rebuild, so it is never asked.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
@@ -692,7 +704,7 @@ async fn an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered() {
     assert_eq!(
         user_turn[1],
         format!("{session}#0"),
-        "under the collector's own deterministic id"
+        "under the curator writer's deterministic id (GH #889)"
     );
     std::fs::write(&marker, b"go").unwrap();
 

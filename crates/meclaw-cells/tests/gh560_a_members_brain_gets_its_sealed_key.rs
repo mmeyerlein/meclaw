@@ -392,7 +392,8 @@ async fn boot(td: &tempfile::TempDir, real_brain: &str) -> ColonyHandle {
             "error",
             "write",
             "turn_write",
-            "prune",
+            // GH #889: no `prune` lane any more -- the prune chain fell with the
+            // collector's `in_prune`, and no level emits it.
             "build",
             "bundle",
             "close_report",
@@ -463,7 +464,7 @@ fn member_manifest() -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.10.5",
+            "add_nodes": [{"name": MEMBER, "template": "member@2.0.0",
                            "override_params": {
                                "access/vault": {"unlock_env": UNLOCK_ENV},
                                "memory-hive/clock": quiet_night(),
@@ -529,7 +530,8 @@ fn assistant_manifest(base_url: &str) -> Value {
         "write",
         "turn_write",
         "sidecar",
-        "prune",
+        // GH #889: no `prune` lane any more -- the prune chain fell with the
+        // collector's `in_prune`, and no level emits it.
         "error",
         "build",
         "dump",
@@ -545,7 +547,7 @@ fn assistant_manifest(base_url: &str) -> Value {
                 "model_surface": "gpt-4o-mini"},
         "diff": {
             "add_nodes": [{"name": format!("assistants/{AGENT}"),
-                           "template": "assistant@2.9.5",
+                           "template": "assistant@3.0.0",
                            "override_params": {
                                // The brain under test: no bearer of its own
                                // (an empty string is not a bearer, GH #271), a

@@ -125,8 +125,9 @@ fn emit(doc: Value) -> Vec<Value> {
 
 const SESSION: &str = "c-523-2026-08-29T18:00:00.000000Z";
 
-/// One turn as the collector's `turn_write` route hands it out: one message,
-/// one speaker, and nothing else in `messages[]`.
+/// One turn as the `turn_write` route hands it out (the curator's writer since
+/// GH #889, the collector before, same contract): one message, one speaker,
+/// and nothing else in `messages[]`.
 fn turn(origin: &str, text: &str) -> Value {
     json!({"origin": origin, "text": text, "happened_at": ""})
 }

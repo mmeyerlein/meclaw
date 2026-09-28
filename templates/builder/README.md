@@ -1,4 +1,4 @@
-# `builder@1.15.3`
+# `builder@1.16.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -292,16 +292,16 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 ## A level is a recipe
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
-rewrote from scratch on every build: an organisation gets **20** transit edges, a
-member **20**, an assistant **28**, a channel **4**, a screen **3**, an app
+rewrote from scratch on every build: an organisation gets **18** transit edges, a
+member **18**, an assistant **27**, a channel **4**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
 
 A container level — an org, a member — costs the doors `in_turn`, `in_recall`,
-`in_brief`, `in_propose`, `in_build_result` and `in_export`, and the exits
-`answer`, `ack`, `reject`, `error`, `write`, `turn_write`, `prune`, `build`,
-`close_report`, `export_done` and `pack_ack`. The two levels share one renderer
+`in_brief`, `in_propose`, `in_build_result`, `in_export` and `mutation_committed`, and the exits
+`answer`, `bundle`, `ack`, `reject`, `error`, `write`, `turn_write`, `build`,
+`close_report`, `export_done` and `dump`. The two levels share one renderer
 because they share one contract, lane for lane, one storey apart. `in_import` is
 the lane both accept and neither wires: an import addresses the level's own
 path, so an edge from the container could never deliver one. **The table stood
@@ -362,8 +362,8 @@ either of them is the member. See § *The identity door is opt-in* and
 declaration*.
 
 An **assistant** level costs the two turn doors (`in_turn`, `in_bundle`, both
-guarded on `context.assistant`), `in_build_result`, the eight exits `answer`,
-`recall`, `sidecar`, `write`, `turn_write`, `prune`, `error` and `build` —
+guarded on `context.assistant`), `in_build_result`, the seven exits `answer`,
+`recall`, `sidecar`, `write`, `turn_write`, `error` and `build` —
 and, since [#476](https://github.com/mmeyerlein/meclaw/issues/476), the three
 **transfer** edges [#475](https://github.com/mmeyerlein/meclaw/issues/475)
 opened: `in_export` and `in_import` down under the same `context.assistant`
@@ -426,7 +426,7 @@ on a `channel` (§ *A round is provenance*).
 | `ctx` | optional, **`member_person` required for `channel`** | the declaration's own `ctx` block, mutation-wide. The recipe reads exactly one key out of it — `member_person`, the identity of the person a channel speaks with — and a channel wish without it renders nothing and asks instead, as `wish_incomplete` (§ *A round is provenance*) |
 | `override_params` | optional | addressed per cell of the template (`{"cogny/brain": {"temperature": 0.2}}`) |
 | `birth` | optional | `active` or `inactive` — the door's own vocabulary, written top-level on the `add_nodes` entry. A name the door does not know is refused here as `birth_unknown`, one hop from the wish that made it, rather than at the door one hop from the manifest. The default is the door's (`active`) for every level except `channel`, which is born **asleep** |
-| `subscribe` | optional, `assistant` | draw the identity door as well — since #561 four v-lanes: one push from the member's own `./affinity` into each brain rim of the generation, and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
+| `subscribe` | optional, `assistant` | draw the identity door as well — since #877 six v-lanes: one push from the member's own `./affinity` into each brain rim of the generation (`talky`, `talky-chat`, `cogny`), and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
 | — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its door. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the mount*) |
 | `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration* |
 | `door` | optional, `assistant` | grow the generation as its **member's door**: one default edge more, from the container into it, on `in_turn` only, stamping `context.assistant` with its name — so a turn that names no agent reaches it instead of dying at the container as `hive_no_route`. One door per member is a rule of the wish, not checked here. A value that is not a boolean is refused as `door_invalid`; on any other level it is refused as `door_level_invalid`; see § *The member's door is one default edge* |
@@ -446,7 +446,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.8.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.8.1",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.4"}], "…": "…"}}]}
@@ -470,6 +470,12 @@ lanes off the current `assistant`; and its librarian is the current `builder-lib
 corpus is regenerated over this number's templates and docs. Only pins moved.
 Since `1.15.3` ([#886](https://github.com/mmeyerlein/meclaw/issues/886)) its librarian is the current `builder-librarian`, whose corpus is regenerated over
 this number's templates, and the recipes count an assistant's lanes off the current `assistant`. Only pins moved.
+
+Since `1.16.0` ([#877](https://github.com/mmeyerlein/meclaw/issues/877), [#889](https://github.com/mmeyerlein/meclaw/issues/889)) the recipes draw the identity pack and its receipt for
+`talky-chat` as well, carry `pack_sub` and `pack_hash` on the pack's lane, announce each brain's
+`curator/summarizer` to the model registry and render no `prune` exit and no `pack_ack` above the
+member; the librarian, the `assistant` it counts and the `display` it grows are the current ones.
+A wish now yields something it could not before, so it is the second place.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,
@@ -765,17 +771,19 @@ argument beats both — a key a caller filled in is a decision, a sentence is a 
 A grown assistant reaches its brain with an **empty** `system` tree: nothing in a grown topology
 writes a durable slot, and the one lane that can — `in_pack`, GH #458 — needs an edge from the
 member's own record ([#473](https://github.com/mmeyerlein/meclaw/issues/473)). `subscribe: true`
-renders it, and since [#561](https://github.com/mmeyerlein/meclaw/issues/561) it renders **four
-v-lanes** rather than two plain edges: `./affinity → ./assistants/<name>/talky` and
-`./affinity → ./assistants/<name>/cogny`, each carrying `"lane": "in_pack"`, guarded on
-`hop.route == 'answer' && hop.subscriber == './assistants/<name>'` and re-stamped onto `in_pack`,
+renders it, and since [#561](https://github.com/mmeyerlein/meclaw/issues/561) it renders
+v-lanes rather than plain edges — **six** since [#877](https://github.com/mmeyerlein/meclaw/issues/877):
+`./affinity → ./assistants/<name>/talky`, `…/talky-chat` and `…/cogny`, each carrying
+`"lane": "in_pack"`, guarded on `hop.route == 'answer' && hop.subscriber == './assistants/<name>'`,
+re-stamped onto `in_pack` and promoting the pack's `pack_sub`/`pack_hash` into context (the
+receipt carries them home, and only a clean receipt books the delivery),
 plus one `pack_ack` v-lane back from each rim into `./assistants` — because `in_pack` and
 `pack_ack` are one decision and the door refuses the first without the second. The pack ends at
-the two BRAIN RIMS because the assistant level no longer carries the lane: it declares a connect
-point for it (`"at": ["./talky", "./cogny"]`) and vouches for the corridor instead of hopping on
+the BRAIN RIMS because the assistant level no longer carries the lane: it declares a connect
+point for it (`"at": ["./talky", "./talky-chat", "./cogny"]`) and vouches for the corridor instead of hopping on
 it ([#559](https://github.com/mmeyerlein/meclaw/issues/559)). The guard still names the
 **generation** and not a rim — a subscription is one row about one agent, and the fan-out is the
-two edges.
+edges.
 
 **This one declaration keeps the wide form**, and the reason is measured rather than chosen.
 `./affinity` is a *sibling* of `./assistants`: from a declaration standing in the container the
@@ -810,7 +818,7 @@ reason is worth writing down so nobody re-derives the disappointment:
   its `accepts` and `emits` are both empty, and its two upward edges condition on
   `has(hop.error_code)` — on a failure key, not on a lane.
 - **Lane count is not edge count**, in either direction. `assistant` declares
-  thirty lanes and gets twenty-eight edges: four of them are addressed at the
+  twenty-eight lanes and gets twenty-seven edges: three of them are addressed at the
   path directly (ruling W7-R5), `in_pack` and `pack_ack` are the opt-in identity
   door and no part of the level, `tool_result`
   is spoken inside the level and crosses no container edge, `display` folds
@@ -847,7 +855,7 @@ level's own set and behind both older switches, so no index either of them rende
  "modifier": {"set_context": {"assistant": "'<name>'"}}}
 ```
 
-An assistant grown with `door: true` carries **29** edges: the level's own set and this one.
+An assistant grown with `door: true` carries **28** edges: the level's own set and this one.
 The edge takes the level's form. It is `.` → `./<name>` in the container, and
 `./assistants` → `./assistants/<name>` when `subscribe` or `credential` moved the declaration to
 the member. The absolute edge is the same either way, so the door adds no third reason for the
@@ -913,7 +921,8 @@ its 2.3.2; the way back since its 2.3.4): an edge that names the road -- `in_mod
 `model_subscribe`, `model_refused`, `in_refused`, `context.model_announcer`,
 `context.model_generation`, `context.model_announced` -- must be one of these three, byte for
 byte. A push edge starts at the declaration's container and carries only the pushes addressed
-to one cell standing directly in its composite; a return edge runs from one composite under the
+to one cell standing directly in its composite, or to the summarizer of the curator that composite
+stands in front of (GH #877); a return edge runs from one composite under the
 container to the container itself; an announcement edge starts at a generation the same
 manifest instantiates. Anything else is refused as `model_push_form`, `model_refusal_form` or
 `model_announcement_form` before the broker is asked, and so is any edge that writes the hop keys
@@ -982,7 +991,9 @@ with an empty default, so an unset key leaves the cell without a start value at 
 those tokens in two pieces, because the colony binds every whole `${...}` in the script itself
 when it reads the recipe cell's config. The push form the gate checks is one segment below the
 edge's `to`: a talky's `brain`, or one of the memory hive's four cells, and nothing deeper
-(`crates/meclaw-cells/tests/gh858_a_grown_member_announces_its_memory.rs`).
+(`crates/meclaw-cells/tests/gh858_a_grown_member_announces_its_memory.rs`) -- except
+`curator/summarizer`, the curator summarizer behind each rim, which a generation announces since
+GH #877 beside its three brains.
 
 ## An app is a declaration
 

@@ -10,6 +10,8 @@
         "base_url": "text",
         "wire_dialect": "text",
         "context_window": "int",
+        "cache_mode": "text",
+        "cache_ttl_s": "int",
         "cost_in": "int",
         "cost_out": "int",
         "caps": "json",

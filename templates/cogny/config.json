@@ -25,7 +25,7 @@
         },
         {
           "route": "in_pack",
-          "because": "a durable `system.*` slot for this core's brain -- the door in the wall (GH #458). This composite is sealed: an edge naming `./brain` is refused with `hive_port_boundary`, so until this lane existed there was no way at all for an identity to reach it from outside. The pack enters at this path and the collector turns it into a system-slot upsert. It is a LANE rather than a body flag because what lands in `system.*` is UPSERTed into the brain's own `cell.db` and stands until something overwrites that exact path -- durable state, told apart from the evidence of one round by the topology and not by a key a model could have written. Body: `system` carrying one or more slot subtrees (what `affinity`'s push lane emits: the slots and NO turn beside them, so the update costs a write and not an inference, GH #263), or `slot` + `content` for a single one written by hand. Only `identity`, `persona`, `handover` and `instructions` may be written -- a subset of the collector's `SYS_KEEP`, so what arrives is out of the curator's reach at any budget. `instructions` joined that list in GH #488: holding the charter out of the lane assumed it had another owner, and it had none -- nothing exported it and no template seeded it, so a rebuilt core came up with an empty charter and answered as the vendor's default assistant. What guards it now is the edge that stamps the lane, drawn only where a brain may draw its OWN push edge, from a source whose single writer is `affinity`'s audited gate; anything else refuses the WHOLE pack with `slot_unknown`, an empty one with `pack_empty`. The owner is taken from `envelope.reply_to` and never from the body. PAIRED with `pack_ack` in `params.required_drains`"
+          "because": "a durable `system.*` slot for this core's brain -- the door in the wall (GH #458). This composite is sealed: an edge naming `./brain` is refused with `hive_port_boundary`, so until this lane existed there was no way at all for an identity to reach it from outside. The pack enters at this path and `./curator` holds it in its ledger and hands it to the brain as a system slot with the next call (GH #889). It is a LANE rather than a body flag because what lands in `system.*` stands in that ledger until something overwrites that exact path -- durable state, told apart from the evidence of one round by the topology and not by a key a model could have written. Body: `system` carrying one or more slot subtrees (what `affinity`'s push lane emits: the slots and NO turn beside them, so the update costs a write and not an inference, GH #263), or `slot` + `content` for a single one written by hand. Only `identity`, `persona`, `handover` and `instructions` may be written. `instructions` joined that list in GH #488: holding the charter out of the lane assumed it had another owner, and it had none -- nothing exported it and no template seeded it, so a rebuilt core came up with an empty charter and answered as the vendor's default assistant. What guards it now is the edge that stamps the lane, drawn only where a brain may draw its OWN push edge, from a source whose single writer is `affinity`'s audited gate; anything else refuses the WHOLE pack with `slot_unknown`, an empty one with `pack_empty`. The owner is taken from `envelope.reply_to` and never from the body. PAIRED with `pack_ack` in `params.required_drains`"
         },
         {
           "route": "in_model",
@@ -33,7 +33,7 @@
         },
         {
           "route": "in_menu",
-          "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since cogny@4.3.0 this core ASKS what its tools look like instead of carrying a menu somebody typed, and it declares `[\"*\"]`: a reasoning core is the one caller of an assistant that should be able to reach everything the surface can, and a list typed here would be a second copy of the hive's own catalogue that drifts on the first tool added. The request leaves on `schemas`, and the answer is written into `./brain` as durable `system.tools` -- the collector emits `menu` once and this template's edge carries it, exactly as it does with `pack`. Since 4.4.0 the menu the collector writes also carries the two tools it serves ITSELF -- `memory_recall` and `thread_recall` (`collector@3.3.1`, GH #512) -- because this core routes both by name and no tools hive has a declaration for either. PAIRED with `schemas`. The full account of the lane pair lives in `templates/talky/README.md` § The menu is asked for; everything there holds here"
+          "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since cogny@4.3.0 this core ASKS what its tools look like instead of carrying a menu somebody typed, and it declares `[\"*\"]`: a reasoning core is the one caller of an assistant that should be able to reach everything the surface can, and a list typed here would be a second copy of the hive's own catalogue that drifts on the first tool added. The request leaves on `schemas`, and the answer is written into `./brain` as durable `system.tools` -- the collector emits `menu` once and this template's edge carries it to `./curator`, which hands it to the brain. PAIRED with `schemas`. The full account of the lane pair lives in `templates/talky/README.md` § The menu is asked for; everything there holds here"
         },
         {
           "route": "in_schemas",
@@ -59,7 +59,7 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. ONE name is reserved since cogny@5.0.0 and it is served by this composite's own collector: `thread_recall` (GH #451), which redeems a stub the curator left. `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) was the second until then; since GH #552 the member's memory hive declares and answers it, so it is an ORDINARY tool name and leaves on this default edge like any other. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has four out-edges (calls, result, answer and thread_recall into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: five senders (., ./collector, ./brain, ./dispatcher, ./schemas) over 19 edges since 5.0.0, five of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. No name is reserved since cogny@5.2.0 (GH #889). `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) was reserved until then; since GH #552 the member's memory hive declares and answers it, so it is an ORDINARY tool name and leaves on this default edge like any other. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has four out-edges (calls, result and answer into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: six senders (., ./collector, ./curator, ./brain, ./dispatcher, ./schemas) over 25 edges since 5.2.0, five of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
         },
         {
           "route": "recall",
@@ -104,12 +104,22 @@
         {
           "from": ".",
           "to": "./collector",
-          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_bundle' || hop.route == 'in_pack' || hop.route == 'in_menu')"
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_bundle' || hop.route == 'in_menu')"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_pack'"
         },
         {
           "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model'"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && hop.subscriber.endsWith('/curator/summarizer'))"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/curator/summarizer')"
         },
         {
           "from": ".",
@@ -118,10 +128,21 @@
         },
         {
           "from": "./collector",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'curate'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_curate'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12",
           "modifier": {
             "set_context": {
+              "curator_call": "hop.curator_call",
               "turn_id": "hop.turn_id",
               "session_id": "hop.session_id",
               "iter": "hop.iter"
@@ -131,18 +152,28 @@
         },
         {
           "from": "./collector",
-          "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'pack'"
-        },
-        {
-          "from": "./collector",
-          "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'menu'"
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'menu'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_slots'"
+            }
+          }
         },
         {
           "from": "./brain",
           "to": "./dispatcher",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./brain",
+          "to": "./curator",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_llm'"
+            }
+          }
         },
         {
           "from": "./brain",
@@ -185,22 +216,13 @@
           }
         },
         {
-          "from": "./dispatcher",
-          "to": "./collector",
-          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'thread_recall'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_thread_call'"
-            }
-          }
-        },
-        {
           "from": "./collector",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'answer'",
           "modifier": {
             "delete_context": [
-              "col_phase"
+              "col_phase",
+              "curator_call"
             ]
           }
         },
@@ -211,7 +233,8 @@
           "condition": "has(hop.route) && hop.route == 'tool'",
           "modifier": {
             "delete_context": [
-              "col_phase"
+              "col_phase",
+              "curator_call"
             ]
           }
         },
@@ -221,17 +244,33 @@
           "condition": "has(hop.route) && hop.route == 'recall'",
           "modifier": {
             "delete_context": [
-              "col_phase"
+              "col_phase",
+              "curator_call"
             ]
           }
         },
         {
-          "from": "./collector",
+          "from": "./curator",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'pack_ack'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'pack_ack'",
           "modifier": {
             "delete_context": [
-              "col_phase"
+              "col_phase",
+              "curator_call"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call"
             ]
           }
         },
@@ -241,7 +280,8 @@
           "condition": "has(hop.route) && hop.route == 'schemas'",
           "modifier": {
             "delete_context": [
-              "col_phase"
+              "col_phase",
+              "curator_call"
             ]
           }
         },
@@ -252,7 +292,10 @@
           "modifier": {
             "set_hop": {
               "route": "'tool_schemas'"
-            }
+            },
+            "delete_context": [
+              "curator_call"
+            ]
           }
         },
         {
@@ -264,7 +307,8 @@
               "route": "'error'"
             },
             "delete_context": [
-              "col_phase"
+              "col_phase",
+              "curator_call"
             ]
           }
         },
@@ -277,7 +321,8 @@
               "route": "'model_refused'"
             },
             "delete_context": [
-              "col_phase"
+              "col_phase",
+              "curator_call"
             ]
           }
         },
