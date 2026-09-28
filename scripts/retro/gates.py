@@ -27,7 +27,7 @@ from . import reports
 SUMMARY = re.compile(
     r"GATE-SUMMARY\s+(?P<mode>strand|integration|release|ci)\s+"
     r"(?P<rev>[0-9a-f]{6,40})\s+(?P<green>\d+)/(?P<total>\d+)\s+"
-    r"(?P<secs>\d+)s\s+(?P<verdict>GREEN|RED)")
+    r"(?P<secs>\d+)s\s+(?P<verdict>GREEN|RED|ASK)")
 
 LOCK_WAIT = re.compile(r"GATE lock-wait \[(\d+)s behind other runs\] (\d+)s")
 

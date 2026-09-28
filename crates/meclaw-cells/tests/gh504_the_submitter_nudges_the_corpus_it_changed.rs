@@ -425,7 +425,8 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // 1.15.1 pins the member's screen at `display@2.8.0` (GH #867) and draws
         // one way back per composite on the model road (GH #863);
         // 1.15.2 pins its own dispatcher at `dispatcher@1.2.2` (GH #871).
-        "builder@1.15.2"
+        // 1.15.3 pins its librarian at `builder-librarian@2.2.6` (GH #886).
+        "builder@1.15.3"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

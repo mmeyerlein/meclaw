@@ -27,6 +27,12 @@
 #     --no-precheck-stop
 #                    run the cargo stations even when `precheck` is RED
 #                    (see A RED FORM STATION STOPS THE CARGO STATIONS)
+#     --decide <station>=without:"<reason>"
+#                    integration and release only: answer a station's
+#                    question with "go on without a fresh measurement". The
+#                    reason is required and goes into the receipt as
+#                    `owner_decisions`. Repeatable, one per asking station
+#                    (see A QUESTION FOR THE OWNER)
 #
 # MODES
 # =====
@@ -48,14 +54,18 @@
 #
 # OUTPUT
 # ======
-#   GATE <station> [<scope>] <secs>s <GREEN|RED|SKIP|NOTE> [reason]
-#   GATE-SUMMARY <mode> <rev> <green>/<total> <secs>s <GREEN|RED>
+#   GATE <station> [<scope>] <secs>s <GREEN|RED|SKIP|NOTE|ASK> [reason]
+#   GATE-SUMMARY <mode> <rev> <green>/<total> <secs>s <GREEN|RED|ASK>
 #
 # Verdicts: GREEN the station passed. RED it failed. SKIP it could not run
 # (missing tool, or planned elsewhere) -- never a failure. NOTE a finding to
 # read, not a judgement on the commit (advisories, tree-sync, lock-wait, and
 # `corpus-committed` in `strand`: there the committed corpus is allowed to be
-# behind the sources of a commit that has not been written yet).
+# behind the sources of a commit that has not been written yet). ASK a
+# question for the owner, not a finding: the station cannot say whether the
+# commit is good without a measurement nobody has made yet (see A QUESTION
+# FOR THE OWNER). The summary is RED when any station is RED, else ASK when
+# any station asked, else GREEN.
 #
 # `stage-lock` is the other thing that may be running on this host: a twin
 # measurement takes a lock of its own while it works, and two integration
@@ -75,8 +85,9 @@
 # `lock_wait_secs` (0 when the run never waited).
 #
 # `<green>/<total>` counts the stations that were JUDGED: GREEN and RED only.
-# SKIP and NOTE appear in neither half -- they are on their own GATE line and
-# in the receipt, but a run with three notes is not a run with three failures.
+# SKIP, NOTE and ASK appear in neither half -- they are on their own GATE line
+# and in the receipt, but a run with three notes is not a run with three
+# failures, and an open question is no judgement on the commit either way.
 #
 # It runs each station ONCE and it does NOT restart the chain because one
 # finding was fixed -- fix everything it lists, then run it again as a whole
@@ -217,7 +228,36 @@
 # Nothing else in this runner is retried, and a red without that signature is
 # red.
 #
-# Exit 0 = no station is RED.
+# A QUESTION FOR THE OWNER (ASK)
+# ==============================
+# `persona-receipt` compares the committed persona report
+# (`workshop/evals/persona/last_run.json`) with a fingerprint of the sources
+# it was measured on. When the sources moved, or the report is missing or was
+# aborted, the report no longer describes this tree -- and that is NOT a
+# finding about the commit: the persona may be exactly as good as before, and
+# only a measurement can say. A strand gets a NOTE (a reminder before the
+# commit). A pass used to have two choices, both wrong: green would wave an
+# unmeasured persona through, red would block every wave on a measurement
+# that costs time or money -- and silently red is exactly what the owner ruled
+# out on 22.09. So a pass ASKS.
+#
+# The runner cannot ask interactively: every station runs with </dev/null, and
+# a wave's pass runs unattended. So it prints the question and ends. After the
+# summary line comes a block with three answers -- measure again locally,
+# measure again on a paid provider, or go on without -- and the exit code is 4.
+# The answer is a SECOND RUN: after a measurement, the committed report covers
+# the tree and the station is GREEN; for "without" the owner passes
+# `--decide persona-receipt=without:"<reason>"`, the station becomes a NOTE
+# that names the reason, and the receipt carries it in `owner_decisions`.
+# Only "without" is a switch -- the other two answers are measurements, and a
+# switch for them would be a claim without one. A report that is current and
+# red is a finding: RED in a pass, and "without" never outvotes it. A question
+# and a red station in the same run print both: RED wins the summary and the
+# exit code, and the question is still printed, so one run lists everything.
+#
+# Exit 0 = green. 1 = a station is RED. 2 = the runner refused to start. 4 =
+# ASK: a question for the owner is open and nothing is red. 3 is the strand
+# kit's token queue and never comes from here.
 
 set -uo pipefail
 
@@ -232,6 +272,7 @@ usage() {
 mode=""; base=""; only=""; fail_fast=0; plan_only=0
 log_dir="${MECLAW_GATE_ARCHIVE:-}"
 no_nice=0; resync=0; no_precheck_stop=0
+decides=()
 
 if [ $# -ge 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
     usage
@@ -269,8 +310,51 @@ while [ $# -gt 0 ]; do
         --no-nice)   no_nice=1; shift ;;
         --resync)    resync=1; shift ;;
         --no-precheck-stop) no_precheck_stop=1; shift ;;
+        --decide)    need_value "$1" "$#"; decides+=("$2"); shift 2 ;;
         -h|--help)   usage; exit 0 ;;
         *) echo "gate: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+# --- --decide (see A QUESTION FOR THE OWNER) ----------------------------------
+# Checked here, before anything runs: a mistyped answer found after an hour of
+# stations would be an hour lost, and an answer the runner silently ignored
+# would leave the owner believing a question was answered. Every refusal says
+# what was wrong with it, on its own line.
+ASKING_STATIONS="persona-receipt"
+ASK_EXIT=4
+for d in ${decides[@]+"${decides[@]}"}; do
+    case "$mode" in
+        integration|release) ;;
+        *) echo "gate: --decide answers a question only integration and release ask" \
+                "(this is $mode)" >&2
+           exit 2 ;;
+    esac
+    case "$d" in
+        *=*:*) ;;
+        *) echo "gate: --decide wants <station>=without:\"<reason>\", got: $d" >&2
+           exit 2 ;;
+    esac
+    st=${d%%=*}; rest=${d#*=}; ans=${rest%%:*}; why=${rest#*:}
+    case " $ASKING_STATIONS " in
+        *" $st "*) ;;
+        *) echo "gate: --decide names $st, which never asks (asking stations: $ASKING_STATIONS)" >&2
+           exit 2 ;;
+    esac
+    if [ "$ans" != without ]; then
+        echo "gate: --decide $st=$ans -- the only answer is 'without';" \
+             "the other two answers are measurements, not switches" >&2
+        exit 2
+    fi
+    if [ -z "${why//[[:space:]]/}" ]; then
+        echo "gate: --decide $st=without needs a reason -- the owner's call is written into the receipt" >&2
+        exit 2
+    fi
+    case "$why" in
+        *$'\t'*|*$'\n'*)
+            echo "gate: --decide $st: the reason must be one line without tabs" \
+                 "(it is one field of a tab-separated record)" >&2
+            exit 2 ;;
     esac
 done
 
@@ -633,8 +717,13 @@ release_run_lock() {
 mkdir -p "$logs_dir"
 receipt="$gate_dir/$mode-${rev:-unknown}.json"
 rows_file=$(mktemp)
-trap 'rm -f "$rows_file"' EXIT
+# The owner's answers that were APPLIED in this run, one TSV line each
+# (station, decision, reason, time). Beside the rows, because the receipt is
+# rewritten after every station and must carry them from the moment they count.
+decisions_file=$(mktemp)
+trap 'rm -f "$rows_file" "$decisions_file"' EXIT
 : >"$rows_file"
+: >"$decisions_file"
 
 started=$(date -Is)
 t_start=$(date +%s)
@@ -651,6 +740,7 @@ write_receipt() {
     MECLAW_R_PLAN="$planned_names" \
     MECLAW_R_FINISHED="$finished" MECLAW_R_VERDICT="$1" \
     MECLAW_R_ROWS="$rows_file" MECLAW_R_OUT="$receipt" \
+    MECLAW_R_DECISIONS="$decisions_file" \
     python3 - <<'PY'
 import json, os
 rows = []
@@ -662,6 +752,15 @@ with open(os.environ["MECLAW_R_ROWS"]) as fh:
         name, scope, secs, verdict, log = line.split("\t")
         rows.append({"name": name, "scope": scope, "secs": int(secs),
                      "verdict": verdict, "log": log})
+decisions = []
+with open(os.environ["MECLAW_R_DECISIONS"]) as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        station, decision, reason, at = line.split("\t", 3)
+        decisions.append({"station": station, "decision": decision,
+                          "reason": reason, "at": at})
 doc = {
     "mode": os.environ["MECLAW_R_MODE"],
     "rev": os.environ["MECLAW_R_REV"],
@@ -682,6 +781,10 @@ doc = {
     "finished": os.environ["MECLAW_R_FINISHED"] or None,
     "stations": rows,
     "verdict": os.environ["MECLAW_R_VERDICT"],
+    # The owner's answers to a station's question (`--decide`), as applied in
+    # this run. Always present and `[]` without one, so a reader never has to
+    # tell "nobody decided anything" from "a runner that did not know how".
+    "owner_decisions": decisions,
 }
 with open(os.environ["MECLAW_R_OUT"], "w") as fh:
     json.dump(doc, fh, indent=2)
@@ -695,7 +798,18 @@ PY
 # no tool; counting them in the denominator made a clean run report 9/12 and
 # read like three failures. Every station is still on its own GATE line and in
 # the receipt -- the summary just does not pretend to grade them.
-green=0; total=0; red=0
+green=0; total=0; red=0; ask=0
+asked=()
+# The verdict of the run SO FAR. RED beats ASK beats GREEN. It is ASK, never
+# GREEN, while a question is open: `export-audit` reads this receipt as the
+# last station of the same run, and a receipt saying GREEN over an open
+# question is a green nobody gave.
+running_verdict() {
+    if [ "$red" -gt 0 ]; then echo RED
+    elif [ "$ask" -gt 0 ]; then echo ASK
+    else echo GREEN
+    fi
+}
 report() {   # name scope secs verdict log [reason]
     local name="$1" scope="$2" secs="$3" verdict="$4" log="$5" reason="${6:-}"
     printf 'GATE %s [%s] %ss %s%s\n' \
@@ -704,8 +818,10 @@ report() {   # name scope secs verdict log [reason]
     case "$verdict" in
         GREEN) green=$((green + 1)); total=$((total + 1)) ;;
         RED)   red=$((red + 1));     total=$((total + 1)) ;;
+        # A question is no judgement on the commit, so it is in neither half.
+        ASK)   ask=$((ask + 1)); asked+=("$name"$'\t'"$reason") ;;
     esac
-    write_receipt "$([ "$red" -gt 0 ] && echo RED || echo GREEN)"
+    write_receipt "$(running_verdict)"
 }
 
 # --- ghost binaries ---------------------------------------------------------
@@ -852,9 +968,10 @@ lost \`$ep\`, and the same station passed on the retry."
 # names the stations whose own `cargo` column is 0 and that still cannot be
 # judged without the build: the two suites that boot `target/debug/meclaw`, and
 # the audit that grades this run's receipt -- which, after such a stop, is a
-# receipt the cargo stations are missing from. Everything with `cargo 1` is
-# covered by the column itself.
-PRECHECK_STOP_ALSO="scenarios:memory scenarios:builder export-audit"
+# receipt the cargo stations are missing from. `persona-cases` belongs with the
+# suites: its runner self-test boots the binary against a stub. Everything with
+# `cargo 1` is covered by the column itself.
+PRECHECK_STOP_ALSO="scenarios:memory scenarios:builder export-audit persona-cases"
 precheck_red=0
 
 # Does this station need what a cargo station builds?
@@ -873,6 +990,100 @@ precheck_notes() {   # log
     [ -f "$1" ] || return 0
     grep '^NOTE ' "$1" 2>/dev/null | sed 's/^/    | /'
     return 0
+}
+
+# --- the persona receipt (see A QUESTION FOR THE OWNER) -----------------------
+# The checker (`workshop/evals/persona/fingerprint.py --check`) answers with an
+# exit code, and the codes are a CONTRACT with this arm: 0 covered, 3 stale,
+# 4 missing, 5 incomplete, 6 red. Everything else -- 1 is a crash, 2 a
+# malformed report -- is RED in every mode: a checker that could not look must
+# never read as a reminder or as a question.
+#
+# 3/4/5 say "no measurement describes this tree", which is not a finding about
+# the commit, so a pass ASKS instead of turning red; 6 says "the measurement
+# of this very tree is red", which is one. An aborted run (5) is a missing
+# measurement, not a verdict on the persona, so it asks too.
+#
+# Returns 1 when it reported RED, so the loop can honour --fail-fast.
+decision_for() {   # station -> the reason of its --decide, or nothing
+    local d st rest reason=""
+    for d in ${decides[@]+"${decides[@]}"}; do
+        st=${d%%=*}; rest=${d#*=}
+        # The last one given wins, like every other option of this runner.
+        [ "$st" = "$1" ] && reason=${rest#*:}
+    done
+    printf '%s' "$reason"
+}
+
+persona_receipt_report() {   # name scope secs log_rel log rc
+    local name="$1" scope="$2" secs="$3" log_rel="$4" log="$5" rc="$6" text why
+    text=$(sed -n 's/^PERSONA-RECEIPT [a-z]* //p' "$log" 2>/dev/null | tail -1)
+    [ -n "$text" ] || text="no PERSONA-RECEIPT line in $log_rel"
+    case "$rc" in
+        0|3|4|5|6) ;;
+        *)
+            report "$name" "$scope" "$secs" RED "$log_rel" "the checker failed (exit $rc)"
+            tail -n 20 "$log" | sed 's/^/    | /'
+            return 1 ;;
+    esac
+    if [ "$mode" = strand ]; then
+        # A strand gates before its commit, and the measurement is a separate
+        # job (it takes hours or money). The line is a reminder, not a verdict.
+        case "$rc" in
+            0) why="covers its sources" ;;
+            3) why="the persona sources moved ($text); measure and commit the report" ;;
+            4) why="no persona report yet; measure and commit one" ;;
+            5) why="the committed report is incomplete; measure and commit a full one" ;;
+            6) why="the committed report is red ($text)" ;;
+        esac
+        report "$name" "$scope" "$secs" NOTE "$log_rel" "$why"
+        return 0
+    fi
+    case "$rc" in
+        0)
+            report "$name" "$scope" "$secs" GREEN "$log_rel" ;;
+        6)
+            # A current, red measurement is a finding. "without" answers a
+            # missing measurement and never outvotes one that exists.
+            report "$name" "$scope" "$secs" RED "$log_rel" "$text"
+            tail -n 20 "$log" | sed 's/^/    | /'
+            return 1 ;;
+        *)
+            why=$(decision_for "$name")
+            if [ -n "$why" ]; then
+                printf '%s\t%s\t%s\t%s\n' "$name" without "$why" "$(date -Is)" \
+                    >>"$decisions_file"
+                report "$name" "$scope" "$secs" NOTE "$log_rel" "owner decided: without -- $why"
+            else
+                report "$name" "$scope" "$secs" ASK "$log_rel" "$text"
+            fi ;;
+    esac
+    return 0
+}
+
+# The question block after the summary line. The two measure commands stand
+# here as literal text, never assembled from a variable: the persona runner's
+# self-test holds its own `measure_commands()` against these lines, line by
+# line, so the command the owner is told to run is the command that exists.
+print_question() {   # station text
+    local st="$1" text="$2"
+    printf '  %s: %s\n' "$st" "$text"
+    if [ "$st" = persona-receipt ]; then
+        cat <<'ASK'
+  The committed persona report does not describe this tree. Three answers:
+    1. measure again on the local model (no model spend, about 1-2 hours; the hosted
+       embedder costs cents, so the runner asks for a budget as well):
+         LOCAL_LLM_MODEL=<model id served at LOCAL_LLM_BASE_URL> python3 workshop/evals/persona/run_persona.py --live --engine local --budget-eur <EUR>
+       then, if it is green, commit workshop/evals/persona/last_run.json and transcripts/, and run this gate again
+    2. measure again on a paid provider (costs money; design estimate 1.2-2.0 EUR a run,
+       the runner prints its own estimate and refuses to spend without a budget):
+         python3 workshop/evals/persona/run_persona.py --live --engine paid --budget-eur <EUR>
+       then, if it is green, commit the report and run this gate again
+ASK
+    fi
+    printf '    3. go on without a fresh measurement -- the owner'"'"'s call, written into the receipt:\n'
+    printf '         scripts/gate.sh %s --decide %s=without:"<reason>"   (with this run'"'"'s other options)\n' \
+        "$mode" "$st"
 }
 
 # --- run --------------------------------------------------------------------
@@ -1015,6 +1226,12 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
             report "$name" "$scope" "$s_secs" NOTE "$log_rel" \
                 "the corpus is stale; regenerate it and commit it with this change"
         fi
+    elif [ "$name" = "persona-receipt" ]; then
+        if ! persona_receipt_report "$name" "$scope" "$s_secs" "$log_rel" "$log" "$rc" \
+           && [ "$fail_fast" = 1 ]; then
+            echo "gate: --fail-fast -- stopping after $name." >&2
+            break
+        fi
     elif [ "$name" = "deny-advisories" ]; then
         # Advisories move without a commit: a finding here is about the
         # dependencies, not about this tree. It is read, not blocking.
@@ -1047,7 +1264,7 @@ done
 release_run_lock
 
 secs=$(( $(date +%s) - t_start ))
-if [ "$red" -gt 0 ]; then verdict=RED; else verdict=GREEN; fi
+verdict=$(running_verdict)
 write_receipt "$verdict" final
 
 if [ -n "$log_dir" ]; then
@@ -1069,8 +1286,30 @@ fi
 printf 'GATE-SUMMARY %s %s %s/%s %ss %s\n' \
     "$mode" "${rev:0:7}" "$green" "$total" "$secs" "$verdict"
 
+# The question comes after the summary, and it comes even when the run is
+# red: every finding and every open question out of ONE run.
+if [ "$ask" -gt 0 ]; then
+    if [ "$verdict" = RED ]; then
+        echo "gate: ASK as well -- a question for the owner, not a finding."
+    else
+        echo "gate: ASK -- a question for the owner, not a finding."
+    fi
+    for a in "${asked[@]}"; do
+        print_question "${a%%$'\t'*}" "${a#*$'\t'}"
+    done
+fi
+
+# An answer to a question this run never asked changes nothing and is not in
+# the receipt -- said out loud, so nobody believes it was applied.
+for d in ${decides[@]+"${decides[@]}"}; do
+    st=${d%%=*}
+    grep -q "^$st"$'\t' "$decisions_file" 2>/dev/null || \
+        echo "gate: --decide $st unused -- the station did not ask in this run" >&2
+done
+
 if [ "$verdict" = RED ]; then
     echo "gate: RED -- fix everything listed, then run the gate again as a whole."
     exit 1
 fi
+[ "$verdict" = ASK ] && exit "$ASK_EXIT"
 exit 0

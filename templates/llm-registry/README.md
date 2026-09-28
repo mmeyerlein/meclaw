@@ -1,4 +1,4 @@
-# `llm-registry@2.3.1`
+# `llm-registry@2.3.2`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -327,6 +327,9 @@ reaches it and the registry never resolves it, so a broken translator can never 
 registry and a repair. Without a key the registry still boots, resolves and pushes, and every
 translation fails into the journal. The instructions it is given travel in the question's
 `system` slot, and it keeps no history: each question carries the whole catalogue.
+
+Since 2.3.2 ([#886](https://github.com/mmeyerlein/meclaw/issues/886)) `./translate` declares `hop.model`, the model that
+answered its translation; nothing else moved.
 
 ## How a brain becomes a subscriber
 

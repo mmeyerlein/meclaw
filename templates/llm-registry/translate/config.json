@@ -68,6 +68,10 @@
           "type": "string",
           "required": true
         },
+        "model": {
+          "type": "string",
+          "required": false
+        },
         "error_code": {
           "type": "string",
           "required": false

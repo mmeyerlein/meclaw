@@ -1,4 +1,4 @@
-# `builder@1.15.2`
+# `builder@1.15.3`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -468,6 +468,8 @@ cut out of an answer on to the collector ([#871](https://github.com/mmeyerlein/m
 the composer has no splitter, so nothing it does changes, and the recipes count an assistant's
 lanes off the current `assistant`; and its librarian is the current `builder-librarian`, whose
 corpus is regenerated over this number's templates and docs. Only pins moved.
+Since `1.15.3` ([#886](https://github.com/mmeyerlein/meclaw/issues/886)) its librarian is the current `builder-librarian`, whose corpus is regenerated over
+this number's templates, and the recipes count an assistant's lanes off the current `assistant`. Only pins moved.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,

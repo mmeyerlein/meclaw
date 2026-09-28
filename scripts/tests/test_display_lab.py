@@ -62,6 +62,7 @@ TOOLS = {
     "worker_stalls.py": "python3",
     "identity_probe.py": "python3",
     "sidecar_quote.py": "python3",
+    "fact_yield.py": "python3",
 }
 
 # `callers/` holds TEMPLATES, not bound callers: a caller names one colony's
@@ -71,14 +72,16 @@ TOOLS = {
 # `worker_stalls.py` reads one process's `/proc`, not a port (GH #866).
 # `identity_probe.py` reads one colony's tree, not its port (GH #872).
 # `sidecar_quote.py` reads a colony's database and one brain's hops (GH #871).
+# fact_yield.py reads a colony's database: the in_remember hops (GH #881).
 PLACEHOLDERS = {"headers.py": ("@LAB@", "@DB@"), "worker_stalls.py": ("@LAB@", "@PID@"),
                 "identity_probe.py": ("@LAB@", "@ROOT@"),
-                "sidecar_quote.py": ("@LAB@", "@DB@", "@BRAIN@")}
+                "sidecar_quote.py": ("@LAB@", "@DB@", "@BRAIN@"),
+                "fact_yield.py": ("@LAB@", "@DB@")}
 DEFAULT_PLACEHOLDERS = ("@LAB@", "@PORT@")
 
 # The one argument without which a tool refuses (exit 2); `--port` unless named.
 MANDATORY = {"headers.py": "--db", "worker_stalls.py": "--pid", "identity_probe.py": "--root",
-             "sidecar_quote.py": "--db"}
+             "sidecar_quote.py": "--db", "fact_yield.py": "--db"}
 
 # Every head says the same five things, whatever the comment syntax around them.
 HEAD_LINES = 60
@@ -1018,13 +1021,22 @@ class IdentityProbeTest(unittest.TestCase):
     SECRET = "the soul text of the fixture agent, never to be printed"
     BIRTH = 1000
 
-    def tree(self, tmp, packs=None, acks=None, slot_len=None, extra_brain_db=False):
+    def tree(self, tmp, packs=None, acks=None, slot_len=None, extra_brain_db=False,
+             strays=False, nested_brain=False):
         """A colony root: `colony.db`, three brain `cell.db`s, one affinity store.
 
         `packs` / `acks`: brain -> list of (created_at, error_code) rows; default
         one clean pack at BIRTH+30 and one clean ack at BIRTH+31 for every brain.
         `slot_len`: (brain, slot) -> length of the stored value (default: the
         secret's length).
+        `strays`: the other `cell.db`s a real brain composition and affinity
+        hive carry beside the named ones, each WITH the table the probe looks
+        for (`collector/window`, `session-keeper/night|sessions`,
+        `affinity/clock`) -- a real colony had four `system` tables under
+        `talky/` (ledger fund 9).
+        `nested_brain`: talky's llm cell is not at `talky/brain/` but one level
+        deeper (`talky/inner/brain/`) -- the glob fallback's one hit;
+        with `extra_brain_db` a second one (`talky/twin/brain/`) beside it.
         """
         import sqlite3
         root = pathlib.Path(tmp) / "colony"
@@ -1068,8 +1080,17 @@ class IdentityProbeTest(unittest.TestCase):
         con.close()
 
         main = root / "main" / self.MEMBER.strip("/")
+        def system_db(d):
+            d.mkdir(parents=True)
+            c = sqlite3.connect(str(d / "cell.db"))
+            c.execute("CREATE TABLE system (slot_path TEXT PRIMARY KEY, value TEXT)")
+            c.commit()
+            c.close()
+
         for brain in self.BRAINS:
             d = main / "assistants" / self.ASSISTANT / brain / "brain"
+            if nested_brain and brain == "talky":
+                d = main / "assistants" / self.ASSISTANT / brain / "inner" / "brain"
             d.mkdir(parents=True)
             c = sqlite3.connect(str(d / "cell.db"))
             c.execute("CREATE TABLE system (slot_path TEXT PRIMARY KEY, value TEXT)")
@@ -1082,11 +1103,18 @@ class IdentityProbeTest(unittest.TestCase):
             k = main / "assistants" / self.ASSISTANT / brain / "session-keeper" / "store"
             k.mkdir(parents=True)
             sqlite3.connect(str(k / "cell.db")).execute("CREATE TABLE sessions (id TEXT)").connection.close()
+            if strays:
+                gen = main / "assistants" / self.ASSISTANT / brain
+                for part in ("collector/window", "session-keeper/night",
+                             "session-keeper/sessions"):
+                    system_db(gen / part)
         if extra_brain_db:
-            d = main / "assistants" / self.ASSISTANT / "talky" / "twin"
-            d.mkdir(parents=True)
-            c = sqlite3.connect(str(d / "cell.db"))
-            c.execute("CREATE TABLE system (slot_path TEXT PRIMARY KEY, value TEXT)")
+            system_db(main / "assistants" / self.ASSISTANT / "talky" / "twin" / "brain")
+        if strays:
+            clock = main / "affinity" / "clock"
+            clock.mkdir(parents=True)
+            c = sqlite3.connect(str(clock / "cell.db"))
+            c.execute("CREATE TABLE subscribers (id TEXT)")
             c.commit()
             c.close()
         store = main / "affinity" / "store"
@@ -1180,9 +1208,33 @@ class IdentityProbeTest(unittest.TestCase):
 
     def test_two_candidate_brain_databases_are_refused_not_guessed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            done = self.probe(self.tree(tmp, extra_brain_db=True))
+            done = self.probe(self.tree(tmp, nested_brain=True, extra_brain_db=True))
         self.assertEqual(2, done.returncode, done.stdout)
         self.assertIn("talky", done.stderr)
+        self.assertIn("want exactly 1", done.stderr)
+
+    def test_collector_and_keeper_tables_are_not_the_brain(self):
+        """Fund 9: the brain is `<brain>/brain/cell.db`, the store `affinity/store/cell.db`
+        -- a `system` table in a collector's window or a keeper's store, or a
+        `subscribers` table in the clock, changes nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, strays=True), extra=["--json"])
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        doc = json.loads(done.stdout)
+        self.assertEqual("PASS", doc["verdict"])
+        for brain in self.BRAINS:
+            self.assertTrue(doc["brains"][brain]["cell_db"].endswith(
+                "/assistants/a/%s/brain/cell.db" % brain), doc["brains"][brain]["cell_db"])
+        self.assertTrue(doc["subscription"]["cell_db"].endswith("/affinity/store/cell.db"))
+
+    def test_a_brain_one_level_deeper_is_found_by_the_fallback(self):
+        """No `<brain>/brain/cell.db`: the glob counts only paths ending in
+        `/brain/cell.db`, the strays beside it do not make it ambiguous."""
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, strays=True, nested_brain=True), extra=["--json"])
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertTrue(json.loads(done.stdout)["brains"]["talky"]["cell_db"].endswith(
+            "/talky/inner/brain/cell.db"))
 
 
 class SidecarQuoteTest(unittest.TestCase):
@@ -1346,6 +1398,230 @@ class SidecarQuoteTest(unittest.TestCase):
         for word in ("INSERT", "UPDATE", "DELETE", "urlopen", "requests"):
             with self.subTest(word=word):
                 self.assertNotIn(word, text)
+
+
+class FactYieldTest(unittest.TestCase):
+    """`fact_yield.py` over a fixture `colony.db` (GH #881): how many facts each
+    block that reached a memory's `in_remember` lane carried -- ids and numbers
+    only, never a running colony and never a fact's text."""
+
+    HIVE = "/m/memory"
+
+    def make_db(self, tmp, rows):
+        """`rows`: (id, from, to, hop, body_kind, body, created_at) tuples."""
+        db = pathlib.Path(tmp) / "colony.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE message_log (id TEXT PRIMARY KEY, trace_id TEXT,"
+                     " parent_message_id TEXT, correlation_id TEXT, ttl INTEGER,"
+                     " from_path TEXT, to_path TEXT, reply_to TEXT, headers TEXT,"
+                     " body_kind TEXT, body_payload TEXT, created_at INTEGER)")
+        for rid, src, dst, hop, kind, body, ts in rows:
+            conn.execute("INSERT INTO message_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (rid, "t", None, None, 8, src, dst, None,
+                          json.dumps({"hop": hop, "context": {}}), kind,
+                          body if isinstance(body, str) else json.dumps(body), ts))
+        conn.commit()
+        conn.close()
+        return db
+
+    @staticmethod
+    def fact(claim="Elvese"):
+        return {"subject": "user", "predicate": "lives_in", "claim": claim,
+                "fact_kind": "world"}
+
+    def door_pair(self, rid, src, hop, kind, body, ts, hive=None):
+        """One block as a running colony logs it (G1, 28.09.): the hop through
+        the hive's door (`src` -> hive) and the hive's forward to its own
+        `extract-glue`, both on the `in_remember` route, same body."""
+        hive = hive or self.HIVE
+        return [(rid, src, hive, hop, kind, body, ts),
+                (rid + "g", hive, hive + "/extract-glue", hop, kind, body, ts)]
+
+    def lane(self):
+        """The positive fixture: what a working lane leaves in the log."""
+        talky = "/m/talky"
+        inr = {"route": "in_remember", "section": "memory"}
+        return (
+            self.door_pair("r1", talky, inr, "inline",
+                           {"section": "memory",
+                            "payload": {"facts": [self.fact(), self.fact("tea")],
+                                        "topic": {"movement": "start"}}}, 1000)
+            + self.door_pair("r2", talky, inr, "inline",
+                             {"section": "memory",
+                              "payload": {"nothing_new": True, "facts": [],
+                                          "topic": {"movement": "continue"}}}, 1001)
+            + self.door_pair("r3", talky, {"route": "in_remember"}, "inline",
+                             {"messages": [{"origin": "assistant", "type": "text",
+                                            "text": json.dumps(
+                                                {"memory": {"facts": [self.fact()],
+                                                            "topic": {"movement": "end"}}})}]},
+                             1002)
+            + self.door_pair("r4", talky, {"route": "in_remember"}, "blob", "blob-id-1", 1003)
+            + [("r5", talky, self.HIVE + "/writer", {"route": "in_episode"}, "inline",
+                {"messages": []}, 1004),
+               ("r6", "/m/talky/splitter", "/m/display", {"route": "sidecar",
+                                                          "section": "display"}, "inline",
+                {"section": "display", "payload": {"kind": "list"}}, 1005)])
+
+    def yield_of(self, rows, *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.make_db(tmp, rows)
+            done = subprocess.run(["python3", str(LAB / "fact_yield.py"), "--db", str(db)]
+                                  + list(extra),
+                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+        return done.returncode, done.stdout.strip().splitlines(), done.stdout
+
+    def test_the_blocks_that_reached_the_lane_are_counted(self):
+        # Each block is logged twice (door + forward to extract-glue); it is
+        # counted once, at the door, with and without --hive.
+        for extra in ([], ["--hive", self.HIVE]):
+            with self.subTest(extra=extra):
+                code, lines, _ = self.yield_of(self.lane(), *extra)
+                self.assertEqual(0, code, lines)
+                self.assertEqual(
+                    "FACT_YIELD PASS n=3 facts=3 mean=1.00 with=2 empty=33 unreadable=1",
+                    lines[-1])
+                self.assertIn("r1 facts=2 nothing_new=no form=section", lines)
+                self.assertIn("r2 facts=0 nothing_new=yes form=section", lines)
+                self.assertIn("r3 facts=1 nothing_new=no form=text", lines)
+                self.assertTrue(any(line.startswith("r4 unreadable (blob body)")
+                                    for line in lines), lines)
+                self.assertFalse(any(line.startswith(("r1g ", "r2g ", "r3g ", "r4g "))
+                                     for line in lines), lines)
+
+    def test_the_hives_own_forward_is_not_a_second_block(self):
+        # Negative: the hive forwarding a block to its own extract-glue is no
+        # arrival -- neither under --hive nor without it, and not when the
+        # forward comes from a sibling cell inside the hive.
+        body = {"section": "memory", "payload": {"facts": [self.fact()]}}
+        inr = {"route": "in_remember", "section": "memory"}
+        rows = [("f1", self.HIVE, self.HIVE + "/extract-glue", inr, "inline", body, 1000),
+                ("f2", self.HIVE + "/router", self.HIVE + "/extract-glue", inr, "inline",
+                 body, 1001)]
+        code, lines, _ = self.yield_of(rows, "--hive", self.HIVE)
+        self.assertEqual(1, code, lines)
+        self.assertEqual("FACT_YIELD FAIL n=0 facts=0 mean=0.00 with=0 empty=0 unreadable=0",
+                         lines[-1])
+        code, lines, _ = self.yield_of(rows[:1])
+        self.assertEqual(1, code, lines)
+        self.assertEqual("FACT_YIELD FAIL n=0 facts=0 mean=0.00 with=0 empty=0 unreadable=0",
+                         lines[-1])
+
+    def test_a_block_wired_straight_to_extract_glue_counts_once(self):
+        # Older wiring: the edge points at extract-glue itself -- one hop from
+        # outside the hive, one block.
+        rows = [("d1", "/m/talky", self.HIVE + "/extract-glue",
+                 {"route": "in_remember", "section": "memory"}, "inline",
+                 {"section": "memory", "payload": {"facts": [self.fact()]}}, 1000)]
+        for extra in ([], ["--hive", self.HIVE]):
+            with self.subTest(extra=extra):
+                self.assertEqual(
+                    "FACT_YIELD PASS n=1 facts=1 mean=1.00 with=1 empty=0 unreadable=0",
+                    self.yield_of(rows, *extra)[1][-1])
+
+    def test_unreadable_headers_count_as_unreadable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.make_db(tmp, [])
+            conn = sqlite3.connect(str(db))
+            conn.execute("INSERT INTO message_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         ("h1", "t", None, None, 8, "/m/talky", self.HIVE, None,
+                          '{"hop": {"route": "in_remember"', "inline", "{}", 1000))
+            conn.commit()
+            conn.close()
+            done = subprocess.run(["python3", str(LAB / "fact_yield.py"), "--db", str(db)],
+                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+        lines = done.stdout.strip().splitlines()
+        self.assertEqual(1, done.returncode, lines)
+        self.assertIn("h1 unreadable (headers not JSON)", lines)
+        self.assertEqual("FACT_YIELD FAIL n=0 facts=0 mean=0.00 with=0 empty=0 unreadable=1",
+                         lines[-1])
+
+    def test_a_log_where_no_block_reached_the_lane_fails(self):
+        # The shape of GH #881: the brain wrote its block, the splitter cut it
+        # into `sidecar` hops, and an edge wired on the old route took none of
+        # them to the memory -- only episodes arrived.
+        block = '```sidecar\n{"memory": {"facts": [], "topic": {"movement": "start"}}}\n```'
+        rows = []
+        for i in range(4):
+            rows.append(("b%d" % i, "/m/talky/brain", "/m/talky/splitter",
+                         {"finish_reason": "stop"}, "inline",
+                         {"messages": [{"origin": "assistant", "type": "text",
+                                        "text": "answer\n\n" + block}]}, 1000 + i))
+            rows.append(("s%d" % i, "/m/talky/splitter", "/m/talky",
+                         {"route": "sidecar", "section": "memory"}, "inline",
+                         {"section": "memory", "payload": {"facts": []}}, 1000 + i))
+            rows.append(("e%d" % i, "/m/talky", self.HIVE,
+                         {"route": "in_episode"}, "inline", {"messages": []}, 1000 + i))
+            rows.append(("e%dw" % i, self.HIVE, self.HIVE + "/writer",
+                         {"route": "in_episode"}, "inline", {"messages": []}, 1000 + i))
+        code, lines, _ = self.yield_of(rows)
+        self.assertEqual(1, code, lines)
+        self.assertEqual("FACT_YIELD FAIL n=0 facts=0 mean=0.00 with=0 empty=0 unreadable=0",
+                         lines[-1])
+
+    def test_the_hive_filter_keeps_one_memory(self):
+        rows = self.lane() + self.door_pair(
+            "r7", "/other/talky", {"route": "in_remember"}, "inline",
+            {"section": "memory", "payload": {"facts": [self.fact()]}}, 1006,
+            hive="/other/memory")
+        self.assertIn(" n=4 ", self.yield_of(rows)[1][-1] + " ")
+        self.assertIn(" n=3 ", self.yield_of(rows, "--hive", self.HIVE)[1][-1] + " ")
+
+    def test_since_skips_older_blocks(self):
+        code, lines, _ = self.yield_of(self.lane(), "--since", "1001")
+        self.assertEqual(0, code, lines)
+        self.assertTrue(lines[-1].startswith("FACT_YIELD PASS n=2 facts=1 "), lines)
+        self.assertNotIn("r1 facts=2 nothing_new=no form=section", lines)
+
+    def test_a_foreign_section_is_unreadable_as_the_hive_refuses_it(self):
+        rows = [("x1", "/m/talky", self.HIVE + "/extract-glue",
+                 {"route": "in_remember", "section": "display"}, "inline",
+                 {"section": "display", "payload": {"kind": "list", "facts": [1]}}, 1000)]
+        code, lines, _ = self.yield_of(rows)
+        self.assertEqual(1, code, lines)
+        self.assertIn("x1 unreadable (section display)", lines)
+        self.assertEqual("FACT_YIELD FAIL n=0 facts=0 mean=0.00 with=0 empty=0 unreadable=1",
+                         lines[-1])
+
+    def test_no_fact_text_is_printed(self):
+        rows = self.door_pair("z1", "/m/talky", {"route": "in_remember"}, "inline",
+                              {"section": "memory",
+                               "payload": {"facts": [self.fact("ZXQ-UNIQUE-CLAIM")]}}, 1000)
+        for extra in ([], ["--json"]):
+            with self.subTest(extra=extra):
+                code, lines, out = self.yield_of(rows, *extra)
+                self.assertEqual(0, code, lines)
+                self.assertNotIn("ZXQ-UNIQUE-CLAIM", out)
+                self.assertNotIn("lives_in", out)
+        _, lines, _ = self.yield_of(rows, "--json")
+        self.assertEqual(2, len(lines), lines)
+        self.assertEqual({"id": "z1", "to": self.HIVE, "facts": 1,
+                          "nothing_new": False, "form": "section"}, json.loads(lines[0]))
+
+    def test_the_module_api_measures_what_the_cli_prints(self):
+        mod = load_tool("fact_yield.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.make_db(tmp, self.lane())
+            summary = mod.measure(str(db), hive=self.HIVE)
+        self.assertEqual((3, 3, 2, 1), (summary["n"], summary["facts"], summary["with"],
+                                        summary["unreadable"]))
+        ok, line = mod.verdict_line(summary, 1)
+        self.assertTrue(ok)
+        self.assertEqual("FACT_YIELD PASS n=3 facts=3 mean=1.00 with=2 empty=33 unreadable=1",
+                         line)
+
+    def test_it_only_reads(self):
+        text = (LAB / "fact_yield.py").read_text(encoding="utf-8")
+        self.assertIn("mode=ro", text)
+        for word in ("INSERT", "UPDATE", "DELETE", "urlopen", "requests"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, text)
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = pathlib.Path(tmp) / "no.db"
+            done = subprocess.run(["python3", str(LAB / "fact_yield.py"), "--db", str(missing)],
+                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+            self.assertEqual(2, done.returncode, done.stderr)
+            self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":

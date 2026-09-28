@@ -282,6 +282,22 @@ class ForeignClassificationTests(unittest.TestCase):
         self.assertEqual(len(gates.runs_of(wave, "strand")), 1)
 
 
+class AskVerdictTests(unittest.TestCase):
+    """The runner's third summary word: ASK, a question for the owner.
+
+    A reader of the summary line that knows only GREEN and RED drops an ASK
+    run without a trace -- and the run did happen."""
+
+    def test_an_ask_run_is_a_run_with_verdict_ask(self):
+        wave = wave_with(self, **{"alpha-report.md":
+            "# alpha\n\n```\nGATE-SUMMARY integration abc1234 0/0 5s ASK\n```\n"})
+        runs = gates.from_markdown(wave)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["verdict"], "ASK")
+        self.assertEqual(runs[0]["mode"], "integration")
+        self.assertEqual(runs[0]["foreign"], [])
+
+
 class ForeignCorpusTests(unittest.TestCase):
     """Q2 against the three waves finding 01 section 3.2 counted by hand.
 

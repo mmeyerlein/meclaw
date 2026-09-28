@@ -92,6 +92,10 @@
           "type": "number",
           "required": false
         },
+        "model": {
+          "type": "string",
+          "required": false
+        },
         "error_code": {
           "type": "string",
           "required": false

@@ -31,12 +31,24 @@ CLASSES (a path can carry several)
     corpus_source see CORPUS_SOURCES below
     evals_memory  workshop/evals/scenarios/**, workshop/fixtures/**memory-hive**,
                   workshop/evals/p5-longmemeval/tools/**
+    evals_recall  workshop/evals/p5-longmemeval/*.py -- the harness' own
+                  scripts -- and workshop/evals/engine.py, the shared eval
+                  engine they call through; plans `recall-harness` only
+                  (GH #878, #879)
     evals_builder workshop/evals/builder-scenarios/**
     display_scenarios  templates/display/compose/scenarios/**
                   -- carries `template` as well (the path lies under
                      templates/), so it pulls the template stations with it.
                      The class of its own exists so the station is planned
                      when only the driver changes
+    evals_guide   workshop/evals/conversation-guide/**,
+                  workshop/fixtures/positive/conversation-guide/**,
+                  templates/memory-hive/inline-contract.md,
+                  workshop/evals/engine.py, workshop/tools/display-lab/fact_yield.py
+                  -- the guide harness and what its self-test reads: the
+                     fixture edge, the shipped block its drift checks compare,
+                     the engine it runs on and the fact counter it records
+                     (GH #881). A path may carry this class beside another
     display_browser  workshop/tools/display-*, and the Rust locks that run
                   a browser driver of the station (BROWSER_LOCKS). Never
                   `template`: the driver lies under workshop/, which does
@@ -45,6 +57,9 @@ CLASSES (a path can carry several)
                   -- the measuring library. Its prefix is the longer one and
                      wins: a tool that READS a screen is not the driver that
                      lays one out, and must not pull `browser:display`
+    persona_source see PERSONA_SOURCES below: the prompt literals, seeds, model knobs
+                  and versions a persona is made of, plus the engine seam it is measured with
+    evals_persona workshop/evals/persona/** -- its committed report included; it is NOT in IGNORED
     gate_infra    scripts/gate.sh, scripts/gate_plan.py, scripts/precheck.py,
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
@@ -90,6 +105,7 @@ STATIONS (S strand, I integration, R release, C ci)
                     the roadmap anchor gate)
     display-lab     display_lab (workshop/tools/display-lab/** and its test);
                     I/R always; never in C -- workshop/ does not travel
+    guide-selftest  evals_guide; I/R always; never in C -- workshop/ does not travel
     fmt             rust_src/rust_test/workspace
     clippy          rust_src/rust_test/workspace  (-p <crates> in S, else --workspace)
     unwrap-budget   rust_src/workspace/unwrap_infra; C always (cargo: it
@@ -134,12 +150,34 @@ STATIONS (S strand, I integration, R release, C ci)
                     declares a wave done is where it belongs. In CI_EXCLUDED,
                     unlike `scenarios:display`: the driver lives under
                     workshop/, which never travels
-    recall-harness  memory-hive template, recall sources, evals_memory; R always.
+    recall-harness  memory-hive template, recall sources, evals_memory,
+                    evals_recall; R always. Four commands: the recall cases
+                    (tools/), the answer-side self-check (GH #878), the
+                    offline local-path cases of the eval engine
+                    (`workshop/evals/engine.py`, GH #879) and the offline
+                    pipeline cases of the ingest (per-turn annotation,
+                    sidecar section, close pass, fact yield, overnight;
+                    GH #880).
                     NOT in I for every diff (R-P2), same measure as
                     `scenarios:memory` and one trigger more: a recall source
                     under `crates/meclaw-cells/src/` reaches the harness and
                     not the scenario cases
     deny-advisories R always (the runner grades it NOTE, never RED)
+    persona-cases   evals_persona; I/R always; never in C (workshop/ does not
+                    travel). Free and offline: its own composition self-test,
+                    then every part that is BUILT -- the privacy sweep and its
+                    self-test, a re-grade of the COMMITTED transcripts, the
+                    runner's --self-test, the fingerprint's self-test. A part
+                    whose module and data are both absent is "not built yet"
+    persona-receipt persona_source/evals_persona; I/R always; never in C.
+                    `fingerprint.py --check` recomputes the persona fingerprint
+                    from the tree and holds it against the committed report
+                    (ADR-0029). NOTE in S, whatever it finds. In I/R: GREEN when
+                    the report covers the tree and is green, RED when it covers
+                    it and is red or when the checker breaks -- and when the
+                    report is stale, incomplete or absent the pass does not turn
+                    red, it ASKS the owner (ruling on GH #621, 2026-09-22; see
+                    `gate.sh --decide`). No station talks to a provider
     export-selftest export_infra; I/R always (seconds, pure Python)
     export-audit    I/R always, last station. TWO shapes, one station name:
                     R runs the FULL audit (scope `R1-R17`, cargo:1 --
@@ -160,7 +198,7 @@ USAGE
     gate_plan.py --mode {strand,integration,release,ci}
                  (--files-from FILE | --files PATH...) [--repo DIR]
                  [--format {json,tsv}]
-    gate_plan.py --print scenario|ignored
+    gate_plan.py --print scenario|ignored|persona-sources [--repo DIR]
 
 `--files-from -` reads paths from stdin, one per line.
 
@@ -221,6 +259,12 @@ SCENARIO = ('binary(/_demo$/) + binary(/_demo_/) + binary(/e2e/) '
 # subtracts it before it calls a tree dirty in the receipt: the scenario
 # stations REWRITE these files while the run is in progress, so without the
 # subtraction every release gate ends `dirty: true` and the export refuses.
+#
+# `workshop/evals/persona/last_run.json` is deliberately NOT here (L-12): it is
+# not rewritten by a station -- the persona run is an artefact nobody's gate
+# performs -- and it IS the measurement `persona-receipt` holds the tree
+# against. Dropping it from the diff would let a new report travel without the
+# station that reads it.
 IGNORED = (
     "workshop/evals/scenarios/last_run.json",
     "workshop/evals/builder-scenarios/last_run.json",
@@ -250,6 +294,48 @@ CORPUS_SOURCES = (
     "workshop/fixtures/negative/*/expected_error.json",
 )
 
+# What a persona is made of, for the persona gate (ADR-0029, GH #882): every
+# file whose bytes can change what the measured models read, which tools they
+# get, whether and where the sidecar writes -- also as the override of a ref
+# marker. A SUPERSET, same discipline as CORPUS_SOURCES: only the direction
+# that matters is enforced (a source missing here lets a prompt edit travel
+# under a report that no longer covers it); over-selection costs one
+# re-measurement. `_glob_re` knows `**`, `*` and `?` and nothing else -- no
+# braces, no classes -- so every alternative is written out.
+# `fingerprint.py` asks for the expanded list with `--print persona-sources`:
+# one semantics for the class and the list.
+PERSONA_SOURCES = (
+    # memory-hive, taken WHOLE: every cell carries model text or a model knob.
+    "templates/memory-hive/config.json",          # hive root: the edges between its cells
+    "templates/memory-hive/inline-contract.md",   # the authority behind MEMORY_RULES
+    "templates/memory-hive/predicate-core.json",
+    "templates/memory-hive/*/config.json",
+    "templates/memory-hive/store/seed/*.jsonl",   # the embedding identity
+    "templates/memory-hive/template.json",
+    # talky, cogny and collector, taken WHOLE as well: root, every sub-config
+    # (a ref marker's override_params moves the menu, the sidecar switch, the
+    # window -- talky/collector sets assemble.tools and assemble.sidecar) and
+    # the version. Single-level `*`: none of the three nests deeper.
+    "templates/collector/config.json",
+    "templates/collector/*/config.json",          # assemble (system_order, menu, preamble), window
+    "templates/collector/template.json",
+    "templates/talky/config.json",                # the route that carries the sidecar
+    "templates/talky/*/config.json",              # brain, splitter, schemas, collector, dispatcher, ...
+    "templates/talky/brain/seed/*.jsonl",
+    "templates/talky/template.json",
+    "templates/cogny/config.json",
+    "templates/cogny/*/config.json",
+    "templates/cogny/template.json",
+    "templates/affinity/brief/config.json",       # the identity brief
+    "templates/llm-registry/**",                  # the model registry
+    "templates/meclaw-os/config.json",
+    "templates/egon/persona/config.json",         # the two persona-bearing templates
+    "templates/slack-agent/persona/config.json",
+    # How a persona is MEASURED: the one engine seam (local/paid, reasoning depth,
+    # price) every eval runner imports. A path may carry several classes.
+    "workshop/evals/engine.py",
+)
+
 # The shell sources shellcheck reads. CI runs on the published export mirror,
 # which has neither `plans/` nor `workshop/`, so only the first two patterns
 # are used there (`SHELL_GLOBS[:2]`).
@@ -268,8 +354,11 @@ CI_EXCLUDED = frozenset({
     "scenarios:memory",  # workshop/evals/scenarios/
     "scenarios:builder",  # workshop/evals/builder-scenarios/
     "recall-harness",    # workshop/evals/p5-longmemeval/
+    "guide-selftest",    # workshop/evals/conversation-guide/
     "browser:display",   # workshop/tools/display-layout-browser.mjs
     "display-lab",       # workshop/tools/display-lab/
+    "persona-cases",     # workshop/evals/persona/
+    "persona-receipt",   # workshop/evals/persona/
     "export-selftest",   # plans/export-fixtures/
     "export-audit",      # plans/export-fixtures/
     "deny",              # the CI `deny` job runs the cargo-deny action itself
@@ -283,12 +372,12 @@ STATION_ORDER = (
     "precheck",
     "roadmap-anchors", "adr-anchors", "claims", "tree-rules",
     "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
-    "display-lab",
+    "display-lab", "guide-selftest",
     "fmt", "clippy", "unwrap-budget", "corridor",
     "tests", "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "scenarios:display",
     "browser:display", "recall-harness",
-    "deny-advisories", "export-selftest", "export-audit",
+    "deny-advisories", "persona-cases", "persona-receipt", "export-selftest", "export-audit",
 )
 
 
@@ -454,6 +543,14 @@ def _classes_of_path(path):
             or path.startswith("workshop/evals/p5-longmemeval/tools/")
             or (path.startswith("workshop/fixtures/") and "memory-hive" in path)):
         cls.add("evals_memory")
+    # The recall harness' own scripts (judge, score, run_eval, the self-check
+    # beside them). Their check is `answer_cases.py` in `recall-harness`. NOT
+    # `evals_memory`: that would drag `scenarios:memory` (46 cases, ~390 s)
+    # into every harness diff for a station that never reads them (GH #878).
+    # The shared eval engine (GH #879) is how every harness call is built; its
+    # offline check is `local_path_cases.py` in the same station.
+    if _matches(path, "workshop/evals/p5-longmemeval/*.py") or path == "workshop/evals/engine.py":
+        cls.add("evals_recall")
     if path.startswith("workshop/evals/builder-scenarios/"):
         cls.add("evals_builder")
 
@@ -474,11 +571,32 @@ def _classes_of_path(path):
     if lab:
         cls.add("display_lab")
 
+    # The conversation guide's self-test (GH #881): the harness, its fixture,
+    # the shipped block its drift checks compare, and the two files it imports
+    # from elsewhere. Those two keep their own classes too -- a break in the
+    # engine or the fact counter has to plan the self-test that runs on them.
+    if (path.startswith("workshop/evals/conversation-guide/")
+            or path.startswith("workshop/fixtures/positive/conversation-guide/")
+            or path in ("templates/memory-hive/inline-contract.md",
+                        "workshop/evals/engine.py",
+                        "workshop/tools/display-lab/fact_yield.py")):
+        cls.add("evals_guide")
+
     # The browser half of the same document: the layout driver under workshop/ and
     # the two locks that run it. No `template` class comes with it -- workshop/ is a
     # FORBIDDEN_PREFIX of the export, which is why the station is in CI_EXCLUDED.
     if (path.startswith("workshop/tools/display-") and not lab) or path in BROWSER_LOCKS:
         cls.add("display_browser")
+
+    # The persona gate (ADR-0029, GH #882): the suite itself -- its committed
+    # report included, which is why that report is not in IGNORED -- and the
+    # sources a persona is made of, with the same glob semantics as
+    # CORPUS_SOURCES. `workshop/evals/engine.py` carries `persona_source` beside
+    # whatever class its own suite gives it.
+    if path.startswith("workshop/evals/persona/"):
+        cls.add("evals_persona")
+    if any(_matches(path, g) for g in PERSONA_SOURCES):
+        cls.add("persona_source")
 
     # `.config/nextest.toml` is gate infrastructure as much as the runner is:
     # it decides which test may be retried, and `test_nextest_quarantine.py`
@@ -982,12 +1100,19 @@ def test_filter(paths, mode, repo=None):
 
 # --- scope helpers ----------------------------------------------------------
 
-def _case_scope(repo, rel):
-    """`<n> cases` counted from the case directory, or `cases` when absent."""
+def _case_scope(repo, rel, recursive=False):
+    """`<n> cases` counted from the case directory, or `cases` when absent.
+
+    `recursive=True` counts every `*.json` below it: a suite may keep its cases
+    in block sub-folders (the persona scenarios do).
+    """
     root = REPO_ROOT if repo is None else repo
     path = os.path.join(root, rel)
     if not os.path.isdir(path):
         return "cases"
+    if recursive:
+        return "%d cases" % sum(1 for _d, _s, names in os.walk(path)
+                                for f in names if f.endswith(".json"))
     return "%d cases" % len([f for f in os.listdir(path) if f.endswith(".json")])
 
 
@@ -1021,6 +1146,32 @@ def _shell_files(repo, globs):
         for p in sorted(globmod.glob(os.path.join(root, pattern))):
             out.append(os.path.relpath(p, root).replace(os.sep, "/"))
     return out or list(globs)
+
+
+def persona_source_files(repo=None):
+    """PERSONA_SOURCES expanded against the tree: repo-relative files, sorted.
+
+    Expanded with `_matches`, the SAME matcher `_classes_of_path` uses -- not
+    with `glob.glob`, which without `recursive=True` reads `**` as `*` and
+    would be a second semantics. A pattern without a wildcard names one file
+    and is passed over when that file is absent (`workshop/` does not travel).
+    """
+    root = REPO_ROOT if repo is None else repo
+    out = set()
+    for pattern in PERSONA_SOURCES:
+        cut = min([i for i in (pattern.find("*"), pattern.find("?")) if i >= 0],
+                  default=-1)
+        if cut < 0:
+            if os.path.isfile(os.path.join(root, pattern)):
+                out.add(pattern)
+            continue
+        prefix = pattern[:cut].rsplit("/", 1)[0] if "/" in pattern[:cut] else ""
+        for dirpath, _dirs, names in os.walk(os.path.join(root, prefix)):
+            for name in names:
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                if _matches(rel, pattern):
+                    out.add(rel)
+    return sorted(out)
 
 
 # --- the plan ---------------------------------------------------------------
@@ -1150,6 +1301,14 @@ def plan(paths, mode, repo=None):
         out["display-lab"] = station(
             "display-lab", "unittest", False,
             [["python3", "-m", "unittest", "scripts.tests.test_display_lab"]])
+
+    # The guide harness pins its own wiring (GH #881): the fixture edge, the
+    # local engine and the rules tail its arms carry. A self-test nothing
+    # plans is not a lock; it costs seconds and needs no colony.
+    if (ir or "evals_guide" in classes) and not ci:
+        out["guide-selftest"] = station(
+            "guide-selftest", "unittest", False,
+            [["python3", "workshop/evals/conversation-guide/run_guide.py", "--self-test"]])
 
     # --- cargo work.
     if classes & {"rust_src", "rust_test", "workspace"}:
@@ -1290,17 +1449,34 @@ def plan(paths, mode, repo=None):
     recall_src = any(p.startswith("crates/meclaw-cells/src/") and "recall" in p
                      for p in files)
     if (mode == "release" or "memory-hive" in templates
-            or "evals_memory" in classes or recall_src):
-        # cwd-relative argv, same rule as `scenarios:builder` above.
+            or "evals_memory" in classes or "evals_recall" in classes or recall_src):
+        # cwd-relative argv, same rule as `scenarios:builder` above. The second
+        # command is the answer side of the harness -- rubric choice, abstention
+        # axis, stratum -- offline, beside the scripts it imports (GH #878).
         out["recall-harness"] = station(
-            "recall-harness", "tier-1", False,
-            [["python3", "recall_cases.py"]],
-            cwds=["workshop/evals/p5-longmemeval/tools"])
+            "recall-harness", "tier-1+answers", False,
+            [["python3", "recall_cases.py"], ["python3", "answer_cases.py"],
+             ["python3", "local_path_cases.py"], ["python3", "pipeline_cases.py"]],
+            cwds=["workshop/evals/p5-longmemeval/tools", "workshop/evals/p5-longmemeval",
+                  "workshop/evals/p5-longmemeval", "workshop/evals/p5-longmemeval"])
 
     if mode == "release":
         out["deny-advisories"] = station(
             "deny-advisories", "advisories", True,
             [["cargo", "deny", "check", "advisories"]])
+
+    # --- the persona gate (ADR-0029, GH #882). Two FREE stations read a committed
+    # measurement; the paid or long run is an artefact, never a station.
+    persona = "workshop/evals/persona"
+    if ir or "evals_persona" in classes:
+        out["persona-cases"] = station(
+            "persona-cases", _case_scope(repo, persona + "/scenarios", recursive=True), False,
+            [["python3", "persona_cases.py", "--self-test"], ["python3", "persona_cases.py"]],
+            cwds=[persona, persona])
+    if ir or classes & {"persona_source", "evals_persona"}:
+        out["persona-receipt"] = station(
+            "persona-receipt", "fingerprint", False,
+            [["python3", "fingerprint.py", "--check"]], cwds=[persona])
 
     if "export_infra" in classes or ir:
         # Seconds of pure Python, so the integration pass pays for it too --
@@ -1410,8 +1586,9 @@ def main(argv=None):
     ap.add_argument("--repo", metavar="DIR",
                     help="tree the test sources are read from (default: this repo)")
     ap.add_argument("--format", choices=("json", "tsv"), default="tsv")
-    ap.add_argument("--print", dest="what", choices=("scenario", "ignored"),
-                    help="print a constant and exit (`ignored`: one path per line)")
+    ap.add_argument("--print", dest="what", choices=("scenario", "ignored", "persona-sources"),
+                    help="print a constant and exit (`ignored`, `persona-sources`: "
+                         "one path per line; `persona-sources` reads `--repo`)")
     args = ap.parse_args(argv)
 
     if args.what == "scenario":
@@ -1423,6 +1600,14 @@ def main(argv=None):
         # suites rewrite while the gate runs must not make the tree look dirty
         # in the receipt, or every release refuses on its own scenario station.
         for path in IGNORED:
+            print(path)
+        return 0
+
+    if args.what == "persona-sources":
+        # One file per line, for `workshop/evals/persona/fingerprint.py`: the
+        # files the persona fingerprint is computed over, expanded with the
+        # matcher the class uses.
+        for path in persona_source_files(args.repo):
             print(path)
         return 0
 

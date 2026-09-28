@@ -296,6 +296,47 @@ class Classify(unittest.TestCase):
         self.assertLess(order.index("gate-selftest"), order.index("display-lab"))
         self.assertLess(order.index("display-lab"), order.index("fmt"))
 
+    def test_the_guide_harness_is_its_own_cheap_station(self):
+        """The conversation guide's self-test pins its own wiring (GH #881).
+
+        The fixture edge, the local engine and the rules tail its arms carry
+        are checked by `run_guide.py --self-test` -- without a colony and
+        without a cent. It stood red for a wave because no station planned it,
+        and a self-test nothing plans is not a lock.
+        """
+        paths = ["workshop/evals/conversation-guide/run_guide.py",
+                 "workshop/fixtures/positive/conversation-guide/setup.json",
+                 "templates/memory-hive/inline-contract.md",
+                 "workshop/evals/engine.py",
+                 "workshop/tools/display-lab/fact_yield.py"]
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertIn("evals_guide", gp.classify([path]))
+        self.assertNotIn("evals_guide", gp.classify(["workshop/tools/judge_eval.py"]))
+        # A file may carry two classes: the fact counter is the library's too.
+        self.assertIn("display_lab",
+                      gp.classify(["workshop/tools/display-lab/fact_yield.py"]))
+
+        cmd = [["python3", "workshop/evals/conversation-guide/run_guide.py", "--self-test"]]
+        for path in paths:
+            with self.subTest(planned_by=path):
+                st = by_name(gp.plan([path], "strand", repo=None))
+                self.assertIn("guide-selftest", st)
+                self.assertFalse(st["guide-selftest"].cargo,
+                                 "a self-test without a colony builds nothing")
+                self.assertEqual(cmd, st["guide-selftest"].cmds)
+
+        self.assertNotIn("guide-selftest",
+                         {s.name for s in gp.plan(["docs/x.md"], "strand", repo=None)})
+        # ci never plans it: workshop/ does not travel.
+        self.assertIn("guide-selftest", gp.CI_EXCLUDED)
+        self.assertNotIn("guide-selftest",
+                         {s.name for s in gp.plan([paths[0]], "ci", repo=None)})
+
+        order = gp.STATION_ORDER
+        self.assertLess(order.index("display-lab"), order.index("guide-selftest"))
+        self.assertLess(order.index("guide-selftest"), order.index("fmt"))
+
     def test_the_library_pulls_nothing_but_its_own_station(self):
         """A measuring tool is not a layout driver.
 
@@ -515,6 +556,78 @@ class Classify(unittest.TestCase):
                              "integration", repo=None))
         self.assertIn("recall-harness", st)
         self.assertNotIn("scenarios:memory", st)
+
+    def test_the_recall_harness_code_plans_the_recall_harness_alone(self):
+        """The harness' own scripts are checked by `answer_cases.py` (GH #878).
+
+        Before #878 `judge.py`, `score.py` and `run_eval.py` classified into no
+        class at all: a diff on them planned no station that reads them. The
+        class `evals_recall` plans `recall-harness` with both commands and NOT
+        `scenarios:memory` (46 cases, ~390 s, which never reads the harness).
+        """
+        self.assertIn("    evals_recall ", gp.__doc__.split("STATIONS")[0])
+        for name in ("judge", "score", "run_eval", "answer_cases"):
+            path = "workshop/evals/p5-longmemeval/%s.py" % name
+            self.assertIn("evals_recall", gp.classify([path]), path)
+            for mode in ("strand", "integration"):
+                st = by_name(gp.plan([path], mode, repo=None))
+                self.assertIn("recall-harness", st, (path, mode))
+                self.assertEqual(st["recall-harness"].cmds,
+                                 [["python3", "recall_cases.py"],
+                                  ["python3", "answer_cases.py"],
+                                  ["python3", "local_path_cases.py"],
+                                  ["python3", "pipeline_cases.py"]], (path, mode))
+                self.assertNotIn("scenarios:memory", st, (path, mode))
+
+    def test_a_harness_readme_or_tool_is_not_harness_code(self):
+        """Negative control: the class stops at the harness' own `*.py`.
+
+        `*` crosses no `/`, so a file under `tools/` stays `evals_memory` only,
+        and the README plans no `recall-harness` in a strand gate.
+        """
+        st = by_name(gp.plan(["workshop/evals/p5-longmemeval/README.md"],
+                             "strand", repo=None))
+        self.assertNotIn("recall-harness", st)
+        cls = gp.classify(["workshop/evals/p5-longmemeval/tools/receipts.py"])
+        self.assertIn("evals_memory", cls)
+        self.assertNotIn("evals_recall", cls)
+
+    def test_the_eval_engine_plans_the_local_path_cases(self):
+        """The shared eval engine is recall-harness code too (GH #879).
+
+        `workshop/evals/engine.py` sits one level above the harness, so the
+        `evals_recall` glob alone does not see it; a change to it changes how
+        every harness call is built. It plans `recall-harness`, whose third
+        command is the offline local-path self-check, and NOT
+        `scenarios:memory`.
+        """
+        path = "workshop/evals/engine.py"
+        self.assertIn("evals_recall", gp.classify([path]))
+        st = by_name(gp.plan([path], "strand", repo=None))
+        self.assertIn("recall-harness", st)
+        cmds = st["recall-harness"].cmds
+        self.assertIn(["python3", "local_path_cases.py"], cmds)
+        self.assertEqual(st["recall-harness"].cwds[cmds.index(["python3", "local_path_cases.py"])],
+                         "workshop/evals/p5-longmemeval")
+        self.assertNotIn("scenarios:memory", st)
+
+    def test_the_pipeline_harness_plans_the_pipeline_cases(self):
+        """The ingest pipeline of the harness has its own offline check (GH #880).
+
+        The annotator, the runner, the self-check itself and the probe setup
+        the runner instantiates each plan `recall-harness`, whose fourth
+        command is `pipeline_cases.py`, run beside the scripts it imports.
+        """
+        for path in ("workshop/evals/p5-longmemeval/annotate.py",
+                     "workshop/evals/p5-longmemeval/run_eval.py",
+                     "workshop/evals/p5-longmemeval/pipeline_cases.py",
+                     "workshop/fixtures/positive/memory-hive-probe/p5-setup.json"):
+            st = by_name(gp.plan([path], "strand", repo=None))
+            self.assertIn("recall-harness", st, path)
+            cmds = st["recall-harness"].cmds
+            self.assertIn(["python3", "pipeline_cases.py"], cmds, path)
+            self.assertEqual(st["recall-harness"].cwds[cmds.index(["python3", "pipeline_cases.py"])],
+                             "workshop/evals/p5-longmemeval", path)
 
     def test_integration_runs_deny_for_the_workspace_class(self):
         st = by_name(gp.plan(["Cargo.lock"], "integration", repo=None))
@@ -918,7 +1031,15 @@ class Classify(unittest.TestCase):
         self.assertEqual(st["scenarios:builder"].cmds,
                          [["python3", "run_builder_scenarios.py"]])
         self.assertEqual(st["recall-harness"].cmds,
-                         [["python3", "recall_cases.py"]])
+                         [["python3", "recall_cases.py"],
+                          ["python3", "answer_cases.py"],
+                          ["python3", "local_path_cases.py"],
+                          ["python3", "pipeline_cases.py"]])
+        self.assertEqual(st["recall-harness"].cwds,
+                         ["workshop/evals/p5-longmemeval/tools",
+                          "workshop/evals/p5-longmemeval",
+                          "workshop/evals/p5-longmemeval",
+                          "workshop/evals/p5-longmemeval"])
 
     def test_every_station_argv_resolves_from_its_working_directory(self):
         """Whatever the cwd, the script the station names has to be there.
@@ -1276,6 +1397,154 @@ class Classify(unittest.TestCase):
                 "CORPUS_SOURCES does not cover templates/**/config.json")
 
 
+class PersonaStations(unittest.TestCase):
+    """The persona gate (ADR-0029, GH #882): two FREE stations over a committed
+    measurement. The paid or long run is an artefact, never a station."""
+
+    PERSONA = "workshop/evals/persona"
+
+    def test_a_prompt_literal_plans_the_receipt_station(self):
+        """A prompt edit re-plans the receipt, not the offline cases."""
+        for p in ("templates/memory-hive/close-glue/config.json",   # INSTRUCTIONS
+                  "templates/memory-hive/schemas/config.json",      # MEMORY_RULES
+                  "templates/collector/assemble/config.json"):      # SIDECAR_PREAMBLE
+            with self.subTest(path=p):
+                self.assertIn("persona_source", gp.classify([p]))
+                st = by_name(gp.plan([p], "strand", repo=None))
+                self.assertIn("persona-receipt", st)
+                self.assertNotIn("persona-cases", st)
+
+    def test_an_eval_file_plans_both_stations(self):
+        p = self.PERSONA + "/scenarios/memory/B6.json"
+        self.assertIn("evals_persona", gp.classify([p]))
+        st = by_name(gp.plan([p], "strand", repo=None))
+        self.assertIn("persona-cases", st)
+        self.assertIn("persona-receipt", st)
+
+    def test_the_passes_plan_both_for_any_diff(self):
+        for mode in ("integration", "release"):
+            with self.subTest(mode=mode):
+                st = by_name(gp.plan(["docs/x.md"], mode, repo=None))
+                for name in ("persona-cases", "persona-receipt"):
+                    self.assertIn(name, st)
+                    self.assertFalse(st[name].cargo)
+
+    def test_ci_plans_neither(self):
+        """workshop/ does not travel; ci runs on the published tree."""
+        paths = [self.PERSONA + "/scenarios/memory/B6.json",
+                 self.PERSONA + "/last_run.json",
+                 "templates/memory-hive/close-glue/config.json"]
+        names = {s.name for s in gp.plan(paths, "ci", repo=None)}
+        for name in ("persona-cases", "persona-receipt"):
+            self.assertNotIn(name, names)
+            self.assertIn(name, gp.CI_EXCLUDED)
+
+    def test_neither_persona_station_builds(self):
+        paths = [self.PERSONA + "/fingerprint.py", "templates/talky/config.json"]
+        for mode in ("strand", "integration", "release"):
+            for s in gp.plan(paths, mode, repo=None):
+                if s.name.startswith("persona-"):
+                    self.assertIs(s.cargo, False, (mode, s.name))
+
+    def test_a_committed_report_still_classifies(self):
+        """L-12: the committed report is the measurement, not a run artefact."""
+        p = self.PERSONA + "/last_run.json"
+        self.assertNotIn(p, gp.IGNORED)
+        self.assertIn("evals_persona", gp.classify([p]))
+        self.assertIn("persona-receipt", by_name(gp.plan([p], "strand", repo=None)))
+
+    def test_the_hive_is_matched_whole(self):
+        for cell in ("extract-glue", "embed", "writer", "tool", "recall", "dream-glue"):
+            p = "templates/memory-hive/%s/config.json" % cell
+            with self.subTest(path=p):
+                self.assertIn("persona_source", gp.classify([p]))
+        self.assertIn("persona_source", gp.classify(["templates/memory-hive/config.json"]))
+
+    def test_the_surfaces_added_since_the_design_are_sources(self):
+        for p in ("templates/talky/schemas/config.json",
+                  "templates/cogny/schemas/config.json",
+                  "templates/affinity/brief/config.json",
+                  "templates/llm-registry/store/seed/models.jsonl",
+                  "templates/llm-registry/translate/config.json",
+                  "templates/meclaw-os/config.json",
+                  "templates/talky/config.json",
+                  "templates/cogny/config.json",
+                  "workshop/evals/engine.py"):
+            with self.subTest(path=p):
+                self.assertIn("persona_source", gp.classify([p]))
+        self.assertNotIn("evals_persona", gp.classify(["workshop/evals/engine.py"]))
+
+    def test_the_ref_markers_of_the_measured_composites_are_sources(self):
+        """A ref marker's override moves the menu and the sidecar switch (OR-GT-S9)."""
+        for p in ("templates/talky/collector/config.json",
+                  "templates/talky/session-keeper/config.json",
+                  "templates/cogny/collector/config.json",
+                  "templates/collector/window/config.json"):
+            with self.subTest(path=p):
+                self.assertIn("persona_source", gp.classify([p]))
+        for p in ("templates/dispatcher/config.json", "templates/door/config.json"):
+            with self.subTest(path=p):
+                self.assertNotIn("persona_source", gp.classify([p]))
+
+    def test_no_pattern_uses_braces_or_classes(self):
+        """`_glob_re` knows `**`, `*` and `?` only; a brace would match nothing."""
+        for g in gp.PERSONA_SOURCES:
+            for ch in "{}[":
+                self.assertNotIn(ch, g, g)
+
+    def test_every_persona_source_pattern_matches_a_file(self):
+        """Private tree only: templates/egon and templates/slack-agent do not travel."""
+        if not (REPO / "workshop").is_dir():
+            self.skipTest("published tree: workshop/ does not travel")
+        import os
+        files = []
+        for dirpath, _dirs, names in os.walk(str(REPO / "templates")):
+            for n in names:
+                files.append(os.path.relpath(os.path.join(dirpath, n),
+                                             str(REPO)).replace(os.sep, "/"))
+        files += [p for p in ("workshop/evals/engine.py",) if (REPO / p).is_file()]
+        dead = [g for g in gp.PERSONA_SOURCES
+                if not any(gp._matches(f, g) for f in files)]
+        self.assertEqual([], dead, "PERSONA_SOURCES patterns that match no file")
+
+    def test_the_stations_run_their_scripts_from_the_suite(self):
+        st = by_name(gp.plan(["docs/x.md"], "integration", repo=None))
+        self.assertEqual([["python3", "fingerprint.py", "--check"]],
+                         st["persona-receipt"].cmds)
+        self.assertEqual([["python3", "persona_cases.py", "--self-test"],
+                          ["python3", "persona_cases.py"]],
+                         st["persona-cases"].cmds)
+        for name in ("persona-cases", "persona-receipt"):
+            for cwd in st[name].cwds:
+                self.assertEqual(self.PERSONA, cwd, name)
+
+    def test_the_persona_stations_run_before_the_export_stations(self):
+        names = [s.name for s in gp.plan(["docs/x.md"], "release", repo=None)]
+        order = ["recall-harness", "deny-advisories", "persona-cases",
+                 "persona-receipt", "export-selftest", "export-audit"]
+        idx = [names.index(n) for n in order]
+        self.assertEqual(sorted(idx), idx, names)
+
+    def test_the_persona_names_are_in_the_register(self):
+        register, stations = gp.__doc__.split("STATIONS", 1)
+        self.assertIn("    persona_source ", register)
+        self.assertIn("    evals_persona ", register)
+        self.assertIn("    persona-cases ", stations)
+        self.assertIn("    persona-receipt ", stations)
+
+    def test_nested_scenarios_are_counted(self):
+        """N may put the scenarios in block sub-folders."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        for rel in ("scenarios/memory/a.json", "scenarios/timing/b.json"):
+            f = root / self.PERSONA / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("{}", encoding="utf-8")
+        st = by_name(gp.plan([self.PERSONA + "/x.py"], "strand", repo=str(root)))
+        self.assertEqual("2 cases", st["persona-cases"].scope)
+
+
 class Precheck(unittest.TestCase):
     """The cheap form station: first in the plan, no cargo, not in ci.
 
@@ -1397,6 +1666,31 @@ class Cli(unittest.TestCase):
         """`scripts/gate.sh` subtracts these before it calls a tree dirty."""
         r = self.run_cli("--print", "ignored")
         self.assertEqual(r.stdout.split(), list(gp.IGNORED))
+
+    def test_print_persona_sources(self):
+        """One semantics for the class and the list: every line classifies."""
+        r = self.run_cli("--print", "persona-sources")
+        lines = r.stdout.splitlines()
+        self.assertTrue(lines)
+        self.assertEqual(sorted(set(lines)), lines)
+        self.assertIn("templates/memory-hive/inline-contract.md", lines)
+        for line in lines:
+            with self.subTest(path=line):
+                self.assertNotIn("*", line)
+                self.assertTrue((REPO / line).is_file())
+                self.assertIn("persona_source", gp.classify([line]))
+
+    def test_print_persona_sources_reads_the_named_tree(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        want = ["templates/memory-hive/x/config.json", "templates/talky/config.json"]
+        for rel in want + ["templates/door/config.json"]:
+            f = root / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("{}", encoding="utf-8")
+        r = self.run_cli("--print", "persona-sources", "--repo", str(root))
+        self.assertEqual(want, r.stdout.splitlines())
 
 
 class LiveBinariesAreScenarioTest(unittest.TestCase):

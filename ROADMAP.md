@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.47.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.47.2, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -54,14 +54,6 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 - The message-header size watch. Headers carry no cap by design, so the watch
   is the instrument: it fires on drift past ~100 KB on a single hop. Last
   reading was 5.4 KB max. *(register: header-size)*
-- A gate for what the assistant is like. Nothing today guards tone, brevity,
-  refusal, what is remembered and when the colony speaks. A model swap, a
-  prompt edit or a changed seed passes every gate green, and whoever talks to
-  it notices the drift weeks later. The design is in the tree: synthetic
-  personas through scripted multi-turn sessions, scored on core invariants,
-  memory and timing, with the paid measurement committed as an artefact and two
-  free stations holding the tree against it.
-  [#621](https://github.com/mmeyerlein/meclaw/issues/621)
 - Telling submissions apart by the door they came in at. Every question the
   broker is asked carries the same requester and the same subject whichever
   front raised it, so a rule that opens the shell to the operator and holds it
@@ -109,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.47.2: the tree is held against a committed persona measurement by two free gate stations that
+  ask the owner instead of turning silently red, the recall harness runs on a local model through
+  today's memory pipeline, and every `llm` cell declares the model it was served.
 - v0.47.1: a member reborn from an exported memory is born with its identity again, a conversation
   brain keeps writing its annotation block once it sees its own earlier answers, and the memory
   hive's night closes no fact across an audience.

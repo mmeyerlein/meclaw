@@ -174,7 +174,6 @@ async fn a_blocked_spawn_journal_does_not_stall_the_colony() {
         WatchdogOnTrip::Exit,
         Some(witness_rx),
     ));
-    let _ = armed_tx.send(());
 
     // Six cold `code` cells, no sandbox: what is under test is the journal on
     // the spawn path, not the profile.
@@ -224,6 +223,17 @@ async fn a_blocked_spawn_journal_does_not_stall_the_colony() {
         .await
         .expect("the colony answers its first question within the failure marker")
         .expect("the ack channel stays open");
+
+    // Armed only now, after the warm-up answer, the way the binary arms its
+    // supervisor only after the bootstrap (`meclaw-cli` lib.rs, Issue #6,
+    // defect 1): boot is not what this lock measures. Armed at spawn, the lock
+    // tripped on a loaded CI runner before the colony loop had beaten once --
+    // main CI run 36351942443 (0.47.1), `beats_seen: 0` and
+    // `armed_for == silent_for` = 400.9 ms, the fifth empty period after
+    // arming, while the probes stayed at worst 0 ms / 2 ms (GH #876).
+    // Period, threshold, witness and the probe bar are unchanged; the whole
+    // blockade below still runs under the armed supervisor.
+    let _ = armed_tx.send(());
 
     // t0: one message into every cell at once.
     for (i, sender) in senders.iter().enumerate() {

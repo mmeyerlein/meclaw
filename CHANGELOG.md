@@ -12,6 +12,38 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.47.2] — 2026-09-28
+
+Every `llm` cell now says in its contract that it reports the model it was served, the gate gains two free stations that hold the
+tree against a committed persona measurement, and the release carries the test fix that turns the main-branch CI green again.
+
+### Fixed
+
+- **Every `llm` cell declares `hop.model`** ([#886](https://github.com/mmeyerlein/meclaw/issues/886)). The `llm` cell has always
+  written the model the provider served into the `hop` header of an answer, and the cost report groups by it; eight shipped cells
+  did not say so in their contract (`talky/brain`, `cogny/brain`, `llm-registry/translate`, `summarizer/writer`,
+  `coder-pipeline/{planner,coder,reviewer}`, `research-assistant/planner`). They now declare it in the wording the other ten already
+  used, and a sweep holds every `llm` cell under `templates/` to that one wording. `talky@5.4.4`, `cogny@5.1.4`,
+  `llm-registry@2.3.2`, `summarizer@2.2.2`, `coder-pipeline@2.2.2`, `research-assistant@2.1.2`; by pin `assistant@2.9.5`,
+  `member@1.10.5`, `builder@1.15.3`, `builder-librarian@2.2.6` (corpus regenerated), `meclaw-os@1.10.3`.
+- **The watchdog locks of #866 arm after boot** ([#876](https://github.com/mmeyerlein/meclaw/issues/876)). The `gh866` tests
+  armed the colony watchdog before the first warm-up answer, while the binary arms it only after bootstrap; on a loaded CI runner
+  that made the main-branch CI of 0.47.1 red. The tests now arm it where the binary does. No behaviour changed.
+
+### Changed
+
+- **Gate: the persona gate's two free stations and a question instead of a silent red** ([#882](https://github.com/mmeyerlein/meclaw/issues/882)).
+  `scripts/gate_plan.py` gains the classes `persona_source` and `evals_persona`, the list `PERSONA_SOURCES` (published as
+  `--print persona-sources`) and the stations `persona-cases` and `persona-receipt` — no cargo, always in `integration`/`release`,
+  never in `ci`. `persona-receipt` holds the committed persona report's fingerprint against the tree: `NOTE` in a strand; in a pass
+  `GREEN` when it covers the tree, `RED` when the covering report is red, and `ASK` when it is stale, incomplete or missing. `ASK` is
+  a question for the owner, not a verdict: the summary ends `ASK`, the runner exits 4 and prints three answers (measure locally,
+  measure on a paid provider, or go on without); `scripts/gate.sh … --decide persona-receipt=without:"<reason>"` records the third
+  in the receipt's new `owner_decisions` field. `strand.sh report/close` and the release export never read `ASK` as green.
+  ADR-0029 is accepted.
+- **Gate: `recall-harness` also runs the offline cases of the recall harness** — abstention grading, the local-model path and the
+  per-turn memory pipeline — and is planned when the shared eval engine changes.
+
 ## [0.47.1] — 2026-09-27
 
 A member reborn from an exported memory is born with its identity again, a conversation brain keeps writing its

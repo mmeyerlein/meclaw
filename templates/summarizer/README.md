@@ -1,4 +1,4 @@
-# `summarizer@2.2.1`
+# `summarizer@2.2.2`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -138,6 +138,9 @@ Whoever draws this hive's push road draws the way back beside it, onto the regis
 `no_route`, loudly. A refusal of anything else -- an operator's push without an address, a push
 addressed to another cell -- keeps the shape it had and the edge it always took.
 
+Since 2.2.2 ([#886](https://github.com/mmeyerlein/meclaw/issues/886)) `./writer` declares `hop.model`, the model the provider served, which the
+`llm` cell has always written into the header; nothing else moved.
+
 ## Knobs
 
 **Since `2.1.0` the four weighting knobs are params of `./prep`, not environment
@@ -230,3 +233,5 @@ Decisions worth naming:
   colony against the mock OpenAI wire: one batch in, exactly one `system.handover` update
   out (and the instructions proven ON the wire), a provider 500 that leaves as exactly one
   `summary_error`.
+- `crates/meclaw-cells/tests/gh886_every_llm_cell_declares_hop_model.rs` -- `./writer` declares
+  `hop.model` in the library's one wording.

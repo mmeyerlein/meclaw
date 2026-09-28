@@ -39,6 +39,12 @@
 #     (`befund/04-struktur.md` section 9.2 / 9.5). So the run is archived next
 #     to the wave and `report` fills the header block from the archive.
 #
+# THE VERDICT has three words: GREEN, RED and ASK. ASK (exit 4 of the
+# runner, passed through unchanged) is a question for the owner that the
+# passes raise instead of a silent red; `gate` prints the asking stations,
+# the summary and the runner's question block. `report` and `close` take
+# GREEN only -- answer the question or measure, then report.
+#
 # THE CARGO TOKEN (`token`) limits how many strands of a wave are in their
 # cargo phase at once. The cargo lock serialises builds, but it does not say
 # how many builders wait behind it: in one wave eleven builders queued for
@@ -427,8 +433,10 @@ cmd_gate() {
     # no refusal (the check stays silent then).
     cmd_token check --pid 0 >/dev/null 2>&1 || true
 
-    # Red stations first, then the summary -- the two things a report needs.
-    grep -E '^GATE [^ ]+ \[.*\] [0-9]+s RED' "$runlog" || true
+    # Red and asking stations first, then the summary -- the two things a
+    # report needs. ASK is the runner's third summary word (exit 4): a
+    # question for the owner is open, and it is never green.
+    grep -E '^GATE [^ ]+ \[.*\] [0-9]+s (RED|ASK)' "$runlog" || true
     summary=$(grep -E '^GATE-SUMMARY ' "$runlog" | tail -1)
     if [ -z "$summary" ]; then
         echo "strand: the gate wrote no summary line -- last lines of $runlog:" >&2
@@ -437,6 +445,14 @@ cmd_gate() {
     fi
     printf '%s\n' "$summary" >"$archive/summary.txt"
     printf '%s\n' "$summary"
+    # The question itself, as the runner printed it after the summary: the
+    # three answers and the `--decide` line. Without it the caller holds an
+    # ASK and has to open the run log to learn what was asked. Printed
+    # whenever the run asked -- a RED run that ALSO asked ("gate: ASK as
+    # well") carries the question too, so one run shows every finding.
+    sed -n '/^gate: ASK/,$p' "$runlog"
+    # The exit goes on unchanged: 4 is the open question, and it must stay
+    # apart from 3 (no cargo token) and from 1 (a station is RED).
     return "$rc"
 }
 
@@ -570,8 +586,16 @@ missing = [f for f in FIELDS
            if not head[f].strip() or head[f].strip() in ('""', "[]")]
 if missing:
     sys.exit("strand: the header block is incomplete: %s" % ", ".join(missing))
-if head["gate"].rstrip('"').endswith("RED"):
-    sys.exit("strand: the gate is RED -- fix it, run it again, then report")
+# Only GREEN is green. RED is a finding, ASK an open question for the owner,
+# and any other word is one this reader does not know -- none of them is a
+# gate a report may stand on.
+word = head["gate"].strip('"').split()[-1] if head["gate"].strip('"').split() else ""
+if word != "GREEN":
+    if word == "ASK":
+        sys.exit("strand: the gate is ASK, not GREEN -- answer the question "
+                 "or measure, then report")
+    sys.exit("strand: the gate is %s, not GREEN -- fix it, run it again, "
+             "then report" % (word or "empty"))
 print("strand: %s -- header block complete, gate green" % report)
 PY
     local rc=$? branch
@@ -626,8 +650,14 @@ for f in ("branch", "issues", "basis", "gate", "commits"):
         sys.exit("strand: run `strand.sh report` first -- %s is empty" % f)
 
 gate = head["gate"].strip('"')
-if gate.endswith("RED"):
-    sys.exit("strand: the gate is RED -- nothing to close")
+# Only GREEN closes an issue (see `report`): ASK is an open question.
+word = gate.split()[-1] if gate.split() else ""
+if word != "GREEN":
+    if word == "ASK":
+        sys.exit("strand: the gate is ASK, not GREEN -- answer the question "
+                 "or measure, then report")
+    sys.exit("strand: the gate is %s, not GREEN -- nothing to close"
+             % (word or "empty"))
 
 branch = head["branch"]
 base = head["basis"]

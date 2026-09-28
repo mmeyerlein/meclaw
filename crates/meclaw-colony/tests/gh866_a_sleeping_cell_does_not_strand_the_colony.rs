@@ -116,7 +116,6 @@ async fn a_sleeping_cell_does_not_strand_the_colony() {
         WatchdogOnTrip::Exit,
         Some(witness_rx),
     ));
-    let _ = armed_tx.send(());
 
     // Warm-up: the first answer waits for the colony to finish booting, which
     // is not what the probe measures (measured: ~160 ms on a loaded host).
@@ -132,6 +131,17 @@ async fn a_sleeping_cell_does_not_strand_the_colony() {
         .await
         .expect("the colony answers its first question within the failure marker")
         .expect("the ack channel stays open");
+
+    // Armed only now, after the warm-up answer, the way the binary arms its
+    // supervisor only after the bootstrap (`meclaw-cli` lib.rs, Issue #6,
+    // defect 1): boot is not what this lock measures. Armed at spawn, the lock
+    // tripped on a loaded CI runner before the colony loop had beaten once --
+    // main CI run 36351942443 (0.47.1), `beats_seen: 0` and
+    // `armed_for == silent_for` = 400.9 ms, the fifth empty period after
+    // arming, while the probes stayed at worst 0 ms / 2 ms (GH #876).
+    // Period, threshold, witness and the probe bar are unchanged; the whole
+    // blockade below still runs under the armed supervisor.
+    let _ = armed_tx.send(());
 
     // One stateful cell on the production task, talking to this colony.
     let (dropped_tx, dropped_rx) = std::sync::mpsc::channel::<()>();

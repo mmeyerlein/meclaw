@@ -355,7 +355,34 @@ PLAN_RED = (
 
 SUMMARY_LINE = re.compile(
     r"^GATE-SUMMARY (?P<mode>\S+) (?P<rev>\S+) (?P<green>\d+)/(?P<total>\d+) "
-    r"(?P<secs>\d+)s (?P<verdict>GREEN|RED)$")
+    r"(?P<secs>\d+)s (?P<verdict>GREEN|RED|ASK)$")
+
+# A station that ASKS in the passes: the persona-receipt arm of the runner
+# turns checker exit 3 (stale) into ASK in integration and release, and the
+# run ends with exit 4 and a question block after the summary line.
+PLAN_ASK = (
+    "persona-receipt\tfingerprint\t0\t"
+    "bash -c 'echo \"PERSONA-RECEIPT stale the sources moved\"; exit 3'\t\n"
+)
+
+# A stand-in for the runner of the tree: what an ASK run prints, without
+# depending on the arm itself. The kit reads the run log, not the runner.
+ASK_STUB = """#!/bin/sh
+echo 'GATE ok [scope-ok] 0s GREEN'
+echo 'GATE persona-receipt [fingerprint] 0s ASK the sources moved'
+echo 'GATE-SUMMARY integration deadbeef 1/1 0s ASK'
+echo 'gate: ASK -- a question for the owner, not a finding.'
+echo '  persona-receipt: the sources moved'
+echo '         scripts/gate.sh integration --decide persona-receipt=without:"<reason>"'
+exit 4
+"""
+
+
+def ask_stub(tree):
+    """Replace the tree's runner by `ASK_STUB`."""
+    stub = pathlib.Path(tree) / "scripts" / "gate.sh"
+    stub.write_text(ASK_STUB)
+    stub.chmod(0o755)
 
 
 class TestGate(StrandShTestCase):
@@ -495,6 +522,39 @@ class TestGate(StrandShTestCase):
         # The full run is still on disk -- it just is not in the answer.
         self.assertIn("GATE ok ", (self.archive() / "run.log").read_text())
 
+    def test_gate_passes_an_ask_through_as_four(self):
+        """A question for the owner is exit 4, never 3 (no token) and never 0.
+
+        Runs the REAL runner of the tree: the ASK verdict, exit 4 and the
+        question block come from its persona-receipt arm.
+        """
+        (self.tree / "change.txt").write_text("a change\n")
+        _git(self.tree, "add", "change.txt")
+        _git(self.tree, "commit", "-q", "-m", "a change")
+        res = self.run_in_tree(self.plan_file(PLAN_ASK), "integration",
+                               "--base", "HEAD~1")
+        self.assertEqual(4, res.returncode, res.stdout + res.stderr)
+        lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
+        self.assertTrue(any(re.match(r"^GATE persona-receipt \[.*\] \d+s ASK", ln)
+                            for ln in lines), res.stdout)
+        summaries = [ln for ln in lines if SUMMARY_LINE.match(ln)]
+        self.assertEqual(1, len(summaries), res.stdout)
+        self.assertEqual("ASK", SUMMARY_LINE.match(summaries[0]).group("verdict"))
+        self.assertIn('--decide persona-receipt=without:"', res.stdout)
+
+    def test_gate_prints_the_question_block_of_an_ask_run(self):
+        """The kit's half of the contract, without the runner's arm: the ASK
+        station line, the summary and the question block from the run log."""
+        ask_stub(self.tree)
+        res = run_strand(self.repo, "gate", "integration", cwd=self.tree)
+        self.assertEqual(4, res.returncode, res.stdout + res.stderr)
+        lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
+        self.assertTrue(lines[0].startswith("GATE persona-receipt "), res.stdout)
+        self.assertTrue(SUMMARY_LINE.match(lines[1]), res.stdout)
+        self.assertTrue(lines[2].startswith("gate: ASK"), res.stdout)
+        self.assertIn('--decide persona-receipt=without:"', res.stdout)
+        self.assertNotIn("GATE ok ", res.stdout)
+
 
 class TestReportAndClose(StrandShTestCase):
     def setUp(self):
@@ -559,6 +619,33 @@ class TestReportAndClose(StrandShTestCase):
         res = run_strand(self.repo, "report", cwd=self.tree)
         self.assertEqual(1, res.returncode, res.stdout)
         self.assertIn("RED", res.stderr)
+
+    def test_report_refuses_an_ask_gate(self):
+        """ASK is no green: a question for the owner is still open."""
+        self.commit()
+        ask_stub(self.tree)
+        self.assertEqual(4, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertIn("ASK", res.stderr)
+        self.assertIn("not GREEN", res.stderr)
+
+    def test_close_refuses_an_ask_gate(self):
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        self.assertEqual(0, run_strand(self.repo, "report",
+                                       cwd=self.tree).returncode)
+        path = self.report("kit")
+        text = path.read_text()
+        gate = header_block(path)["gate"]
+        path.write_text(text.replace(
+            "gate: %s" % gate,
+            'gate: "GATE-SUMMARY integration abc1234 0/0 1s ASK"', 1))
+        self.assertIn("ASK", header_block(path)["gate"])
+        res = run_strand(self.repo, "close", cwd=self.tree)
+        self.assertNotEqual(0, res.returncode, res.stdout)
+        self.assertIn("ASK", res.stderr)
+        self.assertNotIn("gh issue close", res.stdout)
 
     def test_report_refuses_a_header_without_a_gate(self):
         self.commit()

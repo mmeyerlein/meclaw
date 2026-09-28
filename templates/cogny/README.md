@@ -1,4 +1,4 @@
-# `cogny@5.1.3`
+# `cogny@5.1.4`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -96,6 +96,10 @@ The two sub-units are **references**, not copies. Each of the two directories ho
                                   "curate_hard": 0.75,
                                   "tools": ["*"]}}}
 ```
+
+**`5.1.4` declares `hop.model` on `brain`, and nothing else** ([#886](https://github.com/mmeyerlein/meclaw/issues/886)). The cell always wrote the
+model the provider served into the header; the contract now says so, in the one wording the library
+uses. The third digit.
 
 **`5.1.3` moves both pins, `collector` to 4.4.1 and `dispatcher` to 1.2.2, and nothing else**
 ([#871](https://github.com/mmeyerlein/meclaw/issues/871)). That collector keeps the block a
@@ -609,7 +613,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.1.3", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.1.4", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```

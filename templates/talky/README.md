@@ -1,4 +1,4 @@
-# `talky@5.4.3`
+# `talky@5.4.4`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -68,7 +68,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.4.3` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@5.4.4` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -93,6 +93,9 @@ the window (*The block rides beside the answer*, below). The same version shows 
 said beside a tool call with the memory contract's nothing form (knob `nothing_block`), and
 reads an unfenced `{"memory": {...}}` as one block (*The legacy fence still reads*, below).
 No lane and no edge moved, so it is the third digit.
+`5.4.4` declares `hop.model` on `brain` ([#886](https://github.com/mmeyerlein/meclaw/issues/886)): the `llm` cell has always
+written the model the provider served into that header slot, and the contract now says so, in the
+wording every other `llm` cell of the library uses. No lane and no edge moved, so it is the third digit.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -730,7 +733,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.4.3",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.4.4",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
