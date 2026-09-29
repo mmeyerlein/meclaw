@@ -11,7 +11,7 @@
           "context": [
             "session_id"
           ],
-          "because": "an errand for this agent core: ONE class since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) -- synthesis, a development over time, multi-step work, research. The body is the `consult_cogny` tool_call turn the asking dispatcher split out, and its two required arguments are `question` and `context`: the asker sends the context in full and does not deduplicate it against what it thinks this core already knows, because the core's curator discards what it does not need and cannot recover a sentence that was left out. `session_id` is REQUIRED context and the ingress edge promotes it -- a consultation happens inside the conversation that asked for it, and this core's `memory_recall` tool is worth nothing if it cannot say which session it is asking about. `context.consult_class` is read by nobody since 4.4.0: there is one seam lane, so a class key changes nothing"
+          "because": "an errand for this agent core: ONE class since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) -- synthesis, a development over time, multi-step work, research. The body is the `consult_cogny` tool_call turn the asking dispatcher split out, and its two required arguments are `question` and `context`: the asker sends the context in full and does not deduplicate it against what it thinks this core already knows, because the core's curator discards what it does not need and cannot recover a sentence that was left out. `session_id` is REQUIRED context and the ingress edge promotes it -- a consultation happens inside the conversation that asked for it, and this core's `memory_recall` tool is worth nothing if it cannot say which session it is asking about. `context.consult_class` is read by nobody since 4.4.0: there is one seam lane, so a class key changes nothing. Since [#894](https://github.com/mmeyerlein/meclaw/issues/894) the same lane carries two more errands of the same consultation: a follow-up (`consult_cogny` with the `consult_id` of the one it continues) and the asker's answer to a question this core asked back (a `reply_to_consult` call, `consult_id` and `answer`) -- both under the consult's id, both filed as a turn in the session whose window still holds the consultation"
         },
         {
           "route": "in_tool",
@@ -21,7 +21,7 @@
         {
           "route": "in_bundle",
           "context": [],
-          "because": "a memory bundle, coming back from whatever keeps this agent's memory -- the AMBIENT leg of a turn, and the only meaning this lane has since GH #552. `memory_tier` stays empty here (a problem solver asks on purpose), so nothing in the shipped core fires it; a tree that switches the ambient leg on gets its bundle here. The DELIBERATE lookup went the other way: `memory_recall` is an ordinary tool name since cogny@5.0.0, the member's own memory hive declares and answers it, and its result arrives on `in_tool` under the id the round is waiting on. Until then this lane carried both, told apart by a `hop.memory_call_id` the request carried out ([#528](https://github.com/mmeyerlein/meclaw/issues/528), [#552](https://github.com/mmeyerlein/meclaw/issues/552))"
+          "because": "a memory bundle, coming back from whatever keeps this agent's memory -- the AMBIENT leg of a turn, and the only meaning this lane has since GH #552. `memory_tier` stays empty here (a problem solver asks on purpose), so nothing in the shipped core fires it; a tree that switches the ambient leg on gets its bundle here. The DELIBERATE lookup went the other way: `memory_recall` is an ordinary tool name since cogny@5.0.0, the member's own memory hive declares and answers it, and its result arrives on `in_tool` under the id the round is waiting on. Until then this lane carried both, told apart by a `hop.memory_call_id` the request carried out ([#528](https://github.com/mmeyerlein/meclaw/issues/528), [#552](https://github.com/mmeyerlein/meclaw/issues/552)). Since GH #895 the ask leaves through `./curator`, which builds its question, and a bundle carrying `context.gap_ask` -- the curator's own lookup of a gap -- goes back to `./curator` and never to the collector"
         },
         {
           "route": "in_pack",
@@ -38,7 +38,7 @@
         {
           "route": "in_schemas",
           "context": [],
-          "because": "somebody asking this core what its OWN errand looks like, by name -- `{\"tools\": [\"consult_cogny\"]}`, or `[\"*\"]` for everything it declares ([#528](https://github.com/mmeyerlein/meclaw/issues/528)). Whoever is reached declares themselves: this core is not a tool cell, so no tools hive has the `consult_cogny` schema, and when #464 replaced typed menus with asked-for ones the declaration lost its last owner and every caller came up with a menu that did not contain the one tool the core exists for. It is not a tool round and carries no `tool_name`. The lane, the body and the answer are the tools hive's own, byte for byte (`templates/tools/README.md` § Asking for the declarations), so a collector can ask two answerers the same question and cut the two menus together without knowing which of them was a hive of tools. PAIRED with `tool_schemas` in `params.required_drains`"
+          "because": "somebody asking this core what its consult contract looks like, by name -- `{\"tools\": [\"consult_cogny\", \"reply_to_consult\"]}`, or `[\"*\"]` for everything it declares to a voice ([#528](https://github.com/mmeyerlein/meclaw/issues/528), [#894](https://github.com/mmeyerlein/meclaw/issues/894)). Whoever is reached declares themselves: this core is not a tool cell, so no tools hive has these schemas, and when #464 replaced typed menus with asked-for ones the declaration lost its last owner and every caller came up with a menu that did not contain the one tool the core exists for. A voice gets the voices' half -- `consult_cogny` and `reply_to_consult` -- and never `ask_requester`, which is the core's own and is asked for inside this composite (`./collector -> ./schemas`, stamped `hop.tool_caller` 'cogny', answered back into `./collector` on `hop.audience == 'core'` and never out of this rim). It is not a tool round and carries no `tool_name`. The lane, the body and the answer are the tools hive's own, byte for byte (`templates/tools/README.md` § Asking for the declarations), so a collector can ask two answerers the same question and cut the two menus together without knowing which of them was a hive of tools. PAIRED with `tool_schemas` in `params.required_drains`"
         },
         {
           "route": "in_sealed",
@@ -55,11 +55,15 @@
       "emits": [
         {
           "route": "answer",
-          "because": "the core's answer, for whoever asked. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply. Since `collector@4.4.0` every answer also says how the completion behind it ended (GH #843): `hop.finish_reason` (`stop`, `length`, or empty where the collector knows no reason) and `hop.truncated`, `\"1\"` when the completion was cut on `length` -- the core's `length` edge still goes straight to its collector (it has no splitter), and the mark is made there"
+          "because": "the core's answer, for whoever asked. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply. Since `collector@4.4.0` every answer also says how the completion behind it ended (GH #843): `hop.finish_reason` (`stop`, `length`, or empty where the collector knows no reason) and `hop.truncated`, `\"1\"` when the completion was cut on `length` -- since GH #892 the core's `length` edge goes through its splitter, which passes the reason on to its collector, and the mark is made there"
+        },
+        {
+          "route": "ask",
+          "because": "the core's question back to whoever consulted it ([#894](https://github.com/mmeyerlein/meclaw/issues/894), R-27-3): one assistant text turn `the core asks: <question>` from `./ask`, with `hop.consult_id` naming the consultation it belongs to -- `context.consult_id` as the consult edge stamped it, so the asker's departure row (GH #728) finds it. `ask_requester` is a handoff in this composite's dispatcher: the core's turn has ended, and the answer comes back as the core's next errand on `in_turn` (a `reply_to_consult` call of the asker, carrying `consult_id` and `answer`). A parent that lets a core ask back routes this lane to the asker's advice lane, promoting `hop.consult_id` and clearing `col_phase` exactly like the advice edge; a parent that does not draws nothing and the lane dead-letters once per question and the consultation stays open, because nothing answers it -- which is why the declaration is offered only to the core and never to a voice"
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. No name is reserved since cogny@5.2.0 (GH #889). `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) was reserved until then; since GH #552 the member's memory hive declares and answers it, so it is an ORDINARY tool name and leaves on this default edge like any other. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has four out-edges (calls, result and answer into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: six senders (., ./collector, ./curator, ./brain, ./dispatcher, ./schemas) over 25 edges since 5.2.0, five of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. One name is reserved again since GH #894: `ask_requester`, held by the ordinary edge `./dispatcher -> ./ask`, leaves on the `ask` lane and never here. None was reserved between cogny@5.2.0 (GH #889) and then. `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) was reserved until then; since GH #552 the member's memory hive declares and answers it, so it is an ORDINARY tool name and leaves on this default edge like any other. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has six out-edges (calls, result and answer into ./collector, the `history_*` family into ./curator since GH #893, `ask_requester` into ./ask since GH #894, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: eight senders (., ./collector, ./curator, ./brain, ./splitter, ./dispatcher, ./schemas, ./ask) over 38 edges since GH #894, six of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
         },
         {
           "route": "recall",
@@ -79,11 +83,11 @@
         },
         {
           "route": "schemas",
-          "because": "the tool names this core declares it uses, for a tools hive's `in_schemas` door (GH #464). The body is `{\"tools\": [\"*\"]}` unless an instance narrows `./collector`'s `params.tools`, and the hive keeps no record of who asked. Unwired it dead-letters once per tick, which is why the pair with `in_menu` is one decision and not two"
+          "because": "the tool names this core declares it uses, for a tools hive's `in_schemas` door (GH #464). The body is `{\"tools\": [\"*\"]}` unless an instance narrows `./collector`'s `params.tools`, and the hive keeps no record of who asked. The same request also reaches this composite's own `./schemas` (GH #894), which answers the core's half of the consult contract -- `ask_requester` -- back into `./collector`. Unwired it dead-letters once per tick, which is why the pair with `in_menu` is one decision and not two"
         },
         {
           "route": "tool_schemas",
-          "because": "this core's OWN declarations, one `{name, description, parameters}` per name that was asked for and exists -- which is the single errand `consult_cogny` -- plus in `unknown[]` the asked names it does not serve ([#528](https://github.com/mmeyerlein/meclaw/issues/528)). Provider-neutral on purpose, exactly like the tools hive's answer: wrapping the envelope is the caller's job, because the caller is the one that knows which provider it talks to. `hop.operation` is `schemas`, `hop.schema_count` and `hop.unknown_count` count the two lists, and `hop.error_code` is `tool_unknown` or `tools_missing`. PAIRED with `in_schemas`"
+          "because": "this core's OWN declarations for a voice, one `{name, description, parameters}` per name that was asked for and exists -- `consult_cogny` and `reply_to_consult` ([#894](https://github.com/mmeyerlein/meclaw/issues/894)) -- plus in `unknown[]` the asked names it does not serve to a voice, `ask_requester` included ([#528](https://github.com/mmeyerlein/meclaw/issues/528)). The core's own half never leaves here: the rim edge excludes an answer marked `hop.audience == 'core'`. Provider-neutral on purpose, exactly like the tools hive's answer: wrapping the envelope is the caller's job, because the caller is the one that knows which provider it talks to. `hop.operation` is `schemas`, `hop.schema_count` and `hop.unknown_count` count the two lists, and `hop.error_code` is `tool_unknown` or `tools_missing`. PAIRED with `in_schemas`"
         },
         {
           "route": "credential_request",
@@ -104,7 +108,17 @@
         {
           "from": ".",
           "to": "./collector",
-          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_bundle' || hop.route == 'in_menu')"
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_bundle' || hop.route == 'in_menu') && !(hop.route == 'in_bundle' && has(context.gap_ask) && context.gap_ask != '')"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.gap_ask) && context.gap_ask != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_gap_bundle'"
+            }
+          }
         },
         {
           "from": ".",
@@ -161,9 +175,47 @@
           }
         },
         {
+          "from": "./collector",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'curator'"
+            }
+          }
+        },
+        {
           "from": "./brain",
+          "to": "./splitter",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+        },
+        {
+          "from": "./splitter",
           "to": "./dispatcher",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./splitter",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'sidecar'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_section'"
+            }
+          }
         },
         {
           "from": "./brain",
@@ -176,7 +228,7 @@
           }
         },
         {
-          "from": "./brain",
+          "from": "./splitter",
           "to": "./collector",
           "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
           "modifier": {
@@ -222,7 +274,8 @@
           "modifier": {
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
@@ -234,18 +287,49 @@
           "modifier": {
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
         {
           "from": "./collector",
-          "to": ".",
+          "to": "./curator",
           "condition": "has(hop.route) && hop.route == 'recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_recall_ask'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'recall' && !has(hop.gap_ask)",
           "modifier": {
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer",
+              "gap_ask"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'recall' && has(hop.gap_ask)",
+          "modifier": {
+            "set_context": {
+              "gap_ask": "hop.gap_ask"
+            },
+            "delete_hop": [
+              "gap_ask"
+            ],
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
@@ -256,7 +340,8 @@
           "modifier": {
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
@@ -270,7 +355,8 @@
             },
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
@@ -281,20 +367,22 @@
           "modifier": {
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
         {
           "from": "./schemas",
           "to": ".",
-          "condition": "has(hop.operation) && hop.operation == 'schemas'",
+          "condition": "has(hop.operation) && hop.operation == 'schemas' && !(has(hop.audience) && hop.audience == 'core')",
           "modifier": {
             "set_hop": {
               "route": "'tool_schemas'"
             },
             "delete_context": [
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
@@ -308,7 +396,8 @@
             },
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
@@ -322,7 +411,8 @@
             },
             "delete_context": [
               "col_phase",
-              "curator_call"
+              "curator_call",
+              "tool_answerer"
             ]
           }
         },
@@ -330,6 +420,67 @@
           "from": ".",
           "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('history_')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_history_call'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./schemas",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'",
+              "tool_caller": "'cogny'"
+            }
+          }
+        },
+        {
+          "from": "./schemas",
+          "to": "./collector",
+          "condition": "has(hop.operation) && hop.operation == 'schemas' && has(hop.audience) && hop.audience == 'core'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'cogny'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./ask",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'ask_requester'"
+        },
+        {
+          "from": "./ask",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'ask'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer"
+            ]
+          }
         }
       ]
     },
@@ -347,7 +498,7 @@
     ]
   },
   "description": {
-    "purpose": "Scope marker of the cogny composite: the agent core as ONE hive -- the proven tool-loop core (collector fan-in, dispatcher fan-out, ONE brain) behind one consult ingress and one advice exit, plus the cell that declares what that ingress takes. Since 3.0.1 five further lanes meet at the same path (GH #240): in_tool and in_bundle in, tool, recall and error out. Its own seam, its own iteration bound, its own restore_ttl. No keeper, no summarizer, no proxy: the core has no channel, no sessions and no night, so nothing here mints an id or closes a day. Since 4.2.0 (GH #458) it has the one door it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since 4.3.0 (GH #464) the tool menu is asked for rather than typed: `./collector`'s `params.tools` ([\"*\"]) leaves on `schemas`, and the declarations come back on `in_menu` and are written into the brain as durable `system.tools`. Since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) the core is the PROBLEM SOLVER and nothing else: ONE brain, one seam lane, no lookup class; it declares its own errand on `in_schemas`/`tool_schemas`, and its memory leg is a TOOL rather than an ambient bundle -- served by the member's own memory hive since GH #552, not by this composite. Since 4.5.0 ([#548](https://github.com/mmeyerlein/meclaw/issues/548)) the cell that answers `in_schemas` is called `./schemas` and not `./declare`: one lane, one cell name. It does the same job as the tools hive's `schemas` occupant, under the same lane pair, and two words for one thing cost every caller and every mutation a lookup.",
+    "purpose": "Scope marker of the cogny composite: the agent core as ONE hive -- the proven tool-loop core (collector fan-in, dispatcher fan-out, ONE brain) behind one consult ingress, one advice exit and, since GH #894, one question exit (`ask`), plus the cell that declares what that ingress takes. Since 3.0.1 five further lanes meet at the same path (GH #240): in_tool and in_bundle in, tool, recall and error out. Its own seam, its own iteration bound, its own restore_ttl. No keeper, no summarizer, no proxy: the core has no channel, no sessions and no night, so nothing here mints an id or closes a day. Since 4.2.0 (GH #458) it has the one door it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since 4.3.0 (GH #464) the tool menu is asked for rather than typed: `./collector`'s `params.tools` ([\"*\"]) leaves on `schemas`, and the declarations come back on `in_menu` and are written into the brain as durable `system.tools`. Since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) the core is the PROBLEM SOLVER and nothing else: ONE brain, one seam lane, no lookup class; it declares its own errand on `in_schemas`/`tool_schemas`, and its memory leg is a TOOL rather than an ambient bundle -- served by the member's own memory hive since GH #552, not by this composite. Since 4.5.0 ([#548](https://github.com/mmeyerlein/meclaw/issues/548)) the cell that answers `in_schemas` is called `./schemas` and not `./declare`: one lane, one cell name. It does the same job as the tools hive's `schemas` occupant, under the same lane pair, and two words for one thing cost every caller and every mutation a lookup.",
     "use_when": "One per agent, never one per channel voice. Instantiate it as a SIBLING of the channel voices and wire the consult ingress, the advice exit and the tool, memory, error and declaration lanes in the same mutation; the composite is an island until an edge crosses into it. The ingress edge MUST promote `session_id` -- the lane contract demands it, because the core's memory tool asks about sessions.",
     "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no channel surface, no session lifecycle, and no errors cell -- the brain is joined onto the error lane by the exit edges' own set_hop.route. The core's identity and instructions live in the brain's own cell.db - the composite carries the topology, never the persona. The one schema it DOES carry is its own errand, and that is the opposite of a persona: a caller cannot reach what nobody declared. And no class decision: since 4.4.0 there is one class and one lane, so nothing anywhere picks between them."
   }

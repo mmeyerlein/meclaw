@@ -1,0 +1,85 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, re\n\n# THE QUESTION BACK (GH #894, R-27-3). The core called `ask_requester`: it\n# cannot finish the errand without something only the one who consulted it\n# knows -- a preference, a choice, a fact of the person's. The call is a HANDOFF\n# in this composite's dispatcher, so the core's turn has already ended; this cell\n# turns the call into what the asking surface reads: ONE sentence,\n# `the core asks: <question>`, sent back under the CONSULT's id.\n#\n# WHY THE CONSULT'S ID AND NOT THE CALL'S. The surface correlates everything the\n# core sends back by the id its own departure row was written under when the\n# consult left (GH #728, OR-KX-63) -- the consult's call id, which the level's\n# consult edge stamped into `context.consult_id` and which this composite never\n# changes. The id of THIS call names nothing on the surface's side, and a question\n# under it would arrive there anonymous, in a round of its own, and could not be\n# answered under the id the surface is shown. So the context wins, and the hop's\n# id (the dispatcher's `arguments.consult_id or call id`) is only the fallback\n# for a core that stands outside a consult.\n#\n# WHY TEXT. The surface's model cannot see this core's window, so the question\n# travels as the words the core wrote and never as a reference into it. A call\n# whose arguments lost their JSON shape still carries a question -- its raw text\n# is sent as it is -- because a silence here would leave the consult waiting for\n# an answer to a question nobody heard.\n#\n# WHY NO BLOCK ID. The core's curator shows it every block of its window behind\n# a short id, `[#<12 hex>]` (GH #892), and a model quotes what it has just read.\n# An id of the core's window is a reference into a wall the surface cannot\n# read, and the question goes on to a person, so it leaves here without one --\n# the talky splitter's expression, by form alone, in every form a model quotes\n# one, bare included, the full sixty-four-digit block id too (GH #894,\n# R-27-3, OR-KY-80/81/84; one expression with the splitter's, OR-KY-83).\nPREFIX = \"the core asks: \"\nSHORT_ID = re.compile(\n    r\"[ \\t]?(?:\\[#[0-9a-fA-F]{12,16}(?: released[^\\]\\n]{0,64}| expired)?\\]\"\n    r\"|\\[shortened[^\\]\\n#]{0,40}#[0-9a-fA-F]{12,16}[^\\]\\n]{0,4}\\]\"\n    r\"|\\(#[0-9a-fA-F]{12,16}\\)\"\n    r\"|(?<![\\w#])#(?=[0-9]{0,15}[a-fA-F])[0-9a-fA-F]{12,16}(?!\\w)\"\n    r\"|(?<![\\w#])#?(?=[0-9]{0,63}[a-fA-F])[0-9a-fA-F]{64}(?!\\w))\")\n\ndoc = json.load(sys.stdin)\nheader = ((doc.get(\"envelope\") or {}).get(\"header\") or {})\nhop = header.get(\"hop\") or {}\nctx = header.get(\"context\") or {}\nmsgs = (doc.get(\"body\") or {}).get(\"messages\") or []\ncall = next((m for m in msgs\n             if isinstance(m, dict) and m.get(\"type\") == \"tool_call\"), {})\nraw = str(call.get(\"text\") or \"\")\ntry:\n    args = json.loads(raw or \"{}\")\nexcept ValueError:\n    args = None\nquestion = \"\"\nif isinstance(args, dict):\n    question = str(args.get(\"question\") or \"\").strip()\nif not question:\n    question = raw.strip()\nquestion = SHORT_ID.sub(\"\", question).strip()\nif not question:\n    sys.stderr.write(\"ask: an ask_requester call without any text -- sent as\"\n                     \" an empty question so the consult is not left waiting\\n\")\nconsult = str(ctx.get(\"consult_id\") or hop.get(\"consult_id\") or \"\")\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"ask\", \"consult_id\": consult,\n               \"tool_call_id\": str(hop.get(\"tool_call_id\") or call.get(\"id\") or \"\")},\n    \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                  \"text\": PREFIX + question}]}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "ask"
+          ],
+          "required": true
+        },
+        "consult_id": {
+          "type": "string",
+          "required": true,
+          "description": "the id of the consultation the question belongs to: `context.consult_id`, else the dispatcher's `hop.consult_id`. Always present, empty when neither names one -- the level's edge promotes it, and a missing hop key makes a CEL modifier fail"
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "consult_id": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "context": {
+        "consult_id": {
+          "type": "string",
+          "required": false,
+          "description": "the consult this core is working on, stamped by the level's consult edge (GH #728)"
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The core's question back to whoever consulted it (GH #894, R-27-3). An `ask_requester` call of the core's brain becomes ONE sentence, `the core asks: <question>`, on route `ask`, under the id of the consultation the core is working on -- the id the asking surface's departure row names, so the question arrives there correlated and the surface can answer it with `reply_to_consult` under that id.",
+    "use_when": "Inside the cogny composite, between `./dispatcher` and the rim: the dispatcher's tool emission for `ask_requester` comes here instead of leaving on the guarded default, and the `ask` this cell emits leaves the composite on the rim lane of the same name. `ask_requester` is a handoff in this composite's dispatcher, so the core's turn has ended when the question leaves.",
+    "not_in_scope": "No answer and no waiting: the answer comes back as the core's next errand on `in_turn`, through the level's `reply_to_consult` edge, and nothing here holds state. No window reference: the question travels as the words the core wrote, because the surface cannot see the core's window -- a short block id `[#<12 hex>]` the core quoted is taken out of it.",
+    "emits_meaning": "One message per call on route `ask`: hop.consult_id (the consultation), hop.tool_call_id (the call), and one assistant text turn `the core asks: <question>` -- the call's `question` argument, or its raw text when the arguments are not an object with one.",
+    "consumes_meaning": "The dispatcher's tool emission for `ask_requester`: one `tool_call` turn whose text is the call's arguments, `{\"question\": \"...\"}`.",
+    "examples": [
+      "tool_call {\"question\": \"Which city are you travelling to?\"} with context.consult_id 'call-c1' -> route `ask`, consult_id 'call-c1', text 'the core asks: Which city are you travelling to?'"
+    ]
+  }
+}

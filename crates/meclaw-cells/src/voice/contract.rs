@@ -545,4 +545,26 @@ pub trait DuplexProvider: Send + Sync + 'static {
         session: DuplexSession,
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), DuplexError>>;
+    /// Run one RENEWED session of a call that is already running (GH #896).
+    ///
+    /// The connection opens it while the call's current session is still up,
+    /// because a live model's session has a limit and the call must outlive
+    /// it. Everything [`Self::run_session`] promises holds here too — the same
+    /// `format`, the same four channels, the same verdict — with one
+    /// difference: the caller is in the middle of a conversation, so a
+    /// provider that greets the caller when a session opens does NOT greet
+    /// here. What the new session has to know about the conversation so far
+    /// reaches it as an ordinary append from the colony, before any audio of
+    /// the caller does.
+    ///
+    /// The default runs an ordinary session, which is right for every provider
+    /// that says nothing on its own.
+    fn run_renewed_session(
+        &self,
+        format: AudioFormat,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+    ) -> BoxFuture<Result<(), DuplexError>> {
+        self.run_session(format, session, liveness)
+    }
 }

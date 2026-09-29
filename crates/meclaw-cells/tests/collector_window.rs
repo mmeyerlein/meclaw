@@ -1410,6 +1410,99 @@ fn the_capped_round_ends_on_a_partial_answer_not_on_a_raw_tool_result() {
     assert_eq!(closing["type"], "text");
 }
 
+/// GH #894 (R-27-3, OR-KY-68): the digest of a capped round goes to a READER --
+/// straight past the splitter that takes the curator's short block ids out of a
+/// model's prose -- and a history tool's result quotes those ids by design. So
+/// the head of the last result loses them here; the raw round in front of the
+/// digest keeps them, because it is the colony's own record.
+#[test]
+fn the_partial_answer_quotes_no_short_block_id() {
+    let mut rows = vec![leg_window_row(
+        serde_json::json!([{"role": "user", "text": "what did I say about Lisbon?"}]),
+    )];
+    rows.extend(named_round_pair(1, "c1", "history_search", "nothing yet"));
+    rows.extend(named_round_pair(
+        2,
+        "c2",
+        "history_search",
+        "[#0123456789ab] Lisbon in May  [#abcdefABCDEF] a flat near the river",
+    ));
+    let out = emit_with(
+        &[("max_iter", "2")],
+        reply_at(
+            "round-check",
+            "bundle",
+            4,
+            serde_json::Value::Array(rows),
+            2,
+        ),
+    );
+    assert_eq!(out[0]["header"]["partial"], "1", "{out:?}");
+    let texts = texts_of(&out[0]);
+    let last = texts.last().expect("a last turn");
+    assert!(
+        !last.contains("[#"),
+        "a block id reached the reader: {last}"
+    );
+    assert!(
+        last.contains("Lisbon in May a flat near the river"),
+        "the evidence stays, only the ids go: {last}"
+    );
+    assert!(
+        texts[..texts.len() - 1]
+            .iter()
+            .any(|t| t.contains("[#0123456789ab]")),
+        "the raw round keeps what the tool said: {texts:?}"
+    );
+}
+
+/// OR-KY-80: a history tool answers in JSON and writes its ids BARE
+/// (`"id": "#<12 hex>"`), and the window's forms of a released or an expired block
+/// carry one inside their brackets, and an ambiguous id is answered with sixteen-digit
+/// `candidates` (OR-KY-81), and `history_read` answers with the full sixty-four-digit
+/// `hash` (OR-KY-84) -- the digest quotes the head of exactly such a result, so it loses
+/// those too, while a colour or a step number stays.
+#[test]
+fn the_partial_answer_quotes_no_bare_short_block_id() {
+    let mut rows = vec![leg_window_row(
+        serde_json::json!([{"role": "user", "text": "what did I say about Lisbon?"}]),
+    )];
+    rows.extend(named_round_pair(1, "c1", "history_outline", "nothing yet"));
+    let result = r##"{"hits": [{"id": "#0123456789ab", "text": "Lisbon in May, step #3, colour #1a2b3c"}, {"id": "#abcdefabcdef", "text": "[#abcdefabcdef expired] [#0123456789ab released — history_read(\"#0123456789ab\")]"}], "candidates": ["#abcdefabcdef0123"], "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "order": "#123456789012"}"##;
+    rows.extend(named_round_pair(2, "c2", "history_search", result));
+    let out = emit_with(
+        &[("max_iter", "2")],
+        reply_at(
+            "round-check",
+            "bundle",
+            4,
+            serde_json::Value::Array(rows),
+            2,
+        ),
+    );
+    assert_eq!(out[0]["header"]["partial"], "1", "{out:?}");
+    let texts = texts_of(&out[0]);
+    let last = texts.last().expect("a last turn");
+    assert!(
+        !last.contains("0123456789ab") && !last.contains("abcdefabcdef"),
+        "a block id reached the reader: {last}"
+    );
+    assert!(
+        last.contains("Lisbon in May, step #3, colour #1a2b3c"),
+        "the evidence stays, only the ids go: {last}"
+    );
+    assert!(
+        !last.contains("0123456789abcdef0123456789abcdef"),
+        "the full block id of a history_read answer reached the reader (OR-KY-84): {last}"
+    );
+    assert!(
+        texts[..texts.len() - 1]
+            .iter()
+            .any(|t| t.contains("#abcdefabcdef")),
+        "the raw round keeps what the tool said: {texts:?}"
+    );
+}
+
 #[test]
 fn the_first_assembly_of_a_turn_is_never_the_capped_one() {
     // iter 0 against the default of 8: the cap is a bound on the ROUND, not a
@@ -1745,6 +1838,49 @@ fn a_mid_round_turn_with_a_stale_round_also_triggers_the_close() {
     assert_eq!(op["operation"], "select");
     assert_eq!(op["table"], "round");
     assert_eq!(op["where"]["turn_id"], "t9");
+}
+
+/// GH #894 (OR-KY-75): `defer_turns` "0" -- a core's collector -- opens a round
+/// of its own for a turn that arrives in another round's tool round, instead of
+/// stamping it deferred: the stamp waited for a round nobody opened, and the next
+/// errand's round carried it under that errand's `consult_id`. The open round's
+/// idle re-check still rides on the arrival.
+#[test]
+fn a_mid_round_turn_opens_its_own_round_where_turns_are_not_deferred() {
+    let open = serde_json::json!([{"turn_id": "t9", "iter": 1, "recorded_at": FRESH}]);
+    let out = emit_with(
+        &[("defer_turns", "0")],
+        open_reply(open, serde_json::json!([])),
+    );
+    assert_eq!(emitted(&out), 1, "the window leg and nothing else: {out:?}");
+    assert!(
+        !out.iter().any(|m| m["header"]["phase"] == "defer-w"),
+        "no deferral stamp: {out:?}"
+    );
+    let op = op_of(&out[0]);
+    assert_eq!(op["table"], "round", "the window leg parks: {op}");
+    assert_eq!(op["operation"], "insert");
+    assert_eq!(op["row"]["role"], "leg-window");
+    assert_eq!(op["row"]["turn_id"], "t1", "under the NEW turn: {op}");
+
+    let stale = serde_json::json!([{"turn_id": "t9", "iter": 1, "recorded_at": STALE}]);
+    let out = emit_with(
+        &[("defer_turns", "0")],
+        open_reply(stale, serde_json::json!([])),
+    );
+    assert_eq!(out.len(), 2, "the window leg and the re-check: {out:?}");
+    assert_eq!(out[1]["header"]["phase"], "round-check", "{out:?}");
+    assert_eq!(out[1]["header"]["turn_id"], "t9", "{out:?}");
+
+    // The shipped value and a blank knob keep the telephone model.
+    for v in ["1", ""] {
+        let open = serde_json::json!([{"turn_id": "t9", "iter": 1, "recorded_at": FRESH}]);
+        let out = emit_with(
+            &[("defer_turns", v)],
+            open_reply(open, serde_json::json!([])),
+        );
+        assert_eq!(out[0]["header"]["phase"], "defer-w", "{v:?}: {out:?}");
+    }
 }
 
 #[test]
@@ -2594,6 +2730,11 @@ fn an_advice_without_a_correlation_is_still_framed_but_names_no_id() {
 /// what to do with one. The rule travels with the open ids -- in the slot this
 /// cell RE-DERIVES every round, because a seed charter is read once at birth and
 /// a grown, imported or rebuilt brain never receives it (GH #512, GH #525).
+///
+/// GH #894: the question the core asks back is answered with `reply_to_consult`
+/// under its id -- and when only the person knows the answer, the person is
+/// asked first. Until then the rule ended on "never the person", which stood in
+/// every request of the round that carried the core's question.
 #[test]
 fn the_open_consult_slot_says_what_an_advice_is_for() {
     let turns = serde_json::json!([
@@ -2609,13 +2750,18 @@ fn the_open_consult_slot_says_what_an_advice_is_for() {
         "in your own words",
         "Do not consult again",
         "consult_id",
-        "never the person",
+        "reply_to_consult",
+        "if only the person knows, ask the person first",
     ] {
         assert!(
             text.contains(phrase),
             "the rule is missing {phrase:?}: {text}"
         );
     }
+    assert!(
+        !text.contains("never the person"),
+        "the rule forbids the one person who can answer the core's question: {text}"
+    );
 }
 
 /// GH #259 -- the second half of the same lane: a correlation that was handed

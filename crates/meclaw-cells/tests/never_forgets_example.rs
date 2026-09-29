@@ -88,7 +88,14 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// the cells of `curator@1.0.0`, GH #888), so eighteen from `talky` and
 /// twenty-three in all. Derived from the curator's declared cells, to be
 /// confirmed by the first run after its merge.
-const CELLS_AFTER_GROW: usize = 23;
+///
+/// GH #892: the curator answers the menu question with a seventh cell
+/// (`schemas`), so nineteen from `talky` and twenty-four in all. MEASURED.
+/// GH #893 adds an eighth (`history`): twenty from `talky`, twenty-five in
+/// all. GH #895 a ninth (`push`): twenty-one from `talky`, twenty-six in all.
+/// GH #896 a tenth (`handover`) carries a session's handover block into the
+/// next one: twenty-two from `talky`, twenty-seven in all. MEASURED.
+const CELLS_AFTER_GROW: usize = 27;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

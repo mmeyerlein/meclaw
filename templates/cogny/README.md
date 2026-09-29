@@ -1,9 +1,11 @@
-# `cogny@5.2.0`
+# `cogny@5.3.0`
 
-The agent core as one template. Five units under one hive: [`collector`](../collector/),
+The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
-template's own name -- plus ONE `llm` `brain` and one `code` cell, `schemas`, which hands
-out the schema of the errand this core takes. No new cell type, no Rust.
+template's own name -- plus ONE `llm` `brain` and three `code` cells: `splitter`, which cuts
+the sidecar block out of the brain's answer for the curator (a copy of the talky's, GH #892),
+`schemas`, which hands out the declarations of the consult contract, and `ask`, which turns
+the core's question back into one sentence (GH #894). No new cell type, no Rust.
 
 **One brain, since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)).
 Until then the seam had two lanes and the core carried a fast one for memory lookups. The
@@ -42,8 +44,9 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
   `in_turn` lane and is filed as the turn it is: the talky IS the core's user. Nothing in
   here knows that its user is a machine.
 - **An answer that is an event.** The advice leaves on the ordinary `answer` route and
-  becomes the asking talky's `in_advice` event -- which is why the same lane carries a
-  *question back* without a second mechanism.
+  becomes the asking talky's `in_advice` event. Since
+  [#894](https://github.com/mmeyerlein/meclaw/issues/894) a *question back* has a lane of
+  its own, `ask` -- see [The core asks back](#the-core-asks-back-894).
 - **Nobody waits.** The consult is classified at the asking dispatcher
   (the asking dispatcher's `handoff_tools` names `consult_cogny` -- a handoff is async and says in
   the same breath that the answer comes from a later turn, GH #372), so the asker's fan-in
@@ -67,7 +70,8 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
   ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). See
   [Knobs](#knobs).
 - **And an errand nobody has to type (4.4.0).** The core answers `in_schemas` with the
-  schema of `consult_cogny`, in the tools hive's own shape, on `tool_schemas`. Whoever is
+  voices' half of its consult contract -- `consult_cogny` and, since #894,
+  `reply_to_consult` -- in the tools hive's own shape, on `tool_schemas`. Whoever is
   reached declares themselves -- see [The core declares its own errand](#the-core-declares-its-own-errand-528).
 
 ## Cells
@@ -75,10 +79,12 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 | path | type | from |
 |---|---|---|
 | `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
-| `curator/{intake,policy,writer,ledger,summarizer,clock}` | `code`, `code`, `code`, `store`, `llm`, `timer` | `curator` **(sealed)**, since `5.2.0` |
+| `curator/{intake,policy,writer,ledger,summarizer,clock,schemas,history,push,handover}` | `code`, `code`, `code`, `store`, `llm`, `timer`, `code`, `code`, `code`, `code` | `curator` **(sealed)**, since `5.2.0`; `schemas`, `history`, `push` and `handover` since `5.3.0` (GH #892, GH #893, GH #895, GH #896) |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template -- the one inference |
-| `schemas` | `code` | this template -- the errand schema (4.4.0; named `declare` until 4.5.0) |
+| `splitter` | `code` | this template -- a copy of `talky/splitter`, params and contract byte for byte (GH #892) |
+| `schemas` | `code` | this template -- the consult contract's declarations (4.4.0; named `declare` until 4.5.0; two audiences since #894) |
+| `ask` | `code` | this template -- the core's question back, `the core asks: <question>` on `ask` (#894) |
 
 **The braces are an inventory, not an address list.** `collector` and `curator` declare
 `params.ports: []`, so `./collector` and `./curator` are the only addresses an edge from
@@ -91,14 +97,23 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.0.0"},
+{"cell": {"type": "ref", "template": "collector@5.1.0"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.0.0"},
+{"cell": {"type": "ref", "template": "curator@1.1.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
+
+**`5.3.0` cuts its own block and can ask back** ([#892](https://github.com/mmeyerlein/meclaw/issues/892), [#893](https://github.com/mmeyerlein/meclaw/issues/893), [#894](https://github.com/mmeyerlein/meclaw/issues/894), [#895](https://github.com/mmeyerlein/meclaw/issues/895)). A splitter
+like talky's stands between `brain` and `dispatcher` and hands every section to the curator, which
+runs as role `consult`; the `history_*` tools are answered inside; the new cell `./ask` turns an
+`ask_requester` call into the question that leaves on the new route `ask`, and the collector runs
+with `defer_turns` `"0"`, so an errand or a reply that arrives during an open tool round opens a
+round of its own; a recall question, where an instance sets a memory tier, goes through the
+curator. It moves the `curator` pin to 1.1.0 and the `collector` pin to 5.1.0. A route joined the
+boundary, so it is the second digit.
 
 **`5.2.0` references `curator`** and moves the window, the curation and the identity pack
 from the collector to it ([#889](https://github.com/mmeyerlein/meclaw/issues/889)). No lane of the boundary moved; the
@@ -211,9 +226,9 @@ All four meet at the hive path; five further lanes (`in_tool`, `in_bundle`, `too
 | port | endpoint | direction | what travels |
 |---|---|---|---|
 | consult ingress | `./cogny` | in | the errand on lane `in_turn`, carrying `context.consult_id` **and `context.session_id`** |
-| advice exit | `./cogny` | out | `hop.route == 'answer'` -- the advice, a question back, **or** a store refusal marked `hop.degraded` (see Lanes) |
+| advice exit | `./cogny` | out | `hop.route == 'answer'` -- the advice **or** a store refusal marked `hop.degraded` (see Lanes); since #894 a question back leaves on its own lane `ask` (see [The core asks back](#the-core-asks-back-894)) |
 | declaration ingress | `./cogny` | in | `in_schemas` with `{"tools": [...]}` -- what does your errand look like? |
-| declaration exit | `./cogny` | out | `hop.route == 'tool_schemas'` -- the `consult_cogny` schema, provider-neutral |
+| declaration exit | `./cogny` | out | `hop.route == 'tool_schemas'` -- the voices' declarations (`consult_cogny`, `reply_to_consult`), provider-neutral |
 
 ```json
 {"from": "<front>/surface", "to": "./cogny",
@@ -242,9 +257,10 @@ Four things in that pair are load-bearing, and none of them is decoration:
   key. Everything else in the context rides along on purpose.
 - **`consult_id` becomes context**, because the hop decays at the next cell and the
   correlation has to survive the core's whole chain and come home with the answer. A
-  *fresh* consult is named by the call that opened it; a reply to a question the core
-  asked back passes the id it was shown -- the dispatcher decides which, and both arrive
-  here as the same key.
+  *fresh* consult is named by the call that opened it; a follow-up passes the id of the
+  consultation it continues, and so does the reply to a question the core asked back
+  (`reply_to_consult`, #894) -- the dispatcher decides which, and all arrive here as the
+  same key.
 - **`session_id` becomes context, and the lane DEMANDS it.** `accepts[].context` names it
   (GH #291 makes that requirement checkable by a backwards walk, so a mutation that draws
   an ingress without it is refused rather than discovered at runtime). The reason is the
@@ -284,21 +300,21 @@ pair always carries: a caller that asks and does not subscribe offers its model 
 without `consult_cogny` in it, and the round then looks like a model that chose not to
 consult -- the one failure nobody can see from outside.
 
-**What a caller sends** is `{"tools": ["consult_cogny"]}`, or `["*"]` for everything this
-core declares, which is one schema. **What comes back** on `tool_schemas` is
+**What a caller sends** is `{"tools": ["consult_cogny", "reply_to_consult"]}`, or `["*"]`
+for everything this core declares to a voice, which is two schemas (#894). **What comes back** on `tool_schemas` is
 `schemas[]` / `unknown[]` / `messages[]` in the body and `operation` / `schema_count` /
 `unknown_count` / `error_code` (`tool_unknown`, `tools_missing`) on the hop -- byte for
 byte the tools hive's answer shape, and provider-neutral for the same reason: wrapping the
 envelope is the caller's job, because the caller is the one that knows its provider.
 
-The single schema:
+The errand's schema:
 
 | field | type | |
 |---|---|---|
 | `question` | string | **required** -- the one thing the core has to answer |
 | `context` | string | **required** -- everything the core needs: what the person wants, what was already said, what is excluded |
 | `eta` | string | optional -- the asker's own coarse guess, said to the person in the same reply |
-| `consult_id` | string | optional -- names a consultation that is already open |
+| `consult_id` | string | optional -- a follow-up: the id of the earlier consultation this one continues (#894) |
 
 **`context` is required, and it is required to be redundant.** The asking model must not
 filter it against what it thinks the core already knows: the core's curator discards what
@@ -336,6 +352,31 @@ a CHANGELOG Breaking entry and a new major version, never a patch. Adding a lane
 ever promised is additive and takes the minor digit; giving a hive that shipped sealed the
 contract it already implied is a repair and takes the third, which is what 3.0.1 was.
 
+### The core asks back (#894)
+
+A consultation is a complete order (the `consult_cogny` description names its five parts:
+the goal, the facts already known, the constraints, the form of the answer and how long it
+may be, in words -- nothing on this road cuts an answer). When it is still not enough, the
+core calls **`ask_requester`** with one question. It is a handoff in `./dispatcher`, so the
+core's turn ends; `./ask` sends the question out on the `ask` lane as one sentence,
+`the core asks: <question>`, under `context.consult_id` -- the consult's id, which the
+asker's departure row (#728) is written under. The asker answers with **`reply_to_consult`**
+(`consult_id`, `answer`), which arrives here as the next errand on `in_turn`, with the
+consultation still in the curator's window. `ask_requester` is offered to the core only and
+`reply_to_consult` to a voice only: the core asks its own `./schemas` on its menu tick
+(stamped `hop.tool_caller` 'cogny', answered back into `./collector` on
+`hop.audience == 'core'`), and a voice asks
+at the rim. The level that holds a core draws `ask` to the asker's advice lane
+(`templates/assistant/README.md` § The consult edges).
+
+The question travels as the words the core wrote, never as a reference into its window:
+`./ask` takes a short block id the core quoted out of it (`[#<12 hex>]`, bare `#` and twelve to sixteen hex digits, the full sixty-four-digit block
+id, or the window's form of a released, shortened or expired block), because the asker
+cannot read the core's wall and the question goes on to a person. The handoff leaves one
+departure row in the core's own collector, under the `ask_requester` call's id; nothing
+answers under that id (the reply comes back as an errand, not as an advice), so the row is
+never shown and falls with every other departure after seven days (`DEPART_AFTER_MS`).
+
 ### Per-instance lanes (not ports of this template)
 
 **Tools stay outside.** The tool set is the per-agent choice, so the composite carries no
@@ -352,10 +393,18 @@ tool cells and no map of them. Wiring a tool is one edge pair:
 the `calls`, `result` and `answer` emissions carry no `tool_name` at all and an unguarded
 comparison **errors** in CEL, which skips the edge with a log line per lane per message.
 
-**No tool name is reserved inside this composite since `5.2.0`**: `thread_recall` (GH #451)
-read the collector's round table and left with it ([#889](https://github.com/mmeyerlein/meclaw/issues/889)),
-as `memory_recall` left with 5.0.0 ([#552](https://github.com/mmeyerlein/meclaw/issues/552)),
-so every name leaves on the **guarded default edge** of `4.0.2`
+**One tool family is served inside since `5.3.0`: the model's own wall**
+([#893](https://github.com/mmeyerlein/meclaw/issues/893)). `history_search`, `history_read`
+and `history_outline` read `./curator`'s ledger, which no cell outside that hive may read, so
+one ordinary edge takes every name that starts `history_` to the curator (`in_history_call`)
+and one takes its `tool_result` to the collector (`in_tool`); the curator declares the three
+in its menu answer, which `["*"]` asks for. They replace `thread_recall` (GH #451), which
+read the collector's round table and left with it in `5.2.0`
+([#889](https://github.com/mmeyerlein/meclaw/issues/889)), as `memory_recall` left with 5.0.0
+([#552](https://github.com/mmeyerlein/meclaw/issues/552)). **One tool name is reserved since
+#894: `ask_requester`**, held by the ordinary edge `./dispatcher -> ./ask` and sent out on
+`ask` (see [The core asks back](#the-core-asks-back-894)). Every other name leaves on the
+**guarded default edge** of `4.0.2`
 ([#283](https://github.com/mmeyerlein/meclaw/issues/283), ruling Q1), `{"from": "./dispatcher",
 "to": ".", "default": true, "condition": "has(hop.route) && hop.route == 'tool'"}`, consulted
 only when no ordinary edge out of `./dispatcher` fired for the message.
@@ -364,7 +413,7 @@ The guard on that default is not decoration: `./dispatcher` emits four sorts (`c
 `result`, `answer`, `tool`) and default suppression is **sender-wide**, so an unguarded
 default would try to carry `calls`/`result`/`answer` outward whenever nothing ordinary
 fired for them. For the same reason there is **no unconditional tee** from `./dispatcher`
-here -- four out-edges, each conditioned on its own lane. A tee added later, at
+here -- six out-edges, each conditioned on its own lane. A tee added later, at
 `./cogny/dispatcher`, would silence this default for every tool call and the parent's tool
 cells would go dark.
 
@@ -473,7 +522,7 @@ nothing ever answers.
 
 ## The internal wiring, edge by edge
 
-Twenty-five edges in this hive's `params.graph`, plus the five the sealed collector brings
+Thirty-eight edges in this hive's `params.graph`, plus the five the sealed collector brings
 with it and those the sealed curator brings
 ([`../curator/README.md`](../curator/README.md)) -- those are their own door and store
 edges and are neither drawn nor wireable from here. Every edge below names `collector` and
@@ -486,28 +535,44 @@ collector  --(curate)----------------------------------> curator   in_curate  <-
 curator    ==(brain, iter < 12, restore_ttl)===========> brain       <- THE SEAM
 collector  --(menu)------------------------------------> curator   in_slots   <- the answered
                                                                     menu, #464
-brain      --(stop | tool_calls)--> dispatcher
+collector  --(schemas)----------------------------------> curator   in_schemas <- the curator
+                                                                    answers the menu too, #892
+curator    --(tool_schemas, !refused_subscriber)---------> collector in_menu   <- tool_answerer
+                                                                    'curator', #892
+collector  --(recall)----------------------------------> curator   in_recall_ask  <- the
+                                                                    question, #895
+brain      --(stop | tool_calls | length)--> splitter   <- the sidecar cut, #892
 brain      --(any answer, !refused_subscriber)--> curator  in_llm   <- the tap, #889
-brain      --(length)-------------> collector  in_answer   <- no splitter here; the
-                                                             collector marks it truncated
+splitter   --(stop | tool_calls)--> dispatcher
+splitter   --(length)-------------> collector  in_answer   <- the collector marks it truncated
+splitter   --(sidecar)------------> curator    in_section  <- every section; none leaves
+                                                             the core, #892
 
 dispatcher --(calls)---> collector  in_calls
 dispatcher --(result)--> collector  in_tool
 dispatcher --(answer)--> collector  in_answer     -> and out of the advice port
+dispatcher --(tool, history_*)--> curator  in_history_call  <- the model's own wall, #893
+curator    --(tool_result)-------> collector  in_tool
 
 .          --(in_turn)-----------> collector         THE DOORS
-.          --(in_tool|in_bundle|in_menu)-> collector
+.          --(in_tool|in_bundle|in_menu)-> collector   (a bundle with context.gap_ask: not)
+.          --(in_bundle, context.gap_ask)--> curator  in_gap_bundle   <- #895
 .          --(mutation_committed)-> collector
 .          --(in_pack)-----------> curator           <- THE DOOR IN THE WALL, #458
 .          --(in_schemas)--------> schemas           <- #528
 .          --(in_model)----------> brain             <- THE MODEL DOOR, #855
 .          --(in_model, subscriber ends /curator/summarizer)--> curator   <- #889
 collector  --(answer)-----------> .                  THE EXITS
-collector  --(recall)-----------> .
+curator    --(recall, !gap_ask)--> .                  <- the ask, question built, #895
+curator    --(recall, gap_ask)---> .  context.gap_ask := hop.gap_ask   <- #895
 curator    --(pack_ack)---------> .
 curator    --(model_refused)----> .                  <- the summarizer's refused push, #889
 collector  --(schemas)----------> .
-schemas    --(operation == schemas)--> .  route := 'tool_schemas'
+schemas    --(operation == schemas, audience != 'core')--> .  route := 'tool_schemas'
+collector  --(schemas)----------> schemas  route := 'in_schemas', hop.tool_caller := 'cogny'  <- #894
+schemas    --(operation == schemas, audience == 'core')--> collector  route := 'in_menu'  <- #894
+dispatcher --(tool, tool_name == 'ask_requester')--> ask   <- #894
+ask        --(ask)--------------> .                  <- the question back, #894
 dispatcher ==(tool, DEFAULT)==============> .
 brain      --(error|content_filter, !refused_subscriber)--> .  route := 'error'
 brain      --(has(refused_subscriber))--> .  route := 'model_refused'  <- a refused push, #863
@@ -519,8 +584,9 @@ copies a message to *every* matching edge, so two overlapping seam conditions wo
 both brains on one errand and answered twice. With one brain there is nothing to overlap.
 
 **The `==` on the exit marks the default edge** (`4.0.2`, [#283](https://github.com/mmeyerlein/meclaw/issues/283)): it is
-consulted only after every ordinary edge out of `dispatcher` has declined, and since `5.2.0`
-no ordinary edge claims a tool name (GH #889).
+consulted only after every ordinary edge out of `dispatcher` has declined. From `5.2.0`
+(GH #889) no ordinary edge claimed a tool name; since #894 one does again,
+`dispatcher -> ask` for `ask_requester`.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
 belt, not the policy: the round is bounded by `max_iter`, which ends a runaway
@@ -572,10 +638,11 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `interim` | param | `""` | dispatcher -- **off at this template since 4.4.0** ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). On (the shipped default, and what a channel voice keeps) a sentence standing next to a tool bundle leaves on the `answer` lane at once. This core has no channel, and its `answer` lane is the asking voice's advice lane, so such a sentence arrives as an advice nobody gave. Off it does not leave the dispatcher at all, and therefore does not enter this core's own window either -- a sentence nobody could hear was never said. The FINAL answer is untouched |
 | `turn_write` | param | `"0"` | curator/writer -- per-turn episodes, **off at this template since `5.2.0`** (GH #889): the write belongs at the **talky**, and at an unwired core it dead-lettered one message per consult turn. The curator's own default is `"1"` (GH #298) |
 | `tools` | param | `["*"]` | collector -- the tool names this core **declares** it uses (GH #464). Set at this template since `4.3.0`, and set to EVERYTHING on purpose: a reasoning core should reach whatever its surface can, and a list typed here would be a second copy of a catalogue that drifts on the first tool added to the hive. The declarations are asked for on the `schemas` lane and written into the brain as durable `system.tools`. `memory_recall` reaches this list the ordinary way since 5.0.0: `["*"]` asks every answerer the level wired, the member's memory among them ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
-| `keep_recent`, `compress_at`, `context_window`, `summary_chars`, `sidecar_max_chars` | param | see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889); the full table is in the curator's README |
+| `defer_turns` | param | `"0"` (#894) | collector -- a turn that lands in another errand's open tool round opens a round of its own instead of waiting for the next one: this core's session is the conversation that consults it, so a second errand or the asker's `reply_to_consult` would otherwise wait for a round nobody opens and come back under the other errand's `consult_id`. The collector's own default, `"1"`, is the telephone model of a channel voice |
+| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `quality_cap`, `horizon`, `tiers`, `summary_budget`, `keep_rounds`, `stub_tools_after`, `context_window`, `sidecar_max_chars` | param | `role` `"consult"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889), by the consult role's presets since GH #892; the full table is in the curator's README |
 | `max_calls` | param | `16` | cogny/dispatcher -- per-answer call budget |
-| `async_tools` | param | `""` | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
-| `handoff_tools` | param | `""` | cogny/dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. This core needs **none** since 4.4.0: `escalate_to_deep` is gone, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
+| `async_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
+| `handoff_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. Since #894 that is `ask_requester`: the answer to the core's question arrives as its next errand. `escalate_to_deep` is gone since 4.4.0, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
 
 **There is no `env` column above any more.** Since `dispatcher@1.2.0` the last
 three knobs of a cogny tree moved onto `params` with the rest
@@ -597,7 +664,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.2.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.3.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -653,7 +720,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the two port PAIRS plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with eleven cells (plus three hive markers); the `store` and `llm`
+The composite comes up with seventeen cells (plus three hive markers); the `store` and `llm`
 cells report `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a
 stateful cell. Two things to have ready before the mutation:
 
@@ -808,8 +875,9 @@ rides on `hop.route`.
 | `model_refused` | out | a model push the brain refused: its error, with `hop.refused_subscriber` (the brain's path) and `hop.refused_model`, instead of on `error`. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. Since 5.1.2 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `schemas` | out | the tool names this core declares it uses (`{"tools": ["*"]}` as shipped), for a tools hive's `in_schemas` door. It leaves on a TICK, not per turn. **Paired**: see `in_menu`. Since 4.3.0 |
 | `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. They are written into the brain as durable `system.tools`. Since 4.3.0 |
-| `in_schemas` | in | somebody asking what THIS core's errand looks like: `{"tools": ["consult_cogny"]}` or `["*"]`. **Paired**: see `tool_schemas`. Since 4.4.0 |
-| `tool_schemas` | out | the `consult_cogny` schema, provider-neutral, in the tools hive's own answer shape. Since 4.4.0 |
+| `in_schemas` | in | somebody asking what THIS core's consult contract looks like: `{"tools": ["consult_cogny", "reply_to_consult"]}` or `["*"]`. **Paired**: see `tool_schemas`. Since 4.4.0 |
+| `tool_schemas` | out | the voices' declarations, `consult_cogny` and `reply_to_consult` (#894), provider-neutral, in the tools hive's own answer shape. Since 4.4.0 |
+| `ask` | out | the core's question back: one text turn `the core asks: <question>`, `hop.consult_id` naming the consultation. Route it to the asker's advice lane, promoting `hop.consult_id` and clearing `col_phase`. Since #894 |
 
 **The door in the wall (`in_pack`, GH #458) moved to `curator`** with `5.2.0`
 ([#889](https://github.com/mmeyerlein/meclaw/issues/889)): the pack enters `./curator`, which

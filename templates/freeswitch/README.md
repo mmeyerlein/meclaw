@@ -1,4 +1,4 @@
-# `freeswitch@2.1.4`
+# `freeswitch@2.2.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -58,6 +58,7 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 | out, `hop.route == 'partial'` | an interim transcript, out of the media half. OFF by default — `emit_partials` on the `voice` cell turns it on |
 | out, `hop.route == 'spoken'` | what the assistant is saying, while it is still saying it. Duplex only, and on the same `emit_partials` as `partial` — the two are the two halves of one stream |
 | out, `hop.route == 'delegation'` | the duplex provider handed work to the client and named the handle; `hop` carries `delegation_id` and `offset_ms`. It leaves the hive because the work is not telephony, and the answer comes back on `in_advise` |
+| out, `hop.route == 'renewed'` | the duplex half renewed its provider session inside the same call, before the provider's limit (`renew_after_ms` in the media half's `duplex` block); `hop` carries `renewal_n` and `renewed_at`, the body is empty. It leaves the hive for the reason `delegation` does, and the handover for the new session comes back on `in_advise` as a `context` section carrying `hop.renewal_n` |
 | out, `hop.route == 'error'` | a caller with no entry in `callers` — whose leg is put down in the same breath — a request this hive cannot read, or the media half's own failure |
 | out, `tool_result` / `tool_schemas` | the receipt of a `call`/`hangup`, and the offer itself |
 | out, `call_accepted` / `call_queued` / `call_refused` / `call_abandoned` | what a second call got. One receipt per inbound call, empty `messages[]`, `hop` carries `call_id`, `policy`, `capacity` and `cause`. The installing manifest draws the edge that drains them |
@@ -197,7 +198,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.1.4",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.2.0",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -261,6 +262,10 @@ call carries that call, and an edge that promoted the call only on the happy
 path would make every failure look like it came from nowhere. `user_id` is the
 one line the `voice` channel writes as a bare literal and this one writes as a
 fallback: the signalling half knows the caller, the media half does not.
+A media half with a `duplex` block emits `spoken`, `delegation` and `renewed`
+as well; its channel adds the three to the first edge's condition, as the
+`voice` channel's edge does -- a `renewed` the edge leaves out dies at the
+channel, and the renewed session goes on without its handover.
 
 **`voice_session` is gone, and the call has a key of its own** (retracted in
 1.1.0, [#620](https://github.com/mmeyerlein/meclaw/issues/620)). Until 1.0.1 the
@@ -942,6 +947,11 @@ the same wait, and the far end's own `call_ended` always ends the row.
 
 ## Versioning
 
+**`2.2.0` moves the `voice` pin and lets `renewed` out** ([#896](https://github.com/mmeyerlein/meclaw/issues/896)): the media half's
+duplex session is renewed within the same call, and the renewal leaves this hive beside
+`delegation`, so the level above can hand the new session its block. A lane joined this
+channel's surface, which is the second place.
+
 **`2.1.4` moves the `voice` pin** ([#867](https://github.com/mmeyerlein/meclaw/issues/867)),
 whose built-in test page runs behind a strict Content-Security-Policy. Nothing on this
 channel's own surface moves.
@@ -1043,7 +1053,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.1.4`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.2.0`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1056,7 +1066,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.1.4"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.2.0"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

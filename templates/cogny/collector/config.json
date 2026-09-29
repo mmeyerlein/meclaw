@@ -1,13 +1,15 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@5.0.0"
+    "template": "collector@5.1.0"
   },
   "override_params": {
     "assemble": {
       "tools": [
         "*"
-      ]
+      ],
+      "sidecar": "1",
+      "defer_turns": "0"
     }
   }
 }

@@ -63,6 +63,10 @@
           "because": "the duplex provider handed work to the client and named the handle. It leaves this hive because the work is not telephony: whatever stands behind the member does it, and the answer comes back on `in_advise`. `hop` carries `delegation_id` and `offset_ms`, the body the user text of the open turn"
         },
         {
+          "route": "renewed",
+          "because": "the duplex half renewed its provider session within the same call before the provider's limit (GH #896, `params.duplex.renew_after_ms` of the media half). It leaves this hive for the same reason `delegation` does: what the new session has to know is the conversation, and whatever stands behind the member knows it -- the answer comes back on `in_advise` as a `context` section that carries `hop.renewal_n`. `hop` carries `renewal_n` and `renewed_at`, the body is empty. Duplex only"
+        },
+        {
           "route": "error",
           "because": "the failure of a leg of this channel: a caller nobody allowlisted -- whose leg this hive puts down in the same breath (GH #614), so the dialplan has its extension back instead of an answered call nobody speaks into -- a request this hive cannot read, or the media half's own error. It leaves rather than being logged, because a channel that kept its faults to itself is a telephone that stopped ringing for a reason nobody can find"
         },
@@ -112,7 +116,7 @@
         {
           "from": "./voice",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation')",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation' || hop.route == 'renewed')",
           "modifier": {
             "delete_context": [
               "phone_origin",

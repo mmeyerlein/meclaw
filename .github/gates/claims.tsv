@@ -207,6 +207,10 @@ PIN-container-declares-nothing	templates/member/README.md	a container hive that 
 PIN-member-holds-the-memory	templates/member/README.md	**The memory belongs to the member, not to the agent.**	pinned	the_level_wires_the_screen_the_memory_and_the_record
 PIN-level-lane-union-derived	templates/member/README.md	A level's transit contract carries the lanes that	pinned	the_member_declares_the_lanes_that_cross_its_boundary
 PIN-talky-tool-exit-default	templates/talky/README.md	**The tool exit stopped naming names.**	pinned	an_ordinary_tool_call_still_leaves_on_the_tool_lane
+PIN-talky-serves-its-own-wall	templates/talky/README.md	**The model reads its own wall since `talky@6.1.0`**	pinned	a_model_reads_its_own_wall_and_never_another
+PIN-cogny-serves-its-own-wall	templates/cogny/README.md	**One tool family is served inside since `5.3.0`: the model's own wall**	pinned	a_model_reads_its_own_wall_and_never_another
+PIN-curator-history-own-wall-only	templates/curator/README.md	and never another model's wall	pinned	a_model_reads_its_own_wall_and_never_another
+PIN-curator-history-never-shortened	templates/curator/README.md	a larger read is refused with `too_large` and its size, never shortened	pinned	read_over_budget_is_too_large_never_cut
 PIN-no-silencer	templates/terminal/README.md	A `reject` or an `error` lane has exactly **two** honest states	pinned	no_shipped_topology_routes_a_refusal_into_a_cell_that_swallows_it
 PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **six declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level
 PIN-web-asset-route-de	docs/cell-types.md	erst wird die materialisierte Seitenkarte gefragt, dann die Asset-Karte	pinned	a_page_and_an_asset_do_not_shadow_each_other

@@ -240,6 +240,25 @@ pub(crate) fn duplex_tick_ms(p: &VoiceParams) -> u64 {
     }
 }
 
+/// When a duplex connection renews its provider session, and how long the
+/// renewed session waits for its handover block, in milliseconds (GH #896).
+///
+/// Beside the three above, and the same shape: the loopback's params block has
+/// no knob at all and a cascade has no duplex session to renew, so both take
+/// the shipped pair — which never renews. The renewal itself lives in the
+/// connection, ABOVE the provider trait, like the tick.
+pub(crate) fn duplex_renewal_ms(p: &VoiceParams) -> (u64, u64) {
+    match &p.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(g)) => {
+            (g.renew_after_ms, g.renew_grace_ms)
+        }
+        _ => (
+            crate::voice::params::DEFAULT_RENEW_AFTER_MS,
+            crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+        ),
+    }
+}
+
 /// The one relation between a duplex knob and a cell-level one that nothing
 /// checks at the parse: `keepalive_ms` against `provider_idle_timeout_ms`
 /// (R-L7, GH #798).
@@ -444,6 +463,9 @@ fn make_build(
         io.spoken_cap_ms = cap_ms;
         io.close_grace_ms = duplex_close_grace_ms(&parsed);
         io.duplex_tick_ms = duplex_tick_ms(&parsed);
+        let (renew_after_ms, renew_grace_ms) = duplex_renewal_ms(&parsed);
+        io.duplex_renew_after_ms = renew_after_ms;
+        io.duplex_renew_grace_ms = renew_grace_ms;
         // The path the mount registers under. The mount table refuses a name
         // another path holds and lets the holder replace its own entry, which
         // is what a respawn is.
@@ -585,6 +607,40 @@ mod tests {
             crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
             "a cascade never waits for a duplex verdict; it takes the shipped number"
         );
+    }
+
+    /// The renewal pair comes from the gpt_live block, and everything else —
+    /// the loopback, a cascade — takes the shipped pair, which never renews
+    /// (GH #896).
+    #[test]
+    fn the_renewal_comes_from_the_duplex_block() {
+        let set = VoiceParams::parse(&json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live",
+                "api_key": "k",
+                "instructions": "be Egon",
+                "renew_after_ms": 3_300_000,
+                "renew_grace_ms": 7000
+            }
+        }))
+        .expect("a gpt_live block parses");
+        assert_eq!(duplex_renewal_ms(&set), (3_300_000, 7000));
+
+        for other in [
+            json!({"mount": "voice", "duplex": {"provider": "echo"}}),
+            json!({"mount": "voice", "stt": {"provider": "echo"}}),
+        ] {
+            let p = VoiceParams::parse(&other).expect("parses");
+            assert_eq!(
+                duplex_renewal_ms(&p),
+                (
+                    crate::voice::params::DEFAULT_RENEW_AFTER_MS,
+                    crate::voice::params::DEFAULT_RENEW_GRACE_MS
+                ),
+                "no knob, the shipped pair: {other}"
+            );
+        }
     }
 
     /// MUST 2: the deadlines the adapters are held to come from the effective

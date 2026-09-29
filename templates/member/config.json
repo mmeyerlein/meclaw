@@ -892,6 +892,21 @@
               "route": "'in_menu'"
             }
           }
+        },
+        {
+          "from": "./channels",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'renewed'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_renewed'"
+            },
+            "set_context": {
+              "channel": "has(context.channel) ? context.channel : ''",
+              "engine": "has(hop.engine) ? hop.engine : ''",
+              "call_id": "has(hop.call_id) ? hop.call_id : ''"
+            }
+          }
         }
       ]
     },

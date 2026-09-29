@@ -144,9 +144,28 @@ fn a_grown_generation_receives_the_delegation_the_member_stamps() {
     assert_every_stamped_lane_arrives(
         "./assistants",
         json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-               "name": "scribe", "template": "assistant@3.0.0",
+               "name": "scribe", "template": "assistant@3.1.0",
                "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
         "./scribe",
+    );
+}
+
+/// GH #896: a duplex call renewed at its provider's limit comes back to its
+/// generation as `in_renewed`, which the member re-stamps onto `./assistants`
+/// the way it does a delegation -- so the table draws the door beside
+/// `in_delegation`, permissive like it. The seam test above holds it from the
+/// day the member stamps the lane; until then this names it.
+#[test]
+fn a_grown_generation_has_a_door_for_a_renewed_call() {
+    let decl = grow(
+        json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
+               "name": "scribe", "template": "assistant@3.1.0",
+               "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
+    );
+    let doors = doors_into(&decl, "./scribe");
+    assert!(
+        doors.iter().any(|d| d == "in_renewed"),
+        "a grown generation has no door for `in_renewed`: {doors:?}"
     );
 }
 
@@ -174,7 +193,7 @@ fn every_door_of_a_grown_child_names_the_child_it_is_for() {
     for (params, child, key) in [
         (
             json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                   "name": "scribe", "template": "assistant@3.0.0",
+                   "name": "scribe", "template": "assistant@3.1.0",
                    "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
             "./scribe",
             "context.assistant",

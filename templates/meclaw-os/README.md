@@ -1,4 +1,4 @@
-# `meclaw-os@2.0.0`
+# `meclaw-os@2.1.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -26,6 +26,9 @@ pins moved.
 Since 2.0.0 it pins `builder@1.16.0`, `llm-registry@2.4.0`, `argus@1.2.2` and `operator@1.2.4` ([#877](https://github.com/mmeyerlein/meclaw/issues/877), [#889](https://github.com/mmeyerlein/meclaw/issues/889), [#890](https://github.com/mmeyerlein/meclaw/issues/890)):
 `pack_ack` and `prune` no longer leave the shell, because no member raises them any more, and the
 derivation names the org at 2.0.0. A lane left the boundary, so it is the first digit.
+Since 2.1.0 it pins `builder@1.17.0` ([#895](https://github.com/mmeyerlein/meclaw/issues/895), [#896](https://github.com/mmeyerlein/meclaw/issues/896)), whose recipes draw the memory road for
+`talky-chat` and the door a renewed duplex call takes into an assistant's container; a shell
+now grows what it could not before, so it is the second digit.
 
 Between 1.7.0 and 1.9.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it was
 four and not five. The **submitter** stopped being a hive of this level and became an occupant of the
@@ -579,7 +582,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.0.0"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.1.0"}}
 ```
 
 ```bash
@@ -663,7 +666,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.0.0"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.0"}],
           "add_edges": []}}
 ```
 

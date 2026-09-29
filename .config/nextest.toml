@@ -97,8 +97,17 @@ path = "junit.xml"
 # one entry would silently retry the same helper everywhere.)
 #
 # --- current quarantine ----------------------------------------------------
-# (empty -- GH #714 and GH #763 closed with their measurements; an entry comes
-# back only with a new issue behind it)
+# (GH #714 and GH #763 closed with their measurements; an entry comes back
+# only with a new issue behind it)
+
+[[profile.default.overrides]]
+# GH #912 / GH #911 -- under release-gate load the driver resets the dock and
+# waits a fixed 400 ms instead of settling it, so the closing leg starts from
+# opacity 0 and no transition runs (#912); separately WPE WebKit's compositor
+# can segfault at 4K (#911). Measured 2 of 3 green alone, red once in a release
+# gate; neither is a meclaw regression.
+filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser) & test(=the_colony_holds_in_both_engines)'
+retries = 2
 
 # ---------------------------------------------------------------------------
 # LOUD WHEN GREEN -- the tests that may decide not to measure.

@@ -1,4 +1,4 @@
-# `builder@1.16.0`
+# `builder@1.17.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -293,7 +293,7 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
 rewrote from scratch on every build: an organisation gets **18** transit edges, a
-member **18**, an assistant **27**, a channel **4**, a screen **3**, an app
+member **18**, an assistant **30**, a channel **4**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
@@ -401,9 +401,18 @@ road one lane over: per SURFACE one v-lane `./<name>/talky -> .` and `./<name>/t
 on `brief`, each stamping `context.brief_surface` with its own name, and one door back on
 `in_briefing` into each, guarded on `context.assistant` — the typed surface's door also on
 `hop.brief_surface == 'talky-chat'`, the spoken surface's the **default**, the shape of the two
-`in_bundle` doors. Both surfaces, where the memory road draws `talky` alone: the assistant sets the
-brief knob on both surface ref markers, and a surface whose knob is on and whose road is missing
-waits for its brief on every turn with a counterpart.
+`in_bundle` doors. Both surfaces, as the memory road draws both since
+[#895](https://github.com/mmeyerlein/meclaw/issues/895): the assistant sets the brief knob on both
+surface ref markers, and a surface whose knob is on and whose road is missing waits for its brief
+on every turn with a counterpart.
+
+**Since [#895](https://github.com/mmeyerlein/meclaw/issues/895) it costs two more:** the memory road
+of the typed surface, `./<name>/talky-chat -> .` on `recall` stamping `recall_caller 'talky-chat'`
+and its door back on `in_bundle` guarded on that token -- without them a chat turn waited for its
+memory until `round_idle_ms` and answered without it. **And one more since
+[#896](https://github.com/mmeyerlein/meclaw/issues/896):** the door `in_renewed`, permissive like
+`in_delegation`, through which a duplex call renewed at its provider's limit comes back to its
+generation -- the member re-stamps it onto `./assistants`, and a container is not a pass-through.
 
 `grow_level` renders them from a table. What it does **not** decide is the
 template: which class a level is filled with is a catalogue question, and the
@@ -476,6 +485,12 @@ Since `1.16.0` ([#877](https://github.com/mmeyerlein/meclaw/issues/877), [#889](
 `curator/summarizer` to the model registry and render no `prune` exit and no `pack_ack` above the
 member; the librarian, the `assistant` it counts and the `display` it grows are the current ones.
 A wish now yields something it could not before, so it is the second place.
+
+Since `1.17.0` ([#895](https://github.com/mmeyerlein/meclaw/issues/895), [#896](https://github.com/mmeyerlein/meclaw/issues/896)) the recipes draw the memory road for `talky-chat` as well -- the
+`recall` lane and an `in_bundle` door guarded on `hop.recall_caller` -- and give an assistant's
+container the door `in_renewed` beside `in_delegation`; the `assistant` they count and the
+librarian are the current ones. A wish now yields something it could not before, so it is the
+second place.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,
@@ -818,16 +833,17 @@ reason is worth writing down so nobody re-derives the disappointment:
   its `accepts` and `emits` are both empty, and its two upward edges condition on
   `has(hop.error_code)` — on a failure key, not on a lane.
 - **Lane count is not edge count**, in either direction. `assistant` declares
-  twenty-eight lanes and gets twenty-seven edges: three of them are addressed at the
+  twenty-eight lanes and gets thirty edges: three of them are addressed at the
   path directly (ruling W7-R5), `in_pack` and `pack_ack` are the opt-in identity
   door and no part of the level, `tool_result`
   is spoken inside the level and crosses no container edge, `display` folds
   `event`+`receipt` into **one**
   edge one level further out — and since [#562](https://github.com/mmeyerlein/meclaw/issues/562)
-  the memory road costs FOUR edges for two lanes, because `recall` and
+  the memory road costs SIX edges for two lanes, because `recall` and
   `in_bundle` are v-lanes and a v-lane is drawn once per asker
-  (`./<name>/talky`, `./<name>/cogny`), which no lane count could have told
-  anybody. Since [#834](https://github.com/mmeyerlein/meclaw/issues/834) the brief road
+  (`./<name>/talky`, `./<name>/talky-chat`, `./<name>/cogny` -- the typed surface
+  since [#895](https://github.com/mmeyerlein/meclaw/issues/895)), which no lane count
+  could have told anybody. Since [#834](https://github.com/mmeyerlein/meclaw/issues/834) the brief road
   costs four more for two more lanes, `brief` and `in_briefing`, drawn once per SURFACE
   (`./<name>/talky`, `./<name>/talky-chat`): both surface ref markers switch the brief leg
   on, and a surface whose road is missing waits for its brief for ever.
@@ -855,7 +871,7 @@ level's own set and behind both older switches, so no index either of them rende
  "modifier": {"set_context": {"assistant": "'<name>'"}}}
 ```
 
-An assistant grown with `door: true` carries **28** edges: the level's own set and this one.
+An assistant grown with `door: true` carries **31** edges: the level's own set and this one.
 The edge takes the level's form. It is `.` → `./<name>` in the container, and
 `./assistants` → `./assistants/<name>` when `subscribe` or `credential` moved the declaration to
 the member. The absolute edge is the same either way, so the door adds no third reason for the

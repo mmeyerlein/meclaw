@@ -17,7 +17,7 @@
 //! splitter passes the reason through, and the collector stamps
 //! `finish_reason` on EVERY answer (`""` where it does not know one) plus
 //! `truncated "1"` on a cut one. That covers cogny as well, whose `length` edge
-//! still goes straight to its collector because cogny has no splitter.
+//! goes through a splitter of its own since GH #892.
 //!
 //! Measured at the seams: the router is asked where a message goes, and the
 //! shipped scripts run over stdin.
@@ -302,14 +302,19 @@ fn the_cogny_length_edge_is_marked_as_well() {
     }
     let t = table(COGNY, "templates/cogny/config.json");
     // GH #889: cogny's brain is tapped by its curator as well; `roads` leaves
-    // that copy out.
+    // that copy out. GH #892: cogny grew the talky's splitter, so a cut
+    // completion takes the talky's road -- through the splitter, then to the
+    // collector.
     let d = roads(&t, "/c/brain", json!({"finish_reason": "length"}));
     let targets: Vec<&str> = d.iter().map(|(to, _)| to.as_str()).collect();
     assert_eq!(
         targets,
-        vec!["/c/collector"],
-        "cogny has no splitter; its length edge stays"
+        vec!["/c/splitter"],
+        "a cut completion leaves cogny's brain through its splitter"
     );
+    let d = deliveries(&t, "/c/splitter", json!({"finish_reason": "length"}));
+    let targets: Vec<&str> = d.iter().map(|(to, _)| to.as_str()).collect();
+    assert_eq!(targets, vec!["/c/collector"], "and on to the collector");
     assert_eq!(d[0].1["route"], "in_answer");
     let emitted = in_answer(d[0].1.clone(), "The analysis so far");
     let a = answer_of(&emitted);

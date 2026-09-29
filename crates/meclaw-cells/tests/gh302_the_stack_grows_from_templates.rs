@@ -981,10 +981,12 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     );
     // 35 -> 34 with GH #889: the `./assistants -> .` exit on `prune` left the
     // member together with the lane (no assistant emits `prune` any more).
+    // 34 -> 35 with GH #896: the renewal of a duplex channel's live session
+    // reaches the container on `in_renewed`.
     assert_eq!(
-        declared, 34,
+        declared, 35,
         "the member's own edges to and from its assistants container are the member \
-         template's, drawn ONCE at member instantiation. SIXTEEN reach the container: the \
+         template's, drawn ONCE at member instantiation. SEVENTEEN reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
          DEFAULT since GH #533, so a bundle addressed to the asker OUTSIDE the member takes \
          the level's own exit instead \u{2014} the memory hive's REFUSAL of a recall an asker \
@@ -1018,7 +1020,10 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          `in_delegation`, which does NOT pass the firewall: its exit stamps `in_turn`, and a \
          delegation is no turn of the conversation, and \u{2014} since GH #834 \u{2014} \
          `./affinity`'s answer to a generation's brief, answer and error alike, re-stamped \
-         to `in_briefing` when the member's own reply-to token says `inside`. EIGHTEEN \
+         to `in_briefing` when the member's own reply-to token says `inside`, and \
+         \u{2014} since GH #896 \u{2014} the renewal of a duplex channel's live session, \
+         off ./channels on `renewed` and re-stamped to `in_renewed` past the firewall \
+         like the errand. EIGHTEEN \
          leave it: recall, `sidecar` THREE times \u{2014} TWICE since GH #607 \u{2014} the one lane \
          this level SORTS rather than forwards, the memory section onto the very door \
          `extraction` used to take and every other section into `./apps`, on a section-blind edge \
@@ -1160,8 +1165,8 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
             .filter(|e| e["from"] == json!("./channels") || e["to"] == json!("./channels"))
             .count();
     assert_eq!(
-        declared, 12,
-        "the member ships twelve edges between `./channels` and the rest of itself. Three \
+        declared, 13,
+        "the member ships thirteen edges between `./channels` and the rest of itself. Three \
          are the chat channel's own, from GH #454: the screened turn into `./firewall`, \
          the answer coming back from `./assistants` guarded on `context.channel_node`, and \
          the connector's error out at the rim. Five more arrived with GH #455/#459, when \
@@ -1180,7 +1185,9 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
          NOT passed through the firewall, whose exit stamps `in_turn`. The twelfth arrived \
          with member@1.9.0 and that same channel, whose model answers on its own timeline: \
          the three advice sections coming back down out of `./assistants` as `in_advise`, \
-         for a live session that can be told something without being interrupted. A second \
+         for a live session that can be told something without being interrupted. The \
+         thirteenth arrived with GH #896: that session renewed within its call, `renewed` \
+         re-stamped into `./assistants` as `in_renewed`, the errand's road. A second \
          channel must not move any of them \
          (templates/member/README.md § Why a container carries no contract). Move the \
          README with the number."

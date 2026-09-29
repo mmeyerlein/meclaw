@@ -8,8 +8,9 @@
 //! the shipped tree:
 //!
 //! 1. **The declaration is a param of the template.** `talky` declares
-//!    `["web_search", "web_fetch"]`, `cogny` declares `["*"]`, and both names of
-//!    the first list exist in the hive that answers them. A declaration pointing
+//!    `["web_search", "web_fetch"]` plus the three `history_*` names its own
+//!    curator answers (GH #893), `cogny` declares `["*"]`, and every name of
+//!    the first list exists in the answerer that serves it. A declaration pointing
 //!    at nothing is the defect this lane exists to make visible, so the shipped
 //!    one is checked against the shipped table rather than trusted.
 //! 2. **The assembler asks, and knows when not to.** A tick with a declaration
@@ -160,10 +161,17 @@ fn the_shipped_composites_declare_what_they_use() {
             .clone();
     assert_eq!(
         talky_tools,
-        json!(["web_search", "web_fetch"]),
+        json!([
+            "web_search",
+            "web_fetch",
+            "history_search",
+            "history_read",
+            "history_outline"
+        ]),
         "talky's collector ref must carry the composite's own declaration — the tool \
          names the agent uses live where the rest of its contract lives, not in a \
-         subscriber table in the hive that answers"
+         subscriber table in the hive that answers. The three `history_*` names are \
+         answered inside, by the composite's own curator (GH #893)"
     );
 
     let cogny_tools =
@@ -199,6 +207,14 @@ fn every_name_the_shipped_talky_declares_exists_in_the_hive_that_answers() {
         .map(|v| v.as_str().expect("a tool name is a string").to_string())
         .collect();
 
+    // The model's own wall is answered by the composite's curator, not by the
+    // tools hive (GH #893): those names are the curator's offer, the rest the
+    // hive's.
+    let inside = curator_offer();
+    let declared: Vec<String> = declared
+        .into_iter()
+        .filter(|n| !inside.contains(n))
+        .collect();
     let answer = ask_the_hive(&json!(declared));
     let unknown = answer["unknown"]
         .as_array()
@@ -387,6 +403,33 @@ fn ask_the_hive(names: &Value) -> Value {
     );
     assert_eq!(out.len(), 1, "the hive answers once");
     out.into_iter().next().expect("one answer")
+}
+
+/// The tool names the curator offers as a menu answerer (`HISTORY_SCHEMAS` in
+/// `templates/curator/schemas`, a pure literal read with `ast` and spliced into
+/// `CURATOR_OFFER` there, GH #893, OR-KY.T.1).
+fn curator_offer() -> Vec<String> {
+    let schemas: Value = read_json(&templates_root().join("curator/schemas/config.json"));
+    let script = schemas["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline");
+    // The script travels on stdin: one argv string is capped at 128 KiB.
+    let mut child = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(concat!(
+            "import ast, json, sys\n",
+            "for n in ast.parse(sys.stdin.read()).body:\n",
+            "    if isinstance(n, ast.Assign) and any(getattr(t, 'id', '') == 'HISTORY_SCHEMAS' for t in n.targets):\n",
+            "        print(json.dumps([s['name'] for s in ast.literal_eval(n.value)]))\n"
+        ))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3");
+    std::io::Write::write_all(&mut child.stdin.take().expect("stdin"), script.as_bytes())
+        .expect("write the script");
+    let out = child.wait_with_output().expect("wait");
+    meclaw_core::serde_json::from_slice(&out.stdout).expect("the curator offers a list of names")
 }
 
 fn schema_names(answer: &Value) -> Vec<String> {
@@ -984,12 +1027,20 @@ async fn a_cogny_asks_for_everything_and_its_brain_gets_it() {
     // Nothing held out since GH #889: `thread_recall` was the one name the
     // collector served itself, and `memory_recall` has been the member's
     // memory's own declaration since GH #552 — a standalone cogny has no member.
-    let names = await_menu(&td, "cogny", everything.len()).await;
+    // The core's own curator is the second answerer since GH #893: `*` asks it
+    // too, and it offers the model's wall (`history_*`). And one name more since
+    // GH #894: the core also asks its OWN `./schemas`, which declares
+    // `ask_requester` to it -- the core's half of the consult contract, on no
+    // hive's list. Awaited as the full union, because the answers race and a
+    // partial menu of the right length would pass for the whole.
     let mut want = everything.clone();
+    want.extend(curator_offer());
+    want.push("ask_requester".to_string());
     want.sort();
+    let names = await_menu(&td, "cogny", want.len()).await;
     assert_eq!(
         names, want,
-        "the curator must hold every declaration the hive has -- a reasoning core \
-         declares `[\"*\"]` precisely so nothing has to be typed twice"
+        "the curator must hold every declaration the hive has, and its own -- a \
+         reasoning core declares `[\"*\"]` precisely so nothing has to be typed twice"
     );
 }

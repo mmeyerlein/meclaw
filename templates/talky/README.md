@@ -1,4 +1,4 @@
-# `talky@6.0.0`
+# `talky@6.1.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- thirty-nine edges,
+dispatcher for the fan-out, the close batch out to the write port -- forty-nine edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -27,11 +27,13 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
   per-instance: which cell answers to `web_search`. Adding a tool is one edge pair, never
   a topology change.
 - **A close that hands the day on, once.** When a generation ends, the curator's batch
-  (the collector's until `6.0.0`, GH #889) leaves on the write port and that is the whole of it: the parent decides where a day
-  belongs. Since `4.3.0` (GH #447) nothing summarises the batch inside this hive -- the
-  member above the talky turns the close batch into the memory hive's close pass, and
-  what the next generation needs of the last one comes back with the recall bundle of a
-  turn, not as a `system.handover` slot the composite writes behind its own back.
+  (the collector's until `6.0.0`, GH #889) leaves on the write port as it is: the parent decides where a day
+  belongs, and the member above the talky turns the close batch into the memory hive's
+  close pass (GH #447). Inside this hive a close costs one model call, and it is off the
+  hot path: the curator condenses the closed session into a handover note through its own
+  summarizer (GH #896), and the next generation reads it on its first call as the leaf
+  `history.handover`. Whatever else it needs of the last one comes back with the recall
+  bundle of a turn; no `system.handover` slot is written behind the composite's back.
 - **One place errors leave from.** The brain's failed inference, its content filter and
   the session-keeper's store refusal -- three failure lanes from two cells -- fan into
   `./errors` and leave as one normalised report. A parent drains one edge, not three
@@ -43,7 +45,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 |---|---|---|
 | `session-keeper/{stamp,close,sessions,night,porter}` | `code`, `code`, `store`, `timer`, `code` | `session-keeper` **(sealed)** |
 | `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
-| `curator/{intake,policy,writer,ledger,summarizer,clock}` | `code`, `code`, `code`, `store`, `llm`, `timer` | `curator` **(sealed)**, since `6.0.0` |
+| `curator/{intake,policy,writer,ledger,summarizer,clock,schemas,history,push,handover}` | `code`, `code`, `code`, `store`, `llm`, `timer`, `code`, `code`, `code`, `code` | `curator` **(sealed)**, since `6.0.0`; `schemas`, `history`, `push` and `handover` since `6.1.0` (GH #892, GH #893, GH #895, GH #896) |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template |
 | `schemas` | `code` | this template |
@@ -63,13 +65,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.0.0"}}
+{"cell": {"type": "ref", "template": "collector@5.1.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.0.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.1.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -102,6 +104,12 @@ identity pack from the collector to it ([#889](https://github.com/mmeyerlein/mec
 `in_thread_call` and `prune` left the boundary with them, so it is the first digit. The same
 number declares on `brain` every hop key the `llm` cell writes into an answer, the cache keys
 among them ([#890](https://github.com/mmeyerlein/meclaw/issues/890)).
+`6.1.0` moves the `curator` pin to `1.1.0` and the `collector` pin to `5.1.0` ([#892](https://github.com/mmeyerlein/meclaw/issues/892),
+[#893](https://github.com/mmeyerlein/meclaw/issues/893), [#894](https://github.com/mmeyerlein/meclaw/issues/894), [#895](https://github.com/mmeyerlein/meclaw/issues/895), [#896](https://github.com/mmeyerlein/meclaw/issues/896)): the curator runs as role `talky` and takes the `window`, `gap`
+and `memory` sections from the splitter, answers the `history_*` tools and builds the memory
+leg's question inside, the splitter takes the short block ids out of everything that leaves,
+and the new lane `in_renewed` carries a renewed duplex call to the curator. A lane joined the
+boundary, so it is the second digit.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `curator`, `session-keeper` and `dispatcher` have to sit in
@@ -145,6 +153,7 @@ The rest, each optional and each still at the same address:
 | `in_tool` | in | one tool result coming back |
 | `in_advice` | in | an advisor's answer coming back |
 | `in_delegation` | in | an errand the voice model handed the backend of its own accord, in a duplex call. It comes STRAIGHT from the channel, not through a firewall -- a firewall's exit stamps `in_turn`, and this is no turn of the conversation. Promote `context.delegation_id` (the correlation the answer travels back under) and `context.engine`. Since 5.2.0 |
+| `in_renewed` | in | a duplex voice session of a running call was renewed at its provider's limit (GH #896): `hop.call_id`, `hop.renewal_n`. It goes to `./curator` only -- no round, no model -- and comes back out as ONE `sidecar` section `context` carrying `hop.renewal_n`, with `context.call_id` set on the way in, so the member's advice edge hands the running conversation to the call's new session |
 | `in_bundle` | in | a memory bundle coming back |
 | `in_sweep` | in | an operator-forced session sweep |
 | `in_round_sweep` | in | the operator lane of the collector's round table: a round that ran out of iterations |
@@ -295,12 +304,29 @@ same address -- and the `has()` guards are not decoration: an emission that carr
 with a log line per lane per message. A tool name nobody answers to dead-letters and
 stalls that round until the collector's idle window closes it (`round_idle_ms`).
 
-### The one tool the composite serves itself
+### The tools the composite serves itself
 
-**Retired with `talky@6.0.0`** ([#889](https://github.com/mmeyerlein/meclaw/issues/889)):
-`thread_recall` read the collector's round table, which moved into `curator`'s ledger,
-so this composite serves no tool itself any more and every name leaves on the exit below --
-`memory_recall` since `5.0.0` ([#552](https://github.com/mmeyerlein/meclaw/issues/552)).
+**The model reads its own wall since `talky@6.1.0`**
+([#893](https://github.com/mmeyerlein/meclaw/issues/893)): `history_search`, `history_read`
+and `history_outline`. The wall is `curator`'s ledger, a store no cell outside that hive may
+read, so the three are served inside it and never leave on the tool lane. One ordinary edge
+takes every name that starts `history_` to the curator, one takes its answer to the collector:
+
+```json
+{"from": "./dispatcher", "to": "./curator",
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('history_')",
+ "modifier": {"set_hop": {"route": "'in_history_call'"}}}
+{"from": "./curator", "to": "./collector",
+ "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_result'",
+ "modifier": {"set_hop": {"route": "'in_tool'"}}}
+```
+
+The curator also declares the three, as a second answerer of the collector's menu question,
+and `./collector`'s `params.tools` names them; a channel's `allow` list stays its whitelist,
+so a channel that narrows the tools and wants these names them too. They take the place of
+`thread_recall`, the collector's round-table lookup, retired with `talky@6.0.0`
+([#889](https://github.com/mmeyerlein/meclaw/issues/889)). Every other name leaves on the exit
+below -- `memory_recall` since `5.0.0` ([#552](https://github.com/mmeyerlein/meclaw/issues/552)).
 
 **The tool exit stopped naming names.** `./dispatcher -> .` on `hop.route == 'tool'` is a
 **guarded default edge** since `4.2.0` ([#283](https://github.com/mmeyerlein/meclaw/issues/283),
@@ -316,7 +342,7 @@ like every other tool.
 assumed.** The guard is not decoration: `./dispatcher` emits four sorts (`calls`, `result`,
 `answer`, `tool`) and default suppression is **sender-wide**, so an unguarded default would
 try to carry `calls`/`result`/`answer` outward whenever nothing ordinary happened to fire
-for them. And there is **no unconditional tee**: `./dispatcher` has four out-edges here and
+for them. And there is **no unconditional tee**: `./dispatcher` has five out-edges here and
 every ordinary one is conditioned on its own lane. If you add a tee of your own -- a logger,
 a tap, a mirror, at `./talky/dispatcher` -- condition it on its own routes, or it silences
 this default for every tool call and your tool cells go dark.
@@ -420,15 +446,19 @@ and the `turn_id` is deterministic, so a repeat is recognisable downstream as we
 
 ## The internal wiring, edge by edge
 
-Fifteen edges of round in this hive's `params.graph` -- plus the twenty-four that ARE the
-boundary (ten door edges from `.`, fourteen leaving towards it, and those are the lanes
+Twenty-one edges of round in this hive's `params.graph` -- plus the twenty-eight that ARE the
+boundary (twelve door edges from `.`, sixteen leaving towards it, and those are the lanes
 above; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
-push, GH #863, and four of them leave `./curator` since 6.0.0 -- `write`, `turn_write`,
-`pack_ack` and its summarizer's `model_refused`, GH #889; the sixth door is the mutation
+push, GH #863, and seven of them leave `./curator` -- `write`, `turn_write`, `pack_ack` and
+its summarizer's `model_refused` since 6.0.0, GH #889, `sidecar` for the `memory` section it
+passes on unchanged, GH #892, and for a gap's find spoken as `fact` in a duplex call, and the
+memory ask, the collector's and a gap's own, GH #895; the sixth door is the mutation
 receipt, GH #553, the seventh is the `in_menu` fan that reaches `./schemas` beside the
 collector, GH #783, the eighth is the model door straight into `./brain`, GH #855, the ninth
-the pack door and the tenth the summarizer's model door, both into `./curator`, GH #889).
-The two halves are the whole of this file, counted from it. Every one of the fifteen names a
+the pack door and the tenth the summarizer's model door, both into `./curator`, GH #889, the
+eleventh a gap's bundle into `./curator`, GH #895, the twelfth the renewed duplex call,
+`in_renewed` into `./curator`, GH #896).
+The two halves are the whole of this file, counted from it. Every one of the twenty-one names a
 sub-unit **by its path**: three of the eight nodes below are sealed hives, so the address is
 the hive and the lane in the third column is what the door behind it reads; what those three
 draw INSIDE themselves is theirs and is not counted here. Read it as the round it is:
@@ -440,15 +470,20 @@ session-keeper --(close, session_id + channel + audience_set -> context)->  cura
 collector --(curate)------------> curator    in_curate  <- the whole round, GH #889
 curator ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
 collector --(menu)--------------> curator    in_slots   <- the answered tool menu, GH #464
+collector --(schemas)-----------> curator    in_schemas <- the curator answers the menu too, GH #892
+curator --(tool_schemas, !refused_subscriber)--> collector  in_menu  <- tool_answerer 'curator', GH #892
+collector --(recall)------------> curator    in_recall_ask  <- its question is built there, GH #895
 brain --(any answer, !refused_subscriber)--> curator  in_llm   <- the tap, GH #889
    .      --(in_pack)-----------> curator    <- THE DOOR IN THE WALL, GH #458
    .      --(in_model)----------> brain      <- THE MODEL DOOR, past the collector, GH #855
    .      --(in_model, subscriber ends /curator/summarizer)--> curator   <- GH #889
+   .      --(in_bundle, context.gap_ask)--> curator  in_gap_bundle  <- a gap's find, never the collector's, GH #895
 schemas --(operation == schemas)-> collector  in_menu   <- this agent's own sidecar offer, GH #783
 brain --(stop | tool_calls | length)--> splitter  <- the sidecar cut, GH #379; length since 5.4.0, GH #843
 splitter --(stop | tool_calls)---> dispatcher
 splitter --(length)--------------> collector    in_answer   <- a cut answer, its sidecar cut too
-splitter --(sidecar)------------->  .        <- one per section, out of the sidecar port
+splitter --(sidecar: window | gap | memory)--> curator  in_section  <- the curator's sections, GH #892
+splitter --(sidecar, any other)-->  .        <- one per section, out of the sidecar port
 brain --(error | content_filter, !refused_subscriber)-> errors
 brain --(has(refused_subscriber))--> .   route := 'model_refused'  <- a refused push, GH #863
 session-keeper --(reject)--------> errors    <- the session store refused a step
@@ -456,10 +491,14 @@ session-keeper --(reject)--------> errors    <- the session store refused a step
 dispatcher --(calls)---> collector   in_calls    dispatcher ==(tool, DEFAULT)==> [your tools]
 dispatcher --(result)--> collector   in_tool
 dispatcher --(answer)--> collector   in_answer
+dispatcher --(tool, history_*)--> curator    in_history_call   <- the model's own wall, GH #893
+curator --(tool_result)----------> collector  in_tool
 
 curator --(write)------------>  .            <- the close batch, out of the write port
 curator --(pack_ack)--------->  .            <- the pack receipt, GH #458
 curator --(model_refused)---->  .            <- the summarizer's refused push, GH #889
+curator --(sidecar)---------->  .            <- the memory section, unchanged, GH #892; a gap's find as `fact` in a duplex call, GH #895
+curator --(recall)----------->  .            <- the memory ask; a gap's own lifts gap_ask into context, GH #895
 collector --(schemas)--------->  .            <- what tools this agent declares, GH #464
 collector --(brief)----------->  .            <- the counterpart's brief, GH #834
 
@@ -621,11 +660,12 @@ that list in every agent that might use it, and no agent could offer a model any
 had typed.
 
 **What the composite owns is the DECLARATION.** `./collector`'s `params.tools` names the
-tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for everything a
-tools hive has -- and the schemas behind those names are asked for:
+tools this agent uses -- shipped as `["web_search", "web_fetch"]` plus the three `history_*`
+names its own curator answers, `["*"]` for everything a tools hive has -- and the schemas
+behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.0.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.1.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -688,7 +728,8 @@ answerer has nothing under is not a finding when another answerer delivers it.
 
 **Outside itself this composite still asks exactly one answerer, and that is deliberate.** Standalone, a
 talky has a tools hive beside it and nothing else that could serve a tool name, so its
-shipped declaration is its two search tools. The declared list grows **one level up**: in
+shipped declaration is its two search tools -- plus the three `history_*` names its own
+curator answers inside, where no parent can reach (GH #893). The declared list grows **one level up**: in
 [`../assistant/README.md`](../assistant/README.md) the level adds `consult_cogny` to it and
 draws the `schemas` / `in_menu` pair a second time, out to the reasoning core -- because
 `consult_cogny` is not a tool of any hive, it is an errand that LEVEL routes, so only the
@@ -780,7 +821,12 @@ Four things in that pair are load-bearing:
 
 What the parent does *not* wire: nothing else. The turn ends with the interim answer the
 dispatcher already sent to the channel, and the returning advice starts a fresh talky
-round that verbalises it in the channel's own voice.
+round that verbalises it in the channel's own voice. A parent that lets the core ask back
+draws one pair more, as the shipped `assistant` does since
+[#894](https://github.com/mmeyerlein/meclaw/issues/894): the core's `ask` lane onto this
+talky's `in_advice`, and this talky's `reply_to_consult` call -- a handoff beside
+`consult_cogny` -- onto the core's `in_turn` (`templates/assistant/README.md` § The
+consult edges).
 
 **The duration estimate (GH #123, observe-only).** Put the hints in the brain's own
 instructions and let the model fill `arguments.eta` in the same call it already makes:
@@ -905,9 +951,25 @@ model writes the annotation into its own text, and a cell takes it back out agai
 **The splitter, in one line.** `./splitter` sits between `./brain` and `./dispatcher` on
 the answer path. A completion whose text carries a ```` ```sidecar ```` block leaves it as
 the answer with the block cut out, on to the dispatcher exactly as before, plus **ONE
-MESSAGE PER SECTION** on lane `sidecar`, out of the composite. Everything else passes
+MESSAGE PER SECTION** on lane `sidecar`, out of the composite -- the curator's own sections
+(`window`, `gap`) stay with the curator, and `memory` leaves through it unchanged
+([#892](https://github.com/mmeyerlein/meclaw/issues/892)). Everything else passes
 untouched -- a round with tool calls belongs to the dispatcher whole, and **without a
-block contract in the brain's instructions the splitter is a pure pass-through**.
+block contract in the brain's instructions the splitter is a pure pass-through** -- with
+one exception since [#894](https://github.com/mmeyerlein/meclaw/issues/894): the curator's
+short block ids -- `[#<12 hex>]`, the bare `#<12 hex>` a history tool answers with (up to the
+sixteen digits of an ambiguous id's `candidates`), the full sixty-four-digit block id of a
+`history_read` answer, and the window's forms of a released, shortened or expired block; a
+free-standing run counts only with a letter a-f in it, so a step number, a colour or an order
+number stays -- come out of the prose of every text turn and out of every
+string of a section that leaves the composite (a duplex voice speaks `fact`, `context` and
+`correction` aloud), because every answer the brain writes reaches its channel through this
+cell and an internal id never leaves the colony. The sections routed to the curator keep
+theirs -- the splitter knows no section, so the composite names them in its knob
+`id_sections` (`["window", "gap", "memory"]`, held to the `./splitter -> ./curator` edge by a
+lock) -- and so do the block as written and a tool call's arguments; text without an id
+leaves byte for byte. The digest of a round capped at `max_iter` does not come through here:
+the collector writes it and takes the ids out itself.
 
 **The block rides beside the answer, not in it** (`5.4.3`,
 [#871](https://github.com/mmeyerlein/meclaw/issues/871)). The answer half carries the cut
@@ -1108,8 +1170,8 @@ enforces the same two rules again at its end, because it does not own the person
 [#606](https://github.com/mmeyerlein/meclaw/issues/606)). The authority is
 `templates/memory-hive/inline-contract.md`; what puts it in front of a model is
 `./collector`, because the knob `sidecar` is switched on in this composite's own
-`collector/config.json` (`override_params` on `assemble`; the default is off, and `cogny`,
-which has no splitter, leaves it off). *That the collector HOLDS the text and writes it on
+`collector/config.json` (`override_params` on `assemble`; the default is off, and `cogny`
+switches it on too since it grew a splitter, GH #892). *That the collector HOLDS the text and writes it on
 every assembly is retracted, not quietly reworded*: the text belongs to whoever reads what
 it produces, so the memory hive offers it on `sidecar[]` of its `schemas` answer, the
 collector merges the offers of everyone it asked the way it already merges a tool menu
@@ -1183,8 +1245,8 @@ below names the CELL the knob belongs to, because that is what an
 | `memory_tier` | param | `""` | collector -- empty = no memory leg at all |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `turn_write` | param | `"1"` | curator/writer (the collector's until `6.0.0`, GH #889) -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
-| `keep_recent`, `compress_at`, `context_window`, `summary_chars`, `sidecar_max_chars` | param | see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889); the full table is in the curator's README |
-| `tools` | param | `["web_search", "web_fetch"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two tools and not `["*"]`. The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
+| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `quality_cap`, `horizon`, `tiers`, `summary_budget`, `keep_rounds`, `stub_tools_after`, `short_ids`, `context_window`, `sidecar_max_chars` | param | `role` `"talky"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889), by the talky role's presets since GH #892; the full table is in the curator's README |
+| `tools` | param | `["web_search", "web_fetch", "history_search", "history_read", "history_outline"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two search tools and not `["*"]`, plus the model's own wall, which `./curator` answers inside (since `6.1.0`, GH #893). The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
 | `max_calls` | param | `16` | dispatcher -- per-answer call budget |
 | `async_tools` | param | `""` | dispatcher -- tools that answer on their own lane instead of inside the round, as a JSON array or one comma-separated string. Since `dispatcher@1.2.0` it is a param of THIS composite's own dispatcher (GH #138), so the surface's list and a sibling core's list are two statements and not one. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |
 | `handoff_tools` | param | `""` | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny` -- and since GH #530 that is the whole list: `ask_memory` was retired, not replaced). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` did not belong here while it existed (GH #372) |
@@ -1213,7 +1275,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all eighteen cells (plus four hive markers); the two `timer`s
+The composite comes up with all twenty-two cells (plus four hive markers); the two `timer`s
 spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:
@@ -1334,8 +1396,9 @@ of the same round.
   dispatcher, a tool and back to the seam (two provider calls, the second one carrying
   the tool result, the answer carrying the minted session id and `iter=1`); a close
   whose batch
-  reaches the write port, which since `4.3.0` (GH #447) is the whole of the close path:
-  nothing summarises it inside the hive and no further provider call happens.
+  reaches the write port and which costs exactly one further provider call, the
+  curator's handover note through its own summarizer (GH #896); the next generation's
+  first call carries that note as `history.handover`, never the batch.
 - `crates/meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs` -- the
   two golden manifests over the instantiated tree (the sub-unit refs produce the same
   bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries

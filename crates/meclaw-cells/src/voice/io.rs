@@ -110,6 +110,17 @@ pub enum ToConnection {
         /// about — a `speak_start` now, a `speak_end` when the model goes
         /// quiet (OR-L19). `None` for guidance that is never heard as such.
         speak_id: Option<String>,
+        /// The renewal this append is the handover for (GH #896): the
+        /// `renewal_n` the colony answered the `renewed` lane with, `None` for
+        /// every other append.
+        ///
+        /// What the new session has to know about the conversation so far. It
+        /// goes to that renewal while it waits — before any audio of the
+        /// caller does — and makes it due to take over; to the session in
+        /// charge where that IS the renewal (the rest of a split block, or a
+        /// block that came after a takeover without one); and nowhere where
+        /// the renewal it names failed (review M-8).
+        takeover: Option<u32>,
     },
 }
 
@@ -176,6 +187,19 @@ pub struct VoiceIoShared {
     /// nobody speaks no fragment arrives to say that time passed — so the
     /// connection says it.
     pub duplex_tick_ms: u64,
+    /// When a duplex connection renews its provider session inside the same
+    /// call, in milliseconds after a session took charge of it; `0` never renews
+    /// (`params.duplex.renew_after_ms`, GH #896).
+    ///
+    /// Here for the reason the tick is here: the connection is the half that
+    /// holds the session and a clock. A live model ends a session at a limit
+    /// of its own, and the call has to outlive it — so the connection opens the
+    /// next session while the current one still runs.
+    pub duplex_renew_after_ms: u64,
+    /// How long a renewed session that has started waits for its handover
+    /// block before it takes over without one, in milliseconds
+    /// (`params.duplex.renew_grace_ms`, GH #896).
+    pub duplex_renew_grace_ms: u64,
     /// The mode a connection gets when its query string does not say.
     pub default_mode: Mode,
     /// A-timeout (hard rule 12) around a provider's first answer.
@@ -405,6 +429,8 @@ impl VoiceIoShared {
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
+            duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
+            duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             default_mode: Mode::Auto,
             external_timeout,
             idle_timeout: external_timeout,
@@ -481,6 +507,13 @@ pub struct VoiceIo {
     /// The duplex tick, in milliseconds. See
     /// [`VoiceIoShared::duplex_tick_ms`].
     pub duplex_tick_ms: u64,
+    /// When a duplex session is renewed inside the same call, in
+    /// milliseconds; `0` never renews. See
+    /// [`VoiceIoShared::duplex_renew_after_ms`].
+    pub duplex_renew_after_ms: u64,
+    /// How long a renewed session waits for its handover block, in
+    /// milliseconds. See [`VoiceIoShared::duplex_renew_grace_ms`].
+    pub duplex_renew_grace_ms: u64,
     /// The mode a connection starts in without a `?mode=`.
     pub default_mode: Mode,
     /// Operation-timeout around every provider I/O (hard rule 12, A).
@@ -569,13 +602,15 @@ impl VoiceIo {
             external_timeout,
             idle_timeout,
             // A half built by hand is a cascade: the factory is the only caller
-            // that knows about a duplex block, and it sets the four below
-            // right after. `VoiceIo::new` itself is unchanged (OR-L23).
+            // that knows about a duplex block, and it sets the duplex fields
+            // below right after. `VoiceIo::new` itself is unchanged (OR-L23).
             duplex: None,
             spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
+            duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
+            duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             audio_out_frame_ms: crate::voice::params::DEFAULT_AUDIO_OUT_FRAME_MS,
             speak_plain: crate::voice::params::DEFAULT_SPEAK_PLAIN,
             release_grace_ms: crate::voice::params::DEFAULT_RELEASE_GRACE_MS,
@@ -622,6 +657,8 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         spoken_cap_ms: io.spoken_cap_ms,
         close_grace_ms: io.close_grace_ms,
         duplex_tick_ms: io.duplex_tick_ms,
+        duplex_renew_after_ms: io.duplex_renew_after_ms,
+        duplex_renew_grace_ms: io.duplex_renew_grace_ms,
         default_mode: io.default_mode,
         external_timeout: io.external_timeout,
         idle_timeout: io.idle_timeout,
@@ -780,6 +817,7 @@ async fn serve_until_the_handler_goes(
                 delegation_id,
                 content,
                 speak_id,
+                takeover,
             }) => {
                 // The same one hop as every other command: `send_to` hands it
                 // to the connection's `deliver` task and never waits on the
@@ -793,6 +831,7 @@ async fn serve_until_the_handler_goes(
                             delegation_id,
                             content,
                             speak_id,
+                            takeover,
                         },
                     )
                     .await;
@@ -1501,6 +1540,8 @@ mod tests {
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
+            duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
+            duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             default_mode: Mode::Auto,
             external_timeout: MARKER,
             idle_timeout: MARKER,
@@ -1583,7 +1624,7 @@ mod tests {
     ///
     /// What is measured is the mapping and the hop, not the model: a
     /// `VoiceReconfig::Advise` goes in on the handler's seam and a
-    /// `ToConnection::Advise` with the same five fields comes out at the
+    /// `ToConnection::Advise` with the same six fields comes out at the
     /// connection, through the same `deliver` task every other command takes
     /// (GH #593).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1598,6 +1639,8 @@ mod tests {
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
+            duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
+            duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             default_mode: Mode::Auto,
             external_timeout: MARKER,
             idle_timeout: MARKER,
@@ -1626,6 +1669,7 @@ mod tests {
                 delegation_id: Some("d7".to_string()),
                 content: "it is eighteen degrees out".to_string(),
                 speak_id: Some("s9".to_string()),
+                takeover: Some(1),
             })
             .await
             .expect("the handler seam is open");
@@ -1653,6 +1697,7 @@ mod tests {
                 delegation_id,
                 content,
                 speak_id,
+                takeover,
             } => {
                 assert_eq!(kind, AppendKind::Commentary);
                 assert_eq!(event_id, "e1");
@@ -1666,6 +1711,11 @@ mod tests {
                     speak_id.as_deref(),
                     Some("s9"),
                     "and the section the client will be told about"
+                );
+                assert_eq!(
+                    takeover,
+                    Some(1),
+                    "and which renewal it is the handover for (GH #896)"
                 );
             }
             other => panic!("expected the append, got {other:?}"),

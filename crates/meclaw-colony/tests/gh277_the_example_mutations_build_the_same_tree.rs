@@ -466,7 +466,27 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// hive (`intake`, `policy`, `writer`, `ledger`, `summarizer`, `clock` -- six
 /// cells), and three of the instantiated composites carry one (two `talky`s
 /// and one `cogny`), so that is 3 x 6. RE-MEASURED with [`print_the_measurement`].
-const TEMPLATE_BORN_ROWS: usize = 64;
+///
+/// Moved 64 -> 68 with GH #892: every `curator` grew a seventh cell, `schemas`,
+/// which answers the collector's menu question (3 x 1), and `cogny` grew the
+/// talky's sidecar `splitter` (1 x 1). RE-MEASURED with
+/// [`print_the_measurement`].
+///
+/// Moved 68 -> 71 with GH #893: every `curator` grew an eighth cell,
+/// `history`, which serves the model's own wall (3 x 1). RE-MEASURED with
+/// [`print_the_measurement`].
+///
+/// Moved 71 -> 74 with GH #895: every `curator` grew a ninth cell, `push`,
+/// the recall push (3 x 1). Derived; the strand's cargo round measures it.
+///
+/// Moved 74 -> 77 with GH #896: every `curator` grew a tenth cell,
+/// `handover`, which carries a session's handover block into the next one
+/// (3 x 1). RE-MEASURED with [`print_the_measurement`].
+///
+/// Moved 77 -> 78 with GH #894: `cogny` grew `ask`, the cell that turns the
+/// core's `ask_requester` call into its question back (1 x 1). Derived; the
+/// strand's cargo round measures it.
+const TEMPLATE_BORN_ROWS: usize = 78;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -707,7 +727,43 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// and `cogny`'s 22 -> 25 (the round goes collector -> curator -> brain, the
 /// brain taps the curator, pack/close/summarizer doors). Two talkies and one
 /// cogny: 2 x (19 + 2) + 1 x (19 + 3). RE-MEASURED with [`print_the_measurement`].
-const EDGES: usize = 272;
+///
+/// Moved 272 -> 293 with GH #892: every `curator` carries three edges more
+/// (the `in_schemas` door, the `tool_schemas` exit, the `sidecar` exit), and
+/// `talky@6` and `cogny@5` four each of their own (talky: splitter -> curator,
+/// collector -> curator on `schemas`, curator -> collector on `tool_schemas`,
+/// curator -> `.` on `sidecar`; cogny: the splitter's four roads replace the
+/// brain's two, plus the two menu edges). Two talkies and one cogny:
+/// 2 x (3 + 4) + 1 x (3 + 4). RE-MEASURED with [`print_the_measurement`].
+///
+/// Moved 293 -> 311 with GH #893: every `curator` carries four edges more
+/// (the `in_history_call` door into `./history`, its two ledger roads, the
+/// `tool_result` exit), and `talky@6` and `cogny@5` two each of their own
+/// (dispatcher -> curator on `history_*`, curator -> collector on
+/// `tool_result`). Two talkies and one cogny: 2 x (4 + 2) + 1 x (4 + 2).
+/// Derived, confirmed by the next run.
+///
+/// Moved 311 -> 341 with GH #895: every `curator` carries seven edges more
+/// (the `in_recall_ask`/gap door onto `./policy`, the `in_gap_bundle` door onto
+/// `./push`, `./policy -> ./push`, `./push -> ./intake` for the addendum, the
+/// push's two ledger edges and its exit), `talky@6` and `cogny@5` three each
+/// of their own (the collector's ask onto the curator replaces its exit, the
+/// gap bundle's door, and the curator's second `recall` exit). Two talkies and
+/// one cogny: 3 x 7 + 2 x 3 + 1 x 3. Derived; the strand's cargo round
+/// measures it.
+///
+/// Moved 341 -> 364 with GH #896: every `curator` carries seven edges more
+/// (its `handover` cell's two doors, its ledger round, its summarizer round
+/// and its `sidecar` exit), and `talky@6` one of its own (`. -> ./curator` on
+/// `in_renewed`). Two talkies and one cogny: 3 x 7 + 2 x 1. RE-MEASURED with
+/// [`print_the_measurement`].
+///
+/// Moved 364 -> 368 with GH #894: `cogny@5` draws four edges of its own for
+/// the consult contract (collector -> schemas and schemas -> collector, its
+/// inner menu; dispatcher -> ask on `ask_requester`; ask -> `.` on `ask`);
+/// the talkies draw none. One cogny: 1 x 4. Derived; the strand's cargo round
+/// measures it.
+const EDGES: usize = 368;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.48.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.49.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.49.0: the curator shapes each window per role, lets the model read its own conversation back,
+  asks memory with context and hands a new session a note on the last one; the reasoning core can ask
+  back, and a duplex call outlives its provider's session limit.
 - v0.48.0: a curator in front of each conversational model owns its window and keeps a ledger of
   every call, the collector hands the round on uncut, and the `llm` cell says when the provider's
   cache goes cold.

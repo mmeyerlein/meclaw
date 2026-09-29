@@ -1,4 +1,4 @@
-# `voice@2.3.0`
+# `voice@2.4.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -36,12 +36,13 @@ instantiating mutation put it -- and not a scope with a door, so there is no
 | direction | what travels |
 |---|---|
 | in | the finished assistant turn. `context.call_id` picks the connection it is spoken into (`context.session_id` where that key is absent) |
-| in, `hop.route == 'in_advise'` | one section of advice appended to a RUNNING duplex session, without cutting anybody off: `hop.section` says whether it is a `fact` (said out loud), a `context` (thought) or a `correction` (the standing instruction rewritten). Duplex only -- a cascade session has no channel to append to and answers `wrong_engine` |
+| in, `hop.route == 'in_advise'` | one section of advice appended to a RUNNING duplex session, without cutting anybody off: `hop.section` says whether it is a `fact` (said out loud), a `context` (thought) or a `correction` (the standing instruction rewritten). Duplex only -- a cascade session has no channel to append to and answers `wrong_engine`. A `context` that carries `hop.renewal_n` is the handover of a renewal (see `renewed` below): it goes to the renewed session before the caller's audio does, and the call follows at the next quiet moment of the line; a block for a renewal that failed is dropped |
 | out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode` |
 | out, `hop.route == 'partial'` | an interim transcript, same body shape, `hop` carries `eager` beside the rest. OFF by default -- `params.emit_partials` turns it on |
 | out, `hop.route == 'spoken'` | what the ASSISTANT is saying while it is still saying it, same body shape, `hop` carries `speaker: 'assistant'`. Duplex only, and on the same `params.emit_partials` -- the two halves of one stream are ordered together or not at all |
 | out, `hop.route == 'speak_end'` | one synthesis is over. Empty `messages[]`; `hop` carries `session_id`, `call_id`, `speak_id` and `reason` (`done`, `cancelled`, `failed`) beside `platform`. OFF by default -- `params.emit_speak_end` turns it on |
 | out, `hop.route == 'delegation'` | the duplex provider handed work to the client and named the handle: `hop` carries `delegation_id` and `offset_ms`, the body the user text of the open turn. Duplex only |
+| out, `hop.route == 'renewed'` | the provider session was renewed inside the SAME call -- same connection, same `call_id`, the caller's audio never cut -- because a live model ends a session at a limit of its own. Empty `messages[]`; `hop` carries `renewal_n` (counting from 1) and `renewed_at` (epoch milliseconds). The receiver answers with an `in_advise` `context` that carries `hop.renewal_n`: it reaches the new session at once, BEFORE the caller does, and the call goes over at the next quiet moment of the line -- no spoken section open, `spoken_quiet_ms` without the model's audio or a transcript -- at the latest `spoken_cap_ms` after the block; without a block the session is due after `renew_grace_ms`. What the old session still says reaches the caller until the new one speaks, never both at once. A renewal that fails before it takes over leaves the call on its session. Duplex only, and only where `renew_after_ms` is set |
 | out, `hop.route == 'error'` | the cell's own failure: empty `messages[]`, `hop.error_code` plus `msg_type: 'voice_error'`, `session_id` and `call_id` where a session exists, detail in `meta` |
 
 **A duplex emission stamps `hop.engine: 'duplex'`; a cascade stamps nothing at
@@ -53,7 +54,7 @@ that would have to be invented for the cascade.
 **Unlike a chat connector this cell names its own lanes.** `telegram-connector`
 emits one wire and the level around it sorts the two shapes apart on
 `has(hop.error_code)`; here the lane is already on `hop.route` when the emission
-leaves, because there are six shapes and not two, and a level that had to
+leaves, because there are seven shapes and not two, and a level that had to
 separate `partial` from `turn` by the presence of a key would be reading the
 absence of `turn_id` as a meaning. So the edges below carry no `set_hop` on the
 way up: the stamp the cell wrote is the stamp the container routes on.
@@ -70,11 +71,11 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.3.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.4.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
-     "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation')",
+     "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation' || hop.route == 'renewed')",
      "modifier": {"set_context": {"channel_node": "'voice'",
                                   "channel": "'voice'",
                                   "assistant": "'<assistant>'",
@@ -88,13 +89,15 @@ with `edge_schema`.
 }}
 ```
 
-**One edge up, not five.** Every outbound lane carries the same promotion and
+**One edge up, not six.** Every outbound lane carries the same promotion and
 they differ only in the stamp the cell already wrote, so splitting them into one
-edge each would buy nothing and give five copies of one modifier a chance to
+edge each would buy nothing and give six copies of one modifier a chance to
 drift apart. The container sorts them afterwards, on the same `hop.route` this
 edge leaves untouched: the `member` container ships `./channels -> ./firewall`
-for `turn`, `./channels -> ./assistants` for `delegation` and `./channels -> .`
-for `error`. The two duplex lanes are in the condition even on a cascade
+for `turn`, `./channels -> ./assistants` for `delegation` and `renewed` (the
+latter re-stamped `in_renewed`) and `./channels -> .` for `error`. A channel
+whose edge leaves `renewed` out loses it here, and a renewed session goes on
+without its handover. The three duplex lanes are in the condition even on a cascade
 instance, where nothing ever travels them: an edge that has to be widened before
 a `params.duplex` can be switched on is a second migration for a knob. **`error` is promoted exactly like `turn`** -- a
 failure that happened inside a session carries that session, and an edge that
@@ -214,7 +217,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -248,7 +251,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -427,6 +430,17 @@ relatively, so `/<mount>` without the slash answers `308` with the relative
 proxy stripped. Nothing of the protocol moved; the socket and `/info` are where
 they were.
 
+### Since 2.4.0 a duplex call outlives its provider's session limit
+
+A live model ends a session at a limit of its own. Since 2.4.0 ([#896](https://github.com/mmeyerlein/meclaw/issues/896)) the duplex half
+renews it within the same call: after `renew_after_ms` (a `gpt_live` knob, `0` and off by
+default) it opens a second provider session while the first still runs, emits `renewed` with
+`renewal_n` and `renewed_at`, and hands the new session the `in_advise` `context` that carries
+`hop.renewal_n` before any of the caller's audio. The call goes over at the next quiet moment of
+the line, once that block has arrived or `renew_grace_ms` has passed; the old session's audio
+plays out until the new one speaks. A socket that drops still ends the call. A lane joined, so
+it is the second place.
+
 ## The door
 
 An instance is reached at `/<mount>/` on the colony's one listener. That is the
@@ -443,7 +457,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -508,7 +522,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -521,7 +535,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -566,7 +580,7 @@ handing text to a synthesiser and no seam between them to tune. Two ship:
 
 | provider | what it is | the block carries |
 |---|---|---|
-| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback` |
+| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms` |
 | `echo` | the loopback, which needs no credential and knows only `sample_rate` | -- |
 
 **`echo` is here for the reason `echo` is always here.** A trait with one
@@ -585,7 +599,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "api_key": "${OPENAI_API_KEY}",
                                 "instructions": "<who the model is for this session>",
@@ -687,7 +701,9 @@ chosen for.
 **When the provider is gone, so is the call.** A duplex session is not
 reconnected: the connection IS the session here as everywhere in this cell, and
 a provider that drops the socket ends the call rather than resuming it
-somewhere the caller cannot hear.
+somewhere the caller cannot hear. A renewal (`renew_after_ms`, off by default)
+is not a reconnect: it opens the call's second session while the first is still
+running, and a socket that drops still ends the call.
 
 ## The credentials
 
@@ -746,7 +762,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -761,7 +777,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.3.0",
+{"name": "channels/voice", "template": "voice@2.4.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

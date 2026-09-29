@@ -634,9 +634,10 @@ fn the_shipped_v_lane_is_the_one_the_rule_table_allows() {
     });
     assert_eq!(
         diff["add_edges"].as_array().map(Vec::len),
-        Some(8),
-        "eight v-lanes: one recall and one in_bundle per asker, and since GH #834 one brief \
-         and one in_briefing per surface -- all of them judged by the same rule table below"
+        Some(10),
+        "ten v-lanes: one recall and one in_bundle per asker (the typed surface is the third \
+         since GH #895), and since GH #834 one brief and one in_briefing per surface -- all of \
+         them judged by the same rule table below"
     );
     assert!(
         lane_verdicts(BOX_ABS, &diff, &contracts).is_empty(),

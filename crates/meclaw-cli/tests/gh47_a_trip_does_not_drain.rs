@@ -32,6 +32,10 @@ const DRAIN_BUDGET_MS: u64 = 60_000;
 /// Root hive "/" with a conditional ingress edge and a return edge, plus a
 /// `code` cell at "/echo" whose script sleeps before answering.
 ///
+/// Before it sleeps, the script creates the file [`IN_FLIGHT_MARKER`] in
+/// `root`: the one sign a test can see from outside that an answer is inside
+/// `handle()` right now (see [`wait_until_in_flight`]).
+///
 /// The same fixture shape as `gh47_a_drain_is_not_a_wedge.rs`, and it reads its
 /// turns from `payload["body"]` for the same reason: a `code` cell is handed
 /// three objects on stdin since 0.9.0 — `envelope`, `body`, `params`
@@ -39,6 +43,8 @@ const DRAIN_BUDGET_MS: u64 = 60_000;
 /// `payload["messages"]` is always absent and a script reading the top level
 /// echoes an empty string.
 fn write_slow_echo_fixture(root: &std::path::Path, sleep_ms: u64) {
+    let marker = serde_json::to_string(&root.join(IN_FLIGHT_MARKER).to_string_lossy())
+        .expect("a path string serialises");
     let echo_dir = root.join("main/echo");
     std::fs::create_dir_all(&echo_dir).unwrap();
     std::fs::write(
@@ -61,10 +67,12 @@ import sys, json, time
 payload = json.loads(sys.stdin.read())
 turns = payload["body"].get("messages", [])
 text = turns[-1]["text"] if turns else ""
+open({}, "w").close()
 time.sleep({})
 print(json.dumps({{"header": {{"finish_reason": "assistant"}},
                    "messages": [{{"origin": "assistant", "type": "text", "text": text}}]}}))
 "#,
+        marker,
         sleep_ms as f64 / 1000.0
     );
 
@@ -83,6 +91,40 @@ print(json.dumps({{"header": {{"finish_reason": "assistant"}},
         .as_bytes(),
     )
     .unwrap();
+}
+
+/// The file the fixture's script creates in the root before it sleeps.
+const IN_FLIGHT_MARKER: &str = "in_flight";
+
+/// Block until the fixture's cell is inside `handle()`, i.e. until the script
+/// has created [`IN_FLIGHT_MARKER`]; panic after 30 s (the failure-marker
+/// convention of these files).
+///
+/// **Why a marker and not a fixed sleep.** `meclaw` installs its SIGTERM
+/// handler only after the boot: the first poll of the shutdown select, reached
+/// without a yield point right after the stdin reader is spawned
+/// (`gh121_root_lease.rs` states the same property). A SIGTERM that lands
+/// before that runs the DEFAULT disposition and the process dies by signal 15.
+/// The test used to wait a fixed 700 ms for "boot plus the routing hop"; the
+/// integration pass of 2026-09-29 (6604 tests beside it) got
+/// `ExitStatus(unix_wait_status(15))` with nothing on stderr after the boot's
+/// second line, and ten runs pinned to two cores beside twelve nice-19 busy
+/// loops failed 10 of 10 the same way (idle: 10 of 10 green). The marker is
+/// written only after the stdin reader has read the line, routed it through
+/// the colony and started the cell's `python3` -- all of which happens after
+/// the handler is in place -- and it is also the thing the receipt below is
+/// about: an answer in flight when the signal lands.
+fn wait_until_in_flight(root: &std::path::Path) {
+    let marker = root.join(IN_FLIGHT_MARKER);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cell never started its answer within 30 s -- stderr: {}",
+            std::fs::read_to_string(root.join("stderr.txt")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Redirect a child's stdout/stderr into files rather than pipes.
@@ -189,6 +231,11 @@ fn a_watchdog_trip_skips_the_drain_and_still_exits_non_zero() {
 /// be a wait, not a drain. The lower bound says the answer really was in flight
 /// — a run that ended before one cell sleep had passed cannot have saved one.
 ///
+/// The signal waits for the cell to be inside `handle()` ([`wait_until_in_flight`]),
+/// not for a fixed time: a signal before the boot has installed the handler
+/// kills the process by signal 15, which is the boot's property and not the
+/// drain's.
+///
 /// stdin is closed 200 ms AFTER the signal, for the reason given on the test
 /// above; the gap is what makes the signal provably the door that was taken.
 #[cfg(unix)]
@@ -219,9 +266,9 @@ fn a_signal_shutdown_still_takes_the_draining_door() {
     writeln!(stdin, "line-0").unwrap();
     stdin.flush().unwrap();
 
-    // Long enough for boot plus the routing hop, short enough that the cell is
-    // still inside its 1.5 s sleep when the signal lands.
-    std::thread::sleep(Duration::from_millis(700));
+    // The cell has started its 1.5 s sleep, so the handler stands and the
+    // answer is in flight when the signal lands.
+    wait_until_in_flight(td.path());
     let killed = Command::new("kill")
         .arg("-TERM")
         .arg(child.id().to_string())

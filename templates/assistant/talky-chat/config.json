@@ -1,18 +1,32 @@
 {
   "cell": {
     "type": "ref",
-    "template": "talky@6.0.0"
+    "template": "talky@6.1.0"
   },
   "override_params": {
     "brain": {
       "model": "${ctx.model_surface}"
+    },
+    "dispatcher": {
+      "async_tools": [
+        "consult_cogny",
+        "reply_to_consult"
+      ],
+      "handoff_tools": [
+        "consult_cogny",
+        "reply_to_consult"
+      ]
     },
     "collector/assemble": {
       "tools": [
         "web_search",
         "web_fetch",
         "consult_cogny",
-        "memory_recall"
+        "reply_to_consult",
+        "memory_recall",
+        "history_search",
+        "history_read",
+        "history_outline"
       ],
       "memory_tier": "1",
       "brief_slots": [

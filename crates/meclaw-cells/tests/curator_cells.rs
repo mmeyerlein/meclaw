@@ -162,6 +162,9 @@ impl Hive {
             "ledger",
             "summarizer",
             "clock",
+            // GH #896: `./policy` hands the first call of a session it did not
+            // serve last to `./handover`, so every round passes it once.
+            "handover",
         ] {
             cells.insert(name.to_string(), cell_config(name));
         }
@@ -540,7 +543,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.0.0");
+    assert_eq!(t["version"], "1.1.0");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -552,6 +555,8 @@ fn curator_template_shape() {
             .map(|l| l["route"].as_str().unwrap().to_string())
             .collect()
     };
+    // GH #892 added the sections, the pin door and the menu question, and
+    // the two routes that answer them.
     assert_eq!(
         lanes("accepts"),
         [
@@ -560,12 +565,29 @@ fn curator_template_shape() {
             "in_llm",
             "in_pack",
             "in_close",
-            "in_model"
+            "in_model",
+            "in_section",
+            "in_pin",
+            "in_schemas",
+            "in_history_call",
+            "in_recall_ask",
+            "in_gap_bundle",
+            "in_renewed"
         ]
     );
     assert_eq!(
         lanes("emits"),
-        ["brain", "turn_write", "write", "pack_ack", "model_refused"]
+        [
+            "brain",
+            "turn_write",
+            "write",
+            "pack_ack",
+            "model_refused",
+            "sidecar",
+            "tool_schemas",
+            "tool_result",
+            "recall"
+        ]
     );
     let types: Vec<(&str, &str)> = vec![
         ("intake", "code"),
@@ -574,6 +596,10 @@ fn curator_template_shape() {
         ("ledger", "store"),
         ("summarizer", "llm"),
         ("clock", "timer"),
+        ("schemas", "code"),
+        ("history", "code"),
+        ("push", "code"),
+        ("handover", "code"),
     ];
     for (cell, ty) in &types {
         let cfg = cell_config(cell);
@@ -596,8 +622,11 @@ fn curator_template_shape() {
         "summaries": ["id", "covers_to_seq", "hash", "sources", "model", "at"],
         "slots": ["path", "hash", "owner", "at"],
         "state": ["key", "value"],
+        "marks": ["seq", "session_id", "turn_id", "kind", "value", "at"],
+        "pins": ["hash", "source", "until", "at"],
     });
-    assert_eq!(schema.as_object().unwrap().len(), 7, "seven tables");
+    // GH #892: `marks` and `pins` joined the seven of 1.0.0.
+    assert_eq!(schema.as_object().unwrap().len(), 9, "nine tables");
     // The llm cell stamps `cost` as a fraction; the store knows `int`, `text`
     // and `json`, and only `json` says what the column holds (review M4).
     assert_eq!(schema["calls"]["cost"], "json", "calls.cost");

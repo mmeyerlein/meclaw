@@ -36,8 +36,8 @@ use meclaw_cells::timer::TimerCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
-use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::{ColonyHandle, override_params_on_disk};
 use mock_openai::{MockOpenAI, canned_chat_completion, canned_content_and_tool_calls};
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,6 +88,22 @@ fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
         dir = templates_root().join(name);
     }
     panic!("template ref chain does not terminate at {}", dir.display());
+}
+
+/// The `override_params` of the talky's `curator` marker, applied to the
+/// copied curator cells they name (GH #892).
+fn curator_overrides(root: &std::path::Path) {
+    let marker = templates_root().join("talky/curator/config.json");
+    let raw =
+        std::fs::read_to_string(&marker).unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+    let cfg: Value = meclaw_core::serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+    let over = cfg["override_params"]
+        .as_object()
+        .expect("the talky's curator marker carries its overrides");
+    for (cell, params) in over {
+        override_params_on_disk(&root.join("main/talky/curator").join(cell), params);
+    }
 }
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
@@ -324,6 +340,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
         ),
     );
     copy_cells(&templates_root().join("talky"), &root.join("main/talky"));
+    // GH #892: the talky's curator is what its marker's `override_params`
+    // make it -- role `talky` (short ids in the window) and `pass_sections
+    // memory` (the memory section leaves again on `sidecar`, which is the
+    // only way it reaches a parent since the splitter hands it to the
+    // curator). `copy_cells` resolves the reference but not its overrides,
+    // so they are applied here, the way the mutation door applies them to
+    // a staged tree (GH #140).
+    curator_overrides(root);
     // The idle window is a collector PARAM since `collector@1.2.0`, so it is set
     // per collector rather than once in the colony's `.env` -- and this tree has
     // two of them (the talky's and, below, the core's).
@@ -564,12 +588,25 @@ async fn a_consult_answers_the_channel_at_once_and_the_advice_follows_later() {
         second.contains("ADVICE|21C and sunny (weather in berlin)"),
         "the advisor ran its OWN tool round and the result came home: {second}"
     );
+    // Since GH #892 the talky's curator puts the block's short id in front of
+    // the frame: `[#<12 hex>] [advice ...`.
+    let advice = r#"[advice from your reasoning core, consult call-1]\nADVICE|21C and sunny (weather in berlin)","role":"user"#;
+    let at = second.find(advice).unwrap_or_else(|| {
+        panic!(
+            "an advisor event is INBOUND on the wire, not the agent's own words -- and since \
+             GH #540 it says which of the two inbound voices it is: {second}"
+        )
+    });
+    let head = &second[..at];
+    let framed = head.strip_suffix("] ").is_some_and(|h| {
+        let b = h.as_bytes();
+        b.len() >= 12
+            && b[b.len() - 12..].iter().all(u8::is_ascii_hexdigit)
+            && b[..b.len() - 12].ends_with(br#"content":"[#"#)
+    });
     assert!(
-        second.contains(
-            r#"content":"[advice from your reasoning core, consult call-1]\nADVICE|21C and sunny (weather in berlin)","role":"user"#
-        ),
-        "an advisor event is INBOUND on the wire, not the agent's own words -- and since \
-         GH #540 it says which of the two inbound voices it is: {second}"
+        framed,
+        "the advice is the start of its message, behind its short id: {second}"
     );
     assert!(
         second.contains("one moment, i am asking"),

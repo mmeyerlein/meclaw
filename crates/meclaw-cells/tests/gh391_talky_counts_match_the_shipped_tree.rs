@@ -131,6 +131,7 @@ fn word(n: usize) -> &'static str {
         (21, "twenty-one"),
         (22, "twenty-two"),
         (24, "twenty-four"),
+        (25, "twenty-five"),
         (26, "twenty-six"),
         (27, "twenty-seven"),
         (28, "twenty-eight"),
@@ -144,6 +145,16 @@ fn word(n: usize) -> &'static str {
         // GH #889: the curator between collector and brain took talky's graph
         // to thirty-nine edges.
         (39, "thirty-nine"),
+        // GH #892: the curator takes its sections off the splitter, answers the
+        // menu question and passes the memory section on -- forty-three; GH #893:
+        // it serves the model's wall, one edge in from the dispatcher and one
+        // result back to the collector -- forty-five; GH #895: the memory ask
+        // through the curator and a gap's way back -- forty-eight.
+        (45, "forty-five"),
+        (48, "forty-eight"),
+        // GH #896: the renewed duplex call reaches the curator on its own lane
+        // -- forty-nine.
+        (49, "forty-nine"),
     ]
     .into_iter()
     .collect();

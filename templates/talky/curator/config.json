@@ -1,11 +1,15 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@1.0.0"
+    "template": "curator@1.1.0"
   },
   "override_params": {
     "intake": {
-      "nothing_block": "{\"memory\":{\"nothing_new\":true,\"facts\":[],\"topic\":{\"movement\":\"continue\"}}}"
+      "nothing_block": "{\"memory\":{\"nothing_new\":true,\"facts\":[],\"topic\":{\"movement\":\"continue\"}}}",
+      "pass_sections": "memory"
+    },
+    "policy": {
+      "role": "talky"
     }
   }
 }

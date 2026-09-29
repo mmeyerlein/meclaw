@@ -28,7 +28,7 @@ use std::process::{Command, Stdio};
 
 const ASSEMBLE_CONFIG: &str = "../../templates/collector/assemble/config.json";
 
-/// The nine knobs, with the kind of accessor the script reads each one with.
+/// The ten knobs, with the kind of accessor the script reads each one with.
 /// Restated here on purpose: this is the inventory the migration claims to be
 /// complete, and a knob that quietly leaves the config should fail the pin.
 ///
@@ -51,6 +51,10 @@ const KNOBS: &[(&str, &str)] = &[
     // GH #728 -- the deadline of a consult or a delegation: inside it the answer
     // is a leg of the member's turn, past it a straggler (`hop.late`).
     ("late_after_ms", "_int"),
+    // GH #894 -- whether a turn that lands in an open tool round of its session
+    // waits for the next round ("1", the telephone model of a channel voice) or
+    // opens its own ("0", a core, whose session is the conversation consulting it).
+    ("defer_turns", "_str"),
     // GH #525 -- the block contract, `inline_extraction` until GH #606. What it
     // asks FOR is no longer a literal of this cell: the sections are offered on
     // the menu lane and this knob decides whether they are composed into a
@@ -210,7 +214,7 @@ fn nothing_in_the_shipped_collector_reads_the_environment_any_more() {
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("max_iter", 8)` is the
 /// value a cell uses when its config says nothing, and comparing the text is
-/// the complete check over all nine knobs.
+/// the complete check over all ten knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let cfg = config();
@@ -249,7 +253,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
 
-    // No knob may hide: every non-substrate param is one of the nine above.
+    // No knob may hide: every non-substrate param is one of the ten above.
     //
     // The allow-list is the `code` cell's OWN param surface, i.e. every key
     // `CodeParams::parse` reads (crates/meclaw-cells/src/code/params.rs) --

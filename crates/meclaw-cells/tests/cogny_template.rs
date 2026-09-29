@@ -92,7 +92,9 @@ const COGNY_FILES: &[&str] = &[
     "collector/config.json",
     "curator/config.json",
     "schemas/config.json",
+    "splitter/config.json",
     "dispatcher/config.json",
+    "ask/config.json",
 ];
 
 /// The composite ships no seed at all since 4.4.0 (GH #528). The one it used to
@@ -498,9 +500,10 @@ fn the_core_carries_the_tool_loop_and_nothing_else() {
     want.sort();
     assert_eq!(
         found, want,
-        "cogny is collector + curator + dispatcher + brain + schemas (R-CG-2, the \
-         curator since GH #889): no keeper, no proxy -- the core has no channel, no \
-         sessions and no night"
+        "cogny is collector + curator + dispatcher + brain + schemas + splitter + ask \
+         (R-CG-2, the curator since GH #889, the splitter since GH #892, `ask` -- the \
+         core's question back -- since GH #894): no keeper, no proxy -- the core has no \
+         channel, no sessions and no night"
     );
 }
 
@@ -635,10 +638,15 @@ async fn the_core_answers_in_schemas_with_its_own_errand() {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    // Two since GH #894, and still ONE errand: an asker that signs no
+    // `context.tool_caller` is served as a voice, and a voice's half of the consult
+    // contract is the errand plus its reply to a question the core asked back.
+    // `ask_requester`, the core's own half, never leaves through this door.
+    let names: Vec<&str> = schemas.iter().filter_map(|s| s["name"].as_str()).collect();
     assert_eq!(
-        schemas.len(),
-        1,
-        "this core serves exactly one errand: {schemas:?}"
+        names,
+        vec!["consult_cogny", "reply_to_consult"],
+        "this core serves one errand and the reply to its question back: {schemas:?}"
     );
     let one = &schemas[0];
     assert_eq!(

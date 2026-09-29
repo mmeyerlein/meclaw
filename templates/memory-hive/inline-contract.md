@@ -250,8 +250,8 @@ decides what a statement *means* -- that is the close pass's work and the night'
   block back OUT of the answer and hands each section on as its own message. Its fence grammar
   is the one the harness measured this wording with; without the contract in the instructions it
   is a pure pass-through, which is what lets a colony run this composite without any memory at
-  all -- and it is why `talky` is the composite that switches the knob above ON while `cogny`,
-  which has no splitter, leaves it off.
+  all -- and it is why a composite switches the knob above ON only where a splitter stands:
+  `talky`, and `cogny` since GH #892 (its splitter hands the sections to its curator, none leaves the core).
 - `extract-glue` -- **the only ingress.** It validates the block, canonicalises the predicates,
   dedups against what the turn already carries, writes the facts, writes the `topic` row next to
   them, and marks the queue row of the turn it covered with the status its answer earned

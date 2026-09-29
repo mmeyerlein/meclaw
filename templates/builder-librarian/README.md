@@ -1,4 +1,4 @@
-# `builder-librarian@2.2.7`
+# `builder-librarian@2.2.8`
 
 Lexical retrieval over the builder's own knowledge base, as a hive of existing cell types
 -- no new cell type, no Rust. Three cells: `retrieve` (a `code` cell, the query/brief state
@@ -21,8 +21,8 @@ instantiated and never lets a stored version change under its name
 that version. 2.2.1 carries the regenerated corpus; the cells are unchanged. 2.2.2 is the same
 repair once more, over the templates and docs that changed after 2.2.1, 2.2.3 over those
 that changed after 2.2.2, 2.2.4 over those that changed after 2.2.3, 2.2.5 over those
-that changed after 2.2.4, 2.2.6 over those that changed after 2.2.5, and 2.2.7 over those
-that changed after 2.2.6.
+that changed after 2.2.4, 2.2.6 over those that changed after 2.2.5, 2.2.7 over those
+that changed after 2.2.6, and 2.2.8 over those that changed after 2.2.7.
 
 ## The cells
 

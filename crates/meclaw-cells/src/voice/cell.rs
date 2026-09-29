@@ -174,6 +174,26 @@ pub enum VoiceEvent {
         /// Human-readable cause. Never carries a credential.
         detail: String,
     },
+    /// The duplex provider session of this call was renewed, inside the same
+    /// call (GH #896).
+    ///
+    /// A live model ends a session at a limit of its own, and the call has to
+    /// outlive it: the connection opened a second session while the first was
+    /// still running, and that one has now started. It is NOT a reconnect —
+    /// the call, the connection and `session_id` stay what they were, and a
+    /// provider that drops its socket still ends the call. The handler answers
+    /// with the `renewed` lane, and the colony's answer to THAT — an
+    /// `in_advise` `context` carrying `hop.renewal_n` — is the handover the
+    /// new session hears before the caller's audio reaches it.
+    Renewed {
+        /// The call whose provider session was renewed.
+        session_id: String,
+        /// Which renewal of this call this is, counting from 1.
+        renewal_n: u32,
+        /// When the renewed session started, in milliseconds since the Unix
+        /// epoch.
+        renewed_at_ms: u64,
+    },
     /// A binary frame of wrong length arrived. The I/O half **dropped the
     /// frame and kept the connection** (R-V6'): a client that mis-frames one
     /// buffer has a bug, not bad intent, and closing the socket would end a
@@ -270,6 +290,9 @@ pub enum VoiceReconfig {
         content: String,
         /// Set where this append opens a spoken section (OR-L19).
         speak_id: Option<String>,
+        /// The renewal this append is the handover for (GH #896); see
+        /// [`crate::voice::io::ToConnection::Advise`].
+        takeover: Option<u32>,
     },
     /// Close this session's connection with a code.
     Close {
@@ -327,6 +350,10 @@ pub struct LiveSessionState {
     /// `advise` tell the two apart, and it is short by construction: at most
     /// [`CLOSED_DELEGATIONS_KEPT`] entries, the oldest dropped first.
     pub closed_delegations: Vec<OpenDelegation>,
+    /// How many times the provider session of this call has been renewed —
+    /// the `renewal_n` of the last `renewed` emission, `0` before the first
+    /// (GH #896).
+    pub renewals: u32,
 }
 
 /// How many fallback-closed delegations a session remembers (GH #728). A call
@@ -362,6 +389,7 @@ impl LiveSessionState {
             mode,
             closed_turns: 0,
             closed_delegations: Vec::new(),
+            renewals: 0,
         }
     }
 
@@ -986,6 +1014,7 @@ impl VoiceCell {
                 Some(delegation_id),
                 &fallback,
                 true,
+                None,
             )
             .await;
         }
@@ -1270,7 +1299,27 @@ impl VoiceCell {
         {
             state.open_delegations.retain(|open| open.id != *id);
         }
-        self.push_advise(&session_id, kind, delegation_id, &text, spoken)
+        // THE HANDOVER OF A RENEWAL (GH #896). A `context` that carries
+        // `hop.renewal_n` is the colony's answer to the `renewed` lane: what
+        // the renewed session has to know about the conversation so far. The
+        // number travels on to the connection, which knows which renewal is
+        // waiting and which one is in charge: a block reaches the renewal it
+        // names, or nobody where that renewal failed (review M-8). Every part
+        // of a split block carries it. A number that does not read as one is
+        // no handover, and the section is the ordinary `context` it looks like.
+        let takeover = if section == Some("context") {
+            msg.headers
+                .hop
+                .get("renewal_n")
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                })
+                .and_then(|n| u32::try_from(n).ok())
+        } else {
+            None
+        };
+        self.push_advise(&session_id, kind, delegation_id, &text, spoken, takeover)
             .await;
     }
 
@@ -1347,7 +1396,7 @@ impl VoiceCell {
             );
             return;
         }
-        self.push_advise(session_id, AppendKind::Commentary, None, &text, true)
+        self.push_advise(session_id, AppendKind::Commentary, None, &text, true, None)
             .await;
     }
 
@@ -1359,6 +1408,9 @@ impl VoiceCell {
     /// `speak_id` IS its `event_id`: the connection recognises the model's own
     /// `appended` answer by that equality and starts the quiet clock of the
     /// spoken section on it (contract § 1.3).
+    ///
+    /// `takeover` marks the handover to a renewed session (GH #896), and every
+    /// part carries it: see [`crate::voice::io::ToConnection::Advise`].
     async fn push_advise(
         &mut self,
         session_id: &str,
@@ -1366,6 +1418,7 @@ impl VoiceCell {
         delegation_id: Option<String>,
         text: &str,
         spoken: bool,
+        takeover: Option<u32>,
     ) {
         for (i, part) in split_append(text).into_iter().enumerate() {
             let event_id = Uuid::now_v7().to_string();
@@ -1384,9 +1437,48 @@ impl VoiceCell {
                     delegation_id: delegation_id.clone(),
                     content: part,
                     speak_id,
+                    takeover,
                 })
                 .await;
         }
+    }
+
+    /// The provider session of a duplex call was renewed (GH #896).
+    ///
+    /// One emission on the `renewed` lane, in the shape of every duplex lane
+    /// ([`Self::live_body`]) with `renewal_n` and `renewed_at` beside the rest
+    /// and no words at all: what the new session needs to hear is the
+    /// colony's to write, and the handover it writes comes back on `in_advise`
+    /// with `hop.renewal_n` on it. A session this cell no longer holds is gone,
+    /// and a renewal of it is nobody's news.
+    async fn on_renewed(
+        &mut self,
+        session_id: &str,
+        renewal_n: u32,
+        renewed_at_ms: u64,
+        sink: &OriginSink,
+    ) {
+        let Some(state) = self.live_sessions.get_mut(session_id) else {
+            tracing::debug!(
+                path = self.path.as_str(),
+                %session_id, renewal_n,
+                "voice: a renewal for a session this cell no longer holds"
+            );
+            return;
+        };
+        state.renewals = renewal_n;
+        tracing::info!(
+            path = self.path.as_str(),
+            %session_id, renewal_n,
+            "voice: the duplex session was renewed inside the call"
+        );
+        let content = self.live_body(
+            "renewed",
+            session_id,
+            json!({"renewal_n": renewal_n, "renewed_at": renewed_at_ms}),
+            json!([]),
+        );
+        self.emit(sink, content).await;
     }
 
     /// Announce the end of one synthesis on the `speak_end` lane.
@@ -2152,6 +2244,14 @@ impl LongRunningCell for VoiceCell {
                 }
                 VoiceEvent::Live { session_id, event } => {
                     self.on_live_event(&session_id, event, sink).await;
+                }
+                VoiceEvent::Renewed {
+                    session_id,
+                    renewal_n,
+                    renewed_at_ms,
+                } => {
+                    self.on_renewed(&session_id, renewal_n, renewed_at_ms, sink)
+                        .await;
                 }
                 VoiceEvent::DuplexFailed { session_id, detail } => {
                     // The one duplex path that IS built here: a provider that

@@ -1,4 +1,4 @@
-# `member@2.0.0`
+# `member@2.1.0`
 
 One person, as a level. **Four holders, three open containers and no cell of
 its own** — seven nodes and sixty-seven edges.
@@ -315,7 +315,7 @@ strand every channel-less answer.
 
 **The memory: one pair that reads, two edges that write.** `recall` → `in_query`
 and `bundle` → `in_bundle` are the pair the whole level exists for: one memory,
-every assistant of this member reading it — and, since [#532](https://github.com/mmeyerlein/meclaw/issues/532), both askers
+every assistant of this member reading it — and, since [#532](https://github.com/mmeyerlein/meclaw/issues/532), every asker
 *inside* one of them. The reply-to token that sorts the answers out crosses this
 level twice and is read neither time: it goes up in `context.recall_caller` and
 comes back on `hop.recall_caller`, put there by the memory hive's own
@@ -764,6 +764,7 @@ live model carries two more again, and they are the last two rows here.)
 | up, from the channel | `error` — the connector's own failure | the channel's mutation draws it; **this level** ships `./channels -> .` |
 | down, to the channel | `answer` — what an assistant said | **this level** ships `./assistants -> ./channels`; the channel's mutation draws `./channels -> ./channels/<name>`, guarded on `context.channel_node == '<name>'` |
 | up, from the channel | `delegation` — a live model handed work back (1.9.0) | the channel's mutation draws it up with the rest; **this level** ships `./channels -> ./assistants` DIRECTLY, re-stamped to `in_delegation`; the generation's mutation draws the last leg into the child, guarded on its own name |
+| up, from the channel | `renewed` — a live model's session was renewed within the call (GH #896) | the same road as `delegation`: **this level** ships `./channels -> ./assistants` DIRECTLY, re-stamped to `in_renewed`, with `call_id` promoted onto context; the handover comes back as a `sidecar` section `context` and leaves on the advice edge below |
 | down, to the channel | `sidecar`, sections `fact`, `context`, `correction` (1.9.0) | **this level** ships `./assistants -> ./channels`, re-stamped to `in_advise`; the channel's mutation draws the last leg, guarded on its own node name |
 
 **The delegation edge goes round the firewall on purpose.** The firewall's exit
@@ -840,7 +841,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.0.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.1.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1075,7 +1076,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.0.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.1.0"}]
 }}
 ```
 
@@ -1084,7 +1085,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.0.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.1.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1614,8 +1615,8 @@ paragraph, and the `org` and `meclaw-os` contracts with it.
 Both transit lists are prose in the containers' own `description`, not a
 `params.contract`, and the reason is mechanical rather than stylistic.
 `addressed_lane_doors` skips a hive only while **nothing addresses its path**
-(`hive_path_is_wired`). This member addresses `./assistants` on thirty-three of its
-edges and `./channels` on twelve, so both containers are wired the moment the
+(`hive_path_is_wired`). This member addresses `./assistants` on thirty-five of its
+edges and `./channels` on thirteen, so both containers are wired the moment the
 member is instantiated — and from then on every lane they declared would owe a
 `door_exists`: a message arriving at the container path must reach a cell
 *inside* it. An empty container has no inside. The violation would be collected
@@ -1667,6 +1668,11 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`2.1.0` takes the **second** digit ([#896](https://github.com/mmeyerlein/meclaw/issues/896)): a channel's `renewed` reaches `./assistants`
+as `in_renewed`, so a duplex call renewed at its provider's limit gets its block from the
+assistant that holds the conversation, and `./assistants` is derived from
+[`assistant`](../assistant/) at 3.1.0.
 
 `2.0.0` takes the **first** digit ([#877](https://github.com/mmeyerlein/meclaw/issues/877),
 [#889](https://github.com/mmeyerlein/meclaw/issues/889)): `pack_ack` and `prune` no longer leave this level.

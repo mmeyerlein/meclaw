@@ -162,7 +162,28 @@ impl DuplexProvider for GptLiveDuplex {
     ) -> BoxFuture<Result<(), DuplexError>> {
         let params = self.params.clone();
         let timeouts = self.timeouts;
-        Box::pin(async move { run_session(params, timeouts, format, session, liveness).await })
+        Box::pin(
+            async move { run_session(params, timeouts, format, session, liveness, true).await },
+        )
+    }
+
+    /// The same session, without the greeting (GH #896).
+    ///
+    /// A renewed session opens in the middle of a call: the caller has been
+    /// greeted already, and a second greeting would be the model introducing
+    /// itself again mid-sentence. Everything else — the instructions, the
+    /// voice, the deadlines — is the session [`Self::run_session`] opens.
+    fn run_renewed_session(
+        &self,
+        format: AudioFormat,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+    ) -> BoxFuture<Result<(), DuplexError>> {
+        let params = self.params.clone();
+        let timeouts = self.timeouts;
+        Box::pin(
+            async move { run_session(params, timeouts, format, session, liveness, false).await },
+        )
     }
 }
 
@@ -172,12 +193,16 @@ impl DuplexProvider for GptLiveDuplex {
 /// it is the rate the connection negotiated with its client, and with only one
 /// rate on offer (see [`GptLiveDuplex::format`]) the two are the same value —
 /// but the one the client was promised is the one the model has to speak.
+///
+/// `greet` is `false` for a renewed session of a running call (GH #896): the
+/// greeting is what the caller hears FIRST, and a renewal is not first.
 async fn run_session(
     params: GptLiveParams,
     timeouts: ProviderTimeouts,
     format: AudioFormat,
     session: DuplexSession,
     liveness: IoLivenessMark,
+    greet: bool,
 ) -> Result<(), DuplexError> {
     let DuplexSession {
         mut audio_in,
@@ -239,8 +264,10 @@ async fn run_session(
 
     // Exactly once, and only now: a greeting is what the caller should HEAR
     // first, so it travels on `commentary` rather than on `instructions`
-    // (OR-L51 — measured 3/3 spoken against 2/9, median 938 ms).
-    if !params.greeting.is_empty() {
+    // (OR-L51 — measured 3/3 spoken against 2/9, median 938 ms). Never on a
+    // renewed session (GH #896): that one opens mid-call, and the caller was
+    // greeted by the session it replaces.
+    if greet && !params.greeting.is_empty() {
         send_frame(
             &mut write,
             append_frame(

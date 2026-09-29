@@ -328,7 +328,7 @@ PERSONA_SOURCES = (
     # and its summarizer cell carries a prompt and a model of its own. The
     # ledger seed is the durable state a rebuild starts from.
     "templates/curator/config.json",
-    "templates/curator/*/config.json",            # intake, policy, summarizer, writer, ledger, clock
+    "templates/curator/*/config.json",            # intake, policy, summarizer, writer, ledger, clock, history
     "templates/curator/ledger/seed/*.jsonl",
     "templates/curator/template.json",
     "templates/cogny/config.json",

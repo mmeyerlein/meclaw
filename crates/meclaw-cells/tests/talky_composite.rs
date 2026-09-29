@@ -9,14 +9,15 @@
 //!   turn -> stamp -> seam -> curator -> brain(mock) -> split -> fake tool -> seam -> answer
 //!
 //! and a close through the write path, where the batch leaves on the write
-//! port -- which since `talky@4.3.0` (GH #447) is the whole of the close path:
-//! the composite carries no summarizer, so the close costs no inference.
+//! port as it is (GH #447) and the close costs exactly one inference: the
+//! curator's handover note through its own summarizer, off the hot path, which
+//! the next generation reads as `history.handover` (GH #896).
 //! Since GH #889 the seam hands the round to the brain's curator hive, and the
 //! write batch leaves the composite from that curator instead of the collector.
 //!
-//! Free of a real provider by construction: the one `llm` cell talks to the
-//! mock OpenAI wire, and every other cell is a `code`/`store`/`timer` cell that
-//! reports what it was given.
+//! Free of a real provider by construction: the `llm` cells (the brain and the
+//! curator's summarizer) talk to the mock OpenAI wire, and every other cell is
+//! a `code`/`store`/`timer` cell that reports what it was given.
 //!
 //! The byte-identity pin over the four sub-unit copies retired with the copies
 //! themselves (GH #277): `talky` references its sub-units now, so there is
@@ -34,8 +35,8 @@ use meclaw_cells::timer::TimerCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
-use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::{ColonyHandle, override_params_on_disk};
 use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,6 +87,22 @@ fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
         dir = templates_root().join(name);
     }
     panic!("template ref chain does not terminate at {}", dir.display());
+}
+
+/// The `override_params` of the talky's `curator` marker, applied to the
+/// copied curator cells they name (GH #892).
+fn curator_overrides(root: &std::path::Path) {
+    let marker = templates_root().join("talky/curator/config.json");
+    let raw =
+        std::fs::read_to_string(&marker).unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+    let cfg: Value = meclaw_core::serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+    let over = cfg["override_params"]
+        .as_object()
+        .expect("the talky's curator marker carries its overrides");
+    for (cell, params) in over {
+        override_params_on_disk(&root.join("main/talky/curator").join(cell), params);
+    }
 }
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
@@ -270,6 +287,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         &code_cell(ARCHIVE, &["archived"], json!({})),
     );
     copy_cells(&templates_root().join("talky"), &root.join("main/talky"));
+    // GH #892: the talky's curator is what its marker's `override_params`
+    // make it -- role `talky` (short ids in the window) and `pass_sections
+    // memory` (the memory section leaves again on `sidecar`, which is the
+    // only way it reaches a parent since the splitter hands it to the
+    // curator). `copy_cells` resolves the reference but not its overrides,
+    // so they are applied here, the way the mutation door applies them to
+    // a staged tree (GH #140).
+    curator_overrides(root);
 
     // Two patches, both about the clock and the wire rather than about
     // behaviour: a schedule the test can trigger, and both llm cells pointed at
@@ -512,13 +537,17 @@ async fn an_annotated_answer_splits_into_the_reply_and_the_sidecar() {
 
 /// The close path: the keeper seals the generation, the collector batches it,
 /// and the batch leaves on the write port the parent wired. Since
-/// `talky@4.3.0` (GH #447) that is the WHOLE of the close path -- the composite
-/// carries no summarizer any more, so closing a generation costs no inference
-/// and writes no `system.handover` slot behind the brain's back.
+/// `talky@4.3.0` (GH #447) the close asks no model on the BRAIN's behalf and
+/// writes no `system.handover` slot behind its back. GH #896 adds exactly one
+/// call off the hot path: the curator's handover note, through the curator's
+/// own summarizer (the one model door of its hive), which the NEXT generation
+/// reads as its `history.handover` leaf -- the note, never the batch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_close_leaves_on_the_write_port_and_costs_no_inference() {
+async fn a_close_leaves_on_the_write_port_and_costs_one_note_off_the_brain() {
+    const NOTE: &str = "The person said their city is Berlin.";
     let mock = MockOpenAI::start(vec![
         canned_chat_completion("Noted.", "stop"),
+        canned_chat_completion(NOTE, "stop"),
         canned_chat_completion("Still here.", "stop"),
     ])
     .await;
@@ -543,31 +572,45 @@ async fn a_close_leaves_on_the_write_port_and_costs_no_inference() {
         "user turn and answer left as one batch: {text}"
     );
 
-    // The close is model-free. Settle generously (30 s convention) so a second
-    // call would have had every chance to arrive: nothing behind the batch asks
-    // a provider any more.
+    // The close asks for one note (30 s failure marker), and it is the
+    // curator's: the handover instructions and the session's words, not a turn.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while mock.recorded_requests().await.len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the close asked for no handover note within 30 s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let reqs = mock.recorded_requests().await;
+    let wire = meclaw_core::serde_json::to_string(reqs[1].messages().expect("wire messages"))
+        .unwrap_or_default();
+    assert!(
+        wire.contains("You write the handover note") && wire.contains("my city is berlin"),
+        "the second call is the curator's handover note on the closed session: {wire}"
+    );
+    // Settle generously so a further call would have had every chance to
+    // arrive: nothing else behind the batch asks a provider.
     for _ in 0..15 {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
             mock.recorded_requests().await.len(),
-            1,
-            "the close path is model-free since 4.3.0 -- only the turn's own \
-             brain call reached the provider"
+            2,
+            "the close costs the turn's own brain call and ONE note, nothing more"
         );
     }
 
-    // And the next generation opens on the same cells with nothing smuggled
-    // into its system state: its turn is the SECOND provider call, not the
-    // third, and the closed batch is not in the prompt.
+    // The next generation's turn is the third call, and what rides into its
+    // prompt is the note as the curator's leaf -- never the closed batch.
     h.send(turn("still there?")).await;
     recv_bounded(&mut sink_rx).await.expect("the second answer");
     let reqs = mock.recorded_requests().await;
     assert_eq!(
         reqs.len(),
-        2,
-        "the second turn is the second provider call -- the close added none"
+        3,
+        "the second turn is the third provider call -- the close added the note alone"
     );
-    let msgs = reqs[1].messages().expect("wire messages");
+    let msgs = reqs[2].messages().expect("wire messages");
     let sys_text = msgs
         .iter()
         .find(|m| m["role"] == "system")
@@ -575,9 +618,13 @@ async fn a_close_leaves_on_the_write_port_and_costs_no_inference() {
         .unwrap_or_default()
         .to_string();
     assert!(
+        sys_text.contains(NOTE),
+        "the new generation starts with the handover note (GH #896): {sys_text}"
+    );
+    assert!(
         !sys_text.contains("batch|session="),
-        "no handover slot: the closed generation does not ride into the next \
-         prompt as system state: {sys_text}"
+        "no batch in the prompt: the closed generation rides into the next one as \
+         its note, not as system state: {sys_text}"
     );
 
     h.shutdown().await;

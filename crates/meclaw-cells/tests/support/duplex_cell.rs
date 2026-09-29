@@ -34,7 +34,7 @@ use meclaw_testing::voice_client::VoiceClient;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// The repo's failure-marker window: generous, never a discriminator.
 pub const MARKER: Duration = Duration::from_secs(30);
@@ -54,6 +54,20 @@ pub struct FakeSession {
     pub events: mpsc::Sender<DuplexEvent>,
     /// Audio the model produced.
     pub audio_out: mpsc::Sender<Vec<u8>>,
+    /// Which session of the provider this is, counting from 1 (GH #896).
+    pub index: usize,
+    /// Whether the connection opened it as a renewal of a running call
+    /// (`run_renewed_session`, GH #896).
+    pub renewed: bool,
+    /// Where the fake renews: lets the session finish once its caller's audio
+    /// has ended ([`Self::finish`]). `None` elsewhere.
+    finish: Option<oneshot::Sender<()>>,
+    /// Where the fake renews: drops the session's socket ([`Self::hang_up`]).
+    /// `None` elsewhere.
+    hang_up: Option<oneshot::Sender<()>>,
+    /// Where the fake renews: ends the provider's task at once, while this
+    /// handle keeps its event channel open ([`Self::stop`]). `None` elsewhere.
+    stop: Option<oneshot::Sender<oneshot::Sender<()>>>,
 }
 
 impl FakeSession {
@@ -64,6 +78,64 @@ impl FakeSession {
             .await
             .expect("the connection is still reading the model's events");
     }
+
+    /// Let this session of a renewing fake finish (GH #896).
+    ///
+    /// A session whose caller's audio has ended holds its verdict until this
+    /// is called or the handle is dropped. That hold is what makes the
+    /// retiring session measurable: while it holds, the connection is still
+    /// reading what the old model says, and a test can play its last words.
+    pub fn finish(&mut self) {
+        if let Some(tx) = self.finish.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// The socket of this session of a renewing fake drops (GH #896).
+    ///
+    /// Played the way the real adapter reports it (OR-L.L2a.3): a warning, a
+    /// close with `connection_lost`, and an ordinary verdict. The handle goes
+    /// with it, because the connection learns that a provider is gone from its
+    /// event channel closing, and this handle holds a sender of it.
+    pub fn hang_up(mut self) {
+        if let Some(tx) = self.hang_up.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// The provider task of this session of a renewing fake ends at once and
+    /// without a word, and this handle stays (GH #896, review I-3).
+    ///
+    /// Its way in and its control channel are gone when this returns; its
+    /// event channel is NOT, because this handle holds a sender of it. That is
+    /// the moment between a provider ending and the connection reading the
+    /// end of its events, held open for as long as the test likes: the
+    /// connection can only tell by the senders it holds.
+    pub async fn stop(&mut self) {
+        let Some(tx) = self.stop.take() else {
+            panic!("stop() is a knob of the renewing fake")
+        };
+        let (ack_tx, ack_rx) = oneshot::channel();
+        tx.send(ack_tx)
+            .expect("the session's provider task is still running");
+        ack_rx
+            .await
+            .expect("the provider task acknowledges before it returns");
+    }
+}
+
+/// One thing a fake session was told, in the order it was told (GH #896).
+///
+/// The control frames and the audio frames arrive on two channels, and two
+/// channels have no order between them. The journal is the one place where
+/// "the handover reached the new session before the caller did" is a
+/// measurement rather than a guess.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Seen {
+    /// A control frame.
+    Control(DuplexControl),
+    /// An audio frame.
+    Audio(Vec<u8>),
 }
 
 /// A duplex provider that does nothing on its own.
@@ -85,6 +157,23 @@ pub struct FakeDuplex {
     /// measurable instead of academic.
     linger: bool,
     rate: u32,
+    /// Every control frame, with the index of the session it reached (GH #896).
+    tagged_controls: mpsc::UnboundedSender<(usize, DuplexControl)>,
+    /// Every audio frame, with the index of the session it reached.
+    tagged_audio: mpsc::UnboundedSender<(usize, Vec<u8>)>,
+    /// Both, in the order each session was told them.
+    journal: mpsc::UnboundedSender<(usize, Seen)>,
+    /// The index of every session whose caller's audio ended.
+    ended: mpsc::UnboundedSender<usize>,
+    /// How many sessions were opened as renewals.
+    renewed_starts: Arc<AtomicUsize>,
+    /// The fixture of GH #896. A closed control channel is what it is on the
+    /// real adapter — the colony stopped guiding, the audio is the session and
+    /// still flows, so every frame already queued is still read — and a
+    /// session holds its verdict until [`FakeSession::finish`], and can drop
+    /// its socket with [`FakeSession::hang_up`]. Off everywhere else, where
+    /// the fake behaves exactly as it always has.
+    renewing: bool,
 }
 
 impl DuplexProvider for FakeDuplex {
@@ -106,6 +195,29 @@ impl DuplexProvider for FakeDuplex {
         session: DuplexSession,
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), DuplexError>> {
+        self.run(session, liveness, false)
+    }
+
+    /// The same session, counted as a renewal (GH #896).
+    fn run_renewed_session(
+        &self,
+        _format: AudioFormat,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+    ) -> BoxFuture<Result<(), DuplexError>> {
+        self.run(session, liveness, true)
+    }
+}
+
+impl FakeDuplex {
+    /// One session, whether the connection opened it as the first of a call
+    /// or as a renewal of one.
+    fn run(
+        &self,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+        renewed: bool,
+    ) -> BoxFuture<Result<(), DuplexError>> {
         let DuplexSession {
             mut audio_in,
             audio_out,
@@ -119,8 +231,17 @@ impl DuplexProvider for FakeDuplex {
         let starts = Arc::clone(&self.starts);
         let fail = self.fail;
         let linger = self.linger;
+        let tagged_controls = self.tagged_controls.clone();
+        let tagged_audio = self.tagged_audio.clone();
+        let journal = self.journal.clone();
+        let ended = self.ended.clone();
+        let renewed_starts = Arc::clone(&self.renewed_starts);
+        let renewing = self.renewing;
         Box::pin(async move {
-            starts.fetch_add(1, Ordering::SeqCst);
+            let index = starts.fetch_add(1, Ordering::SeqCst) + 1;
+            if renewed {
+                renewed_starts.fetch_add(1, Ordering::SeqCst);
+            }
             let _ = events
                 .send(DuplexEvent::Started {
                     session_id: "fake-session".to_string(),
@@ -138,23 +259,46 @@ impl DuplexProvider for FakeDuplex {
                 // left its loop and `duplex_failed` never reached the lane.
                 return Err(DuplexError::Closed("the model hung up".to_string()));
             }
+            let (finish_tx, finish_rx) = oneshot::channel::<()>();
+            let (hang_up_tx, mut hang_up_rx) = oneshot::channel::<()>();
+            let (stop_tx, mut stop_rx) = oneshot::channel::<oneshot::Sender<()>>();
+            let (finish_tx, hang_up_tx, stop_tx) = if renewing {
+                (Some(finish_tx), Some(hang_up_tx), Some(stop_tx))
+            } else {
+                (None, None, None)
+            };
             let _ = sessions
                 .send(FakeSession {
                     events: events.clone(),
                     audio_out: audio_out.clone(),
+                    index,
+                    renewed,
+                    finish: finish_tx,
+                    hang_up: hang_up_tx,
+                    stop: stop_tx,
                 })
                 .await;
+            // Always open where the fake does not renew, so the loop below is
+            // the loop it always was.
+            let mut control_open = true;
+            let mut hang_up_armed = renewing;
+            let mut stop_armed = renewing;
             loop {
                 tokio::select! {
                     biased;
 
-                    cmd = control.recv() => match cmd {
+                    cmd = control.recv(), if control_open => match cmd {
+                        None if renewing => control_open = false,
                         None => break,
                         Some(DuplexControl::Close) => {
+                            let _ = tagged_controls.send((index, DuplexControl::Close));
+                            let _ = journal.send((index, Seen::Control(DuplexControl::Close)));
                             let _ = controls.send(DuplexControl::Close).await;
                             break;
                         }
                         Some(cmd) => {
+                            let _ = tagged_controls.send((index, cmd.clone()));
+                            let _ = journal.send((index, Seen::Control(cmd.clone())));
                             let _ = controls.send(cmd).await;
                         }
                     },
@@ -163,10 +307,53 @@ impl DuplexProvider for FakeDuplex {
                         None => break,
                         Some(bytes) => {
                             liveness.mark_success();
+                            let _ = tagged_audio.send((index, bytes.clone()));
+                            let _ = journal.send((index, Seen::Audio(bytes.clone())));
                             let _ = audio.send(bytes).await;
                         }
                     },
+
+                    signal = &mut hang_up_rx, if hang_up_armed => match signal {
+                        // The socket dropped, and the real adapter says so the
+                        // way this does: a warning, a close, an ordinary
+                        // verdict (OR-L.L2a.3).
+                        Ok(()) => {
+                            let _ = events
+                                .send(DuplexEvent::Warning {
+                                    detail: "socket ended mid-session".to_string(),
+                                })
+                                .await;
+                            let _ = events
+                                .send(DuplexEvent::Closed {
+                                    reason: "connection_lost".to_string(),
+                                    usage_seconds: 0.0,
+                                })
+                                .await;
+                            return Ok(());
+                        }
+                        // The handle was dropped without a word: nothing
+                        // happened to the socket.
+                        Err(_) => hang_up_armed = false,
+                    },
+
+                    signal = &mut stop_rx, if stop_armed => match signal {
+                        // Gone: the way in and the control channel drop here,
+                        // the event channel stays with the handle.
+                        Ok(ack) => {
+                            drop(audio_in);
+                            drop(control);
+                            let _ = ack.send(());
+                            return Ok(());
+                        }
+                        Err(_) => stop_armed = false,
+                    },
                 }
+            }
+            let _ = ended.send(index);
+            if renewing {
+                // Held until the test lets go, or drops the handle: while it
+                // holds, the connection still reads what this model says.
+                let _ = finish_rx.await;
             }
             if linger {
                 // The caller's audio has stopped and this model does not
@@ -211,6 +398,18 @@ pub struct Live {
     pub mailbox: mpsc::Sender<Message>,
     /// How many sessions the provider was asked to run.
     pub starts: Arc<AtomicUsize>,
+    /// Every control frame the model was told, with the index of the session
+    /// it reached (GH #896).
+    pub tagged_controls: mpsc::UnboundedReceiver<(usize, DuplexControl)>,
+    /// Every audio frame the model was fed, with the index of the session it
+    /// reached.
+    pub tagged_audio: mpsc::UnboundedReceiver<(usize, Vec<u8>)>,
+    /// Both, in the order each session was told them — see [`Seen`].
+    pub journal: mpsc::UnboundedReceiver<(usize, Seen)>,
+    /// The index of every session whose caller's audio ended.
+    pub ended: mpsc::UnboundedReceiver<usize>,
+    /// How many of [`Self::starts`] were renewals.
+    pub renewed_starts: Arc<AtomicUsize>,
     handler: tokio::task::JoinHandle<()>,
     io: tokio::task::JoinHandle<()>,
     listener: tokio::task::JoinHandle<()>,
@@ -235,6 +434,11 @@ struct Wired {
     audio: mpsc::Receiver<Vec<u8>>,
     let_go: mpsc::Receiver<Duration>,
     starts: Arc<AtomicUsize>,
+    tagged_controls: mpsc::UnboundedReceiver<(usize, DuplexControl)>,
+    tagged_audio: mpsc::UnboundedReceiver<(usize, Vec<u8>)>,
+    journal: mpsc::UnboundedReceiver<(usize, Seen)>,
+    ended: mpsc::UnboundedReceiver<usize>,
+    renewed_starts: Arc<AtomicUsize>,
 }
 
 fn wire_fake(fail: bool, linger: bool, rate: u32) -> Wired {
@@ -249,11 +453,31 @@ fn wire_fake(fail: bool, linger: bool, rate: u32) -> Wired {
 /// can hold that task still, and holding it still is the only way to have two
 /// select arms become ready while nobody is polling them.
 fn wire_fake_narrow(fail: bool, linger: bool, rate: u32, audio_cap: usize) -> Wired {
+    wire_fake_full(fail, linger, rate, audio_cap, false, 8)
+}
+
+/// The fake with every knob, the GH #896 ones included: `renewing` (see
+/// [`FakeDuplex`]) and room for `sessions_cap` session handles nobody has
+/// picked up yet — a call that renews a few times publishes a handle per
+/// session, and a full queue would park the provider before its loop.
+fn wire_fake_full(
+    fail: bool,
+    linger: bool,
+    rate: u32,
+    audio_cap: usize,
+    renewing: bool,
+    sessions_cap: usize,
+) -> Wired {
     let (controls_tx, controls) = mpsc::channel(256);
-    let (sessions_tx, sessions) = mpsc::channel(8);
+    let (sessions_tx, sessions) = mpsc::channel(sessions_cap);
     let (audio_tx, audio) = mpsc::channel(audio_cap);
     let (let_go_tx, let_go) = mpsc::channel(8);
+    let (tagged_controls_tx, tagged_controls) = mpsc::unbounded_channel();
+    let (tagged_audio_tx, tagged_audio) = mpsc::unbounded_channel();
+    let (journal_tx, journal) = mpsc::unbounded_channel();
+    let (ended_tx, ended) = mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
+    let renewed_starts = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(FakeDuplex {
         controls: controls_tx,
         sessions: sessions_tx,
@@ -263,6 +487,12 @@ fn wire_fake_narrow(fail: bool, linger: bool, rate: u32, audio_cap: usize) -> Wi
         fail,
         linger,
         rate,
+        tagged_controls: tagged_controls_tx,
+        tagged_audio: tagged_audio_tx,
+        journal: journal_tx,
+        ended: ended_tx,
+        renewed_starts: Arc::clone(&renewed_starts),
+        renewing,
     });
     Wired {
         provider,
@@ -271,6 +501,11 @@ fn wire_fake_narrow(fail: bool, linger: bool, rate: u32, audio_cap: usize) -> Wi
         audio,
         let_go,
         starts,
+        tagged_controls,
+        tagged_audio,
+        journal,
+        ended,
+        renewed_starts,
     }
 }
 
@@ -448,6 +683,108 @@ async fn boot_with(
     close_grace_ms: u64,
     tick_ms: u64,
 ) -> Live {
+    boot_full(
+        raw,
+        duplex,
+        wired,
+        quiet_ms,
+        cap_ms,
+        close_grace_ms,
+        tick_ms,
+        meclaw_cells::voice::params::DEFAULT_RENEW_AFTER_MS,
+        meclaw_cells::voice::params::DEFAULT_RENEW_GRACE_MS,
+    )
+    .await
+}
+
+/// Boot a duplex cell around a fake that renews (GH #896): the connection
+/// opens the call's next session `renew_after_ms` after a session took charge,
+/// and a started renewal is due to take over at its handover or after
+/// `renew_grace_ms` -- and does, at the first quiet moment of the line.
+///
+/// The two numbers reach the I/O half from `params.duplex` through the
+/// factory, which this fixture does not run — so the test sets them here, as
+/// it sets the tick.
+pub async fn boot_renewing(raw: Value, renew_after_ms: u64, renew_grace_ms: u64) -> Live {
+    boot_renewing_clocked(raw, renew_after_ms, renew_grace_ms, TICK_MS).await
+}
+
+/// The same, with the session clock ticking every `tick_ms`.
+pub async fn boot_renewing_clocked(
+    raw: Value,
+    renew_after_ms: u64,
+    renew_grace_ms: u64,
+    tick_ms: u64,
+) -> Live {
+    let wired = wire_fake_full(false, false, RATE, 4096, true, 64);
+    boot_full(
+        raw,
+        Some(wired.provider.clone()),
+        Some(wired),
+        QUIET_MS,
+        CAP_MS,
+        CLOSE_GRACE_MS,
+        tick_ms,
+        renew_after_ms,
+        renew_grace_ms,
+    )
+    .await
+}
+
+/// The same, with the quiet and the cap a takeover waits on (review I-2) held
+/// to the test's own numbers -- the shipped ones are 1 500 and 8 000 ms.
+pub async fn boot_renewing_timed(
+    raw: Value,
+    renew_after_ms: u64,
+    renew_grace_ms: u64,
+    quiet_ms: u64,
+    cap_ms: u64,
+    tick_ms: u64,
+) -> Live {
+    let wired = wire_fake_full(false, false, RATE, 4096, true, 64);
+    boot_full(
+        raw,
+        Some(wired.provider.clone()),
+        Some(wired),
+        quiet_ms,
+        cap_ms,
+        CLOSE_GRACE_MS,
+        tick_ms,
+        renew_after_ms,
+        renew_grace_ms,
+    )
+    .await
+}
+
+/// A renewing fake whose sessions give up as soon as they are open.
+pub async fn boot_renewing_failing(raw: Value, renew_after_ms: u64, renew_grace_ms: u64) -> Live {
+    let wired = wire_fake_full(true, false, RATE, 4096, true, 64);
+    boot_full(
+        raw,
+        Some(wired.provider.clone()),
+        Some(wired),
+        QUIET_MS,
+        CAP_MS,
+        CLOSE_GRACE_MS,
+        TICK_MS,
+        renew_after_ms,
+        renew_grace_ms,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn boot_full(
+    raw: Value,
+    duplex: Option<Arc<dyn DuplexProvider>>,
+    wired: Option<Wired>,
+    quiet_ms: u64,
+    cap_ms: u64,
+    close_grace_ms: u64,
+    tick_ms: u64,
+    renew_after_ms: u64,
+    renew_grace_ms: u64,
+) -> Live {
     let params = VoiceParams::parse(&raw).expect("the fixture params parse");
     let surfaces = Arc::new(SurfaceRegistry::new());
     let (events_tx, mut events_rx) = mpsc::channel(256);
@@ -468,6 +805,8 @@ async fn boot_with(
     io.spoken_cap_ms = cap_ms;
     io.close_grace_ms = close_grace_ms;
     io.duplex_tick_ms = tick_ms;
+    io.duplex_renew_after_ms = renew_after_ms;
+    io.duplex_renew_grace_ms = renew_grace_ms;
     io.cell_path = Path::new("/voice");
     io.surfaces = Arc::clone(&surfaces);
 
@@ -521,18 +860,49 @@ async fn boot_with(
     .await
     .expect("the cell registers its mount within the failure marker");
 
-    let (controls, sessions, audio, let_go, starts) = match wired {
-        Some(w) => (w.controls, w.sessions, w.audio, w.let_go, w.starts),
+    let (
+        controls,
+        sessions,
+        audio,
+        let_go,
+        starts,
+        tagged_controls,
+        tagged_audio,
+        journal,
+        ended,
+        renewed_starts,
+    ) = match wired {
+        Some(w) => (
+            w.controls,
+            w.sessions,
+            w.audio,
+            w.let_go,
+            w.starts,
+            w.tagged_controls,
+            w.tagged_audio,
+            w.journal,
+            w.ended,
+            w.renewed_starts,
+        ),
         None => {
             let (_tx, controls) = mpsc::channel(1);
             let (_tx2, sessions) = mpsc::channel(1);
             let (_tx3, audio) = mpsc::channel(1);
             let (_tx4, let_go) = mpsc::channel(1);
+            let (_tx5, tagged_controls) = mpsc::unbounded_channel();
+            let (_tx6, tagged_audio) = mpsc::unbounded_channel();
+            let (_tx7, journal) = mpsc::unbounded_channel();
+            let (_tx8, ended) = mpsc::unbounded_channel();
             (
                 controls,
                 sessions,
                 audio,
                 let_go,
+                Arc::new(AtomicUsize::new(0)),
+                tagged_controls,
+                tagged_audio,
+                journal,
+                ended,
                 Arc::new(AtomicUsize::new(0)),
             )
         }
@@ -547,6 +917,11 @@ async fn boot_with(
         emissions,
         mailbox: mailbox_tx,
         starts,
+        tagged_controls,
+        tagged_audio,
+        journal,
+        ended,
+        renewed_starts,
         handler,
         io: io_task,
         listener,
@@ -697,6 +1072,24 @@ pub fn advise_msg_with_body(
         .context(context)
         .hop(hop)
         .body(Body::Inline(body))
+        .build()
+}
+
+/// The handover of a renewal (GH #896): an `in_advise` `context` that carries
+/// `hop.renewal_n`, the shape the colony answers the `renewed` lane with.
+pub fn handover_msg(session_id: &str, text: &str, renewal_n: u32) -> Message {
+    let mut context = meclaw_core::serde_json::Map::new();
+    context.insert("call_id".into(), json!(session_id));
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".into(), json!("in_advise"));
+    hop.insert("section".into(), json!("context"));
+    hop.insert("renewal_n".into(), json!(renewal_n));
+    MessageBuilder::new(Path::new("/voice"))
+        .context(context)
+        .hop(hop)
+        .body(Body::Inline(json!({
+            "messages": [{"origin": "assistant", "type": "text", "text": text}]
+        })))
         .build()
 }
 

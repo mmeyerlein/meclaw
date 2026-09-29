@@ -108,8 +108,12 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// `collector@4.0.0` (GH #553), which asks the menu on the mutation receipt
 /// instead. MEASURED. GH #889 adds six more to `talky`: its `curator`
 /// (`intake`, `policy`, `writer`, `ledger`, `summarizer`, `clock`), so eighteen
-/// became twenty-four.
-const CELLS_AFTER_GROW: usize = 24;
+/// became twenty-four. GH #892: the curator answers the menu question with a
+/// seventh cell of its own (`schemas`), so twenty-five. MEASURED. GH #893 adds
+/// an eighth (`history`): twenty-six. GH #895 a ninth (`push`, the recall
+/// push): twenty-seven. GH #896 a tenth (`handover`): twenty-eight.
+/// MEASURED.
+const CELLS_AFTER_GROW: usize = 28;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -119,8 +123,16 @@ const CELLS_AFTER_GROW: usize = 24;
 /// was a sixth until GH #553. MEASURED, and it moves with
 /// [`CELLS_AFTER_GROW`] -- `talky`'s twelfth cell (`schemas`, GH #783) is in
 /// this total too. GH #889: `cogny` carries a curator of its own, six cells more,
-/// so the core adds eleven.
-const CELLS_AFTER_COGNY: usize = 35;
+/// so the core adds eleven. GH #892: the core grew the talky's `splitter`, and
+/// its curator a seventh cell (`schemas`), so it adds thirteen -- on top of the
+/// talky's curator cell counted in [`CELLS_AFTER_GROW`]. MEASURED. GH #893
+/// gives its curator an eighth (`history`): fourteen, and one more in
+/// [`CELLS_AFTER_GROW`] -- forty. GH #895 a ninth (`push`): fifteen, and one
+/// more in [`CELLS_AFTER_GROW`] -- forty-two. GH #896 a tenth (`handover`):
+/// sixteen, and one more in [`CELLS_AFTER_GROW`] -- forty-four. MEASURED. GH #894:
+/// and `./ask`, which turns the core's `ask_requester` call into its question
+/// back, so the core adds seventeen -- forty-five.
+const CELLS_AFTER_COGNY: usize = 45;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -573,7 +585,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus twenty-four instantiated ones: {after:?}"
+        "zero checked-in cells plus twenty-seven instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.
@@ -649,7 +661,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         with_core.len(),
         CELLS_AFTER_COGNY + 1,
-        "twenty-four plus the core's eleven (five and its curator's six), plus the \
+        "twenty-five plus the core's twelve (five and its curator's seven), plus the \
          test-only probe: {with_core:?}"
     );
 

@@ -66,8 +66,8 @@
 //!    section nothing cuts any more.
 //! 6. **The shipped composites ask exactly where the block is cut.** `talky`
 //!    routes the sidecar out of its splitter and switches the knob on; `cogny`
-//!    has no splitter and leaves it off, or its advice would carry a fence
-//!    nobody removes.
+//!    cuts its block with a splitter of its own since GH #892 and switches it
+//!    on too -- its sections go to its curator, and the advice leaves clean.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -976,15 +976,18 @@ fn the_shipped_composites_ask_exactly_where_the_block_is_cut() {
         );
     }
     if shipped("cogny").is_some() {
+        // GH #892: the core grew a splitter of its own -- its curator takes the
+        // sections (`window`, `memory`'s topic mark) -- so it asks for the block
+        // the splitter cuts, and the advice leaves without it.
         assert!(
-            !cuts_the_block("cogny"),
-            "cogny has no splitter: its answer travels back to the asking agent whole"
+            cuts_the_block("cogny"),
+            "cogny's splitter carries the `sidecar` edge (GH #892)"
         );
-        assert_ne!(
+        assert_eq!(
             collector_override("cogny", "sidecar"),
             Some(json!("1")),
-            "so it must not ask for a fence nobody removes — the advice would reach the \
-             front model with a json block stapled to it"
+            "so its collector asks for the block -- a fence the splitter removes before \
+             the advice leaves"
         );
     }
 }

@@ -192,6 +192,32 @@ pub const DEFAULT_DELEGATION_GRACE_MS: u64 = 12000;
 /// sentence paraphrased in the voice already on the line.
 pub const DEFAULT_DELEGATION_FALLBACK: &str = "Das kann ich gerade nicht nachsehen.";
 
+/// When a duplex connection renews its provider session inside the same call,
+/// in milliseconds after a session took charge of the call — the first one
+/// when it opened, a renewed one when it took over; `0` never renews (GH #896).
+///
+/// Off by default, because the number belongs to the provider and not to this
+/// cell: a hosted live model ends a session at a limit of its own, and the host
+/// that knows the limit sets this below it, with room for the renewal to start
+/// and take over. A value above the limit is a call that ends at the limit as
+/// if nothing had been set. It counts from a takeover, the provider's limit
+/// from a session's start: a renewed session started up to the connect time
+/// plus `renew_grace_ms` and `spoken_cap_ms` (the wait for a quiet line)
+/// before it took over, and a host leaves room for that.
+pub const DEFAULT_RENEW_AFTER_MS: u64 = 0;
+
+/// How long a renewed session that has started waits for its handover block
+/// before it takes over without one, in milliseconds (GH #896).
+///
+/// The handover is the colony's answer to the `renewed` lane: a summary of the
+/// conversation so far, appended to the new session BEFORE the caller's audio
+/// reaches it. Five seconds is room for one round trip through a colony that
+/// writes that summary; past it the call is worth more than the summary, and
+/// the new session takes over knowing only its instructions -- like a briefed
+/// one, at the next quiet moment of the line, at the latest `spoken_cap_ms`
+/// later.
+pub const DEFAULT_RENEW_GRACE_MS: u64 = 5000;
+
 /// The rate a duplex session runs at unless a param says otherwise.
 ///
 /// 16 kHz because that is what the telephony edge already forks and plays
@@ -339,7 +365,7 @@ pub enum TtsParams {
 /// `#[allow(clippy::large_enum_variant)]`, the same trade-off
 /// `meclaw_colony::factory::SpawnedCellKind` and `ColonyMsg` already take: the
 /// hosted adapter carries a credential, an instruction text, a fallback
-/// sentence and eight numbers, the loopback carries a rate, and the three
+/// sentence and ten numbers, the loopback carries a rate, and the three
 /// params of R-L7/R-L9 pushed the difference past the threshold. Boxing would
 /// only move the allocation — one of these is parsed per spawn and held once
 /// per cell, never sent and never in a hot path — while touching every match
@@ -428,6 +454,16 @@ pub struct GptLiveParams {
     /// [`DEFAULT_KEEPALIVE_MS`] (R-L7, GH #798).
     #[serde(default = "GptLiveParams::default_keepalive_ms")]
     pub keepalive_ms: u64,
+    /// When the connection renews this session inside the same call, in
+    /// milliseconds after a session took charge of the call; default
+    /// [`DEFAULT_RENEW_AFTER_MS`], which never renews (GH #896).
+    #[serde(default = "GptLiveParams::default_renew_after_ms")]
+    pub renew_after_ms: u64,
+    /// How long a renewed session that has started waits for its handover
+    /// block before it is due to take over without one, in milliseconds;
+    /// default [`DEFAULT_RENEW_GRACE_MS`] (GH #896).
+    #[serde(default = "GptLiveParams::default_renew_grace_ms")]
+    pub renew_grace_ms: u64,
 }
 
 impl GptLiveParams {
@@ -469,6 +505,12 @@ impl GptLiveParams {
     }
     fn default_keepalive_ms() -> u64 {
         DEFAULT_KEEPALIVE_MS
+    }
+    fn default_renew_after_ms() -> u64 {
+        DEFAULT_RENEW_AFTER_MS
+    }
+    fn default_renew_grace_ms() -> u64 {
+        DEFAULT_RENEW_GRACE_MS
     }
 }
 
@@ -852,6 +894,23 @@ impl VoiceParams {
                              session pings its own socket). Keep it well below \
                              `provider_idle_timeout_ms`, or a single unanswered ping ends \
                              the call"
+                                .to_string(),
+                        );
+                    }
+                    // A grace of nothing is not a shorter wait, it is no wait:
+                    // every renewal would take over the moment it started, and
+                    // the handover block the colony writes in answer to the
+                    // `renewed` lane would always reach a session that is
+                    // already listening to the caller -- the one promise of
+                    // that block, "before the caller", broken by a typo. The
+                    // renewal itself is switched off with `renew_after_ms: 0`,
+                    // not here (GH #896).
+                    if g.renew_grace_ms == 0 {
+                        return Err(
+                            "duplex.renew_grace_ms: must be a positive integer (how long a \
+                             renewed session waits for its handover block). A zero would \
+                             take every renewal over without one; switch renewals off with \
+                             `renew_after_ms: 0` instead"
                                 .to_string(),
                         );
                     }
@@ -1495,6 +1554,101 @@ mod tests {
              inside the idle deadline: 3 x {} ms against {} ms",
             g.keepalive_ms,
             p.provider_idle_timeout_ms
+        );
+    }
+
+    /// GH #896: a duplex session is renewed only where a host asked for it, and
+    /// a renewed session waits five seconds for its handover by default.
+    #[test]
+    fn a_renewal_is_off_unless_a_host_sets_it() {
+        assert_eq!(DEFAULT_RENEW_AFTER_MS, 0, "renewal ships off");
+        assert_eq!(DEFAULT_RENEW_GRACE_MS, 5000);
+        let shipped = json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "x"}
+        });
+        let p = VoiceParams::parse(&shipped).expect("a gpt_live block parses");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("expected the gpt_live provider");
+        };
+        assert_eq!(g.renew_after_ms, DEFAULT_RENEW_AFTER_MS);
+        assert_eq!(g.renew_grace_ms, DEFAULT_RENEW_GRACE_MS);
+    }
+
+    /// Both knobs are read where a document names them.
+    #[test]
+    fn the_renewal_knobs_are_read() {
+        let set = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "renew_after_ms": 3_300_000, "renew_grace_ms": 8000
+            }
+        });
+        let p = VoiceParams::parse(&set).expect("both knobs parse");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("expected the gpt_live provider");
+        };
+        assert_eq!(g.renew_after_ms, 3_300_000);
+        assert_eq!(g.renew_grace_ms, 8000);
+    }
+
+    /// A string is not a number of milliseconds, here as for the sibling knobs;
+    /// and the loopback, which knows only its rate, knows neither of the two.
+    #[test]
+    fn a_renewal_knob_of_the_wrong_type_is_refused() {
+        for (key, value) in [
+            ("renew_after_ms", json!("55m")),
+            ("renew_after_ms", json!(-1)),
+            ("renew_grace_ms", json!("5s")),
+            ("renew_grace_ms", json!(true)),
+        ] {
+            let mut raw = json!({
+                "mount": "voice",
+                "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "x"}
+            });
+            raw["duplex"][key] = value.clone();
+            let err = VoiceParams::parse(&raw).expect_err("a wrong type is refused");
+            assert!(err.starts_with("duplex:"), "{key} = {value}: {err}");
+        }
+        let echo = json!({
+            "mount": "voice",
+            "duplex": {"provider": "echo", "renew_after_ms": 1000}
+        });
+        assert!(
+            VoiceParams::parse(&echo).is_err(),
+            "the loopback has no renewal to set"
+        );
+    }
+
+    /// A grace of zero would take every renewal over without its handover; the
+    /// renewal is switched off with `renew_after_ms: 0`, not with this.
+    #[test]
+    fn a_renew_grace_of_zero_is_refused() {
+        let raw = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "renew_grace_ms": 0
+            }
+        });
+        let err = VoiceParams::parse(&raw).expect_err("a grace of nothing is refused");
+        assert!(err.starts_with("duplex.renew_grace_ms:"), "{err}");
+        assert!(
+            err.contains("renew_after_ms: 0"),
+            "the refusal names the way to switch renewals off: {err}"
+        );
+
+        let off = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "renew_after_ms": 0
+            }
+        });
+        assert!(
+            VoiceParams::parse(&off).is_ok(),
+            "`renew_after_ms: 0` is a value: renewals off"
         );
     }
 

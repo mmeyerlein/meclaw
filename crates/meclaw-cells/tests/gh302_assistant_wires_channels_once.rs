@@ -429,6 +429,10 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
     // `memory_recall` its own collector serves. Since GH #529 this sender also
     // has a SCHEMAS edge to the core, which is not an errand: it is filtered
     // out by the thing that makes an errand an errand, a `hop.tool_name` term.
+    // Since GH #894 there are TWO again, and the second is no second class of
+    // question: `reply_to_consult` is the surface's answer to a question the core
+    // asked back, travelling to the core under the consult's id -- the other half
+    // of the one consult errand, not a new one.
     let consults: Vec<&EdgeSpec> = hp
         .graph
         .edges
@@ -443,9 +447,9 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
         .collect();
     assert_eq!(
         consults.len(),
-        1,
-        "one errand from the surface to the core, and it is `consult_cogny` (GH #530): \
-         {consults:#?}"
+        2,
+        "one errand from the surface to the core, `consult_cogny` (GH #530), and its \
+         reply, `reply_to_consult` (GH #894): {consults:#?}"
     );
     let mut named: Vec<String> = consults
         .iter()
@@ -467,9 +471,10 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
     named.sort();
     assert_eq!(
         named,
-        vec!["consult_cogny".to_string()],
+        vec!["consult_cogny".to_string(), "reply_to_consult".to_string()],
         "`ask_memory` is retired (GH #530): a fast memory question is asked by the surface \
-         itself, and what comes here is synthesis, a time series or anything multi-step"
+         itself, and what comes here is synthesis, a time series or anything multi-step -- \
+         and, since GH #894, the answer to a question the core asked back"
     );
 }
 

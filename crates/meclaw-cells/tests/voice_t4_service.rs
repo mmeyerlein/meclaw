@@ -546,6 +546,7 @@ fn label(event: &VoiceEvent) -> &'static str {
         VoiceEvent::Live { .. } => "Live",
         VoiceEvent::LiveTick { .. } => "LiveTick",
         VoiceEvent::DuplexFailed { .. } => "DuplexFailed",
+        VoiceEvent::Renewed { .. } => "Renewed",
     }
 }
 

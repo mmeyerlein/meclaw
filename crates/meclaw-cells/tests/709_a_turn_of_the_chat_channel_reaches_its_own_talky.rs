@@ -263,10 +263,13 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     );
     // GH #889: sixty-three, down from sixty-seven -- the `in_prune` door and the
     // `prune` exit fell with the collector's prune chain, one pair per keeper.
+    // GH #896: sixty-five -- the `in_renewed` door, one per keeper. GH #894:
+    // sixty-nine -- the core's question back (`./cogny -> X` on `ask`) and the
+    // surface's reply (`X -> ./cogny` on `reply_to_consult`), one pair per keeper.
     assert_eq!(
         hp.graph.edges.len(),
-        63,
-        "thirty-seven edges and twenty-six twins. The number is asserted so that an \
+        69,
+        "forty edges and twenty-nine twins. The number is asserted so that an \
          edge added on one side and forgotten on the other is loud"
     );
 }

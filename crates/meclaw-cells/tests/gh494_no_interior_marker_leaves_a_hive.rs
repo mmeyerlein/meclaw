@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 31] = [
+const SHARED: [&str; 32] = [
     "actor",
     "asker",
     "audience_now",
@@ -79,6 +79,14 @@ const SHARED: [&str; 31] = [
     // It has to cross affinity's rim untouched -- a rim that cleared it would
     // send every internal answer out of the member.
     "brief_caller",
+    // GH #896 -- the key a call's channel finds its connection by. A voice
+    // channel's own entry edge stamps it, and it rides to the assistant and back
+    // on the answer untouched (templates/voice/README.md); a renewed duplex
+    // session's `renewed` has no answer to ride on, so the member and the talky
+    // restate it off the hop on the way in and the curator's handover leaves
+    // under it, to re-enter the channel as `in_advise`. Cleared at a rim, the
+    // handover would reach no call.
+    "call_id",
     "channel",
     "chat_id",
     // GH #834 -- who a turn on a channel with many counterparts is WITH, as an

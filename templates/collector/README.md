@@ -1,4 +1,4 @@
-# `collector@5.0.0`
+# `collector@5.1.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -86,7 +86,7 @@ message context.
 | `in_briefing` | the member's `affinity`, restamped by the member ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) | becomes the **brief leg** of this turn: affinity's answer to the `brief` this hive raised, parked as text -- its `system` is dropped at the lane. `hop.brief_outcome == 'error'` parks the leg EMPTY. Since `collector@4.3.0` |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
-| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (in talky through the splitter, in cogny straight from the brain) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)) |
+| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (through the splitter in talky and, since GH #892, in cogny) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)) |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
 | `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under -- and, since `4.1.0`, `sidecar[]` beside them, the sections that answerer wants in the block a `splitter` cuts out of the answer (GH #606). Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and both halves are re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" and "One block, several offers" below |
 | `mutation_committed` | the level above, carrying the mutation door's receipt (GH #553) | the occasion to ask for the menu again. The hive's own door turns it into the internal `in_menu_tick`, which is why nothing outside ever names that lane. It replaced `./menu-clock`, a five-minute poll |
@@ -199,12 +199,13 @@ for how to retune one, and for what `override_params` can and cannot do).
 |---|---|---|
 | `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the turn-opening lanes (`in_turn`, `in_advice`, and since `collector@4.2.0` `in_delegation`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
 | `late_after_ms` | `30000` | deadline of a consult or a delegation (GH #728). A handed call leaves a `depart` row stamped now + this value; the answer of the round its return opens carries `hop.late = "1"` once the deadline has passed when the answer leaves, `"0"` before. Set per assistant on its talky ref markers. |
+| `defer_turns` | `"1"` | whether a turn that arrives while a tool round of its session is open waits for the next round (`"1"`, GH #103, the telephone model of a channel voice) or opens its own (`"0"`, since `5.1.0`, [#894](https://github.com/mmeyerlein/meclaw/issues/894)) -- a core sets `"0"`, because its session is the conversation that consults it, and a deferred errand or reply there waited for a round nobody opened and came back under another errand's `consult_id`. Blank is the shipped value. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the AMBIENT leg alone since `4.0.0` -- a model's own `memory_recall` call is rendered by `memory-hive/tool`, which has a `form` of its own ([#552](https://github.com/mmeyerlein/meclaw/issues/552)). Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `curate` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
 | `brief_slots` | `[]` | slots to brief affinity about the counterpart of a turn; empty = no brief leg ([#834](https://github.com/mmeyerlein/meclaw/issues/834)). Set (`["peer", "channel"]`), a turn whose context carries `counterpart` raises ONE `brief` at its opening and the fan-in waits for `leg-brief`; a turn without one parks the leg empty and waits for nothing. See "The brief leg" below. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
-| `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` cuts the block and switches it on, `cogny` has no splitter and leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
+| `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` and, since GH #892, `cogny` cut the block and switch it on; a composite without a splitter leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
 | `sidecar_max_chars` | `6000` | the ceiling of the composed contract, in characters (GH #889: nothing else since `collector@5.0.0`). It is re-read by the provider on every turn of every conversation, and the sections come from templates this cell does not own -- so the bound lives HERE, where the block is assembled, rather than as a promise each offering template has to keep. Over it, OPTIONAL sections fall from the back of the alphabetical order, with a warn line on stderr naming what fell. A REQUIRED section never falls: a section every turn has to carry is not a budget item, and a contract still over the ceiling with nothing but required sections left is KEPT and the overrun reported, because the alternative is a fence whose contents were never stated. |
 | `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
 
@@ -237,7 +238,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.0.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.1.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -498,8 +499,9 @@ together, and only an answer empty in both is parked. An answerer that offers a 
 without declaring a tool -- a screen is the shipped case -- leaves `system.tools` untouched:
 the merge writes the block contract alone.
 
-**A collector that does not ASK for the block ignores every offer of one, silently.** `cogny`
-has no splitter, so a section offered to it describes a fence nobody would cut. There is no
+**A collector that does not ASK for the block ignores every offer of one, silently.** A
+composite without a splitter leaves `sidecar` empty, so a section offered to it describes a
+fence nobody would cut (`cogny` had none until GH #892). There is no
 warn line: a correctly wired tree must not read like a defect, and the composite's decision is
 the answer to the question, not a symptom.
 
@@ -641,8 +643,12 @@ Since `3.5.0` the seam appends one turn of its own on that branch and only on it
 It is assembled here and never asked of a model: a round that could not finish is the one
 moment another provider call is the wrong answer, and a sentence that changes with the
 weather is not a marker a reader can learn. The tool names come from the `tool_call` turns
-of the round in call order, deduplicated; the head of the last result is whitespace-collapsed
-and cut to 200 characters. **Nothing is lost**: the raw round leaves on the same `answer` -- what changed
+of the round in call order, deduplicated; the head of the last result loses the curator's short
+block ids it quotes -- `[#<12 hex>]`, the bare `#<12 hex>` a history tool's JSON carries (sixteen digits for an ambiguous id's
+`candidates`, sixty-four for the `hash` of a `history_read` answer), and the
+window's forms of a released, shortened or expired block ([#894](https://github.com/mmeyerlein/meclaw/issues/894):
+the digest goes to a reader past the splitter that cleans a model's prose, and internal block
+ids never leave the colony), is whitespace-collapsed and cut to 200 characters. **Nothing is lost**: the raw round leaves on the same `answer` -- what changed
 is the last *word*.
 
 **`hop.partial` is the marker `round_capped` could never be.** Until `collector@5.0.0` that key
@@ -765,8 +771,8 @@ Every message on `answer` carries two keys, present and never absent:
 Until `4.4.0` `head()` rebuilt the hop of an answer and dropped the reason, so an answer the
 model's token budget had cut looked complete to every consumer -- a proxy lane to another
 colony forwarded a half sentence as a whole one. The mark is made here, on `in_answer`, and not
-in the splitter, because one of the two shipped brains has no splitter: cogny's `length` edge
-still goes straight to its collector. The SIDECAR of a cut answer is not this cell's business --
+in the splitter, because a composite without a splitter routes `length` straight to its
+collector (cogny did until GH #892). The SIDECAR of a cut answer is not this cell's business --
 there is one grammar that cuts it, and [`talky`](../talky/) routes `length` through it since 5.4.0.
 
 `./assemble`'s cell contract moved (`contract.version` 2.3.0): `finish_reason` and `truncated`
@@ -1343,8 +1349,11 @@ on its own, it was that nothing beside the text said what the text is.
 **The rule travels with the ids.** Knowing a row is an advice does not yet say what to do
 with one, so `system.consult.text` carries, under the open ids, the one sentence that does:
 an advice is the answer to YOUR consultation, pass it on to the person in your own words,
-do not consult again about it — unless the core asks YOU something back, and then you
-answer the core, with its `consult_id`, never the person. It is here and not in a seed
+do not consult again about it — unless the core asks YOU something back: then you answer the
+core with `reply_to_consult` under its `consult_id`, from what the conversation already holds,
+and if only the person knows, you ask the person first
+([#894](https://github.com/mmeyerlein/meclaw/issues/894); until then it said "never the
+person", which left a question only the person could answer with nobody to ask). It is here and not in a seed
 charter for the reason [#512](https://github.com/mmeyerlein/meclaw/issues/512) and
 [#525](https://github.com/mmeyerlein/meclaw/issues/525) both measured: a seed is read once
 at birth, and a brain that grew — imported, rebuilt, transferred — never receives it. A

@@ -12,6 +12,41 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-09-29
+The curator shapes each window per role and the model steers it, reads its own conversation back, asks memory with
+context and looks a gap up after the answer, and hands a new session a note on the last one; the reasoning core can
+ask back under the consult it answers, and a duplex call outlives its provider's session limit. Internal block ids
+never leave the colony.
+
+### Added
+
+- **The curator shapes the window per role, and the model steers it** ([#892](https://github.com/mmeyerlein/meclaw/issues/892)). `curator@1.1.0` reads a
+  role (`talky`, `consult`, `coding`, `research`) with presets for what stays raw, what is summarised and when a
+  rebuild starts, shows foreign words and tool results behind a short id `[#<12 hex>]` that the model can
+  release or pin through the `window` section of its answer's sidecar, takes pins from another hive on `in_pin`
+  and answers the collector's menu question itself, and `cogny@5.3.0` cuts its answer's sidecar with a splitter
+  of its own.
+- **A model reads its own conversation back** ([#893](https://github.com/mmeyerlein/meclaw/issues/893)). The tools `history_search`, `history_read` and
+  `history_outline` are answered inside `talky@6.1.0` and `cogny@5.3.0` by the curator's new `./history` cell
+  out of its own ledger (by phrase, regular expression, time window, block kind, short id or turn range), and
+  never out of another model's.
+- **The reasoning core can ask back** ([#894](https://github.com/mmeyerlein/meclaw/issues/894)). `cogny@5.3.0` asks the surface that consulted it through the
+  new tool `ask_requester`, the surface answers with `reply_to_consult` under the same `consult_id`, a follow-up
+  keeps the first order in view and no consult answer is cut by a character cap, and `collector@5.1.0` gets the
+  knob `defer_turns`, which the core sets to `"0"` so that an answer arriving during an open tool round opens a
+  round of its own.
+- **The memory leg asks with context, and a gap is looked up after the answer** ([#895](https://github.com/mmeyerlein/meclaw/issues/895)). The curator's new
+  `./push` cell puts the open topic, recently mentioned names and the blocks the person referred to in front of
+  the ambient recall question, the recall road reaches `talky-chat` as well (`builder@1.17.0`, pinned by
+  `meclaw-os@2.1.0`, with the librarian's corpus regenerated as `builder-librarian@2.2.8`), and a `gap` section
+  in an answer starts one asynchronous search whose find reaches the model at the start of the next round.
+- **A new session starts with a handover, and a duplex call outlives its provider's session limit**
+  ([#896](https://github.com/mmeyerlein/meclaw/issues/896)). The curator's new `./handover` cell hands a new session a note on the last one, and
+  `voice@2.4.0` renews a duplex provider session within the same call after `renew_after_ms` (off by default),
+  handing the new session a block of the recent conversation before it takes over at a quiet moment
+  (`freeswitch@2.2.0`, `member@2.1.0`, `assistant@3.1.0` and `talky@6.1.0` carry `renewed` up to the curator,
+  which writes that block).
+
 ## [0.48.0] — 2026-09-29
 
 Each conversational model gets a curator that owns its window and keeps a ledger of every call, the collector hands the round on

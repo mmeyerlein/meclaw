@@ -33,7 +33,11 @@
 //! graph routes by an edge on `hop.tool_name` — which is the rule stated the
 //! other way round. A tool the composite reaches by an edge on its NAME is
 //! topology of the level that draws the edge, so the level both routes it and
-//! must declare it.
+//! must declare it. Since GH #893 a composite's curator is a second answerer:
+//! when the composite asks it the menu question (`./collector -> ./curator` on
+//! `schemas`), it answers what its own `schemas` cell answers for `["*"]` --
+//! the model's own wall, `history_*`, which the composite routes inside by a
+//! prefix edge rather than by name.
 //!
 //! Three checks fall out, and each one is one half of a promise:
 //!
@@ -71,14 +75,32 @@ const SCHEMAS_CELL: &str = concat!(
     "/../../templates/tools/schemas/config.json"
 );
 
+const CURATOR_SCHEMAS_CELL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/curator/schemas/config.json"
+);
+
 /// Every name the shipped tool hive has a declaration for, asked the way its own
 /// hive asks — `["*"]` is the wildcard the door already understands, so this is
 /// read off the cell rather than copied from it.
 fn what_the_tool_hive_answers() -> BTreeSet<String> {
+    what_a_schemas_cell_answers(SCHEMAS_CELL, "/main/tools/schemas")
+}
+
+/// Every tool name a composite's curator answers the menu question with
+/// (GH #893), read off its `schemas` cell the same way.
+fn what_the_curator_answers() -> BTreeSet<String> {
+    if !std::path::Path::new(CURATOR_SCHEMAS_CELL).is_file() {
+        return BTreeSet::new();
+    }
+    what_a_schemas_cell_answers(CURATOR_SCHEMAS_CELL, "/main/talky/curator/schemas")
+}
+
+fn what_a_schemas_cell_answers(cell: &str, target: &str) -> BTreeSet<String> {
     let out = emit_all(
-        &shipped_script(SCHEMAS_CELL),
+        &shipped_script(cell),
         &json!({
-            "target": "/main/tools/schemas",
+            "target": target,
             "header": {"hop": {"route": "in_schemas"}, "context": {}},
             "ttl": 64,
             "tools": ["*"],
@@ -187,14 +209,104 @@ fn routed(c: &Composite) -> BTreeSet<String> {
     out
 }
 
+/// Whether this composite asks its curator the menu question: an edge
+/// `./collector -> ./curator` on `schemas`, in its own graph or in the graph of
+/// the composite a layer of it references (`assistant` asks through its
+/// `talky`).
+fn asks_its_curator(c: &Composite) -> bool {
+    let mut graphs = vec![c.graph.to_string()];
+    for (file, _) in c.layers {
+        if let Some((dir, _)) = file.split_once('/') {
+            graphs.push(format!("{dir}/config.json"));
+        }
+    }
+    graphs.iter().filter_map(|g| read(g)).any(|cfg| {
+        cfg["params"]["graph"]["edges"]
+            .as_array()
+            .is_some_and(|es| {
+                es.iter().any(|e| {
+                    e["from"] == "./collector"
+                        && e["to"] == "./curator"
+                        && e["condition"]
+                            .as_str()
+                            .is_some_and(|c| c.contains("'schemas'"))
+                })
+            })
+    })
+}
+
+/// Every name some answerer of this composite delivers: the tool hive, the
+/// composite's own routing, and its curator when it asks it.
+fn answered(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut out = hive.clone();
+    out.extend(routed(c));
+    if asks_its_curator(c) {
+        out.extend(what_the_curator_answers());
+    }
+    out
+}
+
+/// Whether this composite declares `["*"]`: it asks every answerer it wired for
+/// everything that answerer has (GH #464), so its menu is not a list it names.
+fn asks_for_everything(c: &Composite) -> bool {
+    param(c, "tools")
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .any(|v| v.as_str() == Some("*"))
+}
+
+/// What this composite's OWN `./schemas` cell declares to the composite itself,
+/// asked the way its inner menu edge asks it (`hop.tool_caller` = the composite's
+/// name). GH #894: the core routes `ask_requester` to a cell of its
+/// own and declares it to itself, so the name is on its menu without being on any
+/// list -- and without the tool hive knowing it.
+fn own_declarations(c: &Composite) -> BTreeSet<String> {
+    let path = templates_root().join(c.name).join("schemas/config.json");
+    if !path.is_file() {
+        return BTreeSet::new();
+    }
+    let out = emit_all(
+        &shipped_script(&path.to_string_lossy()),
+        &json!({
+            "target": format!("/main/{}/schemas", c.name),
+            "header": {"hop": {"route": "in_schemas", "tool_caller": c.name},
+                       "context": {}},
+            "ttl": 64,
+            "tools": ["*"],
+            "messages": [],
+        }),
+    );
+    out.first()
+        .and_then(|a| a["schemas"].as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The menu this composite can carry: what it declares AND somebody answers.
 /// Since GH #889 the collector answers nothing itself, so nothing is added to
-/// it on the collector's behalf.
+/// it on the collector's behalf. A composite that asks for everything carries
+/// everything its answerers have: the tool hive's names, the routed names its
+/// own `./schemas` declares to it (GH #894), and its curator's offer when it
+/// asks its curator (GH #893).
 fn menu(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
-    let routed = routed(c);
+    let answered = answered(c, hive);
+    if asks_for_everything(c) {
+        let own = own_declarations(c);
+        let mut all: BTreeSet<String> = hive.clone();
+        all.extend(routed(c).intersection(&own).cloned());
+        if asks_its_curator(c) {
+            all.extend(what_the_curator_answers());
+        }
+        return all;
+    }
     declared(c)
         .into_iter()
-        .filter(|n| hive.contains(n) || routed.contains(n))
+        .filter(|n| answered.contains(n))
         .collect()
 }
 
@@ -271,11 +383,13 @@ fn findings(c: &Composite, hive: &BTreeSet<String>, vocabulary: &BTreeSet<String
             }
         }
     }
+    let answered = answered(c, hive);
     for name in declared(c) {
-        if !hive.contains(&name) && !routed(c).contains(&name) {
+        if !answered.contains(&name) {
             out.push(format!(
                 "{}: `{name}` is declared in `params.tools`, and no answerer of this composite \
-                 delivers it -- the tool hive has nothing under it and no edge routes it. This \
+                 delivers it -- the tool hive has nothing under it, no edge routes it and its \
+                 curator does not offer it. This \
                  is GH #464 happening again",
                 c.name
             ));
@@ -302,6 +416,7 @@ fn findings(c: &Composite, hive: &BTreeSet<String>, vocabulary: &BTreeSet<String
 
 fn vocabulary(hive: &BTreeSet<String>) -> BTreeSet<String> {
     let mut v = hive.clone();
+    v.extend(what_the_curator_answers());
     for c in COMPOSITES {
         v.extend(routed(c));
         v.extend(declared(c));

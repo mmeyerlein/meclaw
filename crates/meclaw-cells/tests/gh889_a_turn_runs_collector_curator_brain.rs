@@ -1284,11 +1284,23 @@ async fn a_briefed_peer_turn_reaches_the_provider_framed_and_in_the_legend() {
         wire(&reqs[0])
     );
     assert_eq!(peer[0]["role"], "user", "{}", wire(&reqs[0]));
-    assert_eq!(
-        peer[0]["content"],
-        format!("[peer {NORTH_REF} \u{b7} {NORTH_NAME}]\n{PEER_SAID}"),
-        "the frame carries the reference and the name of the brief's `who` -- the peer \
-         row's `speaker`/`speaker_ref` survived the curator"
+    // Since GH #892 the talky's curator puts the block's short id in front of
+    // somebody else's words: `[#<12 hex>] `, inside the frame the llm cell
+    // builds around them.
+    let content = peer[0]["content"].as_str().unwrap_or_default();
+    let frame = format!("[peer {NORTH_REF} \u{b7} {NORTH_NAME}]\n[#");
+    let id = content
+        .strip_prefix(frame.as_str())
+        .and_then(|rest| rest.strip_suffix(&format!("] {PEER_SAID}")))
+        .unwrap_or_else(|| {
+            panic!(
+                "the frame carries the reference and the name of the brief's `who` -- the \
+                 peer row's `speaker`/`speaker_ref` survived the curator: {content:?}"
+            )
+        });
+    assert!(
+        id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit()),
+        "a short id of 12 hex digits: {content:?}"
     );
 }
 
@@ -1307,7 +1319,7 @@ fn the_talky_curator_renders_the_nothing_form_its_splitter_cuts() {
     assert!(!form.is_empty(), "talky's splitter speaks a sidecar");
     let curator = read_json(&repo("templates/talky/curator/config.json"));
     assert_eq!(
-        curator["cell"]["template"], "curator@1.0.0",
+        curator["cell"]["template"], "curator@1.1.0",
         "the ref this road boots: {curator}"
     );
     assert_eq!(
@@ -1327,9 +1339,13 @@ fn the_talky_curator_renders_the_nothing_form_its_splitter_cuts() {
             "{level} overrides neither half, so both stay equal: {over:?}"
         );
     }
+    // GH #892: cogny grew the talky's splitter, and its curator renders the
+    // form that splitter cuts, byte for byte, the same way.
     let cogny = read_json(&repo("templates/cogny/curator/config.json"));
-    assert!(
-        cogny["override_params"]["intake"]["nothing_block"].is_null(),
-        "cogny speaks no sidecar and leaves the form off: {cogny}"
+    let cogny_splitter = read_json(&repo("templates/cogny/splitter/config.json"));
+    assert_eq!(
+        cogny["override_params"]["intake"]["nothing_block"],
+        cogny_splitter["params"]["nothing_block"],
+        "cogny's curator renders its splitter's nothing-form: {cogny}"
     );
 }

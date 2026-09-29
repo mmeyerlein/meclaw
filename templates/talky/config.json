@@ -36,8 +36,12 @@
           "because": "an errand the voice model handed the backend of its own accord, in a duplex call (welle-live, R-25-4). It arrives straight from the channel and NOT through a firewall, because a firewall's exit stamps `in_turn` and this is no turn of the conversation: the model keeps talking to the caller while this is worked on. The caller MUST promote `context.delegation_id` -- it is the correlation the answer travels back under -- and `context.engine`, which is what puts this agent into advise mode; without the engine the brain would answer the caller in prose nobody speaks. The collector assembles it exactly like `in_advice`, under role `delegation`, and keeps it out of both memory writers"
         },
         {
+          "route": "in_renewed",
+          "because": "a duplex voice session of a running call was renewed at its provider's limit (GH #896): `hop.call_id`, `hop.renewal_n`. It goes to `./curator` and nowhere else -- no round, no brain call: the curator puts the running conversation together without a model and the answer leaves as ONE `sidecar` section `context` carrying `hop.renewal_n`, on the edge every curator section leaves by, with `context.call_id` so the channel's `in_advise` finds the call"
+        },
+        {
           "route": "in_bundle",
-          "because": "a memory bundle, coming back from whatever keeps this agent's memory"
+          "because": "a memory bundle, coming back from whatever keeps this agent's memory. Since GH #895 a bundle whose `context.gap_ask` is set answers the curator's own lookup of a gap and goes to `./curator` (`in_gap_bundle`), never to the collector, which has no round for it"
         },
         {
           "route": "in_briefing",
@@ -96,11 +100,11 @@
         },
         {
           "route": "sidecar",
-          "because": "one section of the block a turn's answer carried, as the model wrote it: hop.section names the section, the body carries {messages: [], section, payload}. ONE message PER SECTION -- never repaired, never re-serialised, and never judged here, so a parent distributes on hop.section and a section this composite has never heard of needs no change to it. Since talky@5.1.0 this port replaces `extraction`, which carried exactly one thing (the memory annotation, as raw text) and is now the section `memory` on this route (GH #605); a parent still wired on `hop.route == 'extraction'` writes nothing. Since talky@4.1.0 this is how per-turn extraction travels at all: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route too. It is a lane and not an obligation: without the block contract in the brain's instructions there is nothing to cut and nothing ever travels here"
+          "because": "one section of the block a turn's answer carried, as the model wrote it: hop.section names the section, the body carries {messages: [], section, payload}. ONE message PER SECTION -- never repaired, never re-serialised, and never judged here, so a parent distributes on hop.section and a section this composite has never heard of needs no change to it. Since talky@5.1.0 this port replaces `extraction`, which carried exactly one thing (the memory annotation, as raw text) and is now the section `memory` on this route (GH #605); a parent still wired on `hop.route == 'extraction'` writes nothing. Since talky@4.1.0 this is how per-turn extraction travels at all: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route too. The curator's own sections (`window`, `gap`) never travel here, and `memory` travels through the curator unchanged (GH #892). It is a lane and not an obligation: without the block contract in the brain's instructions there is nothing to cut and nothing ever travels here. Since GH #895 one more section leaves here that no answer carried: in a duplex call `./curator` sends a gap's find as `fact` for the voice model"
         },
         {
           "route": "recall",
-          "because": "a memory read this turn needs"
+          "because": "a memory read this turn needs: the collector's per-turn ask, whose question `./curator` builds out of the wall since GH #895 (same hop keys), and the curator's own lookup of a gap of an answer, which lifts `hop.gap_ask` into `context.gap_ask` on the way out so its bundle comes back to the curator"
         },
         {
           "route": "brief",
@@ -175,7 +179,17 @@
         {
           "from": ".",
           "to": "./collector",
-          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_delegation' || hop.route == 'in_bundle' || hop.route == 'in_briefing' || hop.route == 'in_round_sweep' || hop.route == 'in_menu')"
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_delegation' || hop.route == 'in_bundle' || hop.route == 'in_briefing' || hop.route == 'in_round_sweep' || hop.route == 'in_menu') && !(hop.route == 'in_bundle' && has(context.gap_ask) && context.gap_ask != '')"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.gap_ask) && context.gap_ask != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_gap_bundle'"
+            }
+          }
         },
         {
           "from": ".",
@@ -273,6 +287,29 @@
           }
         },
         {
+          "from": "./collector",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'curator'"
+            }
+          }
+        },
+        {
           "from": "./brain",
           "to": "./splitter",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
@@ -295,12 +332,22 @@
         {
           "from": "./splitter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'sidecar'",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory'))",
           "modifier": {
             "delete_context": [
               "tool_answerer",
               "curator_call"
             ]
+          }
+        },
+        {
+          "from": "./splitter",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_section'"
+            }
           }
         },
         {
@@ -402,9 +449,37 @@
         },
         {
           "from": "./collector",
-          "to": ".",
+          "to": "./curator",
           "condition": "has(hop.route) && hop.route == 'recall'",
           "modifier": {
+            "set_hop": {
+              "route": "'in_recall_ask'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'recall' && !has(hop.gap_ask)",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "gap_ask"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'recall' && has(hop.gap_ask)",
+          "modifier": {
+            "set_context": {
+              "gap_ask": "hop.gap_ask"
+            },
+            "delete_hop": [
+              "gap_ask"
+            ],
             "delete_context": [
               "tool_answerer",
               "curator_call"
@@ -430,6 +505,18 @@
             "delete_context": [
               "tool_answerer",
               "curator_call"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'sidecar'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "gap_ask"
             ]
           }
         },
@@ -517,12 +604,42 @@
           "from": ".",
           "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('history_')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_history_call'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_renewed'",
+          "modifier": {
+            "set_context": {
+              "call_id": "has(hop.call_id) ? hop.call_id : ''"
+            }
+          }
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the talky composite: bundles the session keeper, the context collector, the curator, the brain and the tool dispatcher behind ONE ingress, ONE reply exit, ONE write exit and ONE error drain. Everything the first production rollout wired by hand -- the stamp, the seam, the dispatcher lanes, the loopback with restore_ttl, the close path -- is an internal edge here. Since talky@4.3.0 (GH #447) the close batch leaves on the write port and nothing summarises it in here: the member above the talky turns it into the memory hive's close pass, and what the next generation needs of it comes back through the recall bundle. Since talky@4.5.1 (GH #458) it has ONE more door and it is the one it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since talky@4.5.1 (GH #464) it also stops carrying a tool menu somebody typed: `./collector`'s `params.tools` names the tools this agent uses, the names leave on `schemas` and the declarations come back on `in_menu` to be written into the brain as durable `system.tools`. Since talky@4.5.1 (GH #475) it passes two more doors straight through to that keeper -- `in_export` and `in_import` -- and carries the keeper's `dump` back out: the sessions are the one thing in here a member cannot recompute, and until this the lane stopped at a hive nothing above it forwarded to.",
+    "purpose": "Scope marker of the talky composite: bundles the session keeper, the context collector, the curator, the brain and the tool dispatcher behind ONE ingress, ONE reply exit, ONE write exit and ONE error drain. Everything the first production rollout wired by hand -- the stamp, the seam, the dispatcher lanes, the loopback with restore_ttl, the close path -- is an internal edge here. Since talky@4.3.0 (GH #447) the close batch leaves on the write port as it is: the member above the talky turns it into the memory hive's close pass, and what the next generation needs of it comes back through the recall bundle -- beside the one call a close costs in here, off the hot path: the curator condenses the closed session into a handover note through its own summarizer (GH #896), and the next generation reads it on its first call as `history.handover`. Since talky@4.5.1 (GH #458) it has ONE more door and it is the one it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since talky@4.5.1 (GH #464) it also stops carrying a tool menu somebody typed: `./collector`'s `params.tools` names the tools this agent uses, the names leave on `schemas` and the declarations come back on `in_menu` to be written into the brain as durable `system.tools`. Since talky@4.5.1 (GH #475) it passes two more doors straight through to that keeper -- `in_export` and `in_import` -- and carries the keeper's `dump` back out: the sessions are the one thing in here a member cannot recompute, and until this the lane stopped at a hive nothing above it forwarded to.",
     "use_when": "One per conversational agent. Instantiate it in the same mutation that wires the four ports plus the per-instance tool lanes; the composite is an island until an edge crosses into it.",
     "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no surface proxy, no drain cell -- with ONE exception since 4.2.0, and it is a boundary rather than a gap: the tools this composite IMPLEMENTED were served by the collector inside it and routed by this template's own edges (GH #55); since talky@6.0.0 there are none (GH #889). RETRACTED with the same bump: up to 4.1.1 this line read `The brain's identity, instructions and tool schemas live in its own cell.db -- the composite carries the topology, never the persona`. The schema half no longer holds. A tool the composite IMPLEMENTS is topology, and its schema ships with the composite; a tool the PARENT wires is the agent, and the composite carries neither its schema nor its lane. So the composite carries the schemas of those two tools and of no others. Identity, instructions and every per-agent tool stay the brain's own cell.db -- the composite still carries no persona."
   }
