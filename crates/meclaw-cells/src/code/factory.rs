@@ -40,6 +40,11 @@ impl CellFactory for CodeCellFactory {
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
         let params = CodeParams::parse(&raw_params)?;
+        // GH #907: the attachments[] reader -- `None` unless the contract
+        // declares `consumes.body.attachments` (the `llm` factory's gate).
+        let attachment_timeout_ms = crate::code::params::parse_attachment_timeout_ms(&raw_params)?;
+        let attachment_reader =
+            meclaw_colony::AttachmentReader::for_contract(&contract, blob_store.clone());
         // GH #844: a cell whose inline script is materialised per spawn clears
         // the leftovers of processes that were killed before their guard could
         // unlink them -- only files of this crate's own name shape, only of
@@ -73,6 +78,8 @@ impl CellFactory for CodeCellFactory {
                 // Both spawn paths (here and `boot_inactive_respawn` below)
                 // must attach it, or a restarted cell would silently lose it.
                 .with_stdin_params(&raw_params)
+                // GH #907: both spawn paths attach the reader, like the params.
+                .with_attachment_reader(attachment_reader, attachment_timeout_ms)
                 // Runner modes (R2): `cold` leaves the cell untouched; warm and
                 // resident start their pool HERE, once per cell value, so a
                 // crash-respawn keeps the warm children (it is the dispatcher
@@ -177,6 +184,8 @@ impl CellFactory for CodeCellFactory {
         mailbox_capacity: usize,
     ) -> Option<RespawnFn> {
         let params = CodeParams::parse(&raw_params).ok()?;
+        let attachment_timeout_ms =
+            crate::code::params::parse_attachment_timeout_ms(&raw_params).ok()?;
         let max_concurrency = params.effective_max_concurrency();
         let cell = Arc::new(
             CodeCell::new(
@@ -190,6 +199,11 @@ impl CellFactory for CodeCellFactory {
             // W12 route A: same params copy as on the regular spawn path — a
             // restarted cell must see the configuration it was born with.
             .with_stdin_params(&raw_params)
+            // GH #907: the same reader as on the regular spawn path.
+            .with_attachment_reader(
+                meclaw_colony::AttachmentReader::for_contract(&contract, blob_store.clone()),
+                attachment_timeout_ms,
+            )
             // A boot-inactive warm cell costs nothing: the child task spawns its
             // process on the FIRST job, so only the broker exists here.
             .with_runner_pool(&params, max_concurrency),

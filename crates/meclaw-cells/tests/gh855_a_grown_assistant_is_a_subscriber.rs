@@ -518,7 +518,7 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
          MODEL_CORE=m-core\n\
          MODEL_CORE_FAST=m-core-fast\n\
          MODEL_SURFACE=m-surface\n\
-         MODEL_CLOSER=m-closer\nMODEL_DIALECTIC=m-dialectic\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
+         MODEL_CLOSER=m-closer\nMODEL_DIALECTIC=m-dialectic\nMODEL_FILE_SPACE=m-file-space\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
     )
     .unwrap();
     let fs = factories(root);
@@ -812,7 +812,7 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
          MODEL_CORE=m-core\n\
          MODEL_CORE_FAST=m-core-fast\n\
          MODEL_SURFACE=m-surface\n\
-         MODEL_CLOSER=m\nMODEL_DIALECTIC=m\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
+         MODEL_CLOSER=m\nMODEL_DIALECTIC=m\nMODEL_FILE_SPACE=m\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
     )
     .unwrap();
     let real: Arc<dyn CellFactory> = Arc::new(OneRealBrain {
@@ -993,7 +993,7 @@ async fn a_refused_push_on_the_shipped_road_reaches_show() {
          MODEL_CORE=m-core\n\
          MODEL_CORE_FAST=m-core-fast\n\
          MODEL_SURFACE=m-surface\n\
-         MODEL_CLOSER=m\nMODEL_DIALECTIC=m\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
+         MODEL_CLOSER=m\nMODEL_DIALECTIC=m\nMODEL_FILE_SPACE=m\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
     )
     .unwrap();
     let real: Arc<dyn CellFactory> = Arc::new(OneRealBrain {

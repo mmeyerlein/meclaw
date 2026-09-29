@@ -4,9 +4,16 @@
 //! `tokio::time::timeout` (W7). TLS gate: reqwest with `rustls-tls`
 //! + `default-features = false` (Phase-7-TLS-Gate, archive/CLAUDE-phase-lessons.md § Phase 7).
 
-use crate::proxy::io::ProxyEvent;
+use crate::proxy::io::{DocumentContent, ProxyEvent};
 use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
+
+/// GH #907: the default ceiling of one document download, in bytes -- the
+/// Bot API's own `getFile` limit of 20 MiB. The document is committed to the
+/// colony blob store and the turn carries only its reference (R-FJ-1), so no
+/// hop, context or message-log row grows with it; the ceiling is what one
+/// download may cost, not what a turn may carry. An owner sets it lower.
+pub const DEFAULT_MAX_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Error classification for the backoff decision (W8). `Transient` →
 /// exponential backoff (1s → 60s); `Permanent` → a constant 5 min (no busy spin
@@ -48,6 +55,8 @@ pub struct TelegramClient {
     inner: reqwest::Client,
     base_url: String,
     bot_token: String,
+    /// GH #907: ceiling of one document download (`max_document_bytes`).
+    max_document_bytes: u64,
 }
 
 impl TelegramClient {
@@ -61,7 +70,21 @@ impl TelegramClient {
             inner,
             base_url: base_url.trim_end_matches('/').to_string(),
             bot_token: bot_token.to_string(),
+            max_document_bytes: DEFAULT_MAX_DOCUMENT_BYTES,
         })
+    }
+
+    /// GH #907: the same client with another document ceiling. The factory sets
+    /// it from `params.max_document_bytes` at birth; the handler and the I/O
+    /// task hold clones of the one client, so both see the same ceiling.
+    pub fn with_max_document_bytes(mut self, max_document_bytes: u64) -> Self {
+        self.max_document_bytes = max_document_bytes;
+        self
+    }
+
+    /// The document ceiling this client downloads up to.
+    pub fn max_document_bytes(&self) -> u64 {
+        self.max_document_bytes
     }
 
     /// β (path B): rebuild with a new `base_url`, keeping the **immutable**
@@ -75,6 +98,7 @@ impl TelegramClient {
             inner: self.inner.clone(),
             base_url: base_url.trim_end_matches('/').to_string(),
             bot_token: self.bot_token.clone(),
+            max_document_bytes: self.max_document_bytes,
         }
     }
 
@@ -122,7 +146,88 @@ impl TelegramClient {
             .get("result")
             .and_then(|v| v.as_array())
             .ok_or_else(|| TelegramError::Transient("missing result array".into()))?;
-        Ok(results.iter().filter_map(parse_update_text_only).collect())
+        Ok(results.iter().filter_map(parse_update).collect())
+    }
+
+    /// GH #907: `getFile` plus the download of one document, both steps under
+    /// their own operation timeout (hard rule 12) and the whole body read
+    /// inside it. Nothing is fetched past `max_document_bytes`: a size Telegram
+    /// announced over the ceiling answers `TooLarge` without a request, and a
+    /// body that grows past it is dropped mid-stream.
+    ///
+    /// The download URL carries the bot token, so no failure here says more
+    /// than a fixed code (`get_file_failed`, `download_failed`, `timeout`) --
+    /// a `reqwest` error prints its URL, and this string travels into a turn.
+    pub async fn fetch_document(
+        &self,
+        file_id: &str,
+        announced_size: Option<u64>,
+        step_timeout: Duration,
+    ) -> DocumentContent {
+        let cap = self.max_document_bytes;
+        if announced_size.is_some_and(|n| n > cap) {
+            return DocumentContent::TooLarge;
+        }
+        let url = reqwest::Url::parse_with_params(
+            &format!("{}/bot{}/getFile", self.base_url, self.bot_token),
+            &[("file_id", file_id)],
+        );
+        let Ok(url) = url else {
+            return DocumentContent::Failed("get_file_failed".into());
+        };
+        let step = async {
+            let resp = self.inner.get(url).send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            resp.json::<JsonValue>().await.ok()
+        };
+        let meta = match tokio::time::timeout(step_timeout, step).await {
+            Err(_) => return DocumentContent::Failed("timeout".into()),
+            Ok(None) => return DocumentContent::Failed("get_file_failed".into()),
+            Ok(Some(v)) => v,
+        };
+        let result = meta.get("result");
+        let Some(file_path) = result
+            .and_then(|r| r.get("file_path"))
+            .and_then(|v| v.as_str())
+            .filter(|p| !p.is_empty())
+        else {
+            return DocumentContent::Failed("get_file_failed".into());
+        };
+        if result
+            .and_then(|r| r.get("file_size"))
+            .and_then(|v| v.as_u64())
+            .is_some_and(|n| n > cap)
+        {
+            return DocumentContent::TooLarge;
+        }
+        let url = format!("{}/file/bot{}/{}", self.base_url, self.bot_token, file_path);
+        let step = async {
+            let mut resp = self
+                .inner
+                .get(&url)
+                .send()
+                .await
+                .map_err(|_| "download_failed")?;
+            if !resp.status().is_success() {
+                return Err("download_failed");
+            }
+            let mut bytes: Vec<u8> = Vec::new();
+            while let Some(chunk) = resp.chunk().await.map_err(|_| "download_failed")? {
+                if (bytes.len() + chunk.len()) as u64 > cap {
+                    return Err("too_large");
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(bytes)
+        };
+        match tokio::time::timeout(step_timeout, step).await {
+            Err(_) => DocumentContent::Failed("timeout".into()),
+            Ok(Err("too_large")) => DocumentContent::TooLarge,
+            Ok(Err(code)) => DocumentContent::Failed(code.into()),
+            Ok(Ok(bytes)) => DocumentContent::Bytes(bytes),
+        }
     }
 
     /// POST `sendMessage`. A-Timeout via `tokio::time::timeout`. 401/403 →
@@ -202,23 +307,78 @@ impl TelegramClient {
     }
 }
 
-/// Extracts `message.text` updates only. `edited_message`, `callback_query` etc.
-/// are ignored (10-C scope).
-fn parse_update_text_only(v: &JsonValue) -> Option<ProxyEvent> {
+/// One update of `getUpdates` as the event the handler sees. GH #907: EVERY
+/// update with an `update_id` yields an event, because the cursor may only
+/// move past what the handler persisted -- before, a photo, a sticker or an
+/// `edited_message` yielded nothing, `run_io` never moved past it and the
+/// restart after it fetched the same update again, for ever. A text message is
+/// a `UserMessage`, a `message.document` a `Document` (its bytes are fetched
+/// by `run_io`), everything else a `Skipped` that only moves the cursor.
+pub fn parse_update(v: &JsonValue) -> Option<ProxyEvent> {
     let update_id = v.get("update_id")?.as_i64()?;
-    let m = v.get("message")?;
-    let text = m.get("text")?.as_str()?.to_string();
-    let chat_id = m.get("chat")?.get("id")?.as_i64()?;
+    let skipped = ProxyEvent::Skipped { update_id };
+    let Some(m) = v.get("message") else {
+        return Some(skipped);
+    };
+    let Some(chat_id) = m
+        .get("chat")
+        .and_then(|c| c.get("id"))
+        .and_then(|v| v.as_i64())
+    else {
+        return Some(skipped);
+    };
     let user_id = m
         .get("from")
         .and_then(|f| f.get("id"))
         .and_then(|v| v.as_i64());
     let message_id = m.get("message_id").and_then(|v| v.as_i64());
-    Some(ProxyEvent::UserMessage {
+    if let Some(text) = m.get("text").and_then(|v| v.as_str()) {
+        return Some(ProxyEvent::UserMessage {
+            update_id,
+            chat_id,
+            user_id,
+            message_id,
+            text: text.to_string(),
+        });
+    }
+    let Some(doc) = m.get("document") else {
+        return Some(skipped);
+    };
+    let Some(file_id) = doc.get("file_id").and_then(|v| v.as_str()) else {
+        return Some(skipped);
+    };
+    let mime = doc
+        .get("mime_type")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let name = doc
+        .get("file_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if mime == "application/pdf" {
+                "document.pdf".to_string()
+            } else {
+                "document".to_string()
+            }
+        });
+    Some(ProxyEvent::Document {
         update_id,
         chat_id,
         user_id,
         message_id,
-        text,
+        caption: m
+            .get("caption")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        file_id: file_id.to_string(),
+        name,
+        mime,
+        size: doc.get("file_size").and_then(|v| v.as_u64()),
+        content: DocumentContent::NotFetched,
     })
 }

@@ -1,0 +1,125 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 45000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "extract_cmd": "pdftotext",
+    "extract_max_pages": 500,
+    "extract_timeout_ms": 30000,
+    "script_inline": "import sys, json, base64, subprocess\n\n# THE TEXT OF A DOCUMENT (file-space, GH #907). `./ingest` asks on\n# `in_extract` with `{attachments: [<ref>], path, mime}` and hop `op_id`: a\n# PDF about to be born under `path`. This cell declares\n# `consumes.body.attachments`, so the colony reads the blob before the script\n# runs and `attachments[0]` carries `data_b64` (or `error`). It splits the\n# pages and emits exactly ONE message -- the `create` for `./write`, hop\n# `{route: in_write, op: create, op_id, caller: ingest, notify: '1'}`, args\n# `{path, mime, notify, attachment: 0, derived: [{part, text}, ...]}`, the\n# reference passed on so `./write` reads the same blob for the bytes. The\n# pages travel in that body only (a body >= 64 KiB becomes a blob by\n# itself), never in a hop, a context or a `pending` row (R-FJ-1). Without\n# text -- no bytes, no extractor, a failed run -- the `create` goes without\n# `derived` and stderr names the code: the file is still born. It keeps\n# nothing and writes nothing: no store, no temp file, no disk.\n#\n# DETERMINISTIC, NO MODEL (OR-FJ-G6, R-27-4 point 4). A PDF goes through\n# `pdftotext -layout - -` (poppler) as a subprocess: the bytes on stdin, the\n# text on stdout, pages separated by a form feed. argv only, no shell, a\n# timeout per call. Missing program -> `no_extractor`; an exit code other\n# than 0 -> `extract_failed`. stderr does not count -- poppler warns about\n# many readable PDFs.\n#\n# Knobs: `extract_cmd` (the program, default `pdftotext`), `extract_max_pages`\n# (500), `extract_timeout_ms` (30000, below the cell's own timeout).\n\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nP = doc.get(\"params\") or {}\nhop = ((doc.get(\"envelope\") or {}).get(\"header\") or {}).get(\"hop\") or {}\n\nPDF = \"application/pdf\"\n\n\ndef _int(key, default):\n    try:\n        return int(P.get(key, default))\n    except (TypeError, ValueError):\n        return default\n\n\ndef split_pages(text, max_pages):\n    \"\"\"`pdftotext` ends every page with a form feed: the last piece after the\n    final one is empty. Each page keeps its text without the trailing blank\n    lines of the layout.\"\"\"\n    parts = text.split(\"\\f\")\n    if parts and parts[-1].strip() == \"\":\n        parts = parts[:-1]\n    return [p.rstrip() for p in parts][:max_pages]\n\n\ndef extract(mime, data, cmd, timeout_s, max_pages):\n    if mime != PDF:\n        return {\"pages\": [], \"error\": \"unsupported_mime\"}\n    try:\n        run = subprocess.run([cmd, \"-layout\", \"-\", \"-\"], input=data, capture_output=True,\n                             timeout=timeout_s, env={\"PATH\": \"/usr/bin:/bin\", \"LC_ALL\": \"C.UTF-8\"})\n    except FileNotFoundError:\n        return {\"pages\": [], \"error\": \"no_extractor\"}\n    except subprocess.TimeoutExpired:\n        return {\"pages\": [], \"error\": \"timeout\"}\n    except OSError:\n        return {\"pages\": [], \"error\": \"no_extractor\"}\n    if run.returncode != 0:\n        return {\"pages\": [], \"error\": \"extract_failed\"}\n    return {\"pages\": split_pages(run.stdout.decode(\"utf-8\", \"replace\"), max_pages),\n            \"tool\": \"pdftotext\"}\n\n\ndef derived_parts(pages):\n    return [{\"part\": i + 1, \"text\": str(t)} for i, t in enumerate(pages or [])]\n\n\ndef main():\n    if str(hop.get(\"route\") or \"\") != \"in_extract\":\n        sys.stderr.write(\"file-space/extract: not an in_extract request -- dropped\\n\")\n        return []\n    atts = d.get(\"attachments\") if isinstance(d.get(\"attachments\"), list) else []\n    entry = atts[0] if atts and isinstance(atts[0], dict) else {}\n    ref = {k: v for k, v in entry.items() if k not in (\"data_b64\", \"error\")}\n    mime = str(d.get(\"mime\") or \"\")\n    err = entry.get(\"error\")\n    data = None\n    if isinstance(err, dict):\n        out = {\"pages\": [], \"error\": str(err.get(\"code\") or \"store_error\")}\n    else:\n        raw = entry.get(\"data_b64\")\n        try:\n            data = base64.b64decode(raw if isinstance(raw, str) else \"\", validate=True)\n        except Exception:\n            data = None\n        if not data:\n            out = {\"pages\": [], \"error\": \"bad_request\"}\n        else:\n            out = extract(mime, data, str(P.get(\"extract_cmd\") or \"pdftotext\"),\n                          max(1, _int(\"extract_timeout_ms\", 30000)) / 1000.0,\n                          max(1, _int(\"extract_max_pages\", 500)))\n    args = {\"path\": str(d.get(\"path\") or \"\"), \"mime\": mime, \"notify\": \"1\", \"attachment\": 0}\n    if out.get(\"pages\"):\n        args[\"derived\"] = derived_parts(out[\"pages\"])\n    else:\n        # `./write` answers a blob it cannot read with that code itself.\n        sys.stderr.write(\"file-space/extract: no text for %s: %s\\n\"\n                         % (args[\"path\"], out.get(\"error\") or \"no_pages\"))\n    op_id = str(hop.get(\"op_id\") or \"\")\n    return [{\"header\": {\"route\": \"in_write\", \"op\": \"create\", \"op_id\": op_id,\n                        \"caller\": \"ingest\", \"notify\": \"1\"},\n             \"messages\": [], \"op\": \"create\", \"args\": args, \"attachments\": [ref]}]\n\n\nsys.stdout.write(json.dumps(main()))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": false,
+    "settings": {
+      "extract_cmd": {
+        "type": "string",
+        "secret": false,
+        "default": "pdftotext",
+        "description": "The program that turns a PDF into text, called as `<cmd> -layout - -` (the PDF on stdin, the text on stdout, pages split by form feeds). A program that cannot be started answers `no_extractor`."
+      },
+      "extract_max_pages": {
+        "type": "number",
+        "secret": false,
+        "default": 500,
+        "description": "The most pages one answer carries; the rest of a longer document is not read."
+      },
+      "extract_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 30000,
+        "description": "The time one extraction may take before it answers `timeout`; below `external_timeout_ms`, so the answer always leaves."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "op": {
+          "type": "string",
+          "values": [
+            "create"
+          ],
+          "required": true
+        },
+        "args": {
+          "type": "object",
+          "required": true
+        },
+        "attachments": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "in_write"
+          ],
+          "required": true
+        },
+        "op": {
+          "type": "string",
+          "values": [
+            "create"
+          ],
+          "required": true
+        },
+        "op_id": {
+          "type": "string",
+          "required": true
+        },
+        "caller": {
+          "type": "string",
+          "values": [
+            "ingest"
+          ],
+          "required": true
+        },
+        "notify": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "attachments": {
+          "type": "array",
+          "required": true
+        },
+        "path": {
+          "type": "string",
+          "required": true
+        },
+        "mime": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The text of a PDF about to be born in its file space (GH #907): the colony reads the blob the request points at (`consumes.body.attachments`), `pdftotext` (poppler) turns it into one string per page as a subprocess -- the bytes on stdin, the text on stdout, no shell, no temp file, no model -- and the cell sends the `create` for `./write` with the pages as `derived`. Deterministic: the same bytes give the same pages.",
+    "use_when": "Reached on `in_extract` only, which `./ingest` draws for a PDF with the path it chose; emits exactly one `create` on `in_write` with the asker's `op_id` and caller `ingest`, which the hive draws to `./write`. `./write`'s answer goes back to `./ingest`.",
+    "not_in_scope": "No store, no state, no network, no write of its own. No other format than PDF (`unsupported_mime`), no OCR of scanned pages (they come back empty), no model. It never answers `./ingest` itself.",
+    "emits_meaning": "One `create` on `in_write`, hop `op` `create`, `op_id` mirrored, caller `ingest`, notify '1'; body `{messages: [], op: create, args: {path, mime, notify: '1', attachment: 0, derived?: [{part, text}]}, attachments: [ref]}` -- the reference without the bytes, which `./write` reads itself. `derived` is missing when there is no text (stderr names the code: `no_extractor`, `extract_failed`, `timeout`, `unsupported_mime`, `bad_request`, or the reader's `not_found`/`timeout`/`store_error`/`bad_ref`); the file is born all the same.",
+    "consumes_meaning": "body.attachments: `[ref]`, the first entry read -- `data_b64` from the colony's reader, or `error {code, message}`. body.path: the path `./ingest` chose. body.mime: the document's MIME type, only `application/pdf` is read."
+  }
+}

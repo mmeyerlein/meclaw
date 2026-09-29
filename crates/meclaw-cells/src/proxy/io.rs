@@ -26,10 +26,69 @@ pub enum ProxyEvent {
         /// types; e.g. `edited_message` has one, `callback_query` does not;
         /// 10-C consumes only `message`-typed updates, so usually present).
         message_id: Option<i64>,
-        /// `message.text` (Phase-10-C consumes only text messages; non-text
-        /// updates are filtered in `run_io` and not pushed).
+        /// `message.text`.
         text: String,
     },
+    /// GH #907: a `message.document`. `parse_update` yields it with
+    /// `DocumentContent::NotFetched`; `run_io` fetches the bytes (`getFile` +
+    /// download, capped at the client's `max_document_bytes`) before the
+    /// handler sees it, so the handler never waits on the network.
+    Document {
+        /// Telegram `update_id` (cursor as for `UserMessage`).
+        update_id: i64,
+        /// Telegram `chat.id`.
+        chat_id: i64,
+        /// Telegram `from.id`.
+        user_id: Option<i64>,
+        /// Telegram `message.message_id`.
+        message_id: Option<i64>,
+        /// `message.caption`, empty when the document came without one.
+        caption: String,
+        /// `document.file_id`, what `getFile` is asked with.
+        file_id: String,
+        /// `document.file_name`, or `document`/`document.pdf` without one.
+        name: String,
+        /// `document.mime_type`, or `application/octet-stream` without one.
+        mime: String,
+        /// `document.file_size` as Telegram announced it.
+        size: Option<u64>,
+        /// The bytes, or why there are none.
+        content: DocumentContent,
+    },
+    /// GH #907: an update the connector does not read (a photo, a voice note, a
+    /// sticker, an edit). It carries only its id: the handler persists the
+    /// cursor past it and emits nothing, so the update is acknowledged instead
+    /// of being fetched again after every restart.
+    Skipped {
+        /// Telegram `update_id`.
+        update_id: i64,
+    },
+}
+
+impl ProxyEvent {
+    /// The Telegram `update_id` of any event -- what the cursor moves past.
+    pub fn update_id(&self) -> i64 {
+        match self {
+            ProxyEvent::UserMessage { update_id, .. }
+            | ProxyEvent::Document { update_id, .. }
+            | ProxyEvent::Skipped { update_id } => *update_id,
+        }
+    }
+}
+
+/// GH #907: the bytes of one document (committed to the blob store by the
+/// handler), or why there are none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentContent {
+    /// Parsed, not yet fetched (only between `parse_update` and `run_io`).
+    NotFetched,
+    /// The downloaded bytes, at most `max_document_bytes`.
+    Bytes(Vec<u8>),
+    /// Over `max_document_bytes`: announced so, or grown so while downloading.
+    TooLarge,
+    /// A fixed failure code (`get_file_failed`, `download_failed`, `timeout`);
+    /// never a URL -- the download URL carries the bot token.
+    Failed(String),
 }
 
 /// Handler → I/O: live poll-config update (β, path B). The handler sends this
@@ -219,6 +278,27 @@ pub fn run_io(
                 }
                 let call = poll_client.get_updates(poll_offset, req_secs, client_timeout);
                 match tokio::time::timeout(hang_deadline, call).await {
+                    // GH #907: the documents of this batch are fetched HERE,
+                    // inside `work`, so a shutdown cancels a download like it
+                    // cancels a poll; every step of a fetch carries its own
+                    // operation timeout (`client_timeout`, hard rule 12).
+                    Ok(Ok(mut events)) => {
+                        for ev in events.iter_mut() {
+                            if let ProxyEvent::Document {
+                                file_id,
+                                size,
+                                content,
+                                ..
+                            } = ev
+                                && *content == DocumentContent::NotFetched
+                            {
+                                *content = poll_client
+                                    .fetch_document(file_id, *size, client_timeout)
+                                    .await;
+                            }
+                        }
+                        Ok(events)
+                    }
                     Ok(res) => res,
                     Err(_) => {
                         // Own, greppable message: this is NOT the ordinary
@@ -262,7 +342,7 @@ pub fn run_io(
                         liveness.mark_success();
                         backoff.reset();
                         for ev in events {
-                            let ProxyEvent::UserMessage { update_id, .. } = ev;
+                            let update_id = ev.update_id();
                             running_offset = running_offset.max(update_id + 1);
                             if events_tx.send(ev).await.is_err() {
                                 return; // handler dead → shutdown

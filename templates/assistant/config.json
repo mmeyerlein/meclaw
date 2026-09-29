@@ -148,7 +148,7 @@
             "./talky-chat",
             "./cogny"
           ],
-          "because": "a `memory_recall` call one of this level's two brains made, on its way OUT of the level to the member's memory (GH #552). It is the one tool name that leaves here: everything else this level can answer it answers inside, at `./tools` or at `./cogny`, and the named edge beside the default is what takes this one out. The member is the mandatory hop -- it is the level that knows the round the question is asked in, and a recall without an audience is refused rather than answered unfiltered Derived from the emits lists of talky@6.1.1 and cogny@5.3.1 (GH #552). Since 2.5.1 the lane names its connect points: a v-lane may start on either brain rim, because an app's tool is offered where the call is made (apps rim, 2026-09-05)."
+          "because": "a `memory_recall` call one of this level's two brains made, on its way OUT of the level to the member's memory (GH #552). Since GH #908 every `file_*` call leaves the same way, to the member's file space, on one edge per brain conditioned on the prefix; everything else this level can answer it answers inside, at `./tools` or at `./cogny`, and the named edges beside the default are what take these out. The member is the mandatory hop -- it is the level that knows the round the question is asked in, and a recall without an audience is refused rather than answered unfiltered Derived from the emits lists of talky@6.1.1 and cogny@5.3.1 (GH #552). Since 2.5.1 the lane names its connect points: a v-lane may start on either brain rim, because an app's tool is offered where the call is made (apps rim, 2026-09-05)."
         },
         {
           "route": "schemas",
@@ -789,6 +789,63 @@
           "from": "./cogny",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
+          "modifier": {
+            "set_context": {
+              "tool_caller": "'cogny'"
+            },
+            "delete_context": [
+              "col_phase",
+              "consult_class",
+              "consult_id",
+              "tool_answerer"
+            ],
+            "set_hop": {
+              "route": "'tool'"
+            }
+          }
+        },
+        {
+          "from": "./talky",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('file_')",
+          "modifier": {
+            "set_context": {
+              "tool_caller": "'talky'"
+            },
+            "delete_context": [
+              "col_phase",
+              "consult_class",
+              "consult_id",
+              "tool_answerer"
+            ],
+            "set_hop": {
+              "route": "'tool'"
+            }
+          }
+        },
+        {
+          "from": "./talky-chat",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('file_')",
+          "modifier": {
+            "set_context": {
+              "tool_caller": "'talky-chat'"
+            },
+            "delete_context": [
+              "col_phase",
+              "consult_class",
+              "consult_id",
+              "tool_answerer"
+            ],
+            "set_hop": {
+              "route": "'tool'"
+            }
+          }
+        },
+        {
+          "from": "./cogny",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('file_')",
           "modifier": {
             "set_context": {
               "tool_caller": "'cogny'"

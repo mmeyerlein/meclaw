@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@2.1.1"
+│       └── os/config.json     type: "ref", template: "meclaw-os@2.1.2"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 18 edges
 ├── grow-member.json           3. a person.         1 node, 18 edges
@@ -70,21 +70,21 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@2.1.1   the shell
+/os                                 meclaw-os@2.1.2   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.2.2         the control loop
 ├── llm-registry                      → llm-registry@2.4.0  the model registry
 └── orgs                              (empty container)
     └── acme                       org@2.0.0         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@2.1.0      one person
+            └── alex               member@2.2.0      one person
                 ├── affinity          → affinity@3.6.2      identity and meaning
                 ├── firewall          → firewall@2.3.1      the screen
                 ├── memory-hive       → memory-hive@3.6.3   what was said to them
                 ├── channels          (empty container)
-                │   └── telegram      telegram-connector@2.0.1   how alex is reached
+                │   └── telegram      telegram-connector@2.1.0   how alex is reached
                 └── assistants        (empty container)
-                    └── scribe    assistant@3.1.1   one generation of an agent
+                    └── scribe    assistant@3.2.0   one generation of an agent
                         ├── talky       → talky@6.1.1       the conversation surface
                         ├── talky-chat  → talky@6.1.1       the same, for the channel chat
                         ├── cogny       → cogny@5.3.1       the reasoning core
@@ -119,7 +119,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.2"}],
           "add_edges": []}}
 ```
 
@@ -234,7 +234,7 @@ WITHOUT a connect point below `./assistants`, so it stays a mandatory hop — it
 `audience_now`, `channel` and `recall_as_of`, and an author who tried to draw a v-lane straight
 from a brain to the memory is refused with `v_lane_mandatory_hop` rather than debugging a
 `missing_audience` in the log.
-`assistant@3.1.1` emits `pack_ack` (GH #458), and this walkthrough draws no edge
+`assistant@3.2.0` emits `pack_ack` (GH #458), and this walkthrough draws no edge
 for it: nothing here pushes an identity into the generation, so nothing here produces the
 receipt. A colony that wires the push wires the receipt with it, and the member takes every
 receipt to its own `./affinity` (GH #877). Since GH #561 both halves are **v-lanes** and neither ends at this level: the push
@@ -298,7 +298,7 @@ model of its own with `override_params` on `<assistant>/talky/brain` if the two 
 channel belongs to the person, not to a generation, so this step is declared at the *member's*
 `channels` container and the node is `telegram`. The name is no label: it is the value
 `context.channel_node` carries, and it is what the answer is routed back by. Nothing stands beside it — the
-conversation surface travels inside `assistant@3.1.1` as `talky` -- and, since
+conversation surface travels inside `assistant@3.2.0` as `talky` -- and, since
 2.7.0, a second one called `talky-chat` stands beside it for the channel `chat`, which this
 walkthrough does not grow.
 
@@ -353,7 +353,7 @@ Four edges:
   ([#803](https://github.com/mmeyerlein/meclaw/issues/803)).
 
 **The eleven edges between `channels` and its siblings are not among them** — they belong to
-`member@2.1.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@2.2.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` — and, since 1.8.0, its `withdraw` —
 the same way, `./channels → .` lets a
@@ -446,7 +446,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 {"scope": "/os/orgs/acme/members/alex/assistants",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
          "model_surface": "${MODEL_SURFACE}"},
- "diff": {"add_nodes": [{"name": "aide", "template": "assistant@3.1.1",
+ "diff": {"add_nodes": [{"name": "aide", "template": "assistant@3.2.0",
                          "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
@@ -635,6 +635,7 @@ MODEL_SURFACE=openai/gpt-4o-mini
 MODEL_CLOSER=openai/gpt-4o-mini
 MODEL_DIALECTIC=openai/gpt-4o-mini
 MODEL_DREAMER=openai/gpt-4o-mini
+MODEL_FILE_SPACE=openai/gpt-4o-mini
 TELEGRAM_BOT_TOKEN=...
 ENV
 
@@ -682,7 +683,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@2.1.1"}}
+{"cell": {"type": "ref", "template": "meclaw-os@2.1.2"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`

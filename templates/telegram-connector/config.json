@@ -7,6 +7,7 @@
     "long_poll_request_secs": 30,
     "send_timeout_ms": 10000,
     "query_timeout_ms": 5000,
+    "max_document_bytes": 20971520,
     "base_url": "https://api.telegram.org"
   },
   "contract": {
@@ -24,6 +25,12 @@
         "default": 30,
         "description": "Telegram-side getUpdates long-poll wait in seconds"
       },
+      "max_document_bytes": {
+        "type": "number",
+        "secret": false,
+        "default": 20971520,
+        "description": "The largest document the connector downloads, in bytes (20 MiB, the Bot API's own getFile limit; the document is committed to the colony blob store and the turn carries only its reference in attachments[]); a larger one reaches the turn as its caption plus `[file \"<name>\" could not be stored: document too large]`. Set at birth"
+      },
       "send_timeout_ms": {
         "type": "number",
         "secret": false,
@@ -33,7 +40,8 @@
     },
     "emits": {
       "body": {
-        "messages": { "type": "array", "required": true }
+        "messages": { "type": "array", "required": true },
+        "attachments": { "type": "array", "required": false }
       },
       "hop": {
         "platform": { "type": "string", "values": ["telegram"], "required": false },
@@ -41,7 +49,8 @@
         "user_id": { "type": "number", "required": false },
         "message_id": { "type": "number", "required": false },
         "error_code": { "type": "string", "required": false },
-        "msg_type": { "type": "string", "required": false }
+        "msg_type": { "type": "string", "required": false },
+        "has_file": { "type": "string", "values": ["1"], "required": false }
       }
     },
     "consumes": {

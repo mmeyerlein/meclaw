@@ -26,7 +26,17 @@
         "memory_recall",
         "history_search",
         "history_read",
-        "history_outline"
+        "history_outline",
+        "file_info",
+        "file_read",
+        "file_search",
+        "file_summary",
+        "file_ask",
+        "file_history",
+        "file_show",
+        "file_diff",
+        "file_list",
+        "file_find"
       ],
       "memory_tier": "1",
       "brief_slots": [

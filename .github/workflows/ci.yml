@@ -182,6 +182,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # GH #907: file-space/extract turns a PDF into pages with poppler's
+      # pdftotext, and the gh907 locks read the two-page fixture through it.
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils
       # t2 is the whole suite in the vocabulary of scripts/test-tier.sh, which
       # is also what the maintainer runs before a tag -- one definition of the
       # tiers, in one file, invoked the same way from both sides. The script

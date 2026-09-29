@@ -12,6 +12,35 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-09-30
+A workspace can be laid out on disk, run a program and take back what it wrote; it travels through git as
+an exchange format; the file tools reach every model surface; and a document sent to a Telegram chat lands in
+the member's file space as a blob reference, while the turn carries only its address.
+
+### Added
+
+- **A workspace is laid out on a disk and a program runs in it** ([#905](https://github.com/mmeyerlein/meclaw/issues/905)). The new template `projection@1.0.0` is the child hive `./projection` of every
+  file space: `ws_materialize` lays one workspace out under the owner's `base_path`, `ws_exec` runs one allowed
+  program there without a shell and with a minimal environment, and what the program changed comes back at once
+  (a formatter) or as numbered proposals for `ws_adopt`; the directory is writable only through an owner
+  override (`file-space@1.1.0`; `builder-librarian@2.2.10` carries it in the corpus, pinned by `builder@1.17.2`
+  and `meclaw-os@2.1.2`).
+- **A workspace goes into git and comes back** ([#906](https://github.com/mmeyerlein/meclaw/issues/906)). `ws_export_git` commits the workspace's files into a repository beside its
+  projection, `ws_import_git` takes a repository's tree into the workspace, and `ws_push` and `ws_pull` move it
+  to and from a named remote; every git call is an argument list without a shell, no repository hook runs,
+  `.git` never enters the space, and a remote URL that carries credentials is refused
+  (`credentials_unsupported`).
+- **A document sent to a Telegram chat becomes a file** ([#907](https://github.com/mmeyerlein/meclaw/issues/907)). `telegram-connector@2.1.0` takes documents up to 20 MiB
+  (`max_document_bytes`, the Bot API's own limit), commits them to the colony blob store and carries only a
+  blob reference in the turn's `attachments[]`; the member's file space stores the document under
+  `/inbox/<date>/<name>`, takes the pages of a PDF apart with `pdftotext`, and the assistant hears one text turn
+  that names the new file by its address.
+- **A model reads and edits files through its tools** ([#908](https://github.com/mmeyerlein/meclaw/issues/908)). `member@2.2.0` holds the person's `file-space` as a fifth holder, and the
+  `file_` tools reach it from every surface of `assistant@3.2.0`; every argument is checked against the tool's
+  schema before a request is made, and only the reasoning core may write. A member now needs
+  `MODEL_FILE_SPACE` in the environment, the model that writes a file's summaries: growth without it is refused
+  (`env_var_missing`).
+
 ## [0.50.0] — 2026-09-29
 A new file-space template keeps the files of a knowledge space as content-addressed blocks and immutable versions:
 every write carries its base, a syntax hook guards JSON, TOML and Python, a workspace commits all or nothing, and a

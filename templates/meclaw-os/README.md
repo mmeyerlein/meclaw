@@ -1,4 +1,4 @@
-# `meclaw-os@2.1.1`
+# `meclaw-os@2.1.2`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -31,6 +31,8 @@ Since 2.1.0 it pins `builder@1.17.0` ([#895](https://github.com/mmeyerlein/mecla
 now grows what it could not before, so it is the second digit.
 Since 2.1.1 it pins `builder@1.17.1` ([#899](https://github.com/mmeyerlein/meclaw/issues/899)), whose librarian's corpus carries `file-space`;
 only the pin moved, so it is the third digit.
+Since 2.1.2 it pins `builder@1.17.2` ([#905](https://github.com/mmeyerlein/meclaw/issues/905), [#908](https://github.com/mmeyerlein/meclaw/issues/908)), whose librarian's corpus carries
+`projection` and the file tools; only the pin moved, so it is the third digit.
 
 Between 1.7.0 and 1.9.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it was
 four and not five. The **submitter** stopped being a hive of this level and became an occupant of the
@@ -584,7 +586,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.1.1"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.1.2"}}
 ```
 
 ```bash
@@ -668,7 +670,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.2"}],
           "add_edges": []}}
 ```
 

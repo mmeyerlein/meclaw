@@ -1,6 +1,6 @@
-# `file-space@1.0.0`
+# `file-space@1.1.0`
 
-The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed` (code), `summarizer` (llm). A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
+The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
 ## Address
 
@@ -21,8 +21,11 @@ A version is the sha256 of the raw bytes; every answer names it by its first 12 
 |---|---|---|
 | `in_read` | `./read`; `hop.op` `ask`, or `search` with `hop.mode` `semantic` → `./derive` | a request |
 | `in_write` | `./write` | a request; without `ws` on the main line, with `ws` on the workspace's working version |
-| `in_ws` | `./ws` | a request |
+| `in_ws` | `./ws`; the projection ops (`ws_materialize`, `ws_exec`, `ws_adopt`, `ws_export_git`, `ws_import_git`, `ws_push`, `ws_pull`) → `./projection` (lane `in_proj`), exclusively | a request |
 | `in_model` | `./summarizer`, unless `hop.subscriber` names another cell (the curator's door) | a params message of the llm-registry (ADR-0046) |
+| `in_schemas` | `./schemas` | a menu question: body `tools`, the declared names (`*` = all) |
+| `in_tool` | `./tools` | one tool call: hop `tool_name` (`file_*`), `tool_call_id`, the arguments as JSON text in the turn; `context.tool_caller` 'cogny' for a write |
+| `in_ingest` | `./ingest` | a turn carrying `attachments: [{blob_id, mime_type, filename, size_bytes, sha256}]`, a reference into the colony's blob store, never the bytes (GH #907) |
 
 ## Routes (out of the hive path, on `hop.route`)
 
@@ -31,6 +34,9 @@ A version is the sha256 of the raw bytes; every answer names it by its first 12 
 | `answer` | exactly one per request; hop `op`, `op_id`, `caller` unchanged |
 | `model_refused` | a refused `in_model` push (the curator's pattern) |
 | `derived` | `{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller` |
+| `tool_schemas` | `{schemas[], unknown[], sidecar[]}` for `in_schemas`, the shape of `memory-hive` |
+| `tool_result` | one turn under the call's id for `in_tool`: the answer as JSON text without `op_id` and `caller`; `hop.error_code` on a refusal |
+| `turn` | the turn of an `in_ingest`, once, without `attachments`: one text turn after the caption, `[file fh-<id>@<v12> "<name>", <n> pages: <oneline>]` (the page count only for a PDF, counted from its `derived` parts), or `[file "<name>" could not be stored: <code>]`; caption and hop keys unchanged; the edge `./ingest -> .` restores the TTL (`restore_ttl`), because storing, extracting and deriving a document spends some 45 hops of it and the assistant's round starts after them |
 
 ## Request and answer
 
@@ -42,7 +48,7 @@ A version is the sha256 of the raw bytes; every answer names it by its first 12 
 | refusal body | `{ok: false, op, op_id, error: {code, message, candidates?, current?}}` |
 | write | every op that moves content (all but `create` and `snapshot`) carries `args.base` (the version read), `force` optional (it skips the hook, nothing else); answer `version` (new), `base`, `diff` (unified, 3 lines context, ≤ 400 lines; `truncated: true` when cut), `hook` (`ok`/`none`/`forced`; `hook_note` carries the guard's `note` when it passed without checking: `too_large_to_check`, `too_deep_to_check`, `no_text`); `stage` on `replace`; `rebased: true` when moved; `hint: use_replace` on an `overwrite` that changes at most 5 % of the lines |
 
-A line reads as `<n>:<h4>|<text>`, `h4` the first 4 hex digits of the sha256 of the line without `\n` or `\r\n`; `replace_lines` checks exactly these. A non-text version reads as its `derived` pages, each headed `--- page <n> ---`.
+A line reads as `<n>:<h4>|<text>`, `h4` the first 4 hex digits of the sha256 of the line without `\n` or `\r\n`; `replace_lines` checks exactly these. A version with `derived` pages reads as them, each headed `--- page <n> ---` -- also when its bytes happen to be UTF-8, as a pure-ASCII PDF's are; a version without reads as its own text.
 
 ## Internal lanes (`hop.route` of the emission)
 
@@ -53,6 +59,8 @@ A line reads as `<n>:<h4>|<text>`, `h4` the first 4 hex digits of the sha256 of 
 | `in_put` / `put` | `ws` → `write` → `ws` | ops `merge3`, `patch`, `create` |
 | `in_recover` | `write` → `ws` | `{commit}`; no answer |
 | `in_derive` | `write`, `ws` → `derive` | `{file, version}`, hop `notify`/`caller` of the causing write; no answer |
+| `in_extract` / `in_write` | `ingest` → `extract` → `write` | a PDF: `{attachments: [ref], path, mime}`, hop `op_id`; `extract` reads the blob (`consumes.body.attachments`), runs `pdftotext -layout - -` (no shell, no disk) and sends the one `create` on, the pages as `args.derived`, caller `ingest` -- without `derived` when there is no text (`no_extractor`, `extract_failed`, `timeout`, a reader error; stderr names it) |
+| `in_write` / `answer`, `derived` | `ingest` (or `extract`) → `write` → `ingest`, `derive` → `ingest` | `create` of a document under `/inbox/<YYYY-MM-DD>/<name>` (a taken name gets ` (2)`, ` (3)` …; two of one name in one batch are two files, a claim row per document in `pending`; `path_taken` searches again, a PDF through `extract` once more), `args.attachment` 0 with `attachments: [ref]`, caller `ingest`, `notify` '1'; `pending` holds the reference, never the bytes or the pages; the turn waits for `derived` |
 
 `op`, `op_id`, `caller`, `ws`, `notify` survive no store phase: a cell parks them in `pending` and knows a reply by route and `op_id`, never by context.
 
@@ -91,13 +99,24 @@ Every query on a table with `file` names `file` in its `where`, bar two reads: `
 | `in_read` | `raw` | `version?` | `version`, `mime`, `bytes`, `b64` |
 | `in_read` | `search` `semantic` | `pattern`, `limit` | served by `./derive`: `version`, `mode`, `hits[{section, from_line, to_line, score, preview}]` over this file and version only (`preview` ≤ 3 lines in read form) |
 | `in_read` | `ask` | `question` | served by `./derive`: `version`, `answer`, `sources[{from_line, to_line}]`; the model sees the summary and the best `ask_sections` sections, never the whole file |
-| `in_write` | `create`, `overwrite`, `patch` | `path`, `text`\|`b64`, `mime?`, `derived?`, `notify?` \| `text`\|`b64`, `derived?`, `notify?` \| `diff` | write answer |
+| `in_write` | `create`, `overwrite`, `patch` | `path`, `text`\|`b64`\|`attachment`, `mime?`, `derived?`, `notify?` \| `text`\|`b64`\|`attachment`, `derived?`, `notify?` \| `diff` | write answer; `attachment` = index into `body.attachments` (`true` = 0), exactly one content source (`bad_request` else), an entry's `error.code` is the answer's; an attachment is not checked by `./guard`, a moved base is `base_moved` (no merge), the answer has no `diff`, and its bytes and pages are staged as blocks, never parked; `./tools` never passes `attachments` on (a blob id reads any blob of the colony, so only `ingest` and `extract` may set one); a `create` that brings `derived` pages makes the version binary, whatever its source, because the pages are its text (a pure-ASCII PDF is UTF-8) |
 | `in_write` | `replace`, `replace_regex`, `replace_lines`, `insert`, `delete` | `old`, `new`, `expected` `1`\|`all`\|n \| `pattern`, `repl`, `expected` \| `from`, `to`, `hashes`, `new` \| `line`, `before`\|`after`, `text` \| `from`, `to` | write answer |
 | `in_write` | `snapshot`, `revert`, `remove` | `name` \| `version` \| – | write answer |
 | `in_ws` | `ws_open` | `name` (unique among the open), `root` (`/`) | `ws`, `name`, `base_seq` |
-| `in_ws` | `ws_status`, `ws_diff`, `ws_tree` | – | `files[{file, path, state, base, working, behind}]` / `diff` (base → working, ≤ 400 lines) / `files[{file, path, kind, version}]` under `root` as the workspace sees them |
+| `in_ws` | `ws_status`, `ws_diff`, `ws_tree` | – | `files[{file, path, state, base, working, behind}]` / `diff` (base → working, ≤ 400 lines) / `files[{file, path, kind, version}]` under `root` as the workspace sees them, plus `name` and `root` |
 | `in_ws` | `ws_patch`, `ws_merge` | `diff` (several files; `--- /dev/null` creates, `+++ /dev/null` removes) \| – | the moved files; a late failure swings every pointer back |
 | `in_ws` | `ws_commit`, `ws_discard` | `note` \| – | `commit`, `files[{file, version}]` (an empty workspace: `files: []`, no `commit`) \| – |
+| `in_ws` | `ws_materialize`, `ws_exec`, `ws_adopt` | see [`projection`](../projection/README.md) | answered by `./projection`; `caller` 'projection' on its own requests to `read`, `write`, `ws`, whose answers go back to it on `in_answer` |
+
+## Tools (`./schemas`, `./tools`)
+
+| Tools | Op, lane | Who |
+|---|---|---|
+| `file_info`, `file_read`, `file_search`, `file_summary`, `file_ask`, `file_history`, `file_show`, `file_diff`, `file_list`, `file_find` | `<op>` on `in_read` (`ask`, `search` `semantic` → `./derive`) | every surface |
+| `file_create`, `file_replace`, `file_replace_regex`, `file_replace_lines`, `file_insert`, `file_delete`, `file_overwrite`, `file_patch`, `file_snapshot`, `file_revert`, `file_remove` | `<op>` on `in_write` | `context.tool_caller` 'cogny' only |
+| `file_ws_open`, `file_ws_status`, `file_ws_diff`, `file_ws_patch`, `file_ws_merge`, `file_ws_commit`, `file_ws_discard` | `ws_<x>` on `in_ws` | `context.tool_caller` 'cogny' only |
+
+Argument `file` goes into the body, `ws` onto the hop (a workspace name), `mode` of `file_search` onto the hop as well, everything else into `args`; the call id is the request's `op_id` and `caller` is 'tools'. Every argument is checked against the tool's schema first: a mismatch answers `bad_request` and no other cell runs. No tool for `raw`, `ws_tree` or a projection op.
 
 ## Error codes
 
@@ -127,6 +146,7 @@ Every query on a table with `file` names `file` in its `where`, bar two reads: `
 | `ws_exists` / `outside_root` | `ws_open` with the name of an open workspace / a `ws_patch` path outside the workspace's `root` |
 | `patch_invalid` / `patch_failed` | a diff that does not parse, or renames / a hunk that does not apply (a `ws_patch` creating a taken path answers `path_taken`) |
 | `merge_failed` | `./write` refused a merge of `ws_merge` or `ws_commit` |
+| `read_only` | `./tools`: a write or workspace tool called by a surface other than the reasoning core (`context.tool_caller` ≠ 'cogny') |
 
 ## Knobs
 
@@ -136,4 +156,13 @@ Every query on a table with `file` names `file` in its `where`, bar two reads: `
 | `write` | `max_bytes` | 25 MiB | set by its cell |
 | `guard` | `max_check_bytes` | 1 MiB | the largest text the syntax hook parses; a larger one answers `none` with `note` `too_large_to_check` |
 | `derive` | `summary_on_commit`, `embed`, `ask_sections`, `section_lines` | "1", "1", 4, 60 | a summary on every main-line head move (birth always gets one); embeddings per section; sections one `ask` hands the model; lines per window where a file has no headings |
+| `extract` | `extract_cmd`, `extract_max_pages`, `extract_timeout_ms` | `pdftotext`, 500, 30000 | the program that turns a PDF into pages (a name found in `/usr/bin:/bin`, the only `PATH` it runs with, or an absolute path), the most pages one `create` carries as `derived`, the time one extraction may take |
 | `embed` | `endpoint`, `model`, `dim` | the `memory-hive` embedding settings (`MEMORY_EMBED_*`) | one embedding model, one dimension and one binary form per member |
+| `summarizer` | `model` | `${MODEL_FILE_SPACE}`, no default -- growth is refused without it (`env_var_missing`), as for the `MODEL_*` of `memory-hive` | the model that writes summaries and answers `ask`; the llm-registry may move it through `in_model` |
+
+## Versioning
+
+`1.1.0` takes the **second** digit ([#905](https://github.com/mmeyerlein/meclaw/issues/905), [#906](https://github.com/mmeyerlein/meclaw/issues/906), [#907](https://github.com/mmeyerlein/meclaw/issues/907), [#908](https://github.com/mmeyerlein/meclaw/issues/908)): the child hive
+`./projection` lays a workspace out on a disk, runs a permitted program in it and carries
+it into git and back; `in_ingest` stores a document a channel sent as a file; `in_schemas` and
+`in_tool` put the file tools on a model's menu. Lanes joined the boundary and none left.

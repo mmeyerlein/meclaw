@@ -1,0 +1,198 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "description": {
+    "purpose": "The projection of one file space onto a disk: one directory per workspace under the owner's `base_path`, laid out from the space, a permitted program run in it, and afterwards what the program changed taken over into the workspace or kept as a proposal. THE HIVE IS THE ADDRESS -- a file space sends its projection operations to this hive path and the hive hands them on.",
+    "use_when": "Inside a file space only (`./projection`), wherever a tool needs real files: a formatter, a generator, a test run.",
+    "not_in_scope": "No tool menu and no path for a model (the space's callers see operations, never the directory); no watcher; no cleanup of the directory after a workspace closed; no network for a program; no write outside `base_path`.",
+    "contract_in": "Lanes on `hop.route`: in_proj (`ws_materialize`, `ws_exec`, `ws_adopt` to `mat`; `ws_export_git`, `ws_import_git`, `ws_push`, `ws_pull` to `git`), in_answer (the space's answers to this hive's own requests, `op_id` starting `mat:` or `git:`).",
+    "contract_out": "Routes on `hop.route`, leaving through the hive path: answer (one per in_proj request, `op`, `op_id`, `caller` mirrored), in_ws / in_read / in_write (requests to the file space with `caller` 'projection')."
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_proj",
+          "because": "a projection operation: body `{op, args}`, hop `op`, `op_id`, `ws` (a workspace name or id), `caller?`. `ws_materialize(force?)`, `ws_exec(argv, timeout_ms?)`, `ws_adopt(run, ids | 'all')` (cell `mat`); `ws_export_git(note)`, `ws_import_git(source, ref?)`, `ws_push(remote, branch?)`, `ws_pull(remote, branch?)` (cell `git`, GH #906). Answered by exactly one `answer`"
+        },
+        {
+          "route": "in_answer",
+          "because": "the file space's answer to one of this hive's requests, `op_id` `mat:<job>:<n>` (to `mat`) or `git:<job>.<n>` (to `git`); never answered"
+        }
+      ],
+      "emits": [
+        {
+          "route": "answer",
+          "because": "exactly one per in_proj request, hop `op`, `op_id`, `caller` unchanged: `{ok, op, op_id, ws, ...}` or `{ok: false, op, op_id, error: {code, message}}`"
+        },
+        {
+          "route": "in_ws",
+          "because": "`ws_tree` of the workspace, `caller` 'projection', `op_id` `mat:<job>:t` (`git` asks it too, `git:<job>.<n>`: an import compares against it, an export learns the root)"
+        },
+        {
+          "route": "in_read",
+          "because": "`raw` of one version to lay it out, `caller` 'projection', hop `ws` the workspace name"
+        },
+        {
+          "route": "in_write",
+          "because": "what a run changed, taken over: `overwrite` against the laid-out version, `create`, `remove`, each with hop `ws` the workspace name and `caller` 'projection'; `git` writes an import the same way, one file per step"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./mat",
+          "condition": "has(hop.route) && hop.route == 'in_proj' && !(has(hop.op) && hop.op in ['ws_export_git', 'ws_import_git', 'ws_push', 'ws_pull'])"
+        },
+        {
+          "from": ".",
+          "to": "./mat",
+          "condition": "has(hop.route) && hop.route == 'in_answer' && !(has(hop.op_id) && hop.op_id.startsWith('git:'))"
+        },
+        {
+          "from": "./mat",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'mat_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./mat",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'mat'"
+        },
+        {
+          "from": "./mat",
+          "to": "./run",
+          "condition": "has(hop.route) && hop.route == 'in_run'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase"
+            ]
+          }
+        },
+        {
+          "from": "./run",
+          "to": "./mat",
+          "condition": "has(hop.route) && hop.route == 'ran'"
+        },
+        {
+          "from": "./mat",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && (!has(hop.caller) || hop.caller != 'git')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./mat",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'in_ws' || hop.route == 'in_read' || hop.route == 'in_write')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./git",
+          "condition": "has(hop.route) && hop.route == 'in_proj' && has(hop.op) && hop.op in ['ws_export_git', 'ws_import_git', 'ws_push', 'ws_pull']"
+        },
+        {
+          "from": ".",
+          "to": "./git",
+          "condition": "has(hop.route) && hop.route == 'in_answer' && has(hop.op_id) && hop.op_id.startsWith('git:')"
+        },
+        {
+          "from": "./git",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'git_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./git",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'git'"
+        },
+        {
+          "from": "./git",
+          "to": "./mat",
+          "condition": "has(hop.route) && hop.route == 'in_proj' && has(hop.caller) && hop.caller == 'git'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./mat",
+          "to": "./git",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'git'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./git",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'in_ws' || hop.route == 'in_write')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./git",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

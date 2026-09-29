@@ -1,0 +1,120 @@
+{
+  "cell": {
+    "type": "code",
+    "message_timeout": 720000
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 660000,
+    "base_path": "",
+    "exec_timeout_ms": 600000,
+    "env_path": "/usr/local/bin:/usr/bin:/bin",
+    "env_home": "",
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "import sys, json, os, subprocess, signal\n\n# ONE PROGRAM RUN IN A PROJECTION (GH #905, OR-FJ-G2). `./mat` hands over an\n# argv it has already checked against `exec_allow` and the directory it laid\n# out; this cell starts the program there WITHOUT a shell, with an environment\n# of exactly three variables, under a time cap, and answers with the exit code\n# and the last 8 KiB of each output stream. It never reads or writes a file of\n# the workspace itself -- that is `./mat`'s scan afterwards.\n#\n# The sandbox of this cell is the program's sandbox (the child inherits it):\n# no network, write access to `base_path` alone (granted by the owner's\n# override, none in the template). A program that writes anywhere else fails\n# at the kernel, not at a check here.\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nenvelope = doc.get(\"envelope\") or {}\nP = doc.get(\"params\") or {}\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\n\nTAIL_BYTES = 8192\nDEFAULT_CAP_MS = 600000\nKILL_GRACE_S = 5\n\n\n# ================================================================ PURE HALF\ndef tail(data, n=TAIL_BYTES):\n    \"\"\"The last `n` bytes of a stream as text.\"\"\"\n    if not isinstance(data, (bytes, bytearray)):\n        data = str(data or \"\").encode(\"utf-8\", \"replace\")\n    return bytes(data[-n:]).decode(\"utf-8\", \"replace\")\n\n\ndef cap_ms(asked, cap):\n    \"\"\"The time cap of one run: the caller's `timeout_ms`, never above the\n    cell's `exec_timeout_ms` (a caller cannot lift the owner's cap).\"\"\"\n    try:\n        c = int(cap)\n    except Exception:\n        c = DEFAULT_CAP_MS\n    if c <= 0:\n        c = DEFAULT_CAP_MS\n    try:\n        a = int(asked)\n    except Exception:\n        return c\n    return c if a <= 0 else min(a, c)\n\n\ndef run_env(path, home, base):\n    \"\"\"The whole environment of the program: PATH, HOME and LANG, nothing\n    inherited from the colony (no key, no token reaches a tool).\"\"\"\n    return {\"PATH\": str(path or \"/usr/local/bin:/usr/bin:/bin\"),\n            \"HOME\": str(home or base), \"LANG\": \"C.UTF-8\"}\n\n\ndef under(base, cwd):\n    \"\"\"Whether `cwd` is a directory strictly below `base`.\"\"\"\n    b = os.path.normpath(str(base or \"\"))\n    c = os.path.normpath(str(cwd or \"\"))\n    return b.startswith(\"/\") and b != \"/\" and c.startswith(b + \"/\")\n\n\n# ================================================================ RUN\ndef answer(payload):\n    body = {\"ok\": True, \"messages\": []}\n    body.update(payload)\n    body[\"header\"] = {\"route\": \"ran\", \"op_id\": str(hop.get(\"op_id\") or \"\")}\n    return body\n\n\ndef refuse(code, message):\n    return answer({\"ok\": False, \"error\": {\"code\": code, \"message\": message}})\n\n\nif str(hop.get(\"route\") or \"\") != \"in_run\":\n    sys.stderr.write(\"projection/run: unknown lane %r -- dropped\\n\" % hop.get(\"route\"))\n    print(\"[]\")\n    sys.exit(0)\n\nbase = str(P.get(\"base_path\") or \"\")\nargv = d.get(\"argv\")\ncwd = str(d.get(\"cwd\") or \"\")\nif not isinstance(argv, list) or not argv or not all(isinstance(x, str) and x for x in argv):\n    out = refuse(\"bad_request\", \"argv is a list of strings\")\nelif (not under(base, cwd) or not os.path.isdir(cwd)\n      or not under(os.path.realpath(base), os.path.realpath(cwd))):\n    out = refuse(\"bad_path\", \"the run directory must lie below base_path\")\nelse:\n    cap = cap_ms(d.get(\"timeout_ms\"), P.get(\"exec_timeout_ms\", DEFAULT_CAP_MS))\n    env = run_env(P.get(\"env_path\"), P.get(\"env_home\"), base)\n    try:\n        child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,\n                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n                                 start_new_session=True, close_fds=True)\n    except (OSError, ValueError) as e:\n        out = refuse(\"exec_failed\", \"%s: %s\" % (argv[0], e))\n    else:\n        try:\n            so, se = child.communicate(timeout=cap / 1000.0)\n            code = child.returncode\n        except subprocess.TimeoutExpired:\n            # the whole process group: a tool that forked must not outlive\n            # its run\n            try:\n                os.killpg(child.pid, signal.SIGKILL)\n            except OSError:\n                child.kill()\n            try:\n                so, se = child.communicate(timeout=KILL_GRACE_S)\n            except subprocess.TimeoutExpired:\n                so, se = b\"\", b\"\"\n            code = \"timeout\"\n        out = answer({\"exit\": code, \"out_tail\": tail(so), \"err_tail\": tail(se)})\nprint(json.dumps([out]))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": false,
+    "settings": {
+      "base_path": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The same directory as `mat`'s; a run directory not below it is refused with `bad_path`."
+      },
+      "exec_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 600000,
+        "description": "The cap of one run; a caller's `timeout_ms` only lowers it. At the cap the program's process group is killed and the run answers `exit: 'timeout'`. Keep `external_timeout_ms` above it and `cell.message_timeout` above that."
+      },
+      "env_path": {
+        "type": "string",
+        "secret": false,
+        "default": "/usr/local/bin:/usr/bin:/bin",
+        "description": "PATH of the program; the whole environment is PATH, HOME and LANG=C.UTF-8."
+      },
+      "env_home": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "HOME of the program; empty means `base_path`."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "ok": {
+          "type": "boolean",
+          "required": false
+        },
+        "out_tail": {
+          "type": "string",
+          "required": false
+        },
+        "err_tail": {
+          "type": "string",
+          "required": false
+        },
+        "error": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "ran"
+          ]
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "argv": {
+          "type": "array",
+          "required": false
+        },
+        "cwd": {
+          "type": "string",
+          "required": false
+        },
+        "timeout_ms": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Starts one program in a workspace directory: argv without a shell, cwd below `base_path`, an environment of PATH, HOME and LANG only, a time cap; answers the exit code (or 'timeout') and the last 8 KiB of stdout and stderr. The program inherits this cell's sandbox: no network, write access to `base_path` alone.",
+    "use_when": "Inside a projection only, behind `./mat`'s `in_run`.",
+    "not_in_scope": "No check of `exec_allow` (`./mat` asked before anything was laid out), no scan of what the program wrote.",
+    "emits_meaning": "`ran` once per `in_run`, `op_id` mirrored.",
+    "consumes_meaning": "`in_run` `{argv, cwd, timeout_ms?}` from `./mat`."
+  }
+}

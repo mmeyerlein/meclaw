@@ -5,9 +5,9 @@
   "description": {
     "purpose": "Scope marker of a file space: the files of one knowledge space as logical file hives over one store. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
     "use_when": "One per knowledge space whose files have to be read by line, versioned and changed by several writers.",
-    "not_in_scope": "No projection onto a disk, no tool menu, no rights (a later wave). The address of a file is its id, never the store it lives in.",
-    "contract_in": "Lanes on `hop.route`: in_read, in_write, in_ws, in_model (a model package for `./summarizer`, unless `hop.subscriber` names another cell).",
-    "contract_out": "Routes on `hop.route`, leaving through the hive path: answer, model_refused (a refused `in_model` push), derived (`{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller`)."
+    "not_in_scope": "No rights (a later wave); the disk projection lives in the child hive `./projection`, never in a cell of the space; no tool for `raw`, `ws_tree` or a projection op. The address of a file is its id, never the store it lives in.",
+    "contract_in": "Lanes on `hop.route`: in_read, in_write, in_ws (the projection operations `ws_materialize`, `ws_exec`, `ws_adopt`, `ws_export_git`, `ws_import_git`, `ws_push`, `ws_pull` go to the child hive `./projection`, every other one to `./ws`), in_model (a model package for `./summarizer`, unless `hop.subscriber` names another cell); in_schemas and in_tool, the tool menu and a tool call (`./schemas`, `./tools`); in_ingest (a turn carrying a document as a blob reference in `attachments`, GH #907).",
+    "contract_out": "Routes on `hop.route`, leaving through the hive path: answer, model_refused (a refused `in_model` push), derived (`{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller`); tool_schemas and tool_result, their answers; turn (the turn of an `in_ingest` without its `attachments`, the file's address line after the caption)."
   },
   "params": {
     "ports": [],
@@ -23,11 +23,23 @@
         },
         {
           "route": "in_ws",
-          "because": "a workspace operation (`ws_open`, `ws_status`, `ws_diff`, `ws_patch`, `ws_merge`, `ws_commit`, `ws_discard`, `ws_tree`), hop as on `in_read`. Answered by exactly one `answer`"
+          "because": "a workspace operation (`ws_open`, `ws_status`, `ws_diff`, `ws_patch`, `ws_merge`, `ws_commit`, `ws_discard`, `ws_tree`), hop as on `in_read`; the projection operations (`ws_materialize`, `ws_exec`, `ws_adopt`, `ws_export_git`, `ws_import_git`, `ws_push`, `ws_pull`) go to `./projection` instead. Answered by exactly one `answer`"
         },
         {
           "route": "in_model",
           "because": "a model package pushed by the llm registry (ADR-0046), params-only; taken by `./summarizer` unless `hop.subscriber` names another cell (the curator's door). Never answered on `answer`; a refusal leaves as `model_refused`"
+        },
+        {
+          "route": "in_schemas",
+          "because": "a menu question: body `tools`, the names an asking collector declares (`*` = all). Answered by `./schemas` with exactly one `tool_schemas`"
+        },
+        {
+          "route": "in_tool",
+          "because": "one tool call of a model: hop `tool_name` (`file_*`), `tool_call_id`, the arguments as JSON text in the one turn of the body, and `context.tool_caller` the surface the assistant level stamped (only 'cogny' may write). Translated by `./tools` into a request under `caller` 'tools' and answered by exactly one `tool_result`"
+        },
+        {
+          "route": "in_ingest",
+          "because": "a turn whose channel carried a document (GH #907): body = the turn, `attachments: [{blob_id, mime_type, filename, size_bytes, sha256}]` beside its `messages` -- a reference into the colony's blob store, never the bytes. `./ingest` births the first attachment under `/inbox/<YYYY-MM-DD>/` and hands the turn on as `turn`"
         }
       ],
       "emits": [
@@ -42,6 +54,18 @@
         {
           "route": "derived",
           "because": "`{file, version, ok, oneline}` once per `in_derive` with `notify` '1', after the rows are written or the job stopped; `version` is the first 12 hex digits. Leaves the hive only with an empty `caller`"
+        },
+        {
+          "route": "tool_schemas",
+          "because": "the answer to `in_schemas`: `{schemas[], unknown[], sidecar[]}`, provider-neutral, the shape `memory-hive` answers"
+        },
+        {
+          "route": "tool_result",
+          "because": "the answer to `in_tool`: one turn under the call's id, its text the space's answer as JSON without `op_id` and `caller`; `hop.error_code` names a refusal (`bad_request` for an argument its schema refuses, `read_only` for a write from a surface that only reads, or the space's own code)"
+        },
+        {
+          "route": "turn",
+          "because": "the turn of an `in_ingest`, once, without `attachments` and with one text turn after the caption: `[file fh-<id>@<v12> \"<name>\", <n> pages: <oneline>]` -- or `[file \"<name>\" could not be stored: <code>]`; the caption and every other hop key unchanged"
         }
       ]
     },
@@ -55,7 +79,7 @@
         {
           "from": ".",
           "to": "./ws",
-          "condition": "has(hop.route) && hop.route == 'in_ws'"
+          "condition": "has(hop.route) && hop.route == 'in_ws' && !(has(hop.op) && hop.op in ['ws_materialize', 'ws_exec', 'ws_adopt', 'ws_export_git', 'ws_import_git', 'ws_push', 'ws_pull'])"
         },
         {
           "from": "./read",
@@ -309,6 +333,313 @@
               "cur_job",
               "cur_call"
             ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./projection",
+          "condition": "has(hop.route) && hop.route == 'in_ws' && has(hop.op) && hop.op in ['ws_materialize', 'ws_exec', 'ws_adopt', 'ws_export_git', 'ws_import_git', 'ws_push', 'ws_pull']",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_proj'"
+            }
+          }
+        },
+        {
+          "from": "./projection",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && (!has(hop.caller) || hop.caller == '')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./projection",
+          "to": "./ws",
+          "condition": "has(hop.route) && hop.route == 'in_ws'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./projection",
+          "to": "./read",
+          "condition": "has(hop.route) && hop.route == 'in_read'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./projection",
+          "to": "./write",
+          "condition": "has(hop.route) && hop.route == 'in_write'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./ws",
+          "to": "./projection",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'projection'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./read",
+          "to": "./projection",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'projection'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./write",
+          "to": "./projection",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'projection'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./schemas",
+          "condition": "has(hop.route) && hop.route == 'in_schemas'"
+        },
+        {
+          "from": "./schemas",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_schemas'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'in_tool'"
+        },
+        {
+          "from": "./tools",
+          "to": "./read",
+          "condition": "has(hop.route) && hop.route == 'in_read' && !(has(hop.op) && (hop.op == 'ask' || (hop.op == 'search' && has(hop.mode) && hop.mode == 'semantic')))"
+        },
+        {
+          "from": "./tools",
+          "to": "./derive",
+          "condition": "has(hop.route) && hop.route == 'in_read' && (has(hop.op) && (hop.op == 'ask' || (hop.op == 'search' && has(hop.mode) && hop.mode == 'semantic')))"
+        },
+        {
+          "from": "./tools",
+          "to": "./write",
+          "condition": "has(hop.route) && hop.route == 'in_write'"
+        },
+        {
+          "from": "./tools",
+          "to": "./ws",
+          "condition": "has(hop.route) && hop.route == 'in_ws'"
+        },
+        {
+          "from": "./read",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'tools'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./derive",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'tools'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./write",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'tools'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./ws",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'tools'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./tools",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./ingest",
+          "condition": "has(hop.route) && hop.route == 'in_ingest'"
+        },
+        {
+          "from": "./ingest",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'ingest_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./ingest",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'ingest'"
+        },
+        {
+          "from": "./ingest",
+          "to": "./extract",
+          "condition": "has(hop.route) && hop.route == 'in_extract'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ],
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./extract",
+          "to": "./write",
+          "condition": "has(hop.route) && hop.route == 'in_write' && has(hop.caller) && hop.caller == 'ingest'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./ingest",
+          "to": "./write",
+          "condition": "has(hop.route) && hop.route == 'in_write' && has(hop.caller) && hop.caller == 'ingest'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ],
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./write",
+          "to": "./ingest",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'ingest'"
+        },
+        {
+          "from": "./derive",
+          "to": "./ingest",
+          "condition": "has(hop.route) && hop.route == 'derived' && has(hop.caller) && hop.caller == 'ingest'"
+        },
+        {
+          "from": "./ingest",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ],
+            "restore_ttl": true
           }
         }
       ]

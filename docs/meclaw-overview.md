@@ -2817,7 +2817,8 @@ came from. The `blob_id` ref reaches the cell unchanged, and the cell reads the 
 `handle()` time. A cell whose contract declares `consumes.body.attachments` receives a read-only
 handle on the colony's blob store at spawn (`AttachmentReader`, GH #87); without the declaration
 there is no handle. Every read carries its own operation timeout, and a missing blob or a
-non-consumable MIME type are cell errors rather than dead letters.
+non-consumable MIME type are cell errors rather than dead letters. A `code` cell (GH #907) hands
+its script an `error` entry on stdin instead, and the script decides.
 
 The switch is the declaration: `required` (default `true`) governs the ingress check, and a
 `required: false` takes the key out of it entirely (neither presence nor type is checked) yet
@@ -4143,10 +4144,12 @@ condition on. Its reach is a modifier's reach and not one step further, so envel
 seeded hop stay inert data and the envelope-setter authority is untouched. The `headers` object is
 not size-limited (sizes are watched by a standing measurement whose last reading lives in
 [#141](https://github.com/mmeyerlein/meclaw/issues/141)). The multipart path has no `hop` and no
-`ttl` form field, so there the `colony.json` default always applies. Multipart is the one producer
-of the `attachments[]` slot: it streams every file into the blob store and answers, next to
-`message_id`, with the `BlobRef`s it created, which the consuming cell declaring
-`consumes.body.attachments` then reads. Because the synthesised upload body is attachments-only, the
+`ttl` form field, so there the `colony.json` default always applies. Multipart is one of two
+producers of the `attachments[]` slot: it streams every file into the blob store and answers, next
+to `message_id`, with the `BlobRef`s it created, which the consuming cell declaring
+`consumes.body.attachments` then reads. The second is the Telegram `proxy` (GH #907), which writes
+a received document into the blob store and gives its turn exactly one `attachments[]` entry (with
+`sha256`), never the bytes. Because the synthesised upload body is attachments-only, the
 usual flow is two-step: upload, then send the returned `BlobRef`s together with the conversation
 turns over the JSON path.
 

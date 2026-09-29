@@ -668,13 +668,15 @@ fn a_callers_answer_mirrors_it_and_never_leaves_the_space() {
     s.lane(
         "in_read",
         json!({}),
-        json!({"op": "info", "op_id": "q-tools", "caller": "tools"}),
+        // `tools` draws its own edge since B2 (#908): a caller no cell of the
+        // space draws one for stands in for "an internal caller" here.
+        json!({"op": "info", "op_id": "q-other", "caller": "other"}),
         json!({"op": "info", "file": A, "args": {}}),
     );
     assert_eq!(
         s.out.len(),
         before,
-        "an answer to `tools` leaves no hive path"
+        "an answer to an internal caller leaves no hive path"
     );
     assert!(
         s.stderr.is_empty(),

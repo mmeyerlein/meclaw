@@ -89,7 +89,7 @@ The key is never printed. Which model token a declaration reads is the
 declaration's business, so the file carries every one the shipped declarations
 ask for and gives them all the same slug: `MODEL_BRAIN` for
 `examples/meclaw-os`, and `MODEL_CORE`, `MODEL_CORE_FAST`, `MODEL_SURFACE`,
-`MODEL_CLOSER`, `MODEL_DIALECTIC` and `MODEL_DREAMER` for the four levels of
+`MODEL_CLOSER`, `MODEL_DIALECTIC`, `MODEL_DREAMER` and `MODEL_FILE_SPACE` for the four levels of
 `examples/organism`. Another model is one line and a restart, and any
 OpenAI-compatible endpoint works, OpenRouter is only the default `base_url`. A
 wrong key is not caught here: the colony grows, and the first turn ends in

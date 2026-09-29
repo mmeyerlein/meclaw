@@ -17,6 +17,13 @@
 //! leave them (README § 2.3 of the wave). Blocks are cut wherever the test
 //! says (OR-FH-S1): reading never depends on the cut, and the cut rule of
 //! § 2.4 belongs to `./write` alone.
+//!
+//! Blobs (GH #907): `Space::blobs` stands in for the colony's blob store. A
+//! code cell whose contract declares `consumes.body.attachments` gets, on its
+//! stdin document only, every object entry of `body.attachments` plus
+//! `data_b64` or `error {code, message}` -- what the colony's
+//! `AttachmentReader` hands a code cell. `Space::sent` records every message
+//! the space delivers, so a lock can scan hops, contexts and store operations.
 #![allow(dead_code)]
 
 use meclaw_colony::cel_eval::{
@@ -26,7 +33,7 @@ use meclaw_colony::cel_eval::{
 use meclaw_colony::config::ModifierSpec;
 use meclaw_core::Headers;
 use meclaw_core::serde_json::{self as sj, Map, Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -210,6 +217,15 @@ pub struct Space {
     pub store_ops: Vec<(String, Value)>,
     /// Every store operation that failed, with its code.
     pub store_errors: Vec<String>,
+    /// One-shot SQL run on the store right before `cell` next receives a
+    /// message on lane `route` -- a writer outside the space, arriving
+    /// between two phases (GH #907: a path taken after it was searched).
+    pub before: Option<(String, String, String)>,
+    /// The colony's blob store: blob id -> bytes (GH #907).
+    pub blobs: HashMap<String, Vec<u8>>,
+    /// Every message the space delivered, oldest first:
+    /// `{from, to, route, header: {context, hop}, body}` (GH #907).
+    pub sent: Vec<Value>,
     seq: u64,
 }
 
@@ -274,6 +290,9 @@ impl Space {
             stderr: Vec::new(),
             store_ops: Vec::new(),
             store_errors: Vec::new(),
+            before: None,
+            blobs: HashMap::new(),
+            sent: Vec::new(),
             seq: 0,
         }
     }
@@ -291,11 +310,19 @@ impl Space {
         let script = cfg["params"]["script_inline"].as_str().expect("script");
         let mut params = obj(cfg["params"].clone());
         params.remove("script_inline");
+        let reads = cfg["contract"]["consumes"]["body"]
+            .get("attachments")
+            .is_some();
+        let body = if reads {
+            self.with_blobs(&msg.body)
+        } else {
+            msg.body.clone()
+        };
         let doc = json!({
             "envelope": {"header": {"context": msg.context, "hop": msg.hop},
                          "target": format!("{}/{name}", self.path),
                          "reply_to": ""},
-            "body": msg.body,
+            "body": body,
             "params": params,
         });
         let out = run_python(script, &doc.to_string());
@@ -317,6 +344,16 @@ impl Space {
         list.into_iter()
             .map(|m| {
                 let mut body = obj(m);
+                // A real colony's debug build dead-letters a body that is no
+                // UBF body (`invalid_ubf_body`, `colony.rs` emission check):
+                // the first colony lock of the file space (gh908) lost the
+                // `in_check` of `write` there, with no answer. The harness
+                // holds every emission to the same schema.
+                let mut ubf = body.clone();
+                ubf.remove("header");
+                if let Err(e) = meclaw_core::validate_ubf_body(&Value::Object(ubf.clone())) {
+                    panic!("{name} emitted no UBF body ({e}): {}", Value::Object(ubf));
+                }
                 let hop = body
                     .remove("header")
                     .and_then(|h| h.as_object().cloned())
@@ -328,6 +365,43 @@ impl Space {
                 }
             })
             .collect()
+    }
+
+    /// `body` with every object entry of `attachments` read from
+    /// [`Space::blobs`]: `data_b64` (standard base64, padded), or `error`
+    /// `bad_ref` (no `blob_id`, or not a UUID) / `not_found`. The stdin
+    /// document only; the message itself stays as it was.
+    fn with_blobs(&self, body: &Map<String, Value>) -> Map<String, Value> {
+        let mut out = body.clone();
+        let Some(list) = body.get("attachments").and_then(Value::as_array) else {
+            return out;
+        };
+        let read: Vec<Value> = list
+            .iter()
+            .map(|a| {
+                let Some(entry) = a.as_object() else {
+                    return a.clone();
+                };
+                let mut e = entry.clone();
+                let id = entry.get("blob_id").and_then(Value::as_str).unwrap_or("");
+                if meclaw_core::Uuid::parse_str(id).is_err() {
+                    e.insert(
+                        "error".into(),
+                        json!({"code": "bad_ref", "message": "blob_id is missing or not a UUID"}),
+                    );
+                } else if let Some(bytes) = self.blobs.get(id) {
+                    e.insert("data_b64".into(), json!(b64(bytes)));
+                } else {
+                    e.insert(
+                        "error".into(),
+                        json!({"code": "not_found", "message": format!("no blob {id}")}),
+                    );
+                }
+                Value::Object(e)
+            })
+            .collect();
+        out.insert("attachments".into(), Value::Array(read));
+        out
     }
 
     /// One store message answered the way the store cell answers it. A failed
@@ -422,12 +496,25 @@ impl Space {
 
     /// Carry `msg`, emitted by `from`, through the hive until it comes to rest.
     pub fn pump(&mut self, from: &str, msg: Msg) {
-        let mut queue = VecDeque::from([(from.to_string(), msg)]);
+        self.pump_all(vec![(from.to_string(), msg)]);
+    }
+
+    /// Carry several messages at once: all of them are queued before the
+    /// first is handled, as a cell's mailbox holds a batch (GH #907).
+    pub fn pump_all(&mut self, msgs: Vec<(String, Msg)>) {
+        let mut queue = VecDeque::from(msgs);
         let mut steps = 0;
         while let Some((from, msg)) = queue.pop_front() {
             steps += 1;
             assert!(steps < 4000, "the space does not come to rest");
             for (to, m) in self.route(&from, &msg) {
+                self.sent.push(json!({
+                    "from": from,
+                    "to": to,
+                    "route": m.route(),
+                    "header": {"context": m.context, "hop": m.hop},
+                    "body": m.body,
+                }));
                 if to == "." {
                     self.out.push(m);
                     continue;
@@ -440,6 +527,12 @@ impl Space {
                         queue.push_back((to.clone(), answer));
                     }
                     "code" => {
+                        let hit = matches!(&self.before,
+                            Some((c, r, _)) if *c == name && r == m.route());
+                        if hit {
+                            let (_, _, sql) = self.before.take().unwrap();
+                            self.db.execute_batch(&sql).expect("the one-shot SQL");
+                        }
                         for o in self.run_cell(&name, &m) {
                             queue.push_back((to.clone(), o));
                         }
@@ -453,14 +546,19 @@ impl Space {
 
     /// A message arriving on the hive path on lane `route`.
     pub fn lane(&mut self, route: &str, context: Value, hop: Value, body: Value) {
+        let msg = Self::on_lane(route, context, hop, body);
+        self.pump(".", msg);
+    }
+
+    /// The message [`Space::lane`] carries, for [`Space::pump_all`].
+    pub fn on_lane(route: &str, context: Value, hop: Value, body: Value) -> Msg {
         let mut hop = obj(hop);
         hop.insert("route".into(), json!(route));
-        let msg = Msg {
+        Msg {
             context: obj(context),
             hop,
             body: obj(body),
-        };
-        self.pump(".", msg);
+        }
     }
 
     /// An `llm` cell's answer to the oldest message it holds, as the cell

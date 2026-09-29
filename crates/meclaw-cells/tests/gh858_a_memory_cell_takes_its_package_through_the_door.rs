@@ -185,7 +185,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     std::fs::write(
         root.join(".env"),
         format!(
-            "OPENROUTER_API_KEY=test-key\nMODEL_CLOSER={START}\nMODEL_DIALECTIC={START}\n\
+            "OPENROUTER_API_KEY=test-key\nMODEL_CLOSER={START}\nMODEL_DIALECTIC={START}\nMODEL_FILE_SPACE={START}\n\
              MODEL_DREAMER={START}\nMODEL_JUDGE={START}\nMEMORY_LLM_BASE_URL={base_url}\n"
         ),
     )

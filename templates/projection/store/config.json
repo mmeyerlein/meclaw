@@ -1,0 +1,91 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "proj": {
+        "ws": "text",
+        "dir": "text",
+        "manifest": "json",
+        "at": "text"
+      },
+      "runs": {
+        "run": "text",
+        "ws": "text",
+        "argv": "json",
+        "exit": "text",
+        "out_tail": "text",
+        "err_tail": "text",
+        "changes": "json",
+        "at": "text"
+      },
+      "pending": {
+        "op_id": "text",
+        "cell": "text",
+        "phase": "text",
+        "body": "text",
+        "at": "text"
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The projection's own rows: `proj` (one per workspace: its directory and the manifest `{path: {file, version, sha256}}` of what was laid out), `runs` (one per program run: argv, exit, the output tails and its numbered `changes`) and `pending` (a job of `./mat` between two phases, and the answers it waits for).",
+    "use_when": "Inside a projection only; `./mat` is its only writer (`write_surface` internal).",
+    "not_in_scope": "No file content: the bytes live in the file space and on the disk.",
+    "emits_meaning": "One answer per message, a bundle answer for more than one operation.",
+    "consumes_meaning": "One or more `tool_call` turns whose text is the JSON args of one store operation."
+  }
+}

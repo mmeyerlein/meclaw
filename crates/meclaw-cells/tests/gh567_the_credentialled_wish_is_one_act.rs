@@ -223,7 +223,7 @@ fn build_root(root: &std::path::Path) {
          MODEL_CORE_FAST=gpt-4o-mock-fast\n\
          MODEL_SURFACE=gpt-4o-mock-surface\n\
          MODEL_CLOSER=gpt-4o-mock\n\
-         MODEL_DIALECTIC=gpt-4o-mock\n\
+         MODEL_DIALECTIC=gpt-4o-mock\nMODEL_FILE_SPACE=gpt-4o-mock\n\
          MODEL_DREAMER=gpt-4o-mock\n\
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\

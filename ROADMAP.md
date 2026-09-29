@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.50.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.51.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.51.0: a workspace is laid out on disk for a program and adopts what it wrote, travels through git,
+  and the file tools reach the models; a Telegram document lands in the member's file space by reference.
 - v0.50.0: a file-space hive keeps a knowledge space's files as blocks and versions; every write carries its
   base, a syntax hook guards what lands, workspaces commit all or nothing, and a file knows itself from birth.
 - v0.49.0: the curator shapes each window per role, lets the model read its own conversation back,

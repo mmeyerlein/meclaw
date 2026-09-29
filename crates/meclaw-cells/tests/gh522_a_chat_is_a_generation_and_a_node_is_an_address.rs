@@ -86,7 +86,7 @@ fn grow(params: Value) -> Vec<Value> {
 
 fn channel_declaration() -> Value {
     grow(json!({"scope": MEMBER, "level": "channel", "name": NODE,
-                "template": "telegram-connector@2.0.1", "assistant": "egon",
+                "template": "telegram-connector@2.1.0", "assistant": "egon",
                 "ctx": {"member_person": "marcus"}}))[0]
         .clone()
 }
@@ -357,7 +357,7 @@ fn the_answer_reaches_the_connector_the_turn_came_from() {
 
     // A SECOND channel in the same container, and its way back must stay shut.
     let other = grow(json!({"scope": MEMBER, "level": "channel", "name": "slack",
-                            "template": "telegram-connector@2.0.1", "assistant": "egon",
+                            "template": "telegram-connector@2.1.0", "assistant": "egon",
                             "ctx": {"member_person": "marcus"}}))[0]
         .clone();
     let others_way_back = edges(&other)

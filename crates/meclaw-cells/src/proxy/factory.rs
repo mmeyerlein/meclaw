@@ -346,7 +346,10 @@ fn make_build(
     // long_poll_request_secs, send_timeout_ms, query_timeout_ms) are rebuilt per
     // (re)spawn from the cell.db overlay (β restore) inside the closure.
     let ProxyParams {
-        bot_token, emit_to, ..
+        bot_token,
+        emit_to,
+        max_document_bytes,
+        ..
     } = ProxyParams::parse(&params)?;
 
     // Owned clones moved into the multi-call closure.
@@ -394,8 +397,9 @@ fn make_build(
         } = crate::params_overlay::restore::<crate::proxy::params::ProxyOverlay>(&conn, &birth_cap)
             .expect("restore proxy overlay");
         // 4. Build the TelegramClient (sync) with the effective base_url + the immutable bot_token.
-        let client =
-            TelegramClient::new(&base_url, &bot_token_cap).expect("TelegramClient::new");
+        let client = TelegramClient::new(&base_url, &bot_token_cap)
+            .expect("TelegramClient::new")
+            .with_max_document_bytes(max_document_bytes);
         // 5. Build ProxyCell + DbConn (sync), create the mailbox, then funnel the
         //    LR spawn through `build_long_running_task` — the single LR-spawn
         //    site. The helper mints the peace/stop/death_ack oneshot pairs
@@ -410,7 +414,10 @@ fn make_build(
             send_timeout_ms,
             query_timeout_ms,
             base_url,
-        );
+        )
+        // GH #907: the store a fetched document is committed to -- the same
+        // handle the delivery boundary gets, on birth and respawn alike.
+        .with_blob_store(blob_cap.clone());
         let db = DbConn::wrap(conn, Some(Duration::from_millis(query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(

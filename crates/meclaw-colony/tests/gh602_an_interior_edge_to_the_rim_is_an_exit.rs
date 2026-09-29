@@ -146,7 +146,13 @@ fn build_tree(root: &std::path::Path, member: &std::path::Path) -> Value {
     // reference and this tree ships no library. Each becomes an inert double,
     // exactly as `gh598_a_screen_receipt_is_not_a_turn.rs` does it — what is
     // measured here is the member's own rim, not what lives behind it.
-    for holder in ["access", "affinity", "firewall", "memory-hive"] {
+    for holder in [
+        "access",
+        "affinity",
+        "file-space",
+        "firewall",
+        "memory-hive",
+    ] {
         echo(
             &root.join(format!("main/person/{holder}/config.json")),
             &format!("/person/{holder}"),

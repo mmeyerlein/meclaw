@@ -431,7 +431,8 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // 1.17.0 draws the memory road for talky-chat and the door `in_renewed`,
         // and pins `assistant@3.1.0` and `builder-librarian@2.2.8` (GH #895, GH #896).
         // 1.17.1 pins its librarian at `builder-librarian@2.2.9` (GH #899).
-        "builder@1.17.1"
+        // 1.17.2 pins its librarian at `builder-librarian@2.2.10` (GH #905 to GH #908).
+        "builder@1.17.2"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

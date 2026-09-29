@@ -95,12 +95,20 @@ fn check_over(over: Value, path: &str, mime: &str, kind: &str, text: &str) -> Va
     );
     assert_eq!(msgs.len(), 1, "one request, one answer: {msgs:?}");
     let (hop, body) = &msgs[0];
+    // OR-FJ.L.8: the verdict carries the UBF slot `messages: []` (a debug
+    // colony dead-letters a body without one); it is transport, not verdict.
+    let mut body = body.clone();
+    assert_eq!(
+        body.remove("messages"),
+        Some(json!([])),
+        "the verdict is a UBF body"
+    );
     assert_eq!(
         Value::Object(hop.clone()),
         json!({"route": "checked", "op_id": "op-901"}),
         "the answer rides `checked` and mirrors `op_id`, nothing else"
     );
-    Value::Object(body.clone())
+    Value::Object(body)
 }
 
 fn failed(body: &Value, lang: &str, message: &str, line: i64, col: i64) {

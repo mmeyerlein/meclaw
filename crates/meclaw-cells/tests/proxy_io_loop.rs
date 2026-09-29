@@ -55,6 +55,7 @@ async fn run_io_pushes_first_update_then_loops() {
             assert_eq!(update_id, 42);
             assert_eq!(chat_id, 100);
         }
+        other => panic!("expected a text message, got {other:?}"),
     }
 
     // Shutdown via reconfig-channel close (T7 stub: reacts to close).
@@ -110,6 +111,7 @@ async fn run_io_backoff_recovers_after_transient_failures_no_livelock() {
             assert_eq!(update_id, 7);
             assert_eq!(text, "recovered");
         }
+        other => panic!("expected a text message, got {other:?}"),
     }
 
     // Sanity: at least 4 requests at the mock (3 failed + 1 recovery).
@@ -197,8 +199,7 @@ async fn run_io_handles_multiple_updates_in_single_response() {
         .await
         .expect("no 2nd event")
         .unwrap();
-    let ProxyEvent::UserMessage { update_id: id1, .. } = ev1;
-    let ProxyEvent::UserMessage { update_id: id2, .. } = ev2;
+    let (id1, id2) = (ev1.update_id(), ev2.update_id());
     assert_eq!((id1, id2), (10, 11));
 
     // Wait for the second request, then check offset=12 (= max(10,11)+1).

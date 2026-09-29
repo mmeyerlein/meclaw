@@ -252,7 +252,7 @@ async fn the_organism_receipt_reaches_the_collector_inside_the_assistant() {
         root.join(".env"),
         "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\nMODEL_CORE=gpt-4o-mock\n\
          MODEL_CORE_FAST=gpt-4o-mock\nMODEL_SURFACE=gpt-4o-mock\nMODEL_CLOSER=gpt-4o-mock\n\
-         MODEL_DIALECTIC=gpt-4o-mock\nMODEL_DREAMER=gpt-4o-mock\nTELEGRAM_BOT_TOKEN=t\n\
+         MODEL_DIALECTIC=gpt-4o-mock\nMODEL_FILE_SPACE=gpt-4o-mock\nMODEL_DREAMER=gpt-4o-mock\nTELEGRAM_BOT_TOKEN=t\n\
          TELEGRAM_BOT_TOKEN_2=t2\nTELEGRAM_ALLOWED_USER_ID=0\nEXAMPLE_CHAT_TOKEN=c\n",
     )
     .unwrap();

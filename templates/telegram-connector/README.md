@@ -1,8 +1,14 @@
-# `telegram-connector@2.0.1`
+# `telegram-connector@2.1.0`
 
 A Telegram chat as one cell. One `proxy`, one credential, one wire in and one
 wire out. No persona, no llm cell, no answer of its own -- it carries turns
 between a chat and whatever you put behind it.
+
+**`2.1.0` takes documents, and that is why the second digit moved** ([#907](https://github.com/mmeyerlein/meclaw/issues/907)). A
+`message.document` up to `max_document_bytes` (20 MiB, the Bot API's own limit) is committed
+to the colony blob store, and the turn carries only its reference in `attachments[]`, with
+`hop.has_file = "1"`; a larger one reaches the turn as its caption plus a note naming the
+file. Nothing was taken away.
 
 **`2.0.0` is a removal, and that is why the first digit moved.** Up to and
 including `1.0.0` this template was a sealed hive around the `proxy` cell:
@@ -43,6 +49,7 @@ door -- there is no `hive_port_boundary` to trip over and no lane name to hit.
 |---|---|
 | in | the finished assistant turn. `context.chat_id` picks the chat |
 | out, without `hop.error_code` | one inbound chat message as a user-origin turn. `hop` carries `chat_id`, `user_id`, `message_id`, `platform` |
+| out, a document (GH #907) | the same turn, its text the caption (empty allowed), plus one `attachments[]` entry `{blob_id, mime_type, filename, size_bytes, sha256}` -- the document travels as a blob reference in the colony blob store, never as bytes -- and `hop.has_file = "1"`; the pairing edge hands `has_file` on unchanged, and a member sends the turn to its file space. Over `max_document_bytes` (20 MiB, the Bot API's own limit; downloads run one after another inside the poll, each step under the poll's own timeout, so a batch of large documents delays the next poll) or on a failed download or blob write (`blob_write_failed`, `timeout`, `no_blob_store`): no entry, the caption plus `[file "<name>" could not be stored: <why>]` |
 | out, with `hop.error_code` | the connector's own failure: `missing_chat_id`, `missing_assistant_turn`, `send_failed`, `invalid_body` |
 
 Both outbound shapes leave on the same wire. **Sorting them is the caller's job
@@ -119,7 +126,7 @@ cell, so `override_params` takes the flat form -- there is no path inside it to
 address:
 
 ```json
-{"name": "telegram-connector-2", "template": "telegram-connector@2.0.1",
+{"name": "telegram-connector-2", "template": "telegram-connector@2.1.0",
  "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN_2}"}}
 ```
 
@@ -177,7 +184,7 @@ this node itself:
     "add_nodes": [
       {
         "name": "telegram",
-        "template": "telegram-connector@2.0.1",
+        "template": "telegram-connector@2.1.0",
         "birth": "inactive",
         "override_params": {
           "bot_token": "parked",
@@ -230,7 +237,7 @@ credential -- the graph swap `swap_nodes` was re-dedicated for:
         "match": {"name": "telegram"},
         "with": {
           "name": "telegram-live",
-          "template": "telegram-connector@2.0.1",
+          "template": "telegram-connector@2.1.0",
           "params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}
         }
       }
@@ -321,8 +328,8 @@ are still the whole set.
   bot is this connector plus something that produces answers -- see the
   [`talky`](../talky/) template.
 - **Not a session, not a memory, not a history.** It reads `message.text` and
-  nothing else -- a join or a leave carries no `text` and falls silently on the
-  floor, so a topology that needs to know the participant set changed cannot
+  `message.document` and nothing else -- a photo, a voice note, a join or a
+  leave is acknowledged (the cursor moves past it) and otherwise dropped, so a topology that needs to know the participant set changed cannot
   learn it here yet (ADR-0002, O2).
 - **Not a level.** It normalises nothing on its own behalf any more; the level
   that holds it names the lanes (GH #303).

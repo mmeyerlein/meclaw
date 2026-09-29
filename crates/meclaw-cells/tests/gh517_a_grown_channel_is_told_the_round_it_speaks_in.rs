@@ -102,7 +102,7 @@ fn run_classify(args: Value) -> Value {
 fn wish(person: Option<&str>) -> Value {
     let mut params = json!({
         "scope": MEMBER_DIR, "level": "channel", "name": "telegram",
-        "template": "telegram-connector@2.0.1", "assistant": AGENT});
+        "template": "telegram-connector@2.1.0", "assistant": AGENT});
     if let Some(p) = person {
         params["ctx"] = json!({"member_person": p});
     }
@@ -216,7 +216,7 @@ fn a_wish_that_names_no_person_is_asked_rather_than_guessed_at() {
 #[test]
 fn a_grow_sentence_without_a_person_falls_to_the_design_lane_not_to_an_error() {
     let sentence =
-        format!("grow a channel named telegram from telegram-connector@2.0.1 under {MEMBER_DIR}");
+        format!("grow a channel named telegram from telegram-connector@2.1.0 under {MEMBER_DIR}");
     let out = run_classify(json!({"request": sentence, "assistant": AGENT}));
     assert_eq!(
         out["header"]["route"],

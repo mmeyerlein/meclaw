@@ -230,7 +230,14 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, channel: &std::p
     );
 
     copy_cells(member, &root.join("main/person"));
-    for holder in ["access", "affinity", "memory-hive", "assistants", "apps"] {
+    for holder in [
+        "access",
+        "affinity",
+        "memory-hive",
+        "file-space",
+        "assistants",
+        "apps",
+    ] {
         write(
             root,
             &format!("main/person/{holder}/config.json"),

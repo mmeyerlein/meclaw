@@ -37,6 +37,7 @@ b = d.get("body") or {}
 r = h.get("route")
 if r == "in_ws" and b.get("op") == "relay":
     m = dict(b["put"])
+    m.setdefault("messages", [])
     m["header"] = {"route": "in_put", "op": m.get("op", ""), "op_id": h.get("op_id", ""),
                    "caller": ""}
     sys.stdout.write(json.dumps([m]))
@@ -53,7 +54,8 @@ const GUARD_UNCHECKED: &str = r#"import sys, json
 d = json.load(sys.stdin)
 h = d["envelope"]["header"]["hop"]
 sys.stdout.write(json.dumps([{"header": {"route": "checked", "op_id": h.get("op_id", "")},
-                              "hook": "none", "lang": "", "note": "too_deep_to_check"}]))
+                              "hook": "none", "lang": "", "note": "too_deep_to_check",
+                              "messages": []}]))
 "#;
 
 fn space() -> Space {

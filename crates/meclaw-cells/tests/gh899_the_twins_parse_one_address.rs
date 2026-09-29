@@ -161,6 +161,11 @@ fn every_copy_of_text_view_reads_text_or_pages_or_nothing() {
         [b64(b"bin\x00ary"), pages],
         [b64(b"bin\x00ary"), []],
         [b64(&[0xff, 0xfe, b'x']), []],
+        // OR-FJ.I.22 (GH #907): a PDF can be pure ASCII (no binary comment
+        // line, no compressed stream -- the seam lock's `two_pages.pdf` is
+        // one). Its extracted pages are its text, not its PDF source: the
+        // address line counts 2 pages from them and `page: 2` must find one.
+        [b64(b"%PDF-1.4\n1 0 obj\n"), pages],
     ]);
     let want = json!([
         {"kind": "text", "lines": ["a", "b"], "pages": {}},
@@ -173,6 +178,9 @@ fn every_copy_of_text_view_reads_text_or_pages_or_nothing() {
          "pages": {"1": [1, 3], "2": [4, 5]}},
         {"error": "no_text"},
         {"error": "no_text"},
+        {"kind": "derived",
+         "lines": ["--- page 1 ---", "one", "uno", "--- page 2 ---", "two"],
+         "pages": {"1": [1, 3], "2": [4, 5]}},
     ]);
     for cell in twins("text_view") {
         let got = pure(&cell, probe, cases.clone());

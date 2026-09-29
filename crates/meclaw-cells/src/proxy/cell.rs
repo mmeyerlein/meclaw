@@ -39,6 +39,11 @@ pub struct ProxyCell {
     pub(crate) typing: TypingKeepers,
     /// Initial I/O config, consumed exactly once by `split_io`.
     pub(crate) initial_io_cfg: Option<RunIoConfig>,
+    /// GH #907: the colony blob store a fetched document is committed to
+    /// before its turn goes out (the turn carries the reference, never the
+    /// bytes). `None` -- a cell built outside a colony -- turns every document
+    /// into the fallback line `no_blob_store`.
+    pub(crate) blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
 }
 
 impl ProxyCell {
@@ -75,7 +80,20 @@ impl ProxyCell {
                 // is spawned inside a colony.
                 liveness: meclaw_colony::IoLivenessMark::disabled(),
             }),
+            blob_store: None,
         }
+    }
+
+    /// GH #907: the blob store documents are committed to. A builder rather
+    /// than a `new` argument: the factory sets it on birth and respawn alike,
+    /// and the many constructions that never see a document stay as they are.
+    #[must_use]
+    pub fn with_blob_store(
+        mut self,
+        blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
+    ) -> Self {
+        self.blob_store = blob_store;
+        self
     }
 
     /// GH #515: overrides the typing cadence (`TypingCadence::default` is the
@@ -339,13 +357,75 @@ impl LongRunningCell for ProxyCell {
         db: &'a mut DbConn,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
-            let ProxyEvent::UserMessage {
-                update_id,
-                chat_id,
-                user_id,
-                message_id,
-                text,
-            } = event;
+            // GH #907: an update the connector does not read only moves the
+            // cursor -- persisted like every other one, so a restart does not
+            // fetch it again -- and emits nothing.
+            let (update_id, chat_id, content) = match event {
+                ProxyEvent::Skipped { update_id } => {
+                    let next_offset = update_id + 1;
+                    let _ = db
+                        .call_with_timeout(move |c| crate::proxy::db::save_offset(c, next_offset))
+                        .await;
+                    return;
+                }
+                ProxyEvent::UserMessage {
+                    update_id,
+                    chat_id,
+                    user_id,
+                    message_id,
+                    text,
+                } => (
+                    update_id,
+                    chat_id,
+                    crate::proxy::emit::build_user_turn_content(
+                        chat_id, user_id, message_id, &text,
+                    ),
+                ),
+                ProxyEvent::Document {
+                    update_id,
+                    chat_id,
+                    user_id,
+                    message_id,
+                    caption,
+                    name,
+                    mime,
+                    content,
+                    ..
+                } => {
+                    // GH #907: the bytes go into the blob store HERE, before the
+                    // cursor write below, so "cursor persisted before emission"
+                    // holds unchanged; a crash after the blob write and before
+                    // the cursor leaves an orphan blob and a re-fetched update,
+                    // never a lost document. The write is local storage like
+                    // the cursor write, so it runs under the same knob,
+                    // `query_timeout_ms` (`send_timeout_ms` bounds a network
+                    // call to Telegram, which this is not).
+                    let stored = match content {
+                        crate::proxy::io::DocumentContent::Bytes(bytes) => {
+                            crate::proxy::emit::store_document(
+                                self.blob_store.as_deref(),
+                                bytes,
+                                &mime,
+                                &name,
+                                std::time::Duration::from_millis(self.query_timeout_ms),
+                            )
+                            .await
+                            .map_err(str::to_string)
+                        }
+                        other => Err(crate::proxy::emit::document_failure(&other)
+                            .unwrap_or_else(|| "not_fetched".to_string())),
+                    };
+                    let turn = crate::proxy::emit::build_document_turn_content(
+                        chat_id,
+                        user_id,
+                        message_id,
+                        &caption,
+                        &name,
+                        stored.as_ref().map_err(String::as_str),
+                    );
+                    (update_id, chat_id, turn)
+                }
+            };
 
             // GH #515: the sign of life goes FIRST — before the cursor write and
             // before the emission. The whole point is that the chat sees
@@ -365,9 +445,7 @@ impl LongRunningCell for ProxyCell {
                 .call_with_timeout(move |c| crate::proxy::db::save_offset(c, next_offset))
                 .await;
 
-            // 2. Build the UBF content + emit via OriginSink (parent=None, fresh trace).
-            let content =
-                crate::proxy::emit::build_user_turn_content(chat_id, user_id, message_id, &text);
+            // 2. Emit the UBF content via OriginSink (parent=None, fresh trace).
             let _ = sink
                 .emit(meclaw_core::CellOutput {
                     target: self.emit_to.clone(),

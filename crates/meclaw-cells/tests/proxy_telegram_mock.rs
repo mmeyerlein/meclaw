@@ -42,6 +42,7 @@ async fn get_updates_parses_text_messages_into_proxy_events() {
             assert_eq!(*message_id, Some(7));
             assert_eq!(text, "hello");
         }
+        other => panic!("expected a text message, got {other:?}"),
     }
 
     // Sanity: Request hatte `offset=0&timeout=30`.
@@ -52,10 +53,14 @@ async fn get_updates_parses_text_messages_into_proxy_events() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_updates_skips_non_text_updates() {
-    // An update without `message.text` (e.g. `edited_message` or a sticker) → empty.
+async fn get_updates_acknowledges_updates_it_does_not_read() {
+    // GH #907: an update without `message.text` or `message.document` (an edit,
+    // a photo, a sticker) used to yield nothing -- the cursor never moved past
+    // it and every restart fetched it again. Now each one is a `Skipped` event
+    // carrying its id, so the handler can persist the cursor past it.
     let body = br#"{"ok": true, "result": [
-        {"update_id": 99, "edited_message": {"chat":{"id":1}, "text":"x"}}
+        {"update_id": 99, "edited_message": {"chat":{"id":1}, "text":"x"}},
+        {"update_id": 100, "message": {"chat":{"id":1}, "photo": [{"file_id":"p"}]}}
     ]}"#;
     let (addr, _j, _c) = start_mock_server_capturing(vec![MockResponse::ok_json(body)]).await;
     let c = TelegramClient::new(&format!("http://{addr}"), "T").unwrap();
@@ -63,7 +68,14 @@ async fn get_updates_skips_non_text_updates() {
         .get_updates(0, 30, Duration::from_millis(5000))
         .await
         .unwrap();
-    assert!(events.is_empty(), "non-text updates must be filtered");
+    let skipped: Vec<i64> = events
+        .iter()
+        .map(|e| match e {
+            ProxyEvent::Skipped { update_id } => *update_id,
+            other => panic!("expected Skipped, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(skipped, vec![99, 100], "every update is acknowledged");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

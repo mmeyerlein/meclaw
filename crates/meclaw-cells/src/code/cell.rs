@@ -36,6 +36,14 @@ pub struct CodeCell {
     /// because a pool handle is crate-internal plumbing, not part of the cell's
     /// published shape.
     pub(crate) runner: RunnerHandle,
+    /// GH #907: the read handle on the colony blob store, present iff the
+    /// contract declares `consumes.body.attachments` and a store is wired
+    /// ([`meclaw_colony::AttachmentReader::for_contract`]). `None` leaves the
+    /// stdin document byte-identical to a cell without the declaration.
+    pub(crate) attachments: Option<meclaw_colony::AttachmentReader>,
+    /// GH #907: operation timeout of each attachment read
+    /// (`params.attachment_timeout_ms`).
+    pub(crate) attachment_timeout_ms: u64,
 }
 
 /// How a `CodeCell` actually runs its script.
@@ -68,7 +76,100 @@ impl CodeCell {
             validate_emits,
             stdin_params: Value::Object(Map::new()),
             runner: RunnerHandle::Cold,
+            attachments: None,
+            attachment_timeout_ms: crate::code::params::DEFAULT_ATTACHMENT_TIMEOUT_MS,
         }
+    }
+
+    /// GH #907: attach the `attachments[]` reader and its per-read timeout.
+    /// Additive builder step like [`CodeCell::with_stdin_params`]; both spawn
+    /// paths of the factory set it, so a restarted cell reads as it did.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_attachment_reader(
+        mut self,
+        reader: Option<meclaw_colony::AttachmentReader>,
+        timeout_ms: u64,
+    ) -> Self {
+        self.attachments = reader;
+        self.attachment_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// GH #907 (interface 2): the body the script reads on stdin, with every
+    /// object entry of `body.attachments` read from the blob store -- the
+    /// entry plus `data_b64` (standard base64, padded), or plus
+    /// `error: {code, message}` with `code` one of `timeout`, `not_found`,
+    /// `store_error`, `bad_ref` (blob_id missing or not a UUID).
+    ///
+    /// `None` -- stdin stays what it was -- for a cell without a reader and
+    /// for a message without an object entry. The result feeds ONLY the stdin
+    /// document: the `Message`, its log row, hop, context and every emission
+    /// never see the bytes (R-FJ-1). A failed read is not a cell error: the
+    /// script gets the code and decides, the way it decides about any input.
+    async fn stdin_body_with_attachments(&self, msg: &Message) -> Option<Value> {
+        let reader = self.attachments.as_ref()?;
+        let meclaw_core::Body::Inline(Value::Object(body)) = &msg.body else {
+            return None;
+        };
+        let entries = body.get("attachments")?.as_array()?;
+        if !entries.iter().any(Value::is_object) {
+            return None;
+        }
+        let timeout = std::time::Duration::from_millis(self.attachment_timeout_ms);
+        let mut resolved = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Value::Object(fields) = entry else {
+                resolved.push(entry.clone());
+                continue;
+            };
+            let mut fields = fields.clone();
+            // What the substrate adds is the substrate's word, never a
+            // producer's: a stale `data_b64` or `error` on the way in goes.
+            fields.remove("data_b64");
+            fields.remove("error");
+            let blob_id = fields
+                .get("blob_id")
+                .and_then(Value::as_str)
+                .and_then(|s| meclaw_core::Uuid::parse_str(s).ok());
+            let read = match blob_id {
+                None => Err(("bad_ref", "blob_id missing or not a UUID".to_string())),
+                Some(id) => match reader.read(id, timeout).await {
+                    Ok(blob) => Ok(blob.bytes),
+                    Err(e @ meclaw_colony::AttachmentReadError::Timeout(..)) => {
+                        Err(("timeout", e.to_string()))
+                    }
+                    Err(e @ meclaw_colony::AttachmentReadError::NotFound(..)) => {
+                        Err(("not_found", e.to_string()))
+                    }
+                    Err(e @ meclaw_colony::AttachmentReadError::Store(..)) => {
+                        Err(("store_error", e.to_string()))
+                    }
+                },
+            };
+            // AGENTS.md rule 13 (OR-FJ-82): base64 over up to 20 MiB is CPU
+            // work, off the worker like the proxy's SHA-256 over the same bytes.
+            let read = match read {
+                Ok(bytes) => {
+                    tokio::task::spawn_blocking(move || crate::file::base64_encode(&bytes))
+                        .await
+                        .map_err(|e| ("store_error", format!("encoding the blob failed: {e}")))
+                }
+                Err(e) => Err(e),
+            };
+            match read {
+                Ok(encoded) => {
+                    fields.insert("data_b64".into(), Value::String(encoded));
+                }
+                Err((code, message)) => {
+                    fields.insert("error".into(), json!({"code": code, "message": message}));
+                }
+            }
+            resolved.push(Value::Object(fields));
+        }
+        let mut body = body.clone();
+        body.insert("attachments".into(), Value::Array(resolved));
+        Some(Value::Object(body))
     }
 
     /// Attach the cell's raw params, secret-filtered, as the `params` copy the
@@ -480,13 +581,29 @@ impl StatelessCell for CodeCell {
             // in the DLQ instead of being silently parked at the read endpoint.
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
-            let stdin_json = match wire::build_stdin_json(&msg, &self.stdin_params) {
+            // GH #907: the attachment bytes go onto a COPY of the message used
+            // for stdin and nothing else -- `msg` itself, which the error
+            // paths and the emission path below read, never holds them.
+            let stdin_msg = match self.stdin_body_with_attachments(&msg).await {
+                Some(body) => {
+                    let mut copy = msg.clone();
+                    copy.body = meclaw_core::Body::Inline(body);
+                    Some(copy)
+                }
+                None => None,
+            };
+            let stdin_json = match wire::build_stdin_json(
+                stdin_msg.as_ref().unwrap_or(&msg),
+                &self.stdin_params,
+            ) {
                 Ok(s) => s,
                 Err(e) => {
                     emit_invalid_input(sink, &reply_target, e).await;
                     return;
                 }
             };
+            // The copy's bytes live on in `stdin_json` alone.
+            drop(stdin_msg);
 
             let timeout =
                 std::time::Duration::from_millis(self.params.external_timeout_ms.unwrap_or(60_000));

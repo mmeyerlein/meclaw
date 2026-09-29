@@ -271,7 +271,7 @@ fn build_root(root: &std::path::Path) {
          MODEL_CORE_FAST=gpt-4o-mock-fast\n\
          MODEL_SURFACE=gpt-4o-mock-surface\n\
          MODEL_CLOSER=gpt-4o-mock\n\
-         MODEL_DIALECTIC=gpt-4o-mock\n\
+         MODEL_DIALECTIC=gpt-4o-mock\nMODEL_FILE_SPACE=gpt-4o-mock\n\
          MODEL_DREAMER=gpt-4o-mock\n\
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\
@@ -983,10 +983,15 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     // member together with the lane (no assistant emits `prune` any more).
     // 34 -> 35 with GH #896: the renewal of a duplex channel's live session
     // reaches the container on `in_renewed`.
+    // 35 -> 39 with GH #908: the file space's tool road, the same four edges
+    // as the memory's (`tool` and `schemas` in, `tool_result` re-stamped to
+    // `in_tool` and `tool_schemas` to `in_menu` with `tool_answerer = 'files'`).
+    // 39 -> 40 with GH #907: a turn that carried a document comes back off
+    // `./file-space` on `turn`, its address line in place of the bytes.
     assert_eq!(
-        declared, 35,
+        declared, 40,
         "the member's own edges to and from its assistants container are the member \
-         template's, drawn ONCE at member instantiation. SEVENTEEN reach the container: the \
+         template's, drawn ONCE at member instantiation. These reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
          DEFAULT since GH #533, so a bundle addressed to the asker OUTSIDE the member takes \
          the level's own exit instead \u{2014} the memory hive's REFUSAL of a recall an asker \
@@ -1023,7 +1028,9 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          to `in_briefing` when the member's own reply-to token says `inside`, and \
          \u{2014} since GH #896 \u{2014} the renewal of a duplex channel's live session, \
          off ./channels on `renewed` and re-stamped to `in_renewed` past the firewall \
-         like the errand. EIGHTEEN \
+         like the errand, and \u{2014} since GH #907 \u{2014} a turn that carried a \
+         document, off ./file-space on `turn` with its address line instead of the bytes and \
+         re-stamped to `in_turn`. EIGHTEEN \
          leave it: recall, `sidecar` THREE times \u{2014} TWICE since GH #607 \u{2014} the one lane \
          this level SORTS rather than forwards, the memory section onto the very door \
          `extraction` used to take and every other section into `./apps`, on a section-blind edge \

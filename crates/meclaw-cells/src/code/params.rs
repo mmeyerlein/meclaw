@@ -146,6 +146,9 @@ impl CodeParams {
             return Err("params.max_concurrency must be 1 when runner_mode is \"resident\"".into());
         }
         let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
+        // GH #907: validated with the rest so a bad value fails at birth; the
+        // factory reads it again for the attachment reader (see the fn).
+        parse_attachment_timeout_ms(raw)?;
         Ok(CodeParams {
             runner: runner.to_string(),
             script,
@@ -167,6 +170,29 @@ impl CodeParams {
             RunnerMode::Resident => 1,
             _ => self.max_concurrency.unwrap_or(4),
         }
+    }
+}
+
+/// GH #907: default operation timeout of one attachment read, in ms -- the
+/// `llm` cell's default for the same read.
+pub const DEFAULT_ATTACHMENT_TIMEOUT_MS: u64 = 5_000;
+
+/// GH #907: `params.attachment_timeout_ms`, the operation timeout of each
+/// `attachments[]` read a cell declaring `consumes.body.attachments` does
+/// before its script runs. A positive integer, default
+/// [`DEFAULT_ATTACHMENT_TIMEOUT_MS`].
+///
+/// A free function, not a `CodeParams` field: the knob matters only to a
+/// cell that holds an attachment reader, and the factory is the one place
+/// that builds that reader -- a field would reach every literal `CodeParams`
+/// in the tree for a number none of them reads.
+pub fn parse_attachment_timeout_ms(raw: &Value) -> Result<u64, String> {
+    match raw.get("attachment_timeout_ms") {
+        None => Ok(DEFAULT_ATTACHMENT_TIMEOUT_MS),
+        Some(v) => v
+            .as_u64()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| "params.attachment_timeout_ms must be a positive integer".to_string()),
     }
 }
 
@@ -363,5 +389,22 @@ mod tests {
             }))
             .is_ok()
         );
+    }
+
+    /// GH #907: `attachment_timeout_ms` defaults to 5000, takes a positive
+    /// integer and refuses everything else at birth -- and an unknown knob
+    /// next to it still passes (templates carry their own).
+    #[test]
+    fn attachment_timeout_ms_defaults_and_refuses_nonsense() {
+        let base = json!({"runner":"python3","script_inline":"pass","my_knob": 3});
+        assert_eq!(parse_attachment_timeout_ms(&base).unwrap(), 5_000);
+        assert!(CodeParams::parse(&base).is_ok());
+        let mut v = base.clone();
+        v["attachment_timeout_ms"] = json!(250);
+        assert_eq!(parse_attachment_timeout_ms(&v).unwrap(), 250);
+        for bad in [json!(0), json!(-1), json!("5s"), json!(1.5)] {
+            v["attachment_timeout_ms"] = bad.clone();
+            assert!(CodeParams::parse(&v).is_err(), "{bad} must be refused");
+        }
     }
 }

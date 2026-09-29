@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.1.0",
+            v, "2.2.0",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -406,12 +406,14 @@ fn the_versions_moved_with_the_declarations() {
              2.0.0, the first digit: `pack_ack` and `prune` no longer leave the level, \
              and the apps rim stays as it was; GH #896 makes it 2.1.0, the second \
              digit: a channel's `renewed` reaches `./assistants`, and the apps rim \
-             stays as it was again"
+             stays as it was again; GH #907 and GH #908 make it 2.2.0, the second \
+             digit: `./file-space` joins as a fifth holder, reached by the file tools \
+             and by a channel's documents, and the apps rim stays as it was once more"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.1.1",
+            v, "3.2.0",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -436,7 +438,9 @@ fn the_versions_moved_with_the_declarations() {
              `in_renewed` joins the level, the consult edges carry the core's question \
              and the surface's reply, and it pins `talky@6.1.0` and `cogny@5.3.0`; GH #904 \
              makes it 3.1.1, only the pins `talky@6.1.1` and `cogny@5.3.1`, whose \
-             curators keep one standing cache-clock order"
+             curators keep one standing cache-clock order; GH #908 makes it 3.2.0, the \
+             second digit: `./talky`, `./talky-chat` and `./cogny` reach the member's \
+             `file_` tools on edges of their own, a road added and no lane taken away"
         );
     }
 }

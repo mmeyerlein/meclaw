@@ -5,7 +5,7 @@
   },
   "params": {
     "provider": "openai",
-    "model": "${ctx.model}",
+    "model": "${MODEL_FILE_SPACE}",
     "requirement": "Writes two plain summaries of one file -- a single line of at most 120 characters and a paragraph of at most 1200 -- and answers a question about the file only from the numbered lines it is given, citing their line ranges. It needs faithful reading of up to about twelve thousand tokens of text or code and must keep to stated lengths and forms. Nobody holds a conversation on it; it runs after a file changed and when someone asks about one, so a small, inexpensive model is enough.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "https://openrouter.ai/api/v1",
@@ -22,7 +22,7 @@
       "model": {
         "type": "string",
         "secret": false,
-        "description": "The summarizer's model; the template carries `ctx.model`, and the llm-registry may move it through the hive's `in_model` door."
+        "description": "MODEL_FILE_SPACE -- REQUIRED, no default (the `memory-hive` rule for its `MODEL_*`): the model that writes summaries and answers `ask`; the llm-registry may move it through the hive's `in_model` door."
       }
     },
     "emits": {

@@ -375,16 +375,16 @@ if [ -n "$KEY" ]; then
     #
     # Which model names a declaration reads is the declaration's business, so
     # the file carries every token the shipped ones ask for and gives them all
-    # the same model. MODEL_BRAIN is what examples/meclaw-os reads; the six
+    # the same model. MODEL_BRAIN is what examples/meclaw-os reads; the seven
     # MODEL_* below are what the four levels of examples/organism read
     # (assistant@2.6.0 takes the first three as ctx, memory-hive@3.3.0 the
-    # last three), and a token with no value is refused as `env_var_missing`
+    # next three, a member's file-space the last), and a token with no value is refused as `env_var_missing`
     # rather than committing a half-wired cell.
     (
         umask 077
         printf 'OPENROUTER_API_KEY=%s\n' "$KEY" > "${root}/.env"
         for token in MODEL_BRAIN MODEL_CORE MODEL_CORE_FAST MODEL_SURFACE \
-                     MODEL_CLOSER MODEL_DIALECTIC MODEL_DREAMER; do
+                     MODEL_CLOSER MODEL_DIALECTIC MODEL_DREAMER MODEL_FILE_SPACE; do
             printf '%s=%s\n' "$token" "$MODEL" >> "${root}/.env"
         done
     ) || die "could not write ${root}/.env"

@@ -1,12 +1,13 @@
-# `member@2.1.0`
+# `member@2.2.0`
 
-One person, as a level. **Four holders, three open containers and no cell of
-its own** — seven nodes and sixty-seven edges.
+One person, as a level. **Five holders, three open containers and no cell of
+its own** — eight nodes and seventy-four edges.
 
 | holder | what it holds |
 |---|---|
 | [`affinity`](../affinity/README.md) | **identity and meaning** — the curated record of who this person is and who their people are to them. Curated, fail-closed, quotable: it answers *who is X to me* and it is the only thing that answers it. |
 | [`memory-hive`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
+| [`file-space`](../file-space/README.md) | **the files** — since GH #908. This person's knowledge space: every file under one address `fh-<12 hex>`, versioned, read by line and changed only against the version a writer read. |
 | [`firewall`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
 | [`access`](../access/README.md) | **the keys** — since 1.5.0 (GH #560). The provider credentials this person's agents authenticate with, held by the person rather than by the OS. Nothing in this level's graph reaches it but the drain for its `error` lane; a brain asks it over a v-lane. |
 
@@ -83,6 +84,10 @@ memory answers it itself:
 | `./memory-hive -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` — an ordinary tool result re-entering the round that asked, refusals included |
 | `./assistants -> ./memory-hive` | `schemas` | a generation's menu tick, turned into the hive's own `in_schemas` |
 | `./memory-hive -> ./assistants` | `tool_schemas` | the declaration, restamped to `in_menu` and stamped `context.tool_answerer = 'memory'` — the key the menu merge of #529 files an answerer under |
+| `./assistants -> ./file-space` | `tool`, `hop.tool_name.startsWith('file_')` | a file tool call into the file space's `in_tool` (GH #908); its `./tools` checks the arguments and lets only `context.tool_caller == 'cogny'` write |
+| `./file-space -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` |
+| `./assistants -> ./file-space` | `schemas` | the same menu tick into the file space's `in_schemas` |
+| `./file-space -> ./assistants` | `tool_schemas` | restamped to `in_menu` under `context.tool_answerer = 'files'` |
 
 They are **template** edges rather than v-lanes, and that is the one place the two legs
 differ: this level is a mandatory hop for both, so nothing is bought by drawing the tool
@@ -797,7 +802,7 @@ steal each other's updates.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.0.1"}],
+  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.1.0"}],
   "add_edges": [
     {"from": "./channels/telegram", "to": "./channels",
      "condition": "!has(hop.error_code)",
@@ -841,7 +846,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.1.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.2.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1076,7 +1081,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.1.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.2.0"}]
 }}
 ```
 
@@ -1085,7 +1090,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.1.1"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.2.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1668,6 +1673,12 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`2.2.0` takes the **second** digit ([#907](https://github.com/mmeyerlein/meclaw/issues/907), [#908](https://github.com/mmeyerlein/meclaw/issues/908)): a fifth holder,
+[`file-space`](../file-space/) at 1.1.0, holds this person's files. `./assistants` reaches it on
+`tool` and `schemas` for the `file_` tools, a channel's turn that carries a document passes
+through it (`in_ingest`) before it reaches `./assistants`, and `./assistants` is derived from
+[`assistant`](../assistant/) at 3.2.0.
 
 `2.1.0` takes the **second** digit ([#896](https://github.com/mmeyerlein/meclaw/issues/896)): a channel's `renewed` reaches `./assistants`
 as `in_renewed`, so a duplex call renewed at its provider's limit gets its block from the

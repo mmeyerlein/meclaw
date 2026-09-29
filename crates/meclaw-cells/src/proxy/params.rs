@@ -31,6 +31,11 @@ pub struct ProxyParams {
     /// Telegram API base URL. Default `https://api.telegram.org`. Test
     /// override for `mock_http` server (e.g. `http://127.0.0.1:<port>`).
     pub base_url: String,
+    /// GH #907: ceiling of one document download in bytes. Default 20 MiB,
+    /// the Bot API's own limit (`DEFAULT_MAX_DOCUMENT_BYTES`); a larger
+    /// document reaches the turn as a sentence, a smaller one as a blob
+    /// reference in `attachments[]`. Set at birth (immutable at runtime).
+    pub max_document_bytes: u64,
 }
 
 /// β: the `proxy` runtime-overlay projection — the mutable, runtime-tunable
@@ -65,8 +70,12 @@ impl crate::params_overlay::OverlayParams for ProxyOverlay {
         "long_poll_request_secs",
         "send_timeout_ms",
         "query_timeout_ms",
+        "max_document_bytes",
     ];
-    const IMMUTABLE_KEYS: &'static [&'static str] = &["bot_token", "emit_to"];
+    // GH #907: `max_document_bytes` is read at birth into the one client the
+    // handler and the I/O task share; a runtime change would have to rebuild
+    // both, and a ceiling that moves under a running download is no ceiling.
+    const IMMUTABLE_KEYS: &'static [&'static str] = &["bot_token", "emit_to", "max_document_bytes"];
     fn parse(raw: &JsonValue) -> Result<Self, String> {
         let obj = raw.as_object().ok_or("params: must be object")?;
         let base_url = obj
@@ -161,6 +170,13 @@ impl ProxyParams {
                 long_poll_request_secs * 1000
             ));
         }
+        let max_document_bytes = match obj.get("max_document_bytes") {
+            None => crate::proxy::telegram::DEFAULT_MAX_DOCUMENT_BYTES,
+            Some(v) => v
+                .as_u64()
+                .filter(|n| *n > 0)
+                .ok_or("max_document_bytes: a positive integer (bytes)")?,
+        };
 
         Ok(Self {
             bot_token,
@@ -170,6 +186,7 @@ impl ProxyParams {
             send_timeout_ms,
             query_timeout_ms,
             base_url,
+            max_document_bytes,
         })
     }
 }

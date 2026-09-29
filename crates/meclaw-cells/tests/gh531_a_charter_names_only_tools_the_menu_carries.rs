@@ -75,6 +75,10 @@ const SCHEMAS_CELL: &str = concat!(
     "/../../templates/tools/schemas/config.json"
 );
 
+const FILE_SPACE_SCHEMAS_CELL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/file-space/schemas/config.json"
+);
 const CURATOR_SCHEMAS_CELL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/curator/schemas/config.json"
@@ -94,6 +98,15 @@ fn what_the_curator_answers() -> BTreeSet<String> {
         return BTreeSet::new();
     }
     what_a_schemas_cell_answers(CURATOR_SCHEMAS_CELL, "/main/talky/curator/schemas")
+}
+
+/// Every `file_*` tool the member's file space answers the menu question with
+/// (GH #908), read off its `schemas` cell the same way.
+fn what_the_file_space_answers() -> BTreeSet<String> {
+    if !std::path::Path::new(FILE_SPACE_SCHEMAS_CELL).is_file() {
+        return BTreeSet::new();
+    }
+    what_a_schemas_cell_answers(FILE_SPACE_SCHEMAS_CELL, "/main/m/file-space/schemas")
 }
 
 fn what_a_schemas_cell_answers(cell: &str, target: &str) -> BTreeSet<String> {
@@ -209,6 +222,36 @@ fn routed(c: &Composite) -> BTreeSet<String> {
     out
 }
 
+/// Every `hop.tool_name.startsWith('<prefix>')` an edge of this composite is
+/// conditioned on: a family of names it routes by prefix (GH #908, `file_`).
+fn routed_prefixes(c: &Composite) -> BTreeSet<String> {
+    let Some(cfg) = read(c.graph) else {
+        return BTreeSet::new();
+    };
+    let needle = "hop.tool_name.startsWith('";
+    let mut out = BTreeSet::new();
+    for e in cfg["params"]["graph"]["edges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        let Some(cond) = e["condition"].as_str() else {
+            continue;
+        };
+        let mut rest = cond;
+        while let Some(at) = rest.find(needle) {
+            rest = &rest[at + needle.len()..];
+            if let Some(end) = rest.find('\'') {
+                out.insert(rest[..end].to_string());
+                rest = &rest[end..];
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Whether this composite asks its curator the menu question: an edge
 /// `./collector -> ./curator` on `schemas`, in its own graph or in the graph of
 /// the composite a layer of it references (`assistant` asks through its
@@ -240,6 +283,17 @@ fn asks_its_curator(c: &Composite) -> bool {
 fn answered(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
     let mut out = hive.clone();
     out.extend(routed(c));
+    // GH #908: a composite that routes a PREFIX up to the member
+    // (`hop.tool_name.startsWith('file_')`) is answered, one level up, by the
+    // member's file space -- every name its `schemas` cell serves under that
+    // prefix, and nothing else.
+    for prefix in routed_prefixes(c) {
+        out.extend(
+            what_the_file_space_answers()
+                .into_iter()
+                .filter(|n| n.starts_with(&prefix)),
+        );
+    }
     if asks_its_curator(c) {
         out.extend(what_the_curator_answers());
     }

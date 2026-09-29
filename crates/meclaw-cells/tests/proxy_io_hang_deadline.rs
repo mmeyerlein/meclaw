@@ -64,6 +64,7 @@ async fn run_io_survives_a_half_dead_poll_and_delivers_the_next_update() {
             assert_eq!(update_id, 77);
             assert_eq!(text, "alive");
         }
+        other => panic!("expected the text update, got {other:?}"),
     }
 
     // Sanity: the half-dead poll and the successful one are two connections.
@@ -112,7 +113,7 @@ async fn run_io_outer_deadline_does_not_cut_a_legitimate_long_poll() {
         .await
         .expect("no event - the outer deadline cut a legitimate long poll")
         .unwrap();
-    let ProxyEvent::UserMessage { update_id, .. } = ev;
+    let update_id = ev.update_id();
     assert_eq!(update_id, 5);
 
     drop(rc_tx);

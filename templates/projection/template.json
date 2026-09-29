@@ -1,0 +1,24 @@
+{
+  "name": "projection",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "Tools need real files; a file space keeps blocks and versions. The projection lays one workspace out as a directory under the owner's `base_path` (after the first time only what changed), runs one permitted program in it without a shell, and afterwards reads the directory once: a changed file is taken over into the workspace at once when the program is a formatter (`auto_adopt`), everything else becomes a numbered proposal that `ws_adopt` takes over. Every byte goes back through the space's `in_write` with the workspace; the projection never touches the space's tables.",
+    "use_when": "As the child hive `./projection` of a `file-space`; the owner sets `base_path` and the sandbox's write grant for `mat` and `run` in one override, and `exec_allow` for the programs that may run.",
+    "not_in_scope": "No tool for a model (the operations are an API, not a menu); no watcher or polling; no network for a program; no default `base_path` and no write grant in the template; no cleanup of a directory after its workspace closed.",
+    "examples": [
+      "PORTS - every endpoint is the HIVE path (`params.ports` is empty). Entry on `hop.route`: in_proj, in_answer. Exit: answer, in_ws, in_read, in_write.",
+      "OVERRIDE - the owner, on the ref that instantiates the file space: {\"projection/mat\": {\"base_path\": \"/srv/projection\", \"exec_allow\": [\"cargo\"], \"sandbox\": {\"trust\": \"restricted\", \"network\": \"deny\", \"filesystem\": {\"runtime\": true, \"write\": [\"/srv/projection\"]}}}, \"projection/run\": {\"base_path\": \"/srv/projection\", \"sandbox\": {...the same...}}}. Without it every request answers `no_base_path`.",
+      "RUN - {\"op\": \"ws_exec\", \"args\": {\"argv\": [\"cargo\", \"fmt\"]}} with hop `ws` answers `{run, exit, out_tail, err_tail, adopted: [{path, version}], proposals: [{id, path, kind}]}`; `ws_adopt` with `{run, ids}` takes proposals over."
+    ]
+  },
+  "tags": [
+    "projection",
+    "file-space",
+    "workspace",
+    "exec",
+    "sandbox",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

@@ -53,7 +53,7 @@
             "./assistants",
             "./channels"
           ],
-          "because": "the `memory_recall` tool call a generation of this member made -- declared here, like `recall` above and for the same reason (GH #552, ADR-0020). It is not a lane of this rim and never was: it starts inside `./assistants` and ends inside `./memory-hive`, both siblings in here, and `at` says so. Under ADR-0020 a level that declares a lane takes part in it and may not be skipped, and taking part is exactly what this level does: the door `./assistants -> ./memory-hive` turns `tool` into the hive's own `tool_call` and stamps the two keys the hive refuses a question without -- `audience_now` (the round, from `context.audience_set`) and `channel` (the room). Nothing below this level knows the round and nothing above it knows the person, so a v-lane drawn from a generation straight to any memory would produce `missing_audience` at runtime; it is refused at mutation time instead, with `v_lane_mandatory_hop` Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case."
+          "because": "the `memory_recall` tool call a generation of this member made -- declared here, like `recall` above and for the same reason (GH #552, ADR-0020). It is not a lane of this rim and never was: it starts inside `./assistants` and ends inside `./memory-hive`, both siblings in here, and `at` says so. Under ADR-0020 a level that declares a lane takes part in it and may not be skipped, and taking part is exactly what this level does: the door `./assistants -> ./memory-hive` turns `tool` into the hive's own `tool_call` and stamps the two keys the hive refuses a question without -- `audience_now` (the round, from `context.audience_set`) and `channel` (the room). Nothing below this level knows the round and nothing above it knows the person, so a v-lane drawn from a generation straight to any memory would produce `missing_audience` at runtime; it is refused at mutation time instead, with `v_lane_mandatory_hop` Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case. Since GH #908 the same lane carries every `file_*` call to `./file-space`, the member's file space, on an edge conditioned on the prefix: the space's own `./tools` checks the arguments and lets only the reasoning core write."
         },
         {
           "route": "schemas",
@@ -61,7 +61,7 @@
             "./assistants",
             "./channels"
           ],
-          "because": "a generation's menu tick asking this member's memory what its tool looks like (GH #552). Same shape as `tool` and declared for the same reason: the question starts inside `./assistants`, the answer is written inside `./memory-hive`, and the door between them is this level's. A menu that never asked is a menu without `memory_recall` in it, and a round that then looks like a model which chose not to ask its memory Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case."
+          "because": "a generation's menu tick asking this member's memory what its tool looks like (GH #552). Same shape as `tool` and declared for the same reason: the question starts inside `./assistants`, the answer is written inside `./memory-hive`, and the door between them is this level's. A menu that never asked is a menu without `memory_recall` in it, and a round that then looks like a model which chose not to ask its memory Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case. Since GH #908 the question also reaches `./file-space`, which answers the `file_*` declarations it serves."
         },
         {
           "route": "mutation_committed",
@@ -148,14 +148,14 @@
           "at": [
             "./assistants"
           ],
-          "because": "the way back of `tool`, declared here for the same reason and with the same effect (GH #552). The hive's `tool_result` becomes `in_tool` on the edge `./memory-hive -> ./assistants`, which is this level restamping a lane rather than forwarding it: the result re-enters the asking round as an ordinary tool result, refusals included, and the round ends where it began"
+          "because": "the way back of `tool`, declared here for the same reason and with the same effect (GH #552). The hive's `tool_result` becomes `in_tool` on the edge `./memory-hive -> ./assistants`, which is this level restamping a lane rather than forwarding it: the result re-enters the asking round as an ordinary tool result, refusals included, and the round ends where it began. Since GH #908 `./file-space -> ./assistants` restamps the file space's `tool_result` the same way."
         },
         {
           "route": "in_menu",
           "at": [
             "./assistants"
           ],
-          "because": "the way back of `schemas` (GH #552). The hive's `tool_schemas` becomes `in_menu` on the edge `./memory-hive -> ./assistants` and carries `context.tool_answerer == 'memory'`, which is the key the menu merge of GH #529 files an answerer's declarations under -- without it a third answerer would overwrite the menu instead of joining it"
+          "because": "the way back of `schemas` (GH #552). The hive's `tool_schemas` becomes `in_menu` on the edge `./memory-hive -> ./assistants` and carries `context.tool_answerer == 'memory'`, which is the key the menu merge of GH #529 files an answerer's declarations under -- without it a third answerer would overwrite the menu instead of joining it. Since GH #908 the file space's `tool_schemas` comes back the same way under `context.tool_answerer == 'files'`."
         },
         {
           "route": "turn",
@@ -189,7 +189,8 @@
           "modifier": {
             "set_context": {
               "channel": "has(context.channel) ? context.channel : ''",
-              "counterpart": "has(context.counterpart) ? context.counterpart : ''"
+              "counterpart": "has(context.counterpart) ? context.counterpart : ''",
+              "has_file": "has(hop.has_file) ? hop.has_file : ''"
             }
           }
         },
@@ -204,7 +205,8 @@
             "set_context": {
               "channel": "has(context.channel) ? context.channel : ''",
               "counterpart": "has(context.counterpart) ? context.counterpart : ''",
-              "engine": "has(hop.engine) ? hop.engine : ''"
+              "engine": "has(hop.engine) ? hop.engine : ''",
+              "has_file": "has(hop.has_file) ? hop.has_file : ''"
             }
           }
         },
@@ -226,7 +228,7 @@
         {
           "from": "./firewall",
           "to": "./assistants",
-          "condition": "has(hop.route) && hop.route == 'pass'",
+          "condition": "has(hop.route) && hop.route == 'pass' && (has(hop.ctx_has_file) ? hop.ctx_has_file : (has(context.has_file) ? context.has_file : '')) != '1'",
           "modifier": {
             "set_hop": {
               "route": "'in_turn'"
@@ -235,7 +237,41 @@
               "fw_body",
               "fw_now",
               "fw_phase",
+              "store_origin",
+              "has_file"
+            ]
+          }
+        },
+        {
+          "from": "./firewall",
+          "to": "./file-space",
+          "condition": "has(hop.route) && hop.route == 'pass' && (has(hop.ctx_has_file) ? hop.ctx_has_file : (has(context.has_file) ? context.has_file : '')) == '1'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_ingest'"
+            },
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
               "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "delete_context": [
+              "has_file",
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
             ]
           }
         },
@@ -251,7 +287,8 @@
           "condition": "has(hop.route) && hop.route == 'answer'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -265,7 +302,8 @@
               "fw_now",
               "fw_phase",
               "store_origin",
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -309,7 +347,8 @@
               "route": "'bundle'"
             },
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -396,7 +435,8 @@
           "condition": "has(hop.route) && hop.route == 'reject' && (!has(hop.recall_caller) || hop.recall_caller == 'outside')",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -406,7 +446,8 @@
           "condition": "has(hop.route) && hop.route == 'write'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -416,7 +457,8 @@
           "condition": "has(hop.route) && hop.route == 'turn_write'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -426,7 +468,8 @@
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -494,7 +537,8 @@
               "route": "'answer'"
             },
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -504,7 +548,8 @@
           "condition": "has(hop.route) && hop.route == 'ack'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -514,7 +559,8 @@
           "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -524,7 +570,8 @@
           "condition": "has(hop.route) && hop.route == 'error' && (!has(context.brief_caller) || context.brief_caller != 'inside')",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -534,7 +581,8 @@
           "condition": "has(hop.route) && hop.route == 'build'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -586,7 +634,8 @@
           "condition": "has(hop.route) && hop.route == 'close_report'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -616,7 +665,8 @@
           "condition": "has(hop.route) && hop.route == 'export_done'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -626,7 +676,8 @@
           "condition": "has(hop.route) && hop.route == 'export_done'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -636,7 +687,8 @@
           "condition": "has(hop.route) && hop.route == 'export_done'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -646,7 +698,8 @@
           "condition": "has(hop.route) && hop.route == 'export_done'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -656,7 +709,8 @@
           "condition": "has(hop.route) && hop.route == 'dump'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -666,7 +720,8 @@
           "condition": "has(hop.route) && hop.route == 'dump'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -676,7 +731,8 @@
           "condition": "has(hop.route) && hop.route == 'dump'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -686,7 +742,8 @@
           "condition": "has(hop.route) && hop.route == 'dump'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -717,7 +774,8 @@
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -770,7 +828,8 @@
               "kind": "hop.route"
             },
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -780,7 +839,8 @@
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -790,7 +850,8 @@
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
             "delete_context": [
-              "tool_answerer"
+              "tool_answerer",
+              "has_file"
             ]
           }
         },
@@ -840,6 +901,49 @@
             },
             "set_context": {
               "tool_answerer": "'memory'"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./file-space",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('file_')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./file-space",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'files'"
             }
           }
         },
