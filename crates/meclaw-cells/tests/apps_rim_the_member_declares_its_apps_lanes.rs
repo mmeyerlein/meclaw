@@ -411,7 +411,7 @@ fn the_versions_moved_with_the_declarations() {
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.1.0",
+            v, "3.1.1",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -434,7 +434,9 @@ fn the_versions_moved_with_the_declarations() {
              first digit: `in_prune` and `prune` left with `talky@6.0.0`, and it pins \
              `cogny@5.2.0`; GH #894 and GH #896 make it 3.1.0, the second digit: \
              `in_renewed` joins the level, the consult edges carry the core's question \
-             and the surface's reply, and it pins `talky@6.1.0` and `cogny@5.3.0`"
+             and the surface's reply, and it pins `talky@6.1.0` and `cogny@5.3.0`; GH #904 \
+             makes it 3.1.1, only the pins `talky@6.1.1` and `cogny@5.3.1`, whose \
+             curators keep one standing cache-clock order"
         );
     }
 }

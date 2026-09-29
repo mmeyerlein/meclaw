@@ -1,0 +1,33 @@
+{
+  "name": "file-space",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The files of one knowledge space, each a logical file hive under one address: `fh-<12 hex>` for the file, `@<hex>` for a version of it. Content lives as content-addressed blocks and immutable versions in the space's one store; every file has one main line that moves only by compare-and-swap on the version a writer read; workspaces are copy-on-write views committed in two phases. No answer names where a file lives -- moving its rows into another space's store changes no address (ADR 0047).",
+    "use_when": "Wherever text or documents have to be kept, read by line and changed by many writers without losing a change: send a request on `in_read`, `in_write` or `in_ws` of the hive path with `hop.op` and `hop.op_id`, draw `answer` back to the caller.",
+    "not_in_scope": "No projection onto a disk, no `exec`, no git and no tool menu of its own (a later wave); no anchors inside a file (`#...` is refused with `anchor_unsupported`); no rights -- who reaches the hive path may read and write.",
+    "examples": [
+      "PORTS - every endpoint is the HIVE path (`params.ports` is empty and therefore sealed). Entry on `hop.route`: in_read, in_write, in_ws, in_model. Exit: answer, model_refused, derived.",
+      "REQUEST - body `{op, file, args}`, hop `op`, `op_id` (required, mirrored), `ws` (optional workspace name), `mode` (search only), `caller` (internal callers only). Worked: {\"op\": \"read\", \"file\": \"/notes/plan.md\", \"args\": {\"from\": 1, \"to\": 40}} on `in_read` answers `{ok, op, op_id, file, version, lines, from, to, text}` with every line as `<n>:<h4>|<text>`.",
+      "ADDRESS - `fh-<12 hex>` or a path `/a/b.md`, optionally `@<hex prefix>`, `@ws:<name>` or `@snap:<name>`; every answer names the file by its id and the version by its first 12 hex digits."
+    ]
+  },
+  "tags": [
+    "file-space",
+    "files",
+    "versions",
+    "workspace",
+    "blocks",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT",
+  "requires": {
+    "ctx": {
+      "model": {
+        "type": "string",
+        "required": true,
+        "because": "the model the summarizer writes summaries and `ask` answers with"
+      }
+    }
+  }
+}

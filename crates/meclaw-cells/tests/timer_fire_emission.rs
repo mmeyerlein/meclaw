@@ -54,6 +54,7 @@ async fn fire_emission_for_repeating_carries_all_auto_headers_and_overrides_emit
         TimerEvent::Fire {
             schedule_id: id,
             scheduled_at,
+            forced: false,
         },
         &sink,
         &mut db,
@@ -103,6 +104,7 @@ async fn fire_emission_for_repeating_carries_all_auto_headers_and_overrides_emit
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fire_emission_for_once_omits_iteration_n() {
+    let at = Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     setup_timer_schema(&conn).unwrap();
 
@@ -112,7 +114,7 @@ async fn fire_emission_for_once_omits_iteration_n() {
         &ScheduleRow {
             schedule_id: id,
             schedule_name: "oneshot".into(),
-            kind: ScheduleKind::At(Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap()),
+            kind: ScheduleKind::At(at),
             emit_to: Path::new("/dst"),
             emit_body: json!({}),
             emit_headers: Map::new(),
@@ -130,7 +132,10 @@ async fn fire_emission_for_once_omits_iteration_n() {
     cell.handle_event(
         TimerEvent::Fire {
             schedule_id: id,
-            scheduled_at: Utc::now(),
+            // The strike of the sleep arm carries the moment it slept for
+            // (GH #904: a mismatching one is a stale strike and skipped).
+            scheduled_at: at,
+            forced: false,
         },
         &sink,
         &mut db,

@@ -1,0 +1,317 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "description": {
+    "purpose": "Scope marker of a file space: the files of one knowledge space as logical file hives over one store. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
+    "use_when": "One per knowledge space whose files have to be read by line, versioned and changed by several writers.",
+    "not_in_scope": "No projection onto a disk, no tool menu, no rights (a later wave). The address of a file is its id, never the store it lives in.",
+    "contract_in": "Lanes on `hop.route`: in_read, in_write, in_ws, in_model (a model package for `./summarizer`, unless `hop.subscriber` names another cell).",
+    "contract_out": "Routes on `hop.route`, leaving through the hive path: answer, model_refused (a refused `in_model` push), derived (`{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller`)."
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_read",
+          "because": "a read: body `{op, file, args}`, hop `op`, `op_id`, `ws?`, `mode?`, `caller?`. `ask` and the semantic `search` go to `./derive`, every other read to `./read`. Answered by exactly one `answer`"
+        },
+        {
+          "route": "in_write",
+          "because": "a write: body `{op, file?, args}`, hop `op`, `op_id`, `ws?` (a workspace NAME), `caller?`. Every op that moves content (all but `create` and `snapshot`) carries `args.base`, the version it was made against, and may carry `args.force`. Without `ws` it moves the main line, with `ws` the workspace's working version. Answered by exactly one `answer`"
+        },
+        {
+          "route": "in_ws",
+          "because": "a workspace operation (`ws_open`, `ws_status`, `ws_diff`, `ws_patch`, `ws_merge`, `ws_commit`, `ws_discard`, `ws_tree`), hop as on `in_read`. Answered by exactly one `answer`"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package pushed by the llm registry (ADR-0046), params-only; taken by `./summarizer` unless `hop.subscriber` names another cell (the curator's door). Never answered on `answer`; a refusal leaves as `model_refused`"
+        }
+      ],
+      "emits": [
+        {
+          "route": "answer",
+          "because": "exactly one per request, hop `op`, `op_id` and `caller` unchanged: `{ok, op, op_id, file, version, ...}` or `{ok: false, op, op_id, error: {code, message}}`; `version` is the first 12 hex digits"
+        },
+        {
+          "route": "model_refused",
+          "because": "`./summarizer` refused an `in_model` push, `hop.refused_subscriber` set (the curator's pattern)"
+        },
+        {
+          "route": "derived",
+          "because": "`{file, version, ok, oneline}` once per `in_derive` with `notify` '1', after the rows are written or the job stopped; `version` is the first 12 hex digits. Leaves the hive only with an empty `caller`"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./read",
+          "condition": "has(hop.route) && hop.route == 'in_read' && !(has(hop.op) && (hop.op == 'ask' || (hop.op == 'search' && has(hop.mode) && hop.mode == 'semantic')))"
+        },
+        {
+          "from": ".",
+          "to": "./ws",
+          "condition": "has(hop.route) && hop.route == 'in_ws'"
+        },
+        {
+          "from": "./read",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'read_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./read",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'read'"
+        },
+        {
+          "from": "./read",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && (!has(hop.caller) || hop.caller == '')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./write",
+          "condition": "has(hop.route) && hop.route == 'in_write'"
+        },
+        {
+          "from": "./write",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && (!has(hop.caller) || hop.caller == '')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./write",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'write_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./write",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'write'"
+        },
+        {
+          "from": "./write",
+          "to": "./guard",
+          "condition": "has(hop.route) && hop.route == 'in_check'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./guard",
+          "to": "./write",
+          "condition": "has(hop.route) && hop.route == 'checked'"
+        },
+        {
+          "from": "./write",
+          "to": "./derive",
+          "condition": "has(hop.route) && hop.route == 'in_derive'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./write",
+          "to": "./ws",
+          "condition": "has(hop.route) && hop.route == 'in_recover'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./ws",
+          "to": "./write",
+          "condition": "has(hop.route) && hop.route == 'in_put'"
+        },
+        {
+          "from": "./write",
+          "to": "./ws",
+          "condition": "has(hop.route) && hop.route == 'put'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./ws",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'ws_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./ws",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'ws'"
+        },
+        {
+          "from": "./ws",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && (!has(hop.caller) || hop.caller == '')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./ws",
+          "to": "./derive",
+          "condition": "has(hop.route) && hop.route == 'in_derive'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./derive",
+          "condition": "has(hop.route) && hop.route == 'in_read' && (has(hop.op) && (hop.op == 'ask' || (hop.op == 'search' && has(hop.mode) && hop.mode == 'semantic')))"
+        },
+        {
+          "from": "./derive",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'derive_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_job": "hop.job"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./derive",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'derive'"
+        },
+        {
+          "from": "./derive",
+          "to": "./embed",
+          "condition": "has(hop.route) && hop.route == 'embed'",
+          "modifier": {
+            "set_context": {
+              "cur_job": "hop.job"
+            }
+          }
+        },
+        {
+          "from": "./embed",
+          "to": "./derive",
+          "condition": "has(hop.route) && hop.route == 'embedded'"
+        },
+        {
+          "from": "./derive",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'summarize'",
+          "modifier": {
+            "set_context": {
+              "cur_job": "hop.job"
+            }
+          }
+        },
+        {
+          "from": "./summarizer",
+          "to": "./derive",
+          "condition": "!has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_summary'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/summarizer'))"
+        },
+        {
+          "from": "./summarizer",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_job",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./derive",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'derived') && (!has(hop.caller) || hop.caller == '')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_job",
+              "cur_call"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

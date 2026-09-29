@@ -1,0 +1,128 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 90000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${ctx.model}",
+    "requirement": "Writes two plain summaries of one file -- a single line of at most 120 characters and a paragraph of at most 1200 -- and answers a question about the file only from the numbered lines it is given, citing their line ranges. It needs faithful reading of up to about twelve thousand tokens of text or code and must keep to stated lengths and forms. Nobody holds a conversation on it; it runs after a file changed and when someone asks about one, so a small, inexpensive model is enough.",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.2,
+    "max_tokens": 1024,
+    "external_timeout_ms": 60000,
+    "system_order": [
+      "instructions"
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "description": "The summarizer's model; the template carries `ctx.model`, and the llm-registry may move it through the hive's `in_model` door."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "values": [
+            "stop",
+            "length",
+            "tool_calls",
+            "content_filter",
+            "error"
+          ],
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cached": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "cost": {
+          "type": "number",
+          "required": false
+        },
+        "cache_expires_at": {
+          "type": "string",
+          "required": false
+        },
+        "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "latency_ms": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "refused_subscriber": {
+          "type": "string",
+          "required": false
+        },
+        "refused_model": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm"
+    ]
+  },
+  "description": {
+    "purpose": "The file space's one small model, with two briefs: the one-line and the short summary of a new version, and the answer to `ask` out of the lines `./derive` chose.",
+    "use_when": "Inside `file-space` only, called by `./derive`.",
+    "not_in_scope": "No tools, no identity, no memory, and never the whole of a large file: `./derive` hands it at most the start of a file for a summary and the chosen sections for `ask`.",
+    "emits_meaning": "One assistant turn, `finish_reason` `stop`. Anything else (an error, a cut answer, an empty text) and `./derive` writes nothing, or answers `ask` with `model_failed`. A refused `in_model` push carries `hop.refused_subscriber` and leaves the hive on `model_refused`.",
+    "consumes_meaning": "system.instructions.text: the brief. messages[]: one user turn with the file's text or the chosen lines and the question. The one body without messages[] is a params-only push on the hive's `in_model` door (GH #858)."
+  }
+}

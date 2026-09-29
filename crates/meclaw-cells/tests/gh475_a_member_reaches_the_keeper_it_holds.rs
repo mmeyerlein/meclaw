@@ -677,7 +677,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@3.1.0"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@3.1.1"}],
             "add_edges": add_edges,
         }
     }]})

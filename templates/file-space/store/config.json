@@ -1,0 +1,177 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "files": {
+        "file": "text",
+        "path": "text",
+        "kind": "text",
+        "mime": "text",
+        "head": "text",
+        "head_seq": "int",
+        "lock": "text",
+        "tomb": "text",
+        "oneline": "text",
+        "bytes": "int",
+        "lines": "int",
+        "born_at": "text"
+      },
+      "blocks": {
+        "file": "text",
+        "hash": "text",
+        "enc": "text",
+        "size": "int",
+        "body": "text",
+        "first_seen": "text"
+      },
+      "versions": {
+        "file": "text",
+        "version": "text",
+        "blocks": "json",
+        "bytes": "int",
+        "lines": "int",
+        "parent": "text",
+        "force": "text",
+        "made_by": "text",
+        "at": "text"
+      },
+      "line": {
+        "file": "text",
+        "seq": "int",
+        "version": "text",
+        "prev": "text",
+        "op": "text",
+        "note": "text",
+        "ws": "text",
+        "commit": "text",
+        "at": "text"
+      },
+      "snaps": {
+        "file": "text",
+        "name": "text",
+        "version": "text",
+        "at": "text"
+      },
+      "derived": {
+        "file": "text",
+        "version": "text",
+        "kind": "text",
+        "part": "int",
+        "body": "text"
+      },
+      "summaries": {
+        "file": "text",
+        "version": "text",
+        "level": "text",
+        "text": "text",
+        "model": "text",
+        "at": "text"
+      },
+      "embeddings": {
+        "file": "text",
+        "version": "text",
+        "section": "text",
+        "from_line": "int",
+        "to_line": "int",
+        "blob": "text",
+        "dim": "int",
+        "model": "text"
+      },
+      "ws": {
+        "ws": "text",
+        "name": "text",
+        "root": "text",
+        "base_seq": "int",
+        "state": "text",
+        "opened_at": "text",
+        "closed_at": "text",
+        "commit": "text"
+      },
+      "ws_files": {
+        "ws": "text",
+        "file": "text",
+        "base": "text",
+        "working": "text",
+        "state": "text",
+        "at": "text"
+      },
+      "commits": {
+        "commit": "text",
+        "ws": "text",
+        "state": "text",
+        "plan": "json",
+        "note": "text",
+        "at": "text",
+        "deadline": "text"
+      },
+      "pending": {
+        "op_id": "text",
+        "cell": "text",
+        "phase": "text",
+        "body": "text",
+        "at": "text"
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The one store of a file space. A row belongs to the file its `file` column names: `files` (one row per file: path, head, lock, tomb), `blocks` (content-addressed pieces, one row per file and hash -- the same hash in two files is two rows), `versions` (the ordered block list of one version), `line` (the main line, append-only), `snaps`, `derived` (text of non-text files), `summaries`, `embeddings`, `ws`, `ws_files`, `commits` and `pending` (working values of a cell between two store phases). Every select on a table with `file` names the file in its `where`; only `files` is read across files (path lookup, `list`, `find`).",
+    "use_when": "Inside a file space only; the hive's cells are its only writers (`write_surface` internal).",
+    "not_in_scope": "No policy of its own: every rule of the space lives in the cell that writes.",
+    "emits_meaning": "One answer per message, a bundle answer for more than one operation.",
+    "consumes_meaning": "One or more `tool_call` turns whose text is the JSON args of one store operation."
+  }
+}

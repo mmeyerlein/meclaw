@@ -275,10 +275,19 @@ async fn a_scheduled_lane_is_triggerable_once_over_the_http_api() {
         refusal["hop"]["error_code"], "schedule_not_found",
         "an unknown id is refused by name (spec § timer, error codes); hop: {refusal}"
     );
-    // And it is a refusal, not a firing: nothing ran, so nothing counted.
+    // And it is a refusal, not a firing: nothing ran, so nothing counted --
+    // no fire headers. The id itself does ride back: since GH #904 every
+    // error answer to an op that named a `schedule_id` names it, so the
+    // caller can match the refusal to what it sent.
     assert!(
-        refusal["hop"]["schedule_id"].is_null(),
+        refusal["hop"]["fired_at"].is_null()
+            && refusal["hop"]["event_id"].is_null()
+            && refusal["hop"]["iteration_n"].is_null(),
         "a refused trigger emits no fire headers; hop: {refusal}"
+    );
+    assert_eq!(
+        refusal["hop"]["schedule_id"], "0190a3f2-0000-7000-8000-0000000000ff",
+        "the refusal names the id the op carried (GH #904); hop: {refusal}"
     );
     let detail = fired[1]["body_payload"].as_str().expect("body_payload");
     assert!(

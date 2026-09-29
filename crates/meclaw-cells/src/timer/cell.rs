@@ -217,6 +217,15 @@ impl LongRunningCell for TimerCell {
             // read is the window this issue was reported from.
             let op_now = chrono::Utc::now();
 
+            // GH #904 (PP-7, OR-KX.K.23): every error answer to an op that named a
+            // `schedule_id` names it back, as the caller sent it -- a refused
+            // order (`at_in_past`, `schedule_id_exists`, ...) is then the
+            // caller's to match, not a bare code. Taken before the parse, so a
+            // parse error of an op with an id carries it too.
+            let op_schedule_id = op_val
+                .get("schedule_id")
+                .and_then(|x| x.as_str())
+                .map(str::to_string);
             let op = match crate::timer::op::TimerOp::parse(&op_val) {
                 Ok(o) => o,
                 Err(e) => {
@@ -225,19 +234,20 @@ impl LongRunningCell for TimerCell {
                     } else {
                         "parse_error"
                     };
-                    crate::timer::emit::emit_op_error(
+                    crate::timer::emit::emit_op_error_for(
                         sink,
                         &msg,
                         code,
                         &e,
                         tool_call_id.as_deref(),
+                        op_schedule_id.as_deref(),
                     )
                     .await;
                     return;
                 }
             };
             match op {
-                crate::timer::op::TimerOp::Add(row) => {
+                crate::timer::op::TimerOp::Add { row, rearm } => {
                     // GH #231: a one-shot whose `at` has passed by the time the
                     // op is processed is refused here, before the INSERT. It is
                     // never planned (`load_active_filter_past` and
@@ -249,12 +259,13 @@ impl LongRunningCell for TimerCell {
                     if let crate::timer::schedule::ScheduleKind::At(at) = &row.kind
                         && let Some(detail) = past_at_detail("add", *at, op_now)
                     {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "at_in_past",
                             &detail,
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                         return;
@@ -263,11 +274,13 @@ impl LongRunningCell for TimerCell {
                     // names an active row with the same moment changes
                     // nothing and is acknowledged; one that names a removed
                     // row revives it; only a different order under the same
-                    // id is `schedule_id_exists`.
+                    // id is `schedule_id_exists`. GH #904: with `rearm` the
+                    // standing row is replaced in any status (`Rearmed`,
+                    // answered like a revival: a snapshot, no new emission).
                     let row_for_call = row.clone();
                     let added = db
                         .call_with_timeout(move |c| {
-                            crate::timer::db::add_schedule(c, &row_for_call)
+                            crate::timer::db::add_schedule(c, &row_for_call, rearm)
                                 .map_err(|e| format!("{e}"))
                         })
                         .await;
@@ -298,22 +311,24 @@ impl LongRunningCell for TimerCell {
                             }
                         }
                         Ok(Err(e)) => {
-                            crate::timer::emit::emit_op_error(
+                            crate::timer::emit::emit_op_error_for(
                                 sink,
                                 &msg,
                                 "schedule_id_exists",
                                 &format!("add: {e}"),
                                 tool_call_id.as_deref(),
+                                op_schedule_id.as_deref(),
                             )
                             .await
                         }
                         Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                            crate::timer::emit::emit_op_error(
+                            crate::timer::emit::emit_op_error_for(
                                 sink,
                                 &msg,
                                 "query_timeout",
                                 "add: query exceeded query_timeout_ms",
                                 tool_call_id.as_deref(),
+                                op_schedule_id.as_deref(),
                             )
                             .await
                         }
@@ -335,24 +350,26 @@ impl LongRunningCell for TimerCell {
                     {
                         Ok(r) => r.unwrap_or(None),
                         Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                            crate::timer::emit::emit_op_error(
+                            crate::timer::emit::emit_op_error_for(
                                 sink,
                                 &msg,
                                 "query_timeout",
                                 "modify: load exceeded query_timeout_ms",
                                 tool_call_id.as_deref(),
+                                op_schedule_id.as_deref(),
                             )
                             .await;
                             return;
                         }
                     };
                     let Some(cur) = current else {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "schedule_not_found",
                             &format!("modify: id {schedule_id} unknown"),
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                         return;
@@ -363,12 +380,13 @@ impl LongRunningCell for TimerCell {
                             || (matches!(cur.kind, crate::timer::schedule::ScheduleKind::At(_))
                                 && new_cron.is_some());
                     if mismatch {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "kind_mismatch",
                             "modify: cannot switch cron<->at (use remove+add)",
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                         return;
@@ -379,12 +397,13 @@ impl LongRunningCell for TimerCell {
                     if let Some(at) = new_at
                         && let Some(detail) = past_at_detail("modify", at, op_now)
                     {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "at_in_past",
                             &detail,
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                         return;
@@ -404,24 +423,26 @@ impl LongRunningCell for TimerCell {
                     {
                         Ok(r) => r.unwrap_or(0),
                         Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                            crate::timer::emit::emit_op_error(
+                            crate::timer::emit::emit_op_error_for(
                                 sink,
                                 &msg,
                                 "query_timeout",
                                 "modify: update exceeded query_timeout_ms",
                                 tool_call_id.as_deref(),
+                                op_schedule_id.as_deref(),
                             )
                             .await;
                             return;
                         }
                     };
                     if n == 0 {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "schedule_not_found",
                             "modify: 0 rows updated",
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                     } else {
@@ -454,24 +475,26 @@ impl LongRunningCell for TimerCell {
                     {
                         Ok(r) => r.unwrap_or(None),
                         Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                            crate::timer::emit::emit_op_error(
+                            crate::timer::emit::emit_op_error_for(
                                 sink,
                                 &msg,
                                 "query_timeout",
                                 "trigger: load exceeded query_timeout_ms",
                                 tool_call_id.as_deref(),
+                                op_schedule_id.as_deref(),
                             )
                             .await;
                             return;
                         }
                     };
                     let Some(row) = row else {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "schedule_not_found",
                             &format!("trigger: id {schedule_id} unknown"),
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                         return;
@@ -481,12 +504,13 @@ impl LongRunningCell for TimerCell {
                     // check: that check skips silently, and a trigger that
                     // silently does nothing is the failure mode #17 was about.
                     if row.status != "active" {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "schedule_not_found",
                             &format!("trigger: id {schedule_id} is {}, not active", row.status),
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                         return;
@@ -509,24 +533,26 @@ impl LongRunningCell for TimerCell {
                     {
                         Ok(r) => r.unwrap_or(0),
                         Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                            crate::timer::emit::emit_op_error(
+                            crate::timer::emit::emit_op_error_for(
                                 sink,
                                 &msg,
                                 "query_timeout",
                                 "remove: query exceeded query_timeout_ms",
                                 tool_call_id.as_deref(),
+                                op_schedule_id.as_deref(),
                             )
                             .await;
                             return;
                         }
                     };
                     if n == 0 {
-                        crate::timer::emit::emit_op_error(
+                        crate::timer::emit::emit_op_error_for(
                             sink,
                             &msg,
                             "schedule_not_found",
                             "remove: 0 rows updated",
                             tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
                         )
                         .await;
                     } else {
@@ -570,6 +596,7 @@ impl LongRunningCell for TimerCell {
             let TimerEvent::Fire {
                 schedule_id,
                 scheduled_at,
+                forced,
             } = event;
 
             // 1. SELECT — race check. Under query_timeout (path C): on Interrupt,
@@ -603,6 +630,29 @@ impl LongRunningCell for TimerCell {
                     ?schedule_id,
                     status = %row.status,
                     "fire: not active, skip"
+                );
+                return;
+            }
+            // GH #904 fix round 1 (review I-1): a sleep strike belongs to the
+            // moment it slept for. `rearm` (and `modify`) replace a one-shot in
+            // place, still `active`, so a strike for the OLD `at` that was
+            // already queued in the event channel would otherwise complete the
+            // NEW order and emit its body -- the curator re-arms its one clock
+            // id on every brain call, so a call landing as the cache goes cold
+            // rebuilt at once and the order for the new moment never fired
+            // (test `a_stale_strike_does_not_fire_the_order_a_rearm_put_in_its_place`).
+            // The new order's own strike follows from the SetActive the op sent.
+            // An operator trigger (GH #17) fires the schedule as it stands.
+            if !forced
+                && let crate::timer::schedule::ScheduleKind::At(at) = row.kind
+                && at != scheduled_at
+            {
+                tracing::debug!(
+                    path = self.own_path.as_str(),
+                    ?schedule_id,
+                    %at,
+                    %scheduled_at,
+                    "fire: one-shot re-armed for another moment, stale strike skipped"
                 );
                 return;
             }

@@ -1,4 +1,4 @@
-# `cogny@5.3.0`
+# `cogny@5.3.1`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,9 +102,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.1.0"},
+{"cell": {"type": "ref", "template": "curator@1.1.1"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
+
+**`5.3.1` moves the `curator` pin to 1.1.1** ([#904](https://github.com/mmeyerlein/meclaw/issues/904)): the curator's cache clock keeps one
+standing order instead of adding one per call. Only the pin moved, so it is the third digit.
 
 **`5.3.0` cuts its own block and can ask back** ([#892](https://github.com/mmeyerlein/meclaw/issues/892), [#893](https://github.com/mmeyerlein/meclaw/issues/893), [#894](https://github.com/mmeyerlein/meclaw/issues/894), [#895](https://github.com/mmeyerlein/meclaw/issues/895)). A splitter
 like talky's stands between `brain` and `dispatcher` and hands every section to the curator, which
@@ -664,7 +667,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.3.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.3.1", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

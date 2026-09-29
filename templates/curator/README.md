@@ -1,4 +1,4 @@
-# `curator@1.1.0`
+# `curator@1.1.1`
 
 The window of one model, owned in one place, with a ledger of every call. Contract tables only; the prose follows with the program it belongs to.
 
@@ -10,6 +10,10 @@ can pin a text into the window (`in_pin`), and the hive answers the collector's 
 `./push` builds the memory leg's question and looks a `gap` up after the answer, and `./handover`
 hands a new session a note on the last one and a renewed duplex call a block of the recent
 conversation. Lanes joined the boundary, so it is the second digit.
+
+Since 1.1.1 ([#904](https://github.com/mmeyerlein/meclaw/issues/904)) the cache clock is one standing order under a fixed id per hive,
+re-armed on every call (`add` with `rearm`), so the timer keeps one row for it instead of one
+per call. No lane moved; a promise is repaired, so it is the third digit.
 
 ## Lanes (into the hive path, on `hop.route`)
 

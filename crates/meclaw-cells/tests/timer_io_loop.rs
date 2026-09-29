@@ -138,3 +138,57 @@ async fn run_io_terminates_when_events_channel_consumer_drops() {
         .unwrap();
     drop(rc_tx);
 }
+
+/// GH #904 fix round 1: the strike says where it came from. A sleep strike
+/// carries the moment it slept for and is not forced -- `handle_event` skips
+/// it when a `rearm` moved the one-shot meanwhile; an operator trigger
+/// (GH #17, `FireNow`) is forced and fires the schedule as it stands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sleep_strike_is_not_forced_and_a_trigger_is() {
+    let (events_tx, mut events_rx) = mpsc::channel::<TimerEvent>(64);
+    let (rc_tx, rc_rx) = mpsc::channel::<TimerReconfig>(8);
+    let id = Uuid::now_v7();
+    let at = Utc::now() + ChDur::milliseconds(200);
+    let io = TimerIo {
+        active: vec![ActiveSchedule {
+            schedule_id: id,
+            kind: ScheduleKind::At(at),
+        }],
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
+    };
+    let join = tokio::spawn(run_io(io, events_tx, rc_rx));
+
+    let ev = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+        .await
+        .expect("no sleep strike within 2s")
+        .unwrap();
+    let TimerEvent::Fire {
+        scheduled_at,
+        forced,
+        ..
+    } = ev;
+    assert!(!forced, "a sleep strike is not forced");
+    assert_eq!(scheduled_at, at, "it carries the moment it slept for");
+
+    rc_tx
+        .send(TimerReconfig::FireNow { schedule_id: id })
+        .await
+        .unwrap();
+    let ev = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+        .await
+        .expect("no trigger strike within 2s")
+        .unwrap();
+    let TimerEvent::Fire {
+        schedule_id,
+        forced,
+        ..
+    } = ev;
+    assert_eq!(schedule_id, id);
+    assert!(forced, "an operator trigger is forced");
+
+    drop(rc_tx);
+    tokio::time::timeout(Duration::from_secs(2), join)
+        .await
+        .expect("run_io hung")
+        .unwrap();
+}

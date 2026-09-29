@@ -569,7 +569,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
 fn grown_generation(name: &str) -> Value {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@3.1.0",
+        "template": "assistant@3.1.1",
         // The three brains of a generation are the doubles named in the header,
         // and a `ctx` key is still required: the model is a RESOLVED literal in
         // the template's `requires`, and the mutation refuses a generation whose

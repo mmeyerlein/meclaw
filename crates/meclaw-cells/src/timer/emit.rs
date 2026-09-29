@@ -41,11 +41,30 @@ pub async fn emit_op_error(
     detail: &str,
     tool_call_id: Option<&str>,
 ) {
+    emit_op_error_for(sink, msg, error_code, detail, tool_call_id, None).await;
+}
+
+/// [`emit_op_error`] for an op that named a `schedule_id` (GH #904, PP-7):
+/// the id rides back as `content.header.schedule_id`, exactly as the op
+/// carried it, so a caller can match a refused order to the order it sent --
+/// the curator's clock got a bare `at_in_past` before. With `None` the body is
+/// byte-identical to [`emit_op_error`]'s.
+pub async fn emit_op_error_for(
+    sink: &OutputSink,
+    msg: &Message,
+    error_code: &str,
+    detail: &str,
+    tool_call_id: Option<&str>,
+    schedule_id: Option<&str>,
+) {
     let target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
     let mut header = json!({
         "error_code": error_code,
         "msg_type":   "timer_op_error",
     });
+    if let Some(id) = schedule_id {
+        header["schedule_id"] = json!(id);
+    }
     let turns = match tool_call_id {
         Some(id) => {
             header["finish_reason"] = json!("error");

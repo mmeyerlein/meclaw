@@ -57,7 +57,7 @@
     ]
   },
   "description": {
-    "purpose": "The moment the model's cache goes cold. It carries no schedule of its own: `./policy` orders one one-shot schedule named `cache` per call (and removes the order of the call before), for the `cache_expires_at` the tap stamped.",
+    "purpose": "The moment the model's cache goes cold. It carries no schedule of its own: `./policy` keeps one one-shot schedule named `cache` under a fixed id and re-arms it per call (`rearm`), for the `cache_expires_at` the tap stamped.",
     "use_when": "Always, as part of the curator. It is not a poll (GH #553): every strike has a name and a time, and a model nobody calls stays silent.",
     "not_in_scope": "No cron, no recurring schedule. What a strike means is the `in_cache_expired` lane the hive's edge stamps on it; a strike for a call that is no longer the newest is dropped by `./policy`."
   }

@@ -1,4 +1,4 @@
-# `talky@6.1.0`
+# `talky@6.1.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.1.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.1.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -110,6 +110,8 @@ and `memory` sections from the splitter, answers the `history_*` tools and build
 leg's question inside, the splitter takes the short block ids out of everything that leaves,
 and the new lane `in_renewed` carries a renewed duplex call to the curator. A lane joined the
 boundary, so it is the second digit.
+`6.1.1` moves the `curator` pin to `1.1.1` ([#904](https://github.com/mmeyerlein/meclaw/issues/904)): the curator's cache clock keeps one
+standing order instead of adding one per call. Only the pin moved, so it is the third digit.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `curator`, `session-keeper` and `dispatcher` have to sit in
@@ -665,7 +667,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.1.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.1.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

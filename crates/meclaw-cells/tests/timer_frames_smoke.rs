@@ -11,6 +11,7 @@ fn frame_types_compile() {
     let _ev = TimerEvent::Fire {
         schedule_id: Uuid::now_v7(),
         scheduled_at: Utc::now(),
+        forced: false,
     };
     let _rc: TimerReconfig = TimerReconfig::SetActive(vec![]);
 }

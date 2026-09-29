@@ -42,6 +42,7 @@ async fn handle_event_for_repeating_bumps_iteration_n_in_db_before_emit() {
         TimerEvent::Fire {
             schedule_id: id,
             scheduled_at: Utc::now(),
+            forced: false,
         },
         &sink,
         &mut db,
@@ -66,7 +67,10 @@ async fn handle_event_for_once_marks_completed_and_does_not_bump_iteration() {
     setup_timer_schema(&conn).unwrap();
     let id = Uuid::now_v7();
     let mut row = cron_row(id, "*/1 * * * * *");
-    row.kind = ScheduleKind::At(Utc::now() + chrono::Duration::seconds(60));
+    // Whole seconds: `at_utc` is stored at millisecond precision, and the
+    // strike below carries the moment it slept for (GH #904).
+    let at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2099, 1, 1, 0, 0, 0).unwrap();
+    row.kind = ScheduleKind::At(at);
     insert_schedule(&conn, &row).unwrap();
     let mut db = DbConn::wrap(conn, None);
 
@@ -77,7 +81,8 @@ async fn handle_event_for_once_marks_completed_and_does_not_bump_iteration() {
     cell.handle_event(
         TimerEvent::Fire {
             schedule_id: id,
-            scheduled_at: Utc::now(),
+            scheduled_at: at,
+            forced: false,
         },
         &sink,
         &mut db,
@@ -113,6 +118,7 @@ async fn handle_event_race_check_skips_persist_when_row_removed_between_sleep_an
         TimerEvent::Fire {
             schedule_id: id,
             scheduled_at: Utc::now(),
+            forced: false,
         },
         &sink,
         &mut db,

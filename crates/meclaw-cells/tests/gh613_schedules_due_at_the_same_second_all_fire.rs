@@ -39,6 +39,7 @@ async fn next_fire(rx: &mut mpsc::Receiver<TimerEvent>, what: &str) -> (Uuid, Da
     let TimerEvent::Fire {
         schedule_id,
         scheduled_at,
+        ..
     } = ev;
     (schedule_id, scheduled_at)
 }

@@ -543,7 +543,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.1.0");
+    assert_eq!(t["version"], "1.1.1");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -1357,8 +1357,12 @@ fn tap_fills_usage_and_expiry() {
     assert_eq!(h.state("last_call"), id);
 }
 
+/// The clock stands on the newest call, under ONE id (GH #904, PP-7): every
+/// tap re-arms the same order (`add` with `rearm`) instead of removing the
+/// last call's order and adding one under a fresh id -- that grew the timer's
+/// `schedules` by a row per call.
 #[test]
-fn tap_arms_the_clock_remove_then_add() {
+fn tap_arms_the_clock_under_one_id() {
     if !shipped() {
         return;
     }
@@ -1383,13 +1387,15 @@ fn tap_arms_the_clock_remove_then_add() {
         json!({"cache_expires_at": "2099-01-01T00:05:00Z"}),
     );
     let all = clock_orders(&h);
-    assert_eq!(all.len(), 3, "{all:?}");
     assert_eq!(
-        all[1],
-        ("remove".to_string(), first[0].1.clone()),
-        "the last order goes first"
+        all,
+        vec![first[0].clone(), first[0].clone()],
+        "two adds under one id, no remove"
     );
-    assert_eq!(all[2].0, "add");
+    assert!(
+        h.clock.iter().all(|m| m.body["rearm"] == json!(true)),
+        "every order re-arms"
+    );
     let add = last_add(&h);
     assert_eq!(add.body["at"], "2099-01-01T00:05:00Z");
     assert_eq!(add.body["schedule_name"], "cache");
@@ -1399,10 +1405,10 @@ fn tap_arms_the_clock_remove_then_add() {
     );
 }
 
-/// An order that fired is done at the timer (`completed`, `timer/db.rs`
-/// `mark_removed` only touches `active` rows): the next tap orders no `remove`
-/// for it -- that answered `schedule_not_found` and cost a stderr line per idle
-/// cycle (review M-2). A stale strike leaves the newer order armed.
+/// An order that fired is done at the timer (`completed`): the next tap
+/// orders no `remove` for it -- that answered `schedule_not_found` (review
+/// M-2) -- but re-arms the same id (GH #904). A stale strike leaves the newer
+/// order armed.
 #[test]
 fn a_fired_order_is_not_removed() {
     if !shipped() {
@@ -1434,7 +1440,9 @@ fn a_fired_order_is_not_removed() {
         vec!["add", "add"],
         "no remove for an order that already fired: {orders:?}"
     );
+    assert_eq!(orders[0].1, orders[1].1, "re-armed under the same id");
     let second = last_add(&h);
+    assert_eq!(second.body["rearm"], json!(true));
     let armed = h.state("armed_call");
     assert_eq!(json!(armed), second.body["emit_body"]["curator_call"]);
     // A strike for the first call now (the race: it fired while the second tap

@@ -12,6 +12,40 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-09-29
+A new file-space template keeps the files of a knowledge space as content-addressed blocks and immutable versions:
+every write carries its base, a syntax hook guards JSON, TOML and Python, a workspace commits all or nothing, and a
+file knows its summary and embeddings from birth. The curator's cache clock keeps one timer row.
+
+### Added
+
+- **A file space keeps files under a stable address and reads them deterministically** ([#899](https://github.com/mmeyerlein/meclaw/issues/899)). The new template `file-space@1.0.0` keeps the files of one knowledge space as
+  content-addressed blocks and immutable versions in one store; a file is addressed as `fh-<12 hex>`,
+  optionally with a version, a workspace or a snapshot, and `info`, `read`, `search`, `history`, `diff`, `list`,
+  `find` and the other read operations answer by that address, never by where the file's rows live
+  (`builder-librarian@2.2.9` carries it in the corpus, pinned by `builder@1.17.1` and `meclaw-os@2.1.1`).
+- **Every write to a file carries the version it was made against** ([#900](https://github.com/mmeyerlein/meclaw/issues/900)). `create`, `replace` (with a deterministic tolerance cascade and no fuzzy
+  matching), `replace_regex`, `replace_lines` (anchored by line hashes) and the other writes go through the hive
+  with `base`; a write against a head that moved is applied when it does not overlap the move and refused with
+  the current lines when it does, and unchanged parts share blocks across versions.
+- **A syntax hook refuses a broken write** ([#901](https://github.com/mmeyerlein/meclaw/issues/901)). Before a JSON, TOML or Python write lands, a blocking hook parses the new
+  content and refuses it with the error and its position; a type without a parser passes, and `force` is
+  recorded on the version.
+- **Workspaces commit in two phases** ([#902](https://github.com/mmeyerlein/meclaw/issues/902)). A workspace branches off the main line copy-on-write, `ws_merge` brings the
+  main line in with a deterministic three-way merge and names the overlapping lines as conflicts, which
+  normal writes resolve, and `ws_commit` moves every touched file onto the main line with one commit point,
+  so a reader sees all of a commit or none of it, and an interrupted commit either aborts or rolls forward.
+- **A file knows itself from its birth** ([#903](https://github.com/mmeyerlein/meclaw/issues/903)). When a file is born and whenever its main line moves (never on a working
+  edit), a model writes a one-line and a short summary and the file's sections are embedded; `search` in mode
+  `semantic` returns a section with its lines, and `ask` answers with its sources.
+
+### Fixed
+
+- **The curator's cache clock keeps one timer row** ([#904](https://github.com/mmeyerlein/meclaw/issues/904)). The timer's `add` takes `rearm: true`, which replaces a fired or removed order
+  with the same id in place, and `curator@1.1.1` arms one fixed id per hive instead of a new one per call, so
+  the timer's table no longer grows with every model call; `talky@6.1.1`, `cogny@5.3.1` and `assistant@3.1.1`
+  move their pins.
+
 ## [0.49.0] — 2026-09-29
 The curator shapes each window per role and the model steers it, reads its own conversation back, asks memory with
 context and looks a gap up after the answer, and hands a new session a note on the last one; the reasoning core can

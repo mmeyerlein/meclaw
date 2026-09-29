@@ -1,4 +1,4 @@
-# `builder@1.17.0`
+# `builder@1.17.1`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -491,6 +491,9 @@ Since `1.17.0` ([#895](https://github.com/mmeyerlein/meclaw/issues/895), [#896](
 container the door `in_renewed` beside `in_delegation`; the `assistant` they count and the
 librarian are the current ones. A wish now yields something it could not before, so it is the
 second place.
+
+Since `1.17.1` ([#899](https://github.com/mmeyerlein/meclaw/issues/899)) its librarian is the current `builder-librarian`, whose corpus now
+carries `file-space`. Only the pin moved, so it is the third place.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,

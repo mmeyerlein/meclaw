@@ -27,6 +27,13 @@ pub enum TimerEvent {
         /// Planned firing time (UTC). Passed through into the auto-set header
         /// `scheduled_at`.
         scheduled_at: DateTime<Utc>,
+        /// `true` for an operator trigger (GH #17, `FireNow`): the schedule
+        /// fires as it stands, whatever its moment. `false` for a strike of the
+        /// sleep arm, which belongs to the moment it slept for -- a one-shot
+        /// whose `at` no longer matches `scheduled_at` was replaced (`rearm`,
+        /// `modify`) after the strike was queued, and `handle_event` skips it
+        /// (GH #904 fix round 1).
+        forced: bool,
     },
 }
 
@@ -86,7 +93,11 @@ pub fn run_io(
                         // next occurrence, and a triggered one-shot is dropped by
                         // handle_event's status check when its own time comes.
                         if events_tx
-                            .send(TimerEvent::Fire { schedule_id, scheduled_at: Utc::now() })
+                            .send(TimerEvent::Fire {
+                                schedule_id,
+                                scheduled_at: Utc::now(),
+                                forced: true,
+                            })
                             .await
                             .is_err()
                         {
@@ -108,7 +119,11 @@ pub fn run_io(
                         for &idx in &due {
                             let schedule_id = active[idx].schedule_id;
                             if events_tx
-                                .send(TimerEvent::Fire { schedule_id, scheduled_at: t })
+                                .send(TimerEvent::Fire {
+                                    schedule_id,
+                                    scheduled_at: t,
+                                    forced: false,
+                                })
                                 .await
                                 .is_err()
                             {

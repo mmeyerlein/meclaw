@@ -17,8 +17,14 @@ use serde_json::Value as JsonValue;
 pub enum TimerOp {
     /// INSERT into `cell.db.schedules`. The caller raises `schedule_id_exists`
     /// on a PK conflict -- unless the row is the same order or a removed one
-    /// (`db::add_schedule`, GH #690).
-    Add(ScheduleRow),
+    /// (`db::add_schedule`, GH #690). With `rearm` (GH #904) a standing row
+    /// under the id, in any status, is replaced by this order.
+    Add {
+        /// The order.
+        row: ScheduleRow,
+        /// `rearm: true` in the op; default `false`.
+        rearm: bool,
+    },
     /// UPDATE an existing row. `new_cron` XOR `new_at` must NOT switch the
     /// schedule type (handler check in `handle`).
     Modify {
@@ -175,16 +181,27 @@ fn parse_add(
         .and_then(|x| x.as_object())
         .cloned()
         .unwrap_or_default();
-    Ok(TimerOp::Add(ScheduleRow {
-        schedule_id,
-        schedule_name: name,
-        kind,
-        emit_to: Path::new(emit_to),
-        emit_body,
-        emit_headers,
-        status: "active".into(),
-        iteration_n: 0,
-    }))
+    // GH #904: a flag, not a new op (OR-FH-T1) -- the smallest contract that
+    // lets one id hold one standing order. Only a JSON boolean is taken: a
+    // string "false" read as truthy would replace rows nobody meant to.
+    let rearm = match obj.get("rearm") {
+        None | Some(JsonValue::Null) => false,
+        Some(JsonValue::Bool(b)) => *b,
+        Some(other) => return Err(format!("rearm: must be a boolean, got {other}")),
+    };
+    Ok(TimerOp::Add {
+        row: ScheduleRow {
+            schedule_id,
+            schedule_name: name,
+            kind,
+            emit_to: Path::new(emit_to),
+            emit_body,
+            emit_headers,
+            status: "active".into(),
+            iteration_n: 0,
+        },
+        rearm,
+    })
 }
 
 /// GH #81: where an op arrived from, and what the answer has to echo.
@@ -243,7 +260,35 @@ mod tests {
             "emit_body": {}
         }))
         .unwrap();
-        assert!(matches!(parsed, TimerOp::Add(_)));
+        assert!(matches!(parsed, TimerOp::Add { rearm: false, .. }));
+    }
+
+    /// GH #904: `rearm` is a boolean flag on `add`, off unless given.
+    #[test]
+    fn op_add_takes_rearm_as_a_boolean_flag() {
+        let base = json!({
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000001",
+            "schedule_name": "x",
+            "at": "2099-01-01T00:00:00Z",
+            "emit_to": "/x",
+            "emit_body": {}
+        });
+        let mut on = base.clone();
+        on["rearm"] = json!(true);
+        assert!(matches!(
+            TimerOp::parse(&on).unwrap(),
+            TimerOp::Add { rearm: true, .. }
+        ));
+        let mut off = base.clone();
+        off["rearm"] = json!(false);
+        assert!(matches!(
+            TimerOp::parse(&off).unwrap(),
+            TimerOp::Add { rearm: false, .. }
+        ));
+        let mut bad = base;
+        bad["rearm"] = json!("true");
+        let err = TimerOp::parse(&bad).unwrap_err();
+        assert!(err.starts_with("rearm:"), "{err}");
     }
 
     #[test]
