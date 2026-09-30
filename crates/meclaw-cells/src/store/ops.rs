@@ -30,6 +30,10 @@ pub struct OpOutcome {
     pub error_code: Option<&'static str>,
     /// Human-readable error text from rusqlite, or `None` on success.
     pub error_text: Option<String>,
+    /// GH #915: the declared index a `unique_violation` hit — travels as the
+    /// `index` header (single op) or the `index` key of the `results[]` entry
+    /// (bundle). `None` for every other outcome.
+    pub error_index: Option<String>,
 }
 
 /// Map an optional JSON value to a `rusqlite::types::Value`. Missing key
@@ -414,8 +418,9 @@ fn op_insert(
             payload: Value::Null,
             error_code: None,
             error_text: None,
+            error_index: None,
         }),
-        Err(e) => Ok(sql_error_outcome("insert", &e)),
+        Err(e) => Ok(write_error_outcome(conn, "insert", &cat, &e)),
     }
 }
 
@@ -470,10 +475,19 @@ fn op_select(
         // that pairs `distinct` with a `limit` is asking for a defined PREFIX,
         // and a prefix of an undefined order is not one.
         for term in &order_by {
-            let col = match cat.column(&term.col) {
+            let col = match cat.column(term.col.column()) {
                 Ok(c) => c,
                 Err(e) => return Ok(catalog_error_outcome("select", e)),
             };
+            // A JSON path is never a projected column (GH #915): `columns` names
+            // whole columns only, so the value it sorts by is not returned.
+            if matches!(term.col, crate::store::query::ColRef::JsonPath { .. }) {
+                return Err(format!(
+                    "order_by key {:?} is not projected: a distinct select can only be \
+                     ordered by a column it returns",
+                    term.col.key()
+                ));
+            }
             if !resolved.contains(&col) {
                 return Err(format!(
                     "order_by column {col:?} is not projected: a distinct select can only be \
@@ -524,6 +538,7 @@ fn op_select(
         payload: Value::Array(out),
         error_code: None,
         error_text: None,
+        error_index: None,
     })
 }
 
@@ -651,6 +666,7 @@ fn op_search(
         payload: Value::Array(out),
         error_code: None,
         error_text: None,
+        error_index: None,
     })
 }
 
@@ -717,6 +733,7 @@ fn op_traverse(
         payload,
         error_code: None,
         error_text: None,
+        error_index: None,
     })
 }
 
@@ -786,6 +803,7 @@ fn op_similar(
             payload: Value::Array(rows),
             error_code: None,
             error_text: None,
+            error_index: None,
         }),
         Err(e) => Ok(sql_error_outcome("similar", &e)),
     }
@@ -852,6 +870,7 @@ fn catalog_error_outcome(op: &'static str, e: CatalogError) -> OpOutcome {
         payload: Value::Null,
         error_code: Some(code),
         error_text: Some(text),
+        error_index: None,
     }
 }
 
@@ -936,8 +955,9 @@ fn op_update(
             payload: Value::Null,
             error_code: None,
             error_text: None,
+            error_index: None,
         }),
-        Err(e) => Ok(sql_error_outcome("update", &e)),
+        Err(e) => Ok(write_error_outcome(conn, "update", &cat, &e)),
     }
 }
 
@@ -989,6 +1009,7 @@ fn op_set_alias(
             payload: Value::Null,
             error_code: None,
             error_text: None,
+            error_index: None,
         }),
         Err(e) => Ok(sql_error_outcome("set_alias", &e)),
     }
@@ -1061,6 +1082,7 @@ fn op_reject_pair(
             payload: Value::Null,
             error_code: None,
             error_text: None,
+            error_index: None,
         }),
         Err(e) => Ok(sql_error_outcome("reject_pair", &e)),
     }
@@ -1113,6 +1135,7 @@ fn op_canonicalize(
         payload: Value::Null,
         error_code: None,
         error_text: None,
+        error_index: None,
     })
 }
 
@@ -1303,6 +1326,7 @@ fn op_alias_candidates(
         payload: Value::Array(payload),
         error_code: None,
         error_text: None,
+        error_index: None,
     })
 }
 
@@ -1340,6 +1364,7 @@ fn op_create_table(
             payload: Value::Null,
             error_code: None,
             error_text: None,
+            error_index: None,
         }),
         Err(e) => Ok(sql_error_outcome("create_table", &e)),
     }
@@ -1373,9 +1398,101 @@ fn op_delete(
             payload: Value::Null,
             error_code: None,
             error_text: None,
+            error_index: None,
         }),
         Err(e) => Ok(sql_error_outcome("delete", &e)),
     }
+}
+
+/// The error outcome of an `insert` or `update` (GH #915).
+///
+/// A write that breaks a UNIQUE index declared in `params.indexes` answers
+/// `unique_violation` and names the index, instead of the raw
+/// `constraint_violation` text — a caller that upserts by "insert, and on a
+/// clash update" has to know WHICH key clashed, and must not parse SQLite's
+/// message to find out. Everything else keeps its classification.
+///
+/// Recognition goes by the extended result code `SQLITE_CONSTRAINT_UNIQUE`
+/// first (a primary-key clash is `SQLITE_CONSTRAINT_PRIMARYKEY` and stays a
+/// `constraint_violation`), then maps the message onto an index the store
+/// created (`origin = 'c'` in `pragma_index_list`): SQLite names an index on
+/// expressions directly (`index 'name'`) and lists the columns of a plain one
+/// (`t.a, t.b`), which is matched against each index's `pragma_index_info`.
+/// No match — a constraint the store did not declare — is the old outcome.
+fn write_error_outcome(
+    conn: &rusqlite::Connection,
+    op: &'static str,
+    cat: &Catalog,
+    e: &rusqlite::Error,
+) -> OpOutcome {
+    match declared_unique_index(conn, cat, e) {
+        Some(index) => {
+            let detail = e.to_string();
+            let text = meclaw_core::serde_json::json!({
+                "code": "unique_violation",
+                "index": index,
+                "detail": detail,
+            })
+            .to_string();
+            OpOutcome {
+                operation: op,
+                rows_affected: 0,
+                payload: Value::Null,
+                error_code: Some("unique_violation"),
+                error_text: Some(text),
+                error_index: Some(index),
+            }
+        }
+        None => sql_error_outcome(op, e),
+    }
+}
+
+/// The name of the store-declared UNIQUE index `e` reports, if any.
+fn declared_unique_index(
+    conn: &rusqlite::Connection,
+    cat: &Catalog,
+    e: &rusqlite::Error,
+) -> Option<String> {
+    let rusqlite::Error::SqliteFailure(err, Some(msg)) = e else {
+        return None;
+    };
+    if err.extended_code != rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
+        return None;
+    }
+    let reported = msg.strip_prefix("UNIQUE constraint failed: ")?;
+    let declared: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_index_list(?1) WHERE \"unique\" = 1 AND origin = 'c'")
+        .and_then(|mut st| {
+            st.query_map([cat.table()], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .ok()?;
+    if let Some(name) = reported
+        .strip_prefix("index '")
+        .and_then(|r| r.strip_suffix('\''))
+    {
+        return declared.into_iter().find(|d| d == name);
+    }
+    let prefix = format!("{}.", cat.table());
+    let cols: Vec<&str> = reported
+        .split(", ")
+        .map(|c| c.strip_prefix(prefix.as_str()).unwrap_or(c))
+        .collect();
+    declared.into_iter().find(|name| {
+        conn.prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .and_then(|mut st| {
+                st.query_map([name], |r| r.get::<_, Option<String>>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .map(|have| {
+                have.len() == cols.len()
+                    && have
+                        .iter()
+                        .zip(&cols)
+                        .all(|(h, c)| h.as_deref() == Some(*c))
+            })
+            .unwrap_or(false)
+    })
 }
 
 /// Map a rusqlite error to an [`OpOutcome`] with `error_code` set.
@@ -1389,6 +1506,7 @@ pub(crate) fn sql_error_outcome(op: &'static str, e: &rusqlite::Error) -> OpOutc
         payload: Value::Null,
         error_code: Some(code),
         error_text: Some(text),
+        error_index: None,
     }
 }
 

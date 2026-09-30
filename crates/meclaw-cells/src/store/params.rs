@@ -454,6 +454,88 @@ mod tests {
         let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
         StoreParams::parse(&v["params"]).expect("shipped template must stay valid");
     }
+
+    // ---- GH #915: params.indexes ----
+
+    fn with_indexes(indexes: Value) -> Value {
+        json!({
+            "schema": { "records": { "id": "text", "doc": "json" } },
+            "indexes": indexes
+        })
+    }
+
+    #[test]
+    fn indexes_parse_plain_path_and_multi_key_forms() {
+        let p = StoreParams::parse(&with_indexes(json!({
+            "records_scope": { "table": "records", "on": ["doc$.scope"] },
+            "records_id": { "table": "records", "on": ["id"], "unique": true },
+            "records_pair": { "table": "records", "on": ["doc$.type", "doc$.state", "id"] }
+        })))
+        .unwrap();
+        assert_eq!(p.indexes.len(), 3);
+        assert_eq!(
+            p.indexes["records_scope"].on,
+            vec!["doc$.scope".to_string()]
+        );
+        assert!(!p.indexes["records_scope"].unique);
+        assert!(p.indexes["records_id"].unique);
+        assert_eq!(p.indexes["records_pair"].on.len(), 3);
+        assert!(
+            StoreParams::parse(&with_indexes(json!({})))
+                .unwrap()
+                .indexes
+                .is_empty()
+        );
+        let absent = StoreParams::parse(&json!({"schema": {"t": {"c": "text"}}})).unwrap();
+        assert!(absent.indexes.is_empty());
+    }
+
+    #[test]
+    fn indexes_reject_malformed_declarations() {
+        let nine: Vec<String> = (0..9).map(|i| format!("doc$.k{i}")).collect();
+        for bad in [
+            json!([]),
+            json!({ "sqlite_x": { "table": "records", "on": ["id"] } }),
+            json!({ "x_fts": { "table": "records", "on": ["id"] } }),
+            json!({ "bad name": { "table": "records", "on": ["id"] } }),
+            json!({ "records": { "table": "records", "on": ["id"] } }),
+            json!({ "i": "records" }),
+            json!({ "i": { "on": ["id"] } }),
+            json!({ "i": { "table": "records" } }),
+            json!({ "i": { "table": "records", "on": [] } }),
+            json!({ "i": { "table": "records", "on": nine } }),
+            json!({ "i": { "table": "records", "on": [1] } }),
+            json!({ "i": { "table": "records", "on": ["doc$.a'"] } }),
+            json!({ "i": { "table": "records", "on": ["doc$"] } }),
+            json!({ "i": { "table": "records", "on": ["id", "id"] } }),
+            json!({ "i": { "table": "records", "on": ["id"], "unique": "yes" } }),
+            json!({ "i": { "table": "records", "on": ["id"], "where": "x" } }),
+        ] {
+            assert!(
+                StoreParams::parse(&with_indexes(bad.clone())).is_err(),
+                "{bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn indexes_survive_the_overlay_round_trip_and_are_immutable() {
+        use crate::params_overlay::OverlayParams;
+        assert!(StoreParams::KNOWN_KEYS.contains(&"indexes"));
+        assert!(StoreParams::IMMUTABLE_KEYS.contains(&"indexes"));
+        let p = StoreParams::parse(&with_indexes(json!({
+            "records_id": { "table": "records", "on": ["id"], "unique": true }
+        })))
+        .unwrap();
+        let back = StoreParams::parse(&meclaw_core::serde_json::to_value(&p).unwrap()).unwrap();
+        assert_eq!(back.indexes, p.indexes);
+        let plain = StoreParams::parse(&json!({"schema": {"t": {"c": "text"}}})).unwrap();
+        let v = meclaw_core::serde_json::to_value(&plain).unwrap();
+        assert!(
+            v.get("indexes").is_none(),
+            "absent stays absent (byte-stable overlay)"
+        );
+    }
 }
 
 use meclaw_core::serde_json::Value;
@@ -526,6 +608,32 @@ pub struct StoreParams {
     /// and the β params-overlay round-trip keep their exact bytes.
     #[serde(default, skip_serializing_if = "WriteSurface::is_open")]
     pub write_surface: WriteSurface,
+    /// Declared indexes (GH #915): `{ "<name>": { "table", "on": [..], "unique" } }`.
+    ///
+    /// Bootstrap-only like `schema`: applied as `CREATE [UNIQUE] INDEX IF NOT
+    /// EXISTS` right after the schema DDL (`store::ddl::apply_index_ddl`), with
+    /// table and columns resolved against the catalog at that point. An `on`
+    /// entry is a column or a JSON-path key (`doc$.scope`) — the same key form
+    /// `where` and `order_by` take, rendered by the same function, so a filter
+    /// on the key can use the index. An index that disappears from the
+    /// declaration stays in the database (no-delete, as with columns).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub indexes: BTreeMap<String, IndexSpec>,
+}
+
+/// One entry of `params.indexes` (GH #915, docs/cell-types.md § store).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IndexSpec {
+    /// The indexed table — resolved against the catalog at DDL time, so a table
+    /// the store did not declare (a seeded one) can carry an index too.
+    pub table: String,
+    /// 1–8 keys, each a column or `<column>$<path>`; grammar-checked here, the
+    /// column halves catalog-resolved at DDL time.
+    pub on: Vec<String>,
+    /// `CREATE UNIQUE INDEX`; a write that violates it answers
+    /// `unique_violation` with the index name.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unique: bool,
 }
 
 /// GH #132 — how a `store`'s write surface is bounded.
@@ -612,6 +720,7 @@ impl crate::params_overlay::OverlayParams for StoreParams {
         "fts",
         "canonical",
         "write_surface",
+        "indexes",
     ];
     /// `schema` is bootstrap-only — it is baked into `cell.db` via DDL at spawn;
     /// changing it at runtime would desync the live tables from the declared
@@ -621,7 +730,7 @@ impl crate::params_overlay::OverlayParams for StoreParams {
     /// that a message can switch off is not a boundary. It is declared in the
     /// `config.json` and stays there.
     const IMMUTABLE_KEYS: &'static [&'static str] =
-        &["schema", "fts", "canonical", "write_surface"];
+        &["schema", "fts", "canonical", "write_surface", "indexes"];
     fn parse(raw: &Value) -> Result<Self, String> {
         StoreParams::parse(raw)
     }
@@ -688,12 +797,14 @@ impl StoreParams {
                 }
             },
         };
+        let indexes = parse_indexes(obj.get("indexes"), &schema)?;
         Ok(StoreParams {
             schema,
             query_timeout_ms,
             canonical,
             fts,
             write_surface,
+            indexes,
         })
     }
 }
@@ -922,6 +1033,87 @@ fn parse_fts(
             cols.push(col.to_string());
         }
         out.insert(table.clone(), cols);
+    }
+    Ok(out)
+}
+
+/// Most keys one declared index may name (docs/cell-types.md § store).
+pub const INDEX_MAX_KEYS: usize = 8;
+
+/// Validate `params.indexes` (GH #915, docs/cell-types.md § store).
+///
+/// What can be checked without a database is checked here — the name through
+/// the same syntax gate as a table (it lives in the same SQLite namespace), the
+/// shape, 1–8 grammar-valid keys without repeats, and no clash with a declared
+/// table. Whether table and columns exist is the catalog's call at DDL time
+/// (`store::ddl::apply_index_ddl`), because an index may sit on a table that is
+/// not in `schema`.
+fn parse_indexes(
+    raw: Option<&Value>,
+    schema: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<BTreeMap<String, IndexSpec>, String> {
+    let Some(raw) = raw else {
+        return Ok(BTreeMap::new());
+    };
+    let obj = raw.as_object().ok_or("params.indexes must be an object")?;
+    let mut out = BTreeMap::new();
+    for (name, spec_v) in obj {
+        crate::store::ddl::check_new_identifier("params.indexes name", name)?;
+        if schema.keys().any(|t| t.eq_ignore_ascii_case(name)) {
+            return Err(format!(
+                "params.indexes.{name}: an index cannot share its name with a table"
+            ));
+        }
+        let spec = spec_v
+            .as_object()
+            .ok_or_else(|| format!("params.indexes.{name} must be an object"))?;
+        if let Some(k) = spec
+            .keys()
+            .find(|k| !matches!(k.as_str(), "table" | "on" | "unique"))
+        {
+            return Err(format!(
+                "params.indexes.{name}: unknown key {k:?} (allowed: table, on, unique)"
+            ));
+        }
+        let table = spec
+            .get("table")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("params.indexes.{name}.table must be a string"))?;
+        let on_v = spec
+            .get("on")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("params.indexes.{name}.on must be an array"))?;
+        if on_v.is_empty() || on_v.len() > INDEX_MAX_KEYS {
+            return Err(format!(
+                "params.indexes.{name}.on must name 1 to {INDEX_MAX_KEYS} keys"
+            ));
+        }
+        let mut on: Vec<String> = Vec::with_capacity(on_v.len());
+        for k in on_v {
+            let key = k
+                .as_str()
+                .ok_or_else(|| format!("params.indexes.{name}.on entries must be strings"))?;
+            crate::store::query::parse::parse_key(key)
+                .map_err(|e| format!("params.indexes.{name}.on: {e}"))?;
+            if on.iter().any(|seen| seen == key) {
+                return Err(format!("params.indexes.{name}.on names {key:?} twice"));
+            }
+            on.push(key.to_string());
+        }
+        let unique = match spec.get("unique") {
+            None => false,
+            Some(v) => v
+                .as_bool()
+                .ok_or_else(|| format!("params.indexes.{name}.unique must be a boolean"))?,
+        };
+        out.insert(
+            name.clone(),
+            IndexSpec {
+                table: table.to_string(),
+                on,
+                unique,
+            },
+        );
     }
     Ok(out)
 }

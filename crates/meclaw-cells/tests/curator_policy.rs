@@ -1418,8 +1418,10 @@ fn cognys_splitter_is_talkys() {
     let d = deliveries(&t, "/c/splitter", json!({"finish_reason": "length"}));
     assert_eq!(targets(&d), vec!["/c/collector"]);
     assert_eq!(d[0].1["route"], "in_answer");
-    // Every section to the curator, none out of the core.
-    for section in ["memory", "window", "gap", "fact"] {
+    // The curator's sections to the curator; since GH #916 every other one
+    // leaves the core the way it leaves a talky, so an app that offered a
+    // section hears it from the core too -- once, never also via the curator.
+    for section in ["memory", "window", "gap"] {
         let d = deliveries(
             &t,
             "/c/splitter",
@@ -1427,6 +1429,15 @@ fn cognys_splitter_is_talkys() {
         );
         assert_eq!(targets(&d), vec!["/c/curator"], "{section}");
         assert_eq!(d[0].1["route"], "in_section");
+    }
+    for section in ["probe", "fact"] {
+        let d = deliveries(
+            &t,
+            "/c/splitter",
+            json!({"route": "sidecar", "section": section}),
+        );
+        assert_eq!(targets(&d), vec!["/c"], "{section}");
+        assert_eq!(d[0].1["route"], "sidecar");
     }
 }
 

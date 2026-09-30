@@ -82,6 +82,64 @@ pub fn apply_schema_ddl(
     Ok(())
 }
 
+/// Apply `params.indexes` (GH #915, docs/cell-types.md § store): one
+/// `CREATE [UNIQUE] INDEX IF NOT EXISTS` per declared index.
+///
+/// Runs right after [`apply_schema_ddl`], because table and columns are resolved
+/// against the live catalog here — an index may sit on a table the schema just
+/// created, or on one a seed brought along. Each key is rendered by
+/// `render_col_ref`, the same function the query path uses for `where` and
+/// `order_by`: SQLite only picks an expression index for a query that spells the
+/// identical expression, so two renderers would be two chances to silently miss.
+///
+/// Idempotent (`IF NOT EXISTS`) and strictly additive: an index that left the
+/// declaration is never dropped (no-delete, like columns), and an existing index
+/// of the same name is kept as it stands. Every declared index is attempted; the
+/// failures (unknown table or column, a UNIQUE index over rows that already
+/// collide) come back together, one line each, so one bad entry does not cost
+/// the others.
+pub fn apply_index_ddl(
+    conn: &rusqlite::Connection,
+    indexes: &BTreeMap<String, crate::store::IndexSpec>,
+) -> Result<(), String> {
+    use crate::store::query::catalog::{Catalog, CatalogError};
+    use crate::store::query::parse::parse_key;
+    use crate::store::query::sql::render_col_ref;
+    let describe = |e: CatalogError| match e {
+        CatalogError::UnknownTable(t) => format!("no such table: {t}"),
+        CatalogError::UnknownColumn(c) => format!("no such column: {c}"),
+        CatalogError::Sql(err) => err.to_string(),
+    };
+    let mut failures = Vec::new();
+    for (name, spec) in indexes {
+        let attempt = || -> Result<(), String> {
+            let cat = Catalog::load(conn, &spec.table).map_err(describe)?;
+            let mut exprs = Vec::with_capacity(spec.on.len());
+            for key in &spec.on {
+                let col = parse_key(key)?;
+                exprs.push(render_col_ref(&cat, &col, false).map_err(describe)?);
+            }
+            let stmt = format!(
+                "CREATE {}INDEX IF NOT EXISTS \"{name}\" ON \"{}\" ({})",
+                if spec.unique { "UNIQUE " } else { "" },
+                cat.table(),
+                exprs.join(", ")
+            );
+            conn.execute(&stmt, [])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        if let Err(e) = attempt() {
+            failures.push(format!("index {name:?}: {e}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
 /// The column names of an existing table, as SQLite spells them.
 fn table_columns(
     conn: &rusqlite::Connection,
@@ -1415,5 +1473,100 @@ mod tests {
                 [], |r| r.get(0),
             ).unwrap();
         assert_eq!(n, 2);
+    }
+
+    // ---- GH #915: params.indexes ----
+
+    fn index_decl(v: meclaw_core::serde_json::Value) -> BTreeMap<String, crate::store::IndexSpec> {
+        crate::store::StoreParams::parse(&meclaw_core::serde_json::json!({
+            "schema": { "records": { "id": "text", "doc": "json" } },
+            "indexes": v
+        }))
+        .unwrap()
+        .indexes
+    }
+
+    fn index_sql(conn: &rusqlite::Connection, name: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn index_ddl_runs_after_the_schema_and_is_idempotent() {
+        let conn = conn_with_extensions();
+        let schema = BTreeMap::from([(
+            "records".to_string(),
+            BTreeMap::from([
+                ("id".to_string(), "text".to_string()),
+                ("doc".to_string(), "json".to_string()),
+            ]),
+        )]);
+        apply_schema_ddl(&conn, &schema).unwrap();
+        let decl = index_decl(meclaw_core::serde_json::json!({
+            "records_scope": { "table": "records", "on": ["doc$.scope"] },
+            "records_id": { "table": "records", "on": ["id"], "unique": true },
+            "records_pair": { "table": "records", "on": ["doc$.type", "doc$.state"] }
+        }));
+        apply_index_ddl(&conn, &decl).unwrap();
+        apply_index_ddl(&conn, &decl).unwrap();
+        assert_eq!(
+            index_sql(&conn, "records_scope").unwrap(),
+            "CREATE INDEX \"records_scope\" ON \"records\" (json_extract(\"doc\", '$.scope'))"
+        );
+        assert_eq!(
+            index_sql(&conn, "records_id").unwrap(),
+            "CREATE UNIQUE INDEX \"records_id\" ON \"records\" (\"id\")"
+        );
+        assert_eq!(
+            index_sql(&conn, "records_pair").unwrap(),
+            "CREATE INDEX \"records_pair\" ON \"records\" \
+             (json_extract(\"doc\", '$.type'), json_extract(\"doc\", '$.state'))"
+        );
+
+        // No-delete: a declaration without the index leaves it standing.
+        let fewer = index_decl(meclaw_core::serde_json::json!({
+            "records_id": { "table": "records", "on": ["id"], "unique": true }
+        }));
+        apply_index_ddl(&conn, &fewer).unwrap();
+        assert!(index_sql(&conn, "records_scope").is_some());
+    }
+
+    #[test]
+    fn index_ddl_resolves_table_and_columns_through_the_catalog() {
+        let conn = conn_with_extensions();
+        conn.execute_batch("CREATE TABLE records (id TEXT, doc TEXT);")
+            .unwrap();
+        let decl = index_decl(meclaw_core::serde_json::json!({
+            "a_good": { "table": "records", "on": ["id"] },
+            "b_table": { "table": "nope", "on": ["id"] },
+            "c_col": { "table": "records", "on": ["nope$.a"] }
+        }));
+        let err = apply_index_ddl(&conn, &decl).unwrap_err();
+        assert!(err.contains("\"b_table\": no such table: nope"), "{err}");
+        assert!(err.contains("\"c_col\": no such column: nope"), "{err}");
+        assert!(
+            index_sql(&conn, "a_good").is_some(),
+            "one bad entry does not cost the others"
+        );
+    }
+
+    #[test]
+    fn a_unique_index_over_colliding_rows_is_reported_not_forced() {
+        let conn = conn_with_extensions();
+        conn.execute_batch(
+            "CREATE TABLE records (id TEXT, doc TEXT);
+             INSERT INTO records VALUES ('a', '{\"k\":1}'), ('b', '{\"k\":1}');",
+        )
+        .unwrap();
+        let decl = index_decl(meclaw_core::serde_json::json!({
+            "records_k": { "table": "records", "on": ["doc$.k"], "unique": true }
+        }));
+        let err = apply_index_ddl(&conn, &decl).unwrap_err();
+        assert!(err.contains("records_k"), "{err}");
+        assert!(index_sql(&conn, "records_k").is_none());
     }
 }

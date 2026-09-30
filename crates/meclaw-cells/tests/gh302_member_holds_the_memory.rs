@@ -1104,7 +1104,7 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
 /// `in_prune` stood here until GH #889: the collector keeps no window any more,
 /// so the assistant no longer accepts the lane and there is nothing left to
 /// subtract.
-const NOT_CARRIED: [(&str, &str); 4] = [
+const NOT_CARRIED: [(&str, &str); 5] = [
     (
         "in_advice",
         "answered inside the assistant by ./cogny; the other producer is a SECOND agent, \
@@ -1127,6 +1127,14 @@ const NOT_CARRIED: [(&str, &str); 4] = [
          `<member>/assistants/<agent>` at its own path. A lane at the member's own door \
          would be an interface promising something nothing outside ever sends",
     ),
+    (
+        "in_pin",
+        "a pin of an installed app (GH #916). Its producer is INSIDE this level -- an app \
+         under `<member>/apps` -- and `install_app` draws the one edge from the cell the app \
+         declared as `pins` straight to `<member>/assistants/<agent>`, so the declaration is \
+         the only way in. A door at this level would let an app that declared nothing pin \
+         into every curator",
+    ),
 ];
 
 /// **The union rule, in the direction that is easy to get wrong (W7-R5).**
@@ -1147,9 +1155,9 @@ const NOT_CARRIED: [(&str, &str); 4] = [
 ///
 /// The assertion is deliberately exhaustive rather than a deny-list: every lane
 /// the assistant accepts is either supplied by a sibling inside this member or
-/// named in [`NOT_CARRIED`]. A **fifth** lane that really does arrive from above
+/// named in [`NOT_CARRIED`]. A lane beyond the list that really does arrive from above
 /// therefore goes red HERE, instead of being silently skipped the way the
-/// outward four were. And a later decision to carry one of the four is a
+/// outward four were. And a later decision to carry one of them is a
 /// deliberate edit of this list plus a lane and a door — not a diff nobody reads.
 #[test]
 fn the_lanes_an_assistant_takes_from_an_operator_deliberately_do_not_cross_this_level() {

@@ -42,6 +42,7 @@ impl StoreRig {
             fts: Default::default(),
             canonical: Default::default(),
             write_surface: Default::default(),
+            indexes: Default::default(),
         });
         let (otx, rx) = mpsc::channel(16);
         let sink = OutputSink::new(

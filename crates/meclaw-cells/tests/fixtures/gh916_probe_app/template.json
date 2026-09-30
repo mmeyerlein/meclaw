@@ -1,0 +1,26 @@
+{
+  "name": "probe-app",
+  "version": "1.0.0",
+  "tags": [
+    "app"
+  ],
+  "app": {
+    "offers": [
+      {
+        "kind": "sidecar",
+        "at": "./sink",
+        "section": "probe"
+      }
+    ],
+    "listens": [
+      "close"
+    ],
+    "pins": "./sink"
+  },
+  "description": {
+    "purpose": "Test fixture for GH #916: an app that offers the sidecar section `probe` at its cell `./sink`, listens to closed sessions and pins through the same cell.",
+    "use_when": "Test fixture only (gh916_an_app_hears_its_member.rs).",
+    "not_in_scope": "Not a template. It keeps nothing and shows nothing: its one cell writes every message it receives to a log file the test reads."
+  },
+  "author": "meclaw"
+}

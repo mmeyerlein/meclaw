@@ -1,6 +1,8 @@
-//! Paket-7 F3 — store error_codes demo (f): all SIX `store` `error_code`
-//! values (cell-types.md Z.71 / D-015) are REAL-triggered through the store
-//! cell + ops, and each asserted.
+//! Paket-7 F3 — store error_codes demo (f): the SEVEN SQL-side `store`
+//! `error_code` values (docs/cell-types.md § store) are accounted for. Six of
+//! them are REAL-triggered through the store cell + ops in this file, and each
+//! asserted; the seventh, `unique_violation` (GH #915), needs a declared
+//! `unique` index and is triggered in `gh915_a_store_filters_on_a_json_path.rs`.
 //!
 //! Spec-code → trigger table (each row is exercised by a `#[test]` below):
 //!
@@ -12,6 +14,7 @@
 //! | `type_mismatch`        | INSERT a non-integer into an INTEGER PRIMARY KEY     | ErrorCode::TypeMismatch      |
 //! | `sql_error`            | a malformed table name → generic SQLITE_ERROR        | classify backstop            |
 //! | `query_timeout`        | a long SELECT interrupted by the query_timeout knob  | DbConn InterruptHandle       |
+//! | `unique_violation`     | INSERT a duplicate into a declared `unique` index    | gh915 test file              |
 //!
 //! The five SQL codes flow through `StoreCell::handle` end-to-end (real
 //! `tool_call` message → real ops → real rusqlite error → classified
@@ -80,6 +83,7 @@ async fn store_code_unknown_table() {
         fts: Default::default(),
         canonical: Default::default(),
         write_surface: Default::default(),
+        indexes: Default::default(),
     });
     // No table created → SELECT hits "no such table".
     let em = run_store_op(
@@ -110,6 +114,7 @@ async fn store_code_unknown_column() {
         fts: Default::default(),
         canonical: Default::default(),
         write_surface: Default::default(),
+        indexes: Default::default(),
     });
     // Column "nosuch" is not declared → "table t has no column named nosuch".
     let em = run_store_op(
@@ -137,6 +142,7 @@ async fn store_code_constraint_violation() {
         fts: Default::default(),
         canonical: Default::default(),
         write_surface: Default::default(),
+        indexes: Default::default(),
     });
     // Duplicate PK → SQLITE_CONSTRAINT.
     let em = run_store_op(
@@ -164,6 +170,7 @@ async fn store_code_type_mismatch() {
         fts: Default::default(),
         canonical: Default::default(),
         write_surface: Default::default(),
+        indexes: Default::default(),
     });
     let em = run_store_op(
         &mut cell,
@@ -188,6 +195,7 @@ async fn store_code_sql_error_backstop() {
         fts: Default::default(),
         canonical: Default::default(),
         write_surface: Default::default(),
+        indexes: Default::default(),
     });
     // TRIGGER CHANGED IN P3 (behaviour of the backstop is unchanged).
     // Until P3 this test reached the backstop by injecting a dangling clause via
@@ -242,6 +250,7 @@ async fn store_code_malformed_table_name_is_rejected_by_the_catalog() {
         fts: Default::default(),
         canonical: Default::default(),
         write_surface: Default::default(),
+        indexes: Default::default(),
     });
     let em = run_store_op(
         &mut cell,
@@ -290,6 +299,7 @@ async fn store_code_query_timeout() {
         fts: Default::default(),
         canonical: Default::default(),
         write_surface: Default::default(),
+        indexes: Default::default(),
     });
 
     // A full-table SELECT over 400k rows — interruptible inside SQLite, far
@@ -306,25 +316,27 @@ async fn store_code_query_timeout() {
     assert_eq!(em.content["header"]["finish_reason"], "error");
 }
 
-// ── Spec-vs-code coverage table (assert all six are accounted for) ───────────
+// ── Spec-vs-code coverage table (assert all seven are accounted for) ─────────
 
 #[test]
-fn all_six_store_codes_are_demonstrated() {
+fn all_seven_store_codes_are_accounted_for() {
     // This is the machine-checkable form of the doc-table at the top: every
-    // spec error_code (cell-types.md Z.71) has a real-trigger test above.
-    const SPEC_CODES: [&str; 6] = [
+    // spec error_code (docs/cell-types.md § store) has a real-trigger test,
+    // above or, for `unique_violation`, in the GH #915 test file.
+    const SPEC_CODES: [&str; 7] = [
         "sql_error",
         "constraint_violation",
         "query_timeout",
         "type_mismatch",
         "unknown_table",
         "unknown_column",
+        "unique_violation",
     ];
-    // Each maps to a `#[test]` in this file (named store_code_*). The mapping is
-    // exhaustive: 6 spec codes ↔ 6 trigger tests.
+    // Six map to a `#[test]` in this file (named store_code_*), the seventh to
+    // the GH #915 file. The mapping is exhaustive: 7 spec codes ↔ 7 trigger tests.
     assert_eq!(
         SPEC_CODES.len(),
-        6,
-        "store declares exactly six error_codes"
+        7,
+        "store declares exactly seven SQL-side error_codes"
     );
 }

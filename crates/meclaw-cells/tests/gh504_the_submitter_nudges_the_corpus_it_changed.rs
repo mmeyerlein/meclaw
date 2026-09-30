@@ -432,7 +432,9 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // and pins `assistant@3.1.0` and `builder-librarian@2.2.8` (GH #895, GH #896).
         // 1.17.1 pins its librarian at `builder-librarian@2.2.9` (GH #899).
         // 1.17.2 pins its librarian at `builder-librarian@2.2.10` (GH #905 to GH #908).
-        "builder@1.17.2"
+        // 1.18.0 takes `close` and `pins` in `install_app` and pins its librarian at
+        // `builder-librarian@2.2.11` (GH #916).
+        "builder@1.18.0"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

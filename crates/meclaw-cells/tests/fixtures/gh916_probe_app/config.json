@@ -1,0 +1,49 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "contract": {
+      "accepts": [
+        {
+          "route": "sidecar",
+          "because": "a section this app offered, handed down by the member's apps container; the hive passes it to its cell"
+        },
+        {
+          "route": "in_close",
+          "because": "the close batch of a session, for an app that listens to `close`; the hive passes it to its cell"
+        },
+        {
+          "route": "schemas",
+          "at": [
+            "./sink"
+          ],
+          "because": "the menu tick of a surface, a v-lane that docks at the offering cell (ADR-0020); the cell offers no tool and answers nothing"
+        }
+      ],
+      "emits": [
+        {
+          "route": "pin",
+          "at": [
+            "./sink"
+          ],
+          "because": "what the app pins, straight from its pinning cell onto the generation, which hands it to the curator of each brain"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./sink",
+          "condition": "has(hop.route) && (hop.route == 'sidecar' || hop.route == 'in_close')"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Test fixture for GH #916: the hive of an app with one cell. Unsealed (no params.ports), so the pin edge can leave its cell and the menu v-lane can reach it.",
+    "use_when": "Test fixture only.",
+    "not_in_scope": "Not a template."
+  }
+}

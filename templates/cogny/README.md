@@ -1,4 +1,4 @@
-# `cogny@5.3.1`
+# `cogny@5.4.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.1.1"},
+{"cell": {"type": "ref", "template": "curator@1.2.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -525,7 +525,7 @@ nothing ever answers.
 
 ## The internal wiring, edge by edge
 
-Thirty-eight edges in this hive's `params.graph`, plus the five the sealed collector brings
+Forty edges in this hive's `params.graph`, plus the five the sealed collector brings
 with it and those the sealed curator brings
 ([`../curator/README.md`](../curator/README.md)) -- those are their own door and store
 edges and are neither drawn nor wireable from here. Every edge below names `collector` and
@@ -533,7 +533,7 @@ edges and are neither drawn nor wireable from here. Every edge below names `coll
 reads:
 
 ```
-collector  --(curate)----------------------------------> curator   in_curate  <- the whole
+collector  ==(curate, iter < 12, restore_ttl)==========> curator   in_curate  <- the whole
                                                                     round, #889
 curator    ==(brain, iter < 12, restore_ttl)===========> brain       <- THE SEAM
 collector  --(menu)------------------------------------> curator   in_slots   <- the answered
@@ -548,8 +548,9 @@ brain      --(stop | tool_calls | length)--> splitter   <- the sidecar cut, #892
 brain      --(any answer, !refused_subscriber)--> curator  in_llm   <- the tap, #889
 splitter   --(stop | tool_calls)--> dispatcher
 splitter   --(length)-------------> collector  in_answer   <- the collector marks it truncated
-splitter   --(sidecar)------------> curator    in_section  <- every section; none leaves
-                                                             the core, #892
+splitter   --(sidecar)------------> curator    in_section  <- window, gap, memory, #892
+splitter   --(sidecar)------------> .                      <- every other section, as a
+                                                             talky's leaves, #916
 
 dispatcher --(calls)---> collector  in_calls
 dispatcher --(result)--> collector  in_tool
@@ -562,6 +563,7 @@ curator    --(tool_result)-------> collector  in_tool
 .          --(in_bundle, context.gap_ask)--> curator  in_gap_bundle   <- #895
 .          --(mutation_committed)-> collector
 .          --(in_pack)-----------> curator           <- THE DOOR IN THE WALL, #458
+.          --(in_pin)------------> curator           <- another hive's pin, #916
 .          --(in_schemas)--------> schemas           <- #528
 .          --(in_model)----------> brain             <- THE MODEL DOOR, #855
 .          --(in_model, subscriber ends /curator/summarizer)--> curator   <- #889
@@ -620,8 +622,12 @@ An operator who runs this core on research-sized work still raises the knob per 
 stays `8`: a colony that has not measured its own rounds is better served by a bound that
 ends a runaway early than by one that pays for it.
 
-**`restore_ttl` sits on the seam, once per round.** `iter` counts brain answers, and a
-bundle of fifteen calls is one answer, one iteration, one restore.
+**`restore_ttl` sits on two edges of the seam, each once per round.** `iter` counts brain
+answers, and a bundle of fifteen calls is one answer, one iteration: the edge into the brain
+restores once and the `curate` edge restores once.
+The `curate` edge restores under the same bound (GH #919): the curator between
+collector and brain spends about twenty routing decisions of ledger round trips per round,
+and without it paid them out of what the legs before the round left.
 
 ## Knobs
 
@@ -667,7 +673,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.3.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.4.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -873,6 +879,8 @@ rides on `hop.route`.
 | `recall` | out | a memory read the brain ASKED for, since 4.4.0: `hop.memory_call_id` names the tool call it belongs to and must come back on `in_bundle`, or the answer is filed as a turn's memory leg and the round waits for a result that never comes |
 | `error` | out | a failed inference on the brain. **Wire it** -- unwired it dead-letters, loudly |
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
+| `in_pin` | in | a pin of another hive for the brain's window, `{pins: [{text, source, until?}], replace_sources?}`, handed to `./curator`'s own `in_pin` (`templates/curator/README.md`). Nothing answers it. Since GH #916 |
+| `sidecar` | out | one section of the block the core's answer carried, `hop.section` and `hop.turn_id` (the round) beside it, the body `{messages: [], section, payload}`: every section but `window`, `gap` and `memory`, which `./curator` takes, as a talky does. Since GH #916 |
 | `pack_ack` | out | the receipt `in_pack` answers with -- ONE per pack, not one per brain: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.2.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it; since 5.2.0 a package whose `hop.subscriber` ends on `/curator/summarizer` goes to `./curator` instead (GH #889). Since 5.1.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
 | `model_refused` | out | a model push the brain refused: its error, with `hop.refused_subscriber` (the brain's path) and `hop.refused_model`, instead of on `error`. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. Since 5.1.2 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |

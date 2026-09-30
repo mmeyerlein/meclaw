@@ -1,0 +1,40 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "external_timeout_ms": 15000,
+    "log_path": "",
+    "script_inline": "import sys, json\ndoc = json.load(sys.stdin)\nenv = doc.get(\"envelope\") or {}\nheader = env.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\nctx = header.get(\"context\") or {}\nbody = doc.get(\"body\") or {}\nparams = doc.get(\"params\") or {}\npath = str(params.get(\"log_path\") or \"\")\nline = {\"route\": str(hop.get(\"route\") or \"\"), \"hop\": hop, \"context\": ctx,\n        \"reply_to\": str(env.get(\"reply_to\") or \"\"), \"body\": body}\nif path:\n    with open(path, \"a\", encoding=\"utf-8\") as fh:\n        fh.write(json.dumps(line, sort_keys=True) + \"\\n\")\nout = []\nif hop.get(\"route\") == \"command_pin\":\n    pin = {\"header\": {\"route\": \"pin\"}, \"messages\": [], \"pins\": body.get(\"pins\") or []}\n    if \"replace_sources\" in body:\n        pin[\"replace_sources\"] = body[\"replace_sources\"]\n    out.append(pin)\nsys.stdout.write(json.dumps(out))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Test fixture for GH #916: every message this cell receives becomes one JSON line in the file `params.log_path` names (route, hop, context, reply_to, body). On `command_pin` it pins what the body carries: `pin` with `pins` (and `replace_sources` when given). It answers nothing else.",
+    "use_when": "Test fixture only.",
+    "not_in_scope": "Not a template. It offers no tool: a menu tick is logged and left unanswered."
+  }
+}

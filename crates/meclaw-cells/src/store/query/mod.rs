@@ -107,11 +107,84 @@ impl Dir {
     }
 }
 
-/// One `order_by` term: column plus direction.
+/// A validated JSON path (GH #915): `$` followed by 1–8 segments, each `.name`
+/// (`[A-Za-z_][A-Za-z0-9_]{0,62}`) or `[n]` (`0`–`9999`, no leading zero).
+///
+/// Only [`parse::parse_json_path`] builds one, so holding a `JsonPath` means the
+/// text contains no quote character, no whitespace and nothing outside ASCII —
+/// which is what allows the renderer to format it as a SQL string LITERAL. A
+/// bound parameter would be safer by construction, but SQLite matches an
+/// expression index only against the identical expression, and `?` is not
+/// identical to `'$.a'`; without the literal no path filter could ever hit an
+/// index declared in `params.indexes`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonPath(String);
+
+impl JsonPath {
+    /// Crate-internal constructor; the grammar check lives in [`parse`].
+    pub(crate) fn new_unchecked(text: String) -> Self {
+        Self(text)
+    }
+
+    /// The path text, e.g. `$.due.start` or `$.tags[0]`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What a `where` key, an `order_by[].col` or a `params.indexes` `on` entry
+/// names (GH #915): a plain column, or a JSON path inside one (`doc$.scope`).
+///
+/// The column half is caller text and stays unresolved until render time, where
+/// the catalog decides whether it exists; the path half is grammar-checked at
+/// parse time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColRef {
+    /// A column of the table, compared as stored.
+    Column(String),
+    /// `json_extract(<column>, '<path>')`.
+    JsonPath {
+        /// Caller-supplied column name — catalog-resolved before rendering.
+        column: String,
+        /// The grammar-checked path.
+        path: JsonPath,
+    },
+}
+
+impl ColRef {
+    /// The caller-supplied column name (the half the catalog resolves).
+    pub fn column(&self) -> &str {
+        match self {
+            ColRef::Column(c) => c,
+            ColRef::JsonPath { column, .. } => column,
+        }
+    }
+
+    /// The key as the caller spelled it: `col` or `col$.path`.
+    pub fn key(&self) -> String {
+        match self {
+            ColRef::Column(c) => c.clone(),
+            ColRef::JsonPath { column, path } => format!("{column}{}", path.as_str()),
+        }
+    }
+}
+
+/// Compares against the caller's spelling of the key, so a test can say
+/// `assert_eq!(filter.col, "a")` for a plain column as it did before GH #915.
+impl PartialEq<&str> for ColRef {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            ColRef::Column(c) => c == other,
+            ColRef::JsonPath { .. } => self.key() == *other,
+        }
+    }
+}
+
+/// One `order_by` term: column (or JSON path) plus direction.
 #[derive(Debug)]
 pub struct OrderTerm {
-    /// Caller-supplied column name — catalog-resolved before rendering.
-    pub col: String,
+    /// Caller-supplied column reference — catalog-resolved before rendering.
+    pub col: ColRef,
     /// Sort direction.
     pub dir: Dir,
 }
@@ -176,11 +249,11 @@ pub struct SimilarSpec {
     pub limit: Option<i64>,
 }
 
-/// One `where` entry: the caller's column name plus its predicate.
+/// One `where` entry: the caller's column reference plus its predicate.
 #[derive(Debug)]
 pub struct Filter {
-    /// Caller-supplied column name — catalog-resolved before rendering.
-    pub col: String,
+    /// Caller-supplied column reference — catalog-resolved before rendering.
+    pub col: ColRef,
     /// The predicate to apply to that column.
     pub pred: Predicate,
 }

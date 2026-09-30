@@ -1,4 +1,4 @@
-# `talky@6.1.1`
+# `talky@6.2.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- forty-nine edges,
+dispatcher for the fan-out, the close batch out to the write port -- fifty edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.1.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.2.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -160,6 +160,7 @@ The rest, each optional and each still at the same address:
 | `in_sweep` | in | an operator-forced session sweep |
 | `in_round_sweep` | in | the operator lane of the collector's round table: a round that ran out of iterations |
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.4.0 |
+| `in_pin` | in | a pin of another hive for the brain's window, `{pins: [{text, source, until?}], replace_sources?}`, handed to `./curator`'s own `in_pin` (`templates/curator/README.md`). Nothing answers it. Since GH #916 |
 | `pack_ack` | out | the receipt `in_pack` answers with, accepted and refused alike: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.4.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it; since 6.0.0 a package whose `hop.subscriber` ends on `/curator/summarizer` goes to `./curator` instead (GH #889). See "The model door". Since 5.4.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
 | `model_refused` | out | a model push the brain refused: its error, with `hop.refused_subscriber` (the brain's path) and `hop.refused_model`, instead of on `error`. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. See "The model door". Since 5.4.2 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
@@ -448,8 +449,8 @@ and the `turn_id` is deterministic, so a repeat is recognisable downstream as we
 
 ## The internal wiring, edge by edge
 
-Twenty-one edges of round in this hive's `params.graph` -- plus the twenty-eight that ARE the
-boundary (twelve door edges from `.`, sixteen leaving towards it, and those are the lanes
+Twenty-one edges of round in this hive's `params.graph` -- plus the twenty-nine that ARE the
+boundary (thirteen door edges from `.`, sixteen leaving towards it, and those are the lanes
 above; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
 push, GH #863, and seven of them leave `./curator` -- `write`, `turn_write`, `pack_ack` and
 its summarizer's `model_refused` since 6.0.0, GH #889, `sidecar` for the `memory` section it
@@ -459,7 +460,8 @@ receipt, GH #553, the seventh is the `in_menu` fan that reaches `./schemas` besi
 collector, GH #783, the eighth is the model door straight into `./brain`, GH #855, the ninth
 the pack door and the tenth the summarizer's model door, both into `./curator`, GH #889, the
 eleventh a gap's bundle into `./curator`, GH #895, the twelfth the renewed duplex call,
-`in_renewed` into `./curator`, GH #896).
+`in_renewed` into `./curator`, GH #896, the thirteenth door another hive's pin,
+`in_pin` into `./curator`, GH #916).
 The two halves are the whole of this file, counted from it. Every one of the twenty-one names a
 sub-unit **by its path**: three of the eight nodes below are sealed hives, so the address is
 the hive and the lane in the third column is what the door behind it reads; what those three
@@ -469,7 +471,7 @@ draw INSIDE themselves is theirs and is not counted here. Read it as the round i
 session-keeper --(turn, session_id -> context)-->  collector   in_turn
 session-keeper --(close, session_id + channel + audience_set -> context)->  curator   in_close
 
-collector --(curate)------------> curator    in_curate  <- the whole round, GH #889
+collector ==(curate, int(hop.iter) < 12, restore_ttl)==> curator  in_curate  <- the whole round, GH #889/#919
 curator ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
 collector --(menu)--------------> curator    in_slots   <- the answered tool menu, GH #464
 collector --(schemas)-----------> curator    in_schemas <- the curator answers the menu too, GH #892
@@ -477,6 +479,7 @@ curator --(tool_schemas, !refused_subscriber)--> collector  in_menu  <- tool_ans
 collector --(recall)------------> curator    in_recall_ask  <- its question is built there, GH #895
 brain --(any answer, !refused_subscriber)--> curator  in_llm   <- the tap, GH #889
    .      --(in_pack)-----------> curator    <- THE DOOR IN THE WALL, GH #458
+   .      --(in_pin)------------> curator    <- another hive's pin, GH #916
    .      --(in_model)----------> brain      <- THE MODEL DOOR, past the collector, GH #855
    .      --(in_model, subscriber ends /curator/summarizer)--> curator   <- GH #889
    .      --(in_bundle, context.gap_ask)--> curator  in_gap_bundle  <- a gap's find, never the collector's, GH #895
@@ -527,10 +530,19 @@ a mutation: `remove_edges` first, `add_edges` second, in **two** mutations. A re
 an add of the same endpoints in ONE diff match over the post-state and take the new edge
 with them.
 
-**`restore_ttl` sits on the seam, once per round.** `iter` counts brain answers, and a
-bundle of fifteen calls is one answer, one iteration, one restore. The substrate refuses
+**`restore_ttl` sits on two edges of the seam, each once per round.** `iter` counts brain
+answers, and a bundle of fifteen calls is one answer, one iteration: the edge into the brain
+restores once and the `curate` edge restores once, both under the same bound. The substrate refuses
 a restoring edge without a condition, because the iteration bound is then the only thing
 left stopping the loop.
+
+**The seam starts at the collector (GH #919).** Since #889 the curator stands between the
+collector and the brain, and its intake, policy and handover spend about twenty routing
+decisions of ledger round trips on every round. The `curate` edge restores the budget too,
+under the same bound: otherwise the curator pays out of whatever the legs before it left.
+Measured on the shipped road: the memory's recall leg costs 26 decisions, a turn with an
+audience reached the curator with 20 left and crossed into the brain at 1, and one level
+more above the generation dead-lettered it `ttl_expired` inside the curator.
 
 ### The door in the wall (`in_pack`, GH #458)
 
@@ -667,7 +679,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.1.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.2.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

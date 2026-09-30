@@ -39,6 +39,11 @@ pub fn build_tool_result(
     if let Some(code) = outcome.error_code {
         headers.insert("error_code".into(), Value::String(code.into()));
     }
+    // GH #915: a `unique_violation` names the index it hit, so an edge or a
+    // caller can branch on it without parsing the text.
+    if let Some(index) = &outcome.error_index {
+        headers.insert("index".into(), Value::String(index.clone()));
+    }
     (body, headers)
 }
 
@@ -71,6 +76,8 @@ pub struct BundleLeg {
     /// The code when this op failed, `None` when it did not. Counting these is
     /// what the header's `bundle_errors` reports.
     error_code: Option<String>,
+    /// GH #915: the index a `unique_violation` hit, `None` otherwise.
+    error_index: Option<String>,
     /// Error text on failure, JSON-serialised payload otherwise — the same
     /// rule [`build_tool_result`] applies to a single-op reply.
     text: String,
@@ -92,6 +99,7 @@ impl BundleLeg {
             rows_affected: outcome.rows_affected,
             duration_ms,
             error_code: outcome.error_code.map(|c| c.to_string()),
+            error_index: outcome.error_index.clone(),
             text,
         }
     }
@@ -118,6 +126,7 @@ impl BundleLeg {
             rows_affected: 0,
             duration_ms,
             error_code: Some(error_code.to_string()),
+            error_index: None,
             text,
         }
     }
@@ -147,6 +156,9 @@ impl BundleLeg {
         entry.insert("duration_ms".into(), Value::from(self.duration_ms));
         if let Some(code) = &self.error_code {
             entry.insert("error_code".into(), Value::String(code.clone()));
+        }
+        if let Some(index) = &self.error_index {
+            entry.insert("index".into(), Value::String(index.clone()));
         }
         Value::Object(entry)
     }
@@ -201,6 +213,7 @@ mod tests {
             payload: Value::Null,
             error_code: None,
             error_text: None,
+            error_index: None,
         };
         let (body, headers) = build_tool_result(&outcome, "call_id_1".to_string(), 42);
         let h_op = headers.get("operation").unwrap();
@@ -223,6 +236,7 @@ mod tests {
             payload: Value::Array(vec![]),
             error_code: None,
             error_text: None,
+            error_index: None,
         };
         let legs = vec![
             BundleLeg::from_outcome(&ok, "a".into(), 1),
@@ -255,6 +269,7 @@ mod tests {
             payload: Value::Array(vec![]),
             error_code: None,
             error_text: None,
+            error_index: None,
         };
         let (body, _headers) = build_bundle_result(
             &[
@@ -282,6 +297,7 @@ mod tests {
             payload: Value::Array(vec![]),
             error_code: None,
             error_text: None,
+            error_index: None,
         };
         let (_body, headers) = build_bundle_result(
             &[
@@ -301,11 +317,43 @@ mod tests {
             payload: Value::Null,
             error_code: Some("constraint_violation"),
             error_text: Some("UNIQUE constraint failed".into()),
+            error_index: None,
         };
         let (_body, headers) = build_tool_result(&outcome, "id".into(), 0);
         assert_eq!(
             headers.get("error_code").unwrap(),
             &Value::String("constraint_violation".into())
         );
+    }
+
+    #[test]
+    fn a_unique_violation_carries_its_index_on_header_and_bundle_leg() {
+        let outcome = OpOutcome {
+            operation: "insert",
+            rows_affected: 0,
+            payload: Value::Null,
+            error_code: Some("unique_violation"),
+            error_text: Some("{\"code\":\"unique_violation\",\"index\":\"records_id\"}".into()),
+            error_index: Some("records_id".into()),
+        };
+        let (_body, headers) = build_tool_result(&outcome, "id".into(), 0);
+        assert_eq!(headers["error_code"], "unique_violation");
+        assert_eq!(headers["index"], "records_id");
+        let (body, _) = build_bundle_result(
+            &[
+                BundleLeg::from_outcome(&outcome, "a".into(), 0),
+                BundleLeg::refusal("insert", "b".into(), 0, "invalid_input", "x".into()),
+            ],
+            0,
+        );
+        assert_eq!(body["results"][0]["index"], "records_id");
+        assert!(body["results"][1].get("index").is_none());
+        let plain = OpOutcome {
+            error_code: Some("constraint_violation"),
+            error_index: None,
+            ..outcome
+        };
+        let (_b, h) = build_tool_result(&plain, "id".into(), 0);
+        assert!(h.get("index").is_none(), "no index header on other codes");
     }
 }

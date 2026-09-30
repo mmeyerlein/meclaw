@@ -12,6 +12,20 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.52.0] — 2026-09-30
+A store filters, sorts and indexes on JSON paths; an installed app hears the sections of every brain, the
+sessions that close and pins its own blocks into every curator; and a turn that names its audience reaches
+its brain again.
+
+### Added
+
+- **A store filters and sorts on a JSON path and declares indexes** ([#915](https://github.com/mmeyerlein/meclaw/issues/915)). `where` and `order_by` take `<column>$<path>` inside a `json` column, `params.indexes` declares plain, unique and JSON-path indexes at spawn, and a write against a unique index is refused as `unique_violation` with the index's name.
+- **An installed app hears every brain, a closed session and its own pins** ([#916](https://github.com/mmeyerlein/meclaw/issues/916)). A section an app offered reaches it from each brain of `assistant@3.3.0`, `install_app` in `builder@1.18.0` takes `close` among the `listens` and a `pins` cell whose pins reach the curator of every brain, and `curator@1.2.0` lets a source replace its own pins with `replace_sources`.
+
+### Fixed
+
+- **A turn that names its audience is answered** ([#919](https://github.com/mmeyerlein/meclaw/issues/919)). The edge into the curator restores the round's TTL under the same bound as the edge into the brain, so the curator's ledger round trips no longer spend what the legs before the round left and the turn no longer dies as `ttl_expired`.
+
 ## [0.51.0] — 2026-09-30
 A workspace can be laid out on disk, run a program and take back what it wrote; it travels through git as
 an exchange format; the file tools reach every model surface; and a document sent to a Telegram chat lands in

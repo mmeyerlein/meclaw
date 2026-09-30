@@ -56,6 +56,10 @@
           "because": "a durable `system.*` slot for this agent's brain -- the door in the wall (GH #458). This composite is sealed: an edge naming `./brain` is refused with `hive_port_boundary`, so until this lane existed there was no way at all for an identity to reach the brain from outside, and `affinity` could push into nowhere. Since talky@6.0.0 the pack enters `./curator` (GH #889), which holds it in its ledger and hands it to the brain as a system slot with the next call, and it is a LANE rather than a body flag because what lands in `system.*` stands in that ledger until something overwrites that exact path -- durable state of the agent, told apart from the evidence of one round by the topology and not by a key a model could have written. Body: `system` carrying one or more slot subtrees (what `affinity`'s push lane emits: the slots and NO turn beside them, so the update costs a write and not an inference, GH #263), or `slot` + `content` for a single one written by hand. Only `identity`, `persona`, `handover` and `instructions` may be written. `instructions` joined that list in GH #488: holding the charter out of the lane assumed it had another owner, and it had none -- nothing exported it and no template seeded it, so a rebuilt generation came up with an empty charter and answered as the vendor's default assistant. What guards it now is the edge that stamps the lane, drawn only where a brain may draw its OWN push edge, from a source whose single writer is `affinity`'s audited gate; anything else refuses the WHOLE pack with `slot_unknown`, an empty one with `pack_empty`. The owner is taken from `envelope.reply_to` and never from the body. PAIRED with `pack_ack` in `params.required_drains`: it answers unconditionally, and a push whose receipt nobody takes dead-letters after the sender was already told it was accepted"
         },
         {
+          "route": "in_pin",
+          "because": "a pin of another hive for this brain's window (GH #916): `{pins: [{text, source, until?}], replace_sources?}`, handed unchanged to `./curator` on its own `in_pin` door, which writes it into the ledger and shows it in the window (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
+        },
+        {
           "route": "in_model",
           "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector: a params body is not a turn, and the collector has no business holding, stamping or dropping one. It is the one way a model package reaches the brain; the brain applies package keys only from a params-only message (GH #853), so a turn on any other lane cannot change the model it talks to. Draw it only from the registry's `update` lane, restamped `in_model`"
         },
@@ -100,7 +104,7 @@
         },
         {
           "route": "sidecar",
-          "because": "one section of the block a turn's answer carried, as the model wrote it: hop.section names the section, the body carries {messages: [], section, payload}. ONE message PER SECTION -- never repaired, never re-serialised, and never judged here, so a parent distributes on hop.section and a section this composite has never heard of needs no change to it. Since talky@5.1.0 this port replaces `extraction`, which carried exactly one thing (the memory annotation, as raw text) and is now the section `memory` on this route (GH #605); a parent still wired on `hop.route == 'extraction'` writes nothing. Since talky@4.1.0 this is how per-turn extraction travels at all: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route too. The curator's own sections (`window`, `gap`) never travel here, and `memory` travels through the curator unchanged (GH #892). It is a lane and not an obligation: without the block contract in the brain's instructions there is nothing to cut and nothing ever travels here. Since GH #895 one more section leaves here that no answer carried: in a duplex call `./curator` sends a gap's find as `fact` for the voice model"
+          "because": "one section of the block a turn's answer carried, as the model wrote it: hop.section names the section, hop.turn_id the round it answered (GH #916), the body carries {messages: [], section, payload}. ONE message PER SECTION -- never repaired, never re-serialised, and never judged here, so a parent distributes on hop.section and a section this composite has never heard of needs no change to it. Since talky@5.1.0 this port replaces `extraction`, which carried exactly one thing (the memory annotation, as raw text) and is now the section `memory` on this route (GH #605); a parent still wired on `hop.route == 'extraction'` writes nothing. Since talky@4.1.0 this is how per-turn extraction travels at all: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route too. The curator's own sections (`window`, `gap`) never travel here, and `memory` travels through the curator unchanged (GH #892). It is a lane and not an obligation: without the block contract in the brain's instructions there is nothing to cut and nothing ever travels here. Since GH #895 one more section leaves here that no answer carried: in a duplex call `./curator` sends a gap's find as `fact` for the voice model"
         },
         {
           "route": "recall",
@@ -198,6 +202,11 @@
         },
         {
           "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_pin'"
+        },
+        {
+          "from": ".",
           "to": "./brain",
           "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && hop.subscriber.endsWith('/curator/summarizer'))"
         },
@@ -255,11 +264,12 @@
         {
           "from": "./collector",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'curate'",
+          "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 12",
           "modifier": {
             "set_hop": {
               "route": "'in_curate'"
-            }
+            },
+            "restore_ttl": true
           }
         },
         {

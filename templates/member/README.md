@@ -1,4 +1,4 @@
-# `member@2.2.0`
+# `member@2.2.1`
 
 One person, as a level. **Five holders, three open containers and no cell of
 its own** — eight nodes and seventy-four edges.
@@ -846,7 +846,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.2.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.2.1` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1081,7 +1081,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.2.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.2.1"}]
 }}
 ```
 
@@ -1090,7 +1090,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.2.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.3.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1576,21 +1576,21 @@ The v-lanes in are the installing manifest's, as always
 (`templates/freeswitch/README.md` § *Wiring it into a member*). What lives here is the
 DECLARATION and the way back.
 
-### Four inbound lanes this level deliberately does not carry
+### Five inbound lanes this level deliberately does not carry
 
-The `assistant` level accepts **nine** lanes. Five of them cross this level:
+Of the lanes the `assistant` level accepts, five cross this level:
 `in_turn` (handed down by the screen), `in_bundle` (handed down by the memory),
 `in_build_result` (which enters at the member's own door and is forwarded) and,
 since #475, `in_export` and `in_import` (which enter at the same door and are
-forwarded the same way). The other four — **`in_advice`**, **`in_sweep`**,
-**`in_round_sweep`** and **`in_pack`** — are **not** lanes of
+forwarded the same way). Five more — **`in_advice`**, **`in_sweep`**,
+**`in_round_sweep`**, **`in_pack`** and, since #916, **`in_pin`** — are **not** lanes of
 this member, and that is a decision rather than an omission (orchestrator ruling
 W7-R5).
 
 A level's transit contract carries the lanes that *cross* it. An emitted lane
 always crosses: it is produced inside and has to get out, which is exactly why
 the outward ones above are here. An accepted lane crosses only when its producer
-sits **outside** the level and addresses **through** it. These four do not:
+sits **outside** the level and addresses **through** it. These five do not:
 
 | lane | who produces it |
 |---|---|
@@ -1598,6 +1598,7 @@ sits **outside** the level and addresses **through** it. These four do not:
 | `in_sweep` | an operator. The assistant's own `because` says it *"enters at the assistant path rather than being produced by a sibling"*. |
 | `in_round_sweep` | the same owner as `in_sweep`, entering the same way. |
 | `in_pack` | `<member>/affinity`, a **sibling** of the container (GH #458). Producer and consumer are both inside this member, so the push edge is drawn from one to the other — and since GH #561 it is a **v-lane** that ends at the generation's brain rims, `<member>/assistants/<agent>/talky`, `…/talky-chat` (since GH #877) and `…/cogny`, because the assistant level declares them as the lane's connect points and stopped carrying the pack itself. A lane at this level's own door would promise something nothing outside ever sends. |
+| `in_pin` | an installed **app** of this member, a sibling of the container (#916). `install_app` draws the one edge, from the cell the app declared as `pins` straight to `<member>/assistants/<agent>`, so the declaration is the only way in: an app without `pins` has no edge, and this level has no door that any app could reach. |
 
 They reach the assistant at its own address, `<member>/assistants/<agent>`, and
 they may: neither this level nor the assistant declares `params.ports`, so both

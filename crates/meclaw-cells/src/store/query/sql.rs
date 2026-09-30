@@ -9,7 +9,8 @@
 
 use super::catalog::{Catalog, CatalogError};
 use super::{
-    DISTANCE_COLUMN, Filter, OrderTerm, Predicate, SimilarSpec, TRAVERSE_CTE, TraverseSpec,
+    ColRef, DISTANCE_COLUMN, Filter, JsonPath, OrderTerm, Predicate, SimilarSpec, TRAVERSE_CTE,
+    TraverseSpec,
 };
 use rusqlite::types::Value as SqlValue;
 
@@ -44,8 +45,8 @@ pub fn render_tail_qualified(
             .iter()
             .map(|t| {
                 Ok(format!(
-                    "\"{}\" {}",
-                    qualified(cat, &t.col, qualify)?,
+                    "{} {}",
+                    render_col_ref(cat, &t.col, qualify)?,
                     t.dir.keyword()
                 ))
             })
@@ -229,7 +230,7 @@ pub fn render_where_qualified(
     let mut clauses = Vec::with_capacity(filters.len());
     let mut vals = Vec::new();
     for f in filters {
-        let col = qualified(cat, &f.col, qualify)?;
+        let col = render_col_ref(cat, &f.col, qualify)?;
         clauses.push(render_predicate(&col, &f.pred, &mut vals));
     }
     Ok((format!(" WHERE {}", clauses.join(" AND ")), vals))
@@ -246,23 +247,48 @@ fn qualified(cat: &Catalog, want: &str, qualify: bool) -> Result<String, Catalog
     })
 }
 
-fn render_predicate(col: &str, pred: &Predicate, vals: &mut Vec<SqlValue>) -> String {
+/// The SQL operand for one [`ColRef`]: `"col"` (or `"table"."col"`) for a
+/// plain column, [`render_json_path`] over it for a path. Every identifier is
+/// catalog-owned; the path is a grammar-checked literal.
+pub fn render_col_ref(cat: &Catalog, col: &ColRef, qualify: bool) -> Result<String, CatalogError> {
+    let ident = qualified(cat, col.column(), qualify)?;
+    Ok(match col {
+        ColRef::Column(_) => format!("\"{ident}\""),
+        ColRef::JsonPath { path, .. } => render_json_path(&ident, path),
+    })
+}
+
+/// THE rendering of a JSON-path operand (GH #915, docs/cell-types.md § store), shared by the
+/// query renderer and by the index DDL (`store::ddl::apply_index_ddl`).
+///
+/// One function, two callers, because SQLite uses an expression index only
+/// when the query spells the identical expression — `json_extract` against
+/// `->>`, a bound path against a literal one, would each silently fall back to
+/// a full scan. `ident` is the catalog-owned column (optionally
+/// `table"."col`), `path` has passed [`super::parse::parse_json_path`], whose
+/// grammar admits no quote character, so the literal cannot be closed early.
+pub fn render_json_path(ident: &str, path: &JsonPath) -> String {
+    format!("json_extract(\"{ident}\", '{}')", path.as_str())
+}
+
+/// `operand` is already rendered (a quoted column or a `json_extract(…)`).
+fn render_predicate(operand: &str, pred: &Predicate, vals: &mut Vec<SqlValue>) -> String {
     match pred {
         Predicate::Cmp(op, v) => {
             vals.push(v.clone());
-            format!("\"{col}\" {} ?", op.symbol())
+            format!("{operand} {} ?", op.symbol())
         }
         Predicate::In(list) => {
             let marks = list.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             vals.extend(list.iter().cloned());
-            format!("\"{col}\" IN ({marks})")
+            format!("{operand} IN ({marks})")
         }
-        Predicate::IsNull(true) => format!("\"{col}\" IS NULL"),
-        Predicate::IsNull(false) => format!("\"{col}\" IS NOT NULL"),
+        Predicate::IsNull(true) => format!("{operand} IS NULL"),
+        Predicate::IsNull(false) => format!("{operand} IS NOT NULL"),
         Predicate::OrNull(inner) => {
             format!(
-                "({} OR \"{col}\" IS NULL)",
-                render_predicate(col, inner, vals)
+                "({} OR {operand} IS NULL)",
+                render_predicate(operand, inner, vals)
             )
         }
     }
@@ -464,6 +490,72 @@ mod tests {
         assert!(matches!(
             render_where(&f, &cat(&c, "f")),
             Err(CatalogError::UnknownColumn(_))
+        ));
+    }
+
+    // ---- GH #915: JSON path operands ----
+
+    #[test]
+    fn a_json_path_renders_as_json_extract_with_the_value_bound() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute("CREATE TABLE records (id TEXT, doc TEXT)", [])
+            .unwrap();
+        let cat = cat(&c, "records");
+        let f = parse_filters(Some(&json!({"doc$.scope": "it's"}))).unwrap();
+        let (clause, vals) = render_where(&f, &cat).unwrap();
+        assert_eq!(clause, " WHERE json_extract(\"doc\", '$.scope') = ?");
+        assert_eq!(
+            vals,
+            vec![SqlValue::Text("it's".into())],
+            "the value is a bind"
+        );
+        assert!(!clause.contains("it's"));
+
+        let f = parse_filters(Some(&json!({"doc$.n": {"or_null": {"gt": 3}}}))).unwrap();
+        let (clause, _) = render_where_qualified(&f, &cat, true).unwrap();
+        assert_eq!(
+            clause,
+            " WHERE (json_extract(\"records\".\"doc\", '$.n') > ? OR \
+             json_extract(\"records\".\"doc\", '$.n') IS NULL)"
+        );
+
+        let o = crate::store::query::parse::parse_order_by(Some(&json!([
+            {"col": "doc$.due.start", "dir": "desc"}, {"col": "id"}
+        ])))
+        .unwrap();
+        let mut v = Vec::new();
+        let tail = render_tail(&o, None, &cat, &mut v).unwrap();
+        assert_eq!(
+            tail,
+            " ORDER BY json_extract(\"doc\", '$.due.start') DESC, \"id\" ASC"
+        );
+    }
+
+    #[test]
+    fn the_query_operand_and_the_index_expression_are_the_same_text() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute("CREATE TABLE records (id TEXT, doc TEXT)", [])
+            .unwrap();
+        let cat = cat(&c, "records");
+        let key = crate::store::query::parse::parse_key("doc$.tags[0]").unwrap();
+        let query_side = render_col_ref(&cat, &key, false).unwrap();
+        let ColRef::JsonPath { path, .. } = &key else {
+            unreachable!()
+        };
+        let index_side = render_json_path(cat.column("doc").unwrap(), path);
+        assert_eq!(query_side, index_side);
+        assert_eq!(index_side, "json_extract(\"doc\", '$.tags[0]')");
+    }
+
+    #[test]
+    fn the_column_of_a_json_path_is_catalog_resolved() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute("CREATE TABLE records (id TEXT, doc TEXT)", [])
+            .unwrap();
+        let f = parse_filters(Some(&json!({"nope$.a": 1}))).unwrap();
+        assert!(matches!(
+            render_where(&f, &cat(&c, "records")),
+            Err(CatalogError::UnknownColumn(c)) if c == "nope"
         ));
     }
 }

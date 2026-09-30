@@ -3,8 +3,9 @@
 //! whatever this module accepts is exactly what the renderer will emit.
 
 use super::{
-    Cmp, DISTANCE_COLUMN, Dir, Filter, MAX_DEPTH_CAP, MAX_DEPTH_DEFAULT, MAX_NODES_CAP,
-    MAX_NODES_DEFAULT, OrderTerm, Predicate, SimilarSpec, TRAVERSE_CTE, TraverseSpec,
+    Cmp, ColRef, DISTANCE_COLUMN, Dir, Filter, JsonPath, MAX_DEPTH_CAP, MAX_DEPTH_DEFAULT,
+    MAX_NODES_CAP, MAX_NODES_DEFAULT, OrderTerm, Predicate, SimilarSpec, TRAVERSE_CTE,
+    TraverseSpec,
 };
 use crate::store::ops::json_to_sql_value;
 use meclaw_core::serde_json::{Map, Value};
@@ -24,7 +25,7 @@ pub fn parse_filters(where_v: Option<&Value>) -> Result<Vec<Filter>, String> {
     let mut out = Vec::with_capacity(obj.len());
     for (col, spec) in obj {
         out.push(Filter {
-            col: col.clone(),
+            col: parse_key(col)?,
             pred: parse_predicate(col, spec)?,
         });
     }
@@ -106,8 +107,9 @@ pub fn parse_order_by(v: Option<&Value>) -> Result<Vec<OrderTerm>, String> {
             let col = o
                 .get("col")
                 .and_then(|c| c.as_str())
-                .ok_or("order_by entry missing col")?
-                .to_string();
+                .ok_or("order_by entry missing col")
+                .map_err(str::to_string)
+                .and_then(parse_key)?;
             let dir = match o.get("dir").map(|d| d.as_str().unwrap_or("")) {
                 None | Some("asc") => Dir::Asc,
                 Some("desc") => Dir::Desc,
@@ -118,6 +120,109 @@ pub fn parse_order_by(v: Option<&Value>) -> Result<Vec<OrderTerm>, String> {
             Ok(OrderTerm { col, dir })
         })
         .collect()
+}
+
+/// Longest segment count a JSON path may carry (GH #915, docs/cell-types.md § store).
+pub const JSON_PATH_MAX_SEGMENTS: usize = 8;
+/// Largest array index a `[n]` segment may name.
+pub const JSON_PATH_MAX_INDEX: u32 = 9999;
+
+/// Split a `where` key / `order_by[].col` / index `on` entry into a
+/// [`ColRef`] (GH #915).
+///
+/// The first `$` separates the column from the path, and it is also the path's
+/// own root: `doc$.scope` is column `doc`, path `$.scope`. A key without `$` is
+/// a plain column exactly as before — a column name cannot contain `$` (the
+/// syntax gate of `check_new_identifier`), so the two forms never overlap.
+pub fn parse_key(key: &str) -> Result<ColRef, String> {
+    let Some(at) = key.find('$') else {
+        return Ok(ColRef::Column(key.to_string()));
+    };
+    let (column, path) = key.split_at(at);
+    if column.is_empty() {
+        return Err(format!(
+            "{key:?}: a JSON path key needs a column before the path (<column>$<path>)"
+        ));
+    }
+    Ok(ColRef::JsonPath {
+        column: column.to_string(),
+        path: parse_json_path(path).map_err(|e| format!("{key:?}: {e}"))?,
+    })
+}
+
+/// Check a JSON path against the grammar of docs/cell-types.md § store: `$` followed by 1–8
+/// segments, each `.name` (`[A-Za-z_][A-Za-z0-9_]{0,62}`) or `[n]` (`0`–`9999`).
+///
+/// The grammar is the injection barrier for the path half of a key: the text is
+/// later formatted into SQL as a string literal (see [`JsonPath`]), so nothing
+/// that could close that literal — no quote, no backslash, no whitespace, no
+/// non-ASCII — may pass. Array indexes must be written canonically (`[1]`, not
+/// `[01]`): SQLite matches an expression index textually, so two spellings of
+/// one path would silently hit and miss the same index.
+pub fn parse_json_path(text: &str) -> Result<JsonPath, String> {
+    let bad = |why: &str| format!("invalid JSON path {text:?}: {why}");
+    let rest = text
+        .strip_prefix('$')
+        .ok_or_else(|| bad("must start with $"))?;
+    if rest.is_empty() {
+        return Err(bad("$ alone names the whole value, not a path"));
+    }
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    let mut segments = 0;
+    while i < bytes.len() {
+        segments += 1;
+        if segments > JSON_PATH_MAX_SEGMENTS {
+            return Err(bad("more than 8 segments"));
+        }
+        match bytes[i] {
+            b'.' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+                let name = &rest[start..j];
+                if name.is_empty() {
+                    return Err(bad("empty member name after ."));
+                }
+                if name.as_bytes()[0].is_ascii_digit() {
+                    return Err(bad("a member name must not start with a digit"));
+                }
+                if name.len() > 63 {
+                    return Err(bad("a member name is at most 63 characters"));
+                }
+                i = j;
+            }
+            b'[' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                let digits = &rest[start..j];
+                if digits.is_empty() || j >= bytes.len() || bytes[j] != b']' {
+                    return Err(bad("an array segment is [n] with n a decimal number"));
+                }
+                if digits.len() > 1 && digits.starts_with('0') {
+                    return Err(bad("an array index has no leading zero"));
+                }
+                let n: u32 = if digits.len() > 4 {
+                    JSON_PATH_MAX_INDEX + 1
+                } else {
+                    digits
+                        .parse()
+                        .map_err(|_| bad("array index is not a number"))?
+                };
+                if n > JSON_PATH_MAX_INDEX {
+                    return Err(bad("an array index is at most 9999"));
+                }
+                i = j + 1;
+            }
+            _ => return Err(bad("a segment starts with . or [")),
+        }
+    }
+    Ok(JsonPath::new_unchecked(text.to_string()))
 }
 
 /// Parse the optional `limit` argument.
@@ -557,5 +662,92 @@ mod tests {
         assert!(parse_filters(Some(&json!(["a"]))).is_err());
         assert!(parse_filters(None).unwrap().is_empty());
         assert!(parse_filters(Some(&json!({}))).unwrap().is_empty());
+    }
+
+    // ---- GH #915: JSON path keys ----
+
+    #[test]
+    fn json_path_grammar_accepts_the_documented_forms() {
+        let eight = "$.a.b.c.d.e.f.g.h";
+        let long_name = format!("$.{}", "n".repeat(63));
+        for ok in [
+            "$.a",
+            "$.a.b",
+            "$.a[0]",
+            "$.a[12].b",
+            "$[0]",
+            "$._x9",
+            "$.a[9999]",
+            eight,
+            long_name.as_str(),
+        ] {
+            let p = parse_json_path(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+            assert_eq!(p.as_str(), ok, "the path text travels unchanged");
+        }
+    }
+
+    #[test]
+    fn json_path_grammar_rejects_everything_else() {
+        let nine = "$.a.b.c.d.e.f.g.h.i";
+        let too_long = format!("$.{}", "n".repeat(64));
+        for bad in [
+            "",
+            "$",
+            "a",
+            "$.",
+            "$..a",
+            "$.a'",
+            "$.a\"",
+            "$.a' OR 1=1 --",
+            "$.a\\",
+            "$[x]",
+            "$[]",
+            "$[1",
+            "$[-1]",
+            "$[01]",
+            "$.1a",
+            nine,
+            "$.a[10000]",
+            "$.a[99999999999999999999]",
+            "$.a b",
+            "$. a",
+            "$.a\n",
+            "$.\u{e4}",
+            "$.a.\u{e4}b",
+            "$.a$",
+            "$.a-b",
+            "$a",
+            too_long.as_str(),
+        ] {
+            assert!(parse_json_path(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn a_key_splits_at_the_first_dollar_and_a_plain_key_stays_a_column() {
+        assert_eq!(parse_key("doc").unwrap(), ColRef::Column("doc".into()));
+        match parse_key("doc$.due.start").unwrap() {
+            ColRef::JsonPath { column, path } => {
+                assert_eq!(column, "doc");
+                assert_eq!(path.as_str(), "$.due.start");
+            }
+            other => panic!("expected a path, got {other:?}"),
+        }
+        assert!(parse_key("$.a").is_err(), "no column before the path");
+        assert!(parse_key("doc$").is_err(), "$ alone is not a path");
+        assert!(parse_key("doc$.a'").is_err());
+        assert_eq!(parse_key("doc$.tags[0]").unwrap().key(), "doc$.tags[0]");
+    }
+
+    #[test]
+    fn where_and_order_by_carry_json_path_keys() {
+        let f = parse_filters(Some(&json!({"doc$.scope": "a", "id": 1}))).unwrap();
+        assert!(matches!(&f[0].col, ColRef::JsonPath { column, .. } if column == "doc"));
+        assert_eq!(f[1].col, "id");
+        let o = parse_order_by(Some(&json!([{"col": "doc$.n", "dir": "desc"}]))).unwrap();
+        assert_eq!(o[0].col, "doc$.n");
+        assert_eq!(o[0].dir, Dir::Desc);
+        assert!(parse_filters(Some(&json!({"doc$.a b": 1}))).is_err());
+        assert!(parse_order_by(Some(&json!([{"col": "doc$"}]))).is_err());
     }
 }

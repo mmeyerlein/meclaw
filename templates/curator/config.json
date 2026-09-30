@@ -36,7 +36,7 @@
         },
         {
           "route": "in_pin",
-          "because": "the door other hives pin through (GH #892): `pins[]`, each `{text, source, until?}` -- `source` the pinning hive's name (one path segment, never `model`), `until` RFC 3339 or absent. Each becomes a block of kind `pin` and a `pins` row, and stands in the window under `system.pinned.<source>.<id>` (at the next rebuild; until then as a message where it arrived, `broadcast_mode tail`). Nothing else of this hive is written through it"
+          "because": "the door other hives pin through (GH #892): `pins[]`, each `{text, source, until?}` -- `source` the pinning hive's name (one path segment, never `model`), `until` RFC 3339 or absent; optional `replace_sources[]` (at most 16 names by the same rule) ends every live pin of those sources first (`until` = now, no row deleted; a hash of the new set that lives stays alive; `pins: []` with it empties them). Each pin becomes a block of kind `pin` and a `pins` row, and stands in the window under `system.pinned.<source>.<id>` (at the next rebuild; until then as a message where it arrived, `broadcast_mode tail`). Nothing else of this hive is written through it"
         },
         {
           "route": "in_schemas",

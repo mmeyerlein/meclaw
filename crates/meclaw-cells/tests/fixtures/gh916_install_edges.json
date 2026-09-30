@@ -1,0 +1,100 @@
+{
+  "_source": "GH #916 -- what install_app draws for an app that offers a sidecar section, listens to closed sessions and pins through one of its cells. Member-relative; the generation is called 'sam'. Reviewed by hand against the contract: the close observer restamps 'write' as 'in_close' with the close pass's context, the binding carries 'in_close', and ONE edge leaves the declared pinning cell onto the generation as 'in_pin'.",
+  "declaration": {
+    "offers": [
+      {
+        "kind": "sidecar",
+        "at": "./sink",
+        "section": "probe"
+      }
+    ],
+    "listens": [
+      "close"
+    ],
+    "pins": "./sink"
+  },
+  "generation": "sam",
+  "edges": [
+    {
+      "from": "./assistants",
+      "to": "./apps",
+      "condition": "has(hop.route) && hop.route == 'write'",
+      "modifier": {
+        "set_hop": {
+          "route": "'in_close'"
+        },
+        "set_context": {
+          "session_id": "has(context.session_id) ? context.session_id : ''",
+          "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+          "channel": "has(context.channel) ? context.channel : ''"
+        }
+      }
+    },
+    {
+      "from": "./apps",
+      "to": "./apps/probe-app",
+      "condition": "has(hop.route) && hop.route == 'in_close'"
+    },
+    {
+      "from": "./apps",
+      "to": "./apps/probe-app",
+      "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'probe'"
+    },
+    {
+      "from": "./apps/probe-app",
+      "to": "./apps",
+      "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+      "modifier": {
+        "set_context": {
+          "tool_answerer": "'probe-app'"
+        }
+      }
+    },
+    {
+      "from": "./assistants/sam/talky",
+      "to": "./apps/probe-app/sink",
+      "lane": "schemas",
+      "condition": "has(hop.route) && hop.route == 'schemas'",
+      "modifier": {
+        "set_context": {
+          "tool_caller": "'talky'",
+          "assistant": "'sam'"
+        },
+        "delete_context": [
+          "col_phase",
+          "consult_class",
+          "consult_id",
+          "tool_answerer"
+        ]
+      }
+    },
+    {
+      "from": "./assistants/sam/talky-chat",
+      "to": "./apps/probe-app/sink",
+      "lane": "schemas",
+      "condition": "has(hop.route) && hop.route == 'schemas'",
+      "modifier": {
+        "set_context": {
+          "tool_caller": "'talky-chat'",
+          "assistant": "'sam'"
+        },
+        "delete_context": [
+          "col_phase",
+          "consult_class",
+          "consult_id",
+          "tool_answerer"
+        ]
+      }
+    },
+    {
+      "from": "./apps/probe-app/sink",
+      "to": "./assistants/sam",
+      "condition": "has(hop.route) && hop.route == 'pin'",
+      "modifier": {
+        "set_hop": {
+          "route": "'in_pin'"
+        }
+      }
+    }
+  ]
+}

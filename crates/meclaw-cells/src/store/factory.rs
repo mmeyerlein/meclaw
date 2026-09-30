@@ -489,6 +489,18 @@ fn effective_params_or_degrade(
              the cell.db and re-wake the cell)"
         );
     }
+    // GH #915: indexes right after the schema — their tables and columns are
+    // resolved against the catalog the schema DDL just produced (docs/cell-types.md § store:
+    // schema → indexes → canonical → fts).
+    if let Err(e) = ddl::apply_index_ddl(conn, &effective.indexes) {
+        tracing::error!(
+            path = path.as_str(),
+            error = %e,
+            "store: index DDL failed at {phase} — the named indexes are MISSING (reads \
+             fall back to a scan, a missing UNIQUE index enforces nothing); every other \
+             op is unaffected"
+        );
+    }
     // Order is load-bearing: the alias table and the backfill run BEFORE the FTS
     // declaration, so the index is built over an already-derived canonical column
     // rather than over NULLs.

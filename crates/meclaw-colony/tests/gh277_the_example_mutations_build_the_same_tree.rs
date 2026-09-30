@@ -763,7 +763,13 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// inner menu; dispatcher -> ask on `ask_requester`; ask -> `.` on `ask`);
 /// the talkies draw none. One cogny: 1 x 4. Derived; the strand's cargo round
 /// measures it.
-const EDGES: usize = 368;
+///
+/// Moved 368 -> 372 with GH #916: each `talky@6` draws one edge more (the pin
+/// door `. -> ./curator` on `in_pin`), and `cogny@5` two (the same door, plus
+/// the splitter's second road: every section its curator does not take leaves
+/// on `.`). Two talkies and one cogny: 2 x 1 + 1 x 2. Measured red in the
+/// strand gate (372 against 368).
+const EDGES: usize = 372;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

@@ -1,4 +1,4 @@
-# `curator@1.1.1`
+# `curator@1.2.0`
 
 The window of one model, owned in one place, with a ledger of every call. Contract tables only; the prose follows with the program it belongs to.
 
@@ -26,7 +26,7 @@ per call. No lane moved; a promise is repaired, so it is the third digit.
 | `in_close` | the session keeper | `context.session_id` of the closed session. |
 | `in_model` | the llm-registry | a params-only body for `./summarizer`, only when `hop.subscriber` names it (the one model door of the hive). |
 | `in_section` | the parent's splitter | one section of the sidecar block of an answer of the model (`hop.section`, body `{messages: [], section, payload}`, the answer's context). `window` (`release`/`pin`: block ids) becomes `marks` rows; `gap` goes to `./push` (through `./policy`), which marks it once and looks it up after the answer; `memory` a `topic` mark (`{movement, name}`, movement start/continue/end) and, when `./intake` `pass_sections` names it, leaves again unchanged on `sidecar`. Any other section is dropped and said. |
-| `in_pin` | another hive | `pins[]`, each `{text, source, until?}`: `source` one path segment, never `model`; `until` RFC 3339. A block of kind `pin` and a `pins` row; the window shows it under `system.pinned.<source>.<id>`. Nothing else of the hive is written through this door. |
+| `in_pin` | another hive | `pins[]`, each `{text, source, until?}`: `source` one path segment, never `model`; `until` RFC 3339. Optional `replace_sources[]` (at most 16, each by the `source` rule): every live pin of those sources ends first (`until` = now, no row deleted), except a hash the new set carries; `pins: []` with it empties those sources. A block of kind `pin` and a `pins` row; the window shows it under `system.pinned.<source>.<id>`. Nothing else of the hive is written through this door. |
 | `in_schemas` | the collector's menu question | `tools[]` the declared names. `./schemas` answers on `tool_schemas` with the curator's tools and sections (`CURATOR_OFFER`). |
 | `in_history_call` | the parent's dispatcher, on `hop.tool_name` starting `history_` | one `history_search`, `history_read` or `history_outline` call (GH #893): one `tool_call` turn, the arguments as its text, `hop.tool_call_id`, `hop.tool_name`, the round's context. Answered by one `tool_result` out of this hive's ledger. |
 | `in_recall_ask` | the context collector | its per-turn memory ask (route `recall`): `phase`, `turn_id`, `session_id`, `iter`, `recall_query`, `memory_tier`, `recall_window_from`, `recall_window_to`, the person's words as `messages[]`. Answered by exactly one `recall` (`./push`, through `./policy` for the knobs); never held back. |

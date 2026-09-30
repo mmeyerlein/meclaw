@@ -1023,7 +1023,7 @@ fn every_copy_of_the_short_id_filter_is_one_expression() {
 /// their ids are named by the composite (`id_sections`) -- and they are exactly the
 /// ones the talky routes to its curator, and none of them leaves the rim. The core's
 /// copy carries the same list (its params are the talky's, `cognys_splitter_is_talkys`)
-/// and routes every section to its curator.
+/// and, since GH #916, routes exactly those to its curator as well.
 #[test]
 fn the_sections_that_keep_their_ids_are_the_ones_the_curator_takes() {
     let mut keep = strings(&splitter_params()["id_sections"]);

@@ -109,6 +109,13 @@ path = "junit.xml"
 filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser) & test(=the_colony_holds_in_both_engines)'
 retries = 2
 
+[[profile.default.overrides]]
+# GH #920 -- under integration-gate load the restarted dispatcher did not reach
+# the sink inside the test's 30 s marker; alone the test passed 3 of 3 in about
+# 0.17 s, and the wave that saw it changed no supervisor or dispatcher code.
+filter = 'binary_id(=meclaw-cells::pre14_a3_stateless_amplification) & test(=dispatcher_death_is_restarted_by_supervisor)'
+retries = 2
+
 # ---------------------------------------------------------------------------
 # LOUD WHEN GREEN -- the tests that may decide not to measure.
 # ---------------------------------------------------------------------------

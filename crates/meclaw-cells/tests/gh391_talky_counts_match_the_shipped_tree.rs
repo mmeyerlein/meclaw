@@ -135,6 +135,7 @@ fn word(n: usize) -> &'static str {
         (26, "twenty-six"),
         (27, "twenty-seven"),
         (28, "twenty-eight"),
+        (29, "twenty-nine"),
         (30, "thirty"),
         (31, "thirty-one"),
         (32, "thirty-two"),
@@ -155,6 +156,8 @@ fn word(n: usize) -> &'static str {
         // GH #896: the renewed duplex call reaches the curator on its own lane
         // -- forty-nine.
         (49, "forty-nine"),
+        // GH #916: another hive's pin reaches the curator on `in_pin` -- fifty.
+        (50, "fifty"),
     ]
     .into_iter()
     .collect();

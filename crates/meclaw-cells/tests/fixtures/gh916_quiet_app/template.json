@@ -1,0 +1,22 @@
+{
+  "name": "quiet-app",
+  "version": "1.0.0",
+  "tags": [
+    "app"
+  ],
+  "app": {
+    "offers": [
+      {
+        "kind": "sidecar",
+        "at": "./sink",
+        "section": "other"
+      }
+    ]
+  },
+  "description": {
+    "purpose": "Test fixture for GH #916, the counter-probe: an app that offers only the sidecar section `other` -- no `close`, no `pins`. It is built from the hive and the cell of gh916_probe_app.",
+    "use_when": "Test fixture only (gh916_an_app_hears_its_member.rs).",
+    "not_in_scope": "Not a template. Its hive and its cell are the probe app's; only the declaration differs."
+  },
+  "author": "meclaw"
+}

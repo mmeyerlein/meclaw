@@ -1,4 +1,4 @@
-# `builder@1.17.2`
+# `builder@1.18.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -497,6 +497,10 @@ carries `file-space`. Only the pin moved, so it is the third place.
 
 Since `1.17.2` ([#905](https://github.com/mmeyerlein/meclaw/issues/905), [#908](https://github.com/mmeyerlein/meclaw/issues/908)) its librarian is `builder-librarian@2.2.10`, whose corpus
 carries `projection` and the file tools. Only the pin moved, so it is the third place.
+
+Since `1.18.0` ([#916](https://github.com/mmeyerlein/meclaw/issues/916)) `install_app` takes `close` among the
+`listens` and the field `pins`, and its librarian is `builder-librarian`. A caller can declare what it
+could not before, so it is the second place.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,
@@ -1043,15 +1047,16 @@ names and versions, never with a block — so whoever places the wish reads
 `app` out of the template and hands it over verbatim as `params.declaration`,
 beside `scope` (the member), `app` (the instance name, which is the template's
 name), `template` and `screen` (the node in `./channels` the app draws on).
-`generation` joins them whenever the declaration offers something or observes
-tool results, and the switch refuses the wish without it
+`generation` joins them whenever the declaration offers something, observes
+tool results or pins, and the switch refuses the wish without it
 (`recipe_params_incomplete`, `missing: ["generation"]`).
 
 **The vocabulary is closed**, and a word outside it is refused as
 `app_declaration_invalid` with `field` and `known`: `screen.out` is drawn from
 `view` and `withdraw` (`error` always travels with them), `screen.back` is
-`["event", "receipt"]`, `listens` from `turn`, `answer`, `partial` and
-`mutation_committed`, an offer is a `tool` (with its `tools`) or a `sidecar`
+`["event", "receipt"]`, `listens` from `turn`, `answer`, `partial`,
+`mutation_committed` and `close`, `pins` names a cell `./<name>` inside the app,
+an offer is a `tool` (with its `tools`) or a `sidecar`
 (with its `section`) at a cell `./<name>` inside the app, and a drive names a
 cell of the member with the lanes it sends and hears back. An app that
 "listens to gossip" would otherwise install green and hear nothing.
@@ -1062,9 +1067,10 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 | kind | edges |
 |---|---|
 | `screen` | the view edge out of the app, every declared lane plus `error`, stamped `channel_node`/`channel` with the screen; the owner edge back in on `event`/`receipt` — the two `grow_level level=app` draws |
-| `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer: the member draws `. -> ./apps` itself |
+| `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer: the member draws `. -> ./apps` itself. `close` observes the close batch of a session (`write` off `./assistants`, the batch the member's close pass takes) and restamps it `in_close` with the close pass's context (`session_id`, `audience_set`, `channel`); the body travels unchanged (`messages[]`, `rounds`, `hop.turn_count`), and `write` has a regular exit at the member, so this observer suppresses no default |
 | `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each surface of the generation, guarded on the tool names; every offering cell answers the menu tick on a `schemas` v-lane from each surface; one exit stamps `tool_answerer` |
 | `observes_tool_results` | two `tool_result` v-lanes into the named cell: from the generation's `./tools` and from `./memory-hive` |
+| `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |
 | `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
 
 **Why the observers carry no guard, and why the channel-less exit rides with
