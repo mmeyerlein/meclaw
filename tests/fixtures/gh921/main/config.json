@@ -1,0 +1,48 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./hook",
+          "to": "./sink",
+          "condition": "has(hop.route) && hop.route == 'probe'"
+        },
+        {
+          "from": "./token",
+          "to": "./sink",
+          "condition": "has(hop.route) && hop.route == 'probe-token'"
+        },
+        {
+          "from": "./hook",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'receipt'"
+        },
+        {
+          "from": "./token",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'receipt'"
+        },
+        {
+          "from": ".",
+          "to": "./hook"
+        },
+        {
+          "from": ".",
+          "to": "./token"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "GH #921: two webhook mounts on the colony's one listener, one proven by an HMAC over the raw body and one by a token header, both emitting onto a lane that ends in a sink, and a sink for their receipts.",
+    "use_when": "As the tree of the webhook proof; the test writes the two secrets into .env.",
+    "not_in_scope": "No model, no wall clock, no answer to the sender beyond the status code.",
+    "examples": [
+      "a signed POST to /probe-hook/ arrives once under /sink with hop.route 'probe'",
+      "an unsigned POST is answered 401 and booked under /receipts as webhook_unverified"
+    ]
+  }
+}

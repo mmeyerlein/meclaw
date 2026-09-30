@@ -1,4 +1,4 @@
-# `builder@1.18.0`
+# `builder@1.18.1`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -501,6 +501,9 @@ carries `projection` and the file tools. Only the pin moved, so it is the third 
 Since `1.18.0` ([#916](https://github.com/mmeyerlein/meclaw/issues/916)) `install_app` takes `close` among the
 `listens` and the field `pins`, and its librarian is `builder-librarian`. A caller can declare what it
 could not before, so it is the second place.
+
+Since `1.18.1` ([#921](https://github.com/mmeyerlein/meclaw/issues/921), [#922](https://github.com/mmeyerlein/meclaw/issues/922)) its librarian is `builder-librarian@2.2.12`, whose corpus
+carries the proxy platform `webhook` and the timer's `catch_up`. Only the pin moved, so it is the third place.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,

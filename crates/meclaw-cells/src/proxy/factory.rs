@@ -17,6 +17,9 @@ use crate::proxy::params::ProxyParams;
 use crate::proxy::platform::ProxyPlatform;
 use crate::proxy::slack::params::SlackParams;
 use crate::proxy::telegram::TelegramClient;
+use crate::proxy::webhook::cell::WebhookCell;
+use crate::proxy::webhook::mount::WebhookIo;
+use crate::proxy::webhook::params::WebhookParams;
 use meclaw_colony::persist::cell_db::open_or_create_cell_db_with_status;
 use meclaw_colony::{
     CellFactory, DbConn, RespawnFn, SpawnedCellKind, SurfaceRegistry, build_long_running_task,
@@ -100,6 +103,7 @@ impl CellFactory for ProxyCellFactory {
             ProxyPlatform::Telegram => ProxyParams::parse(params).map(|_| ()),
             ProxyPlatform::Slack => SlackParams::parse(params).map(|_| ()),
             ProxyPlatform::Meclaw => MeclawParams::parse(params).map(|_| ()),
+            ProxyPlatform::Webhook => WebhookParams::parse(params).map(|_| ()),
         }
     }
 
@@ -112,11 +116,20 @@ impl CellFactory for ProxyCellFactory {
     /// leaving `platform` out). A `platform` that is itself `${VAR}` does not
     /// parse here and may resolve to `meclaw`; the check runs then too, and
     /// only looks at `auth`, which no other platform has (review M3).
+    ///
+    /// GH #921: the same duty for a `webhook` proxy's `verify.secret`. A
+    /// `platform` that does not parse runs both checks, each looking only at
+    /// the key its own platform has.
     fn validate_declared_params(&self, declared: &JsonValue) -> Result<(), String> {
         match crate::proxy::platform::parse_platform(declared) {
             Ok(ProxyPlatform::Telegram | ProxyPlatform::Slack) => Ok(()),
-            Ok(ProxyPlatform::Meclaw) | Err(_) => {
-                crate::proxy::meclaw::params::validate_declared(declared)
+            Ok(ProxyPlatform::Meclaw) => crate::proxy::meclaw::params::validate_declared(declared),
+            Ok(ProxyPlatform::Webhook) => {
+                crate::proxy::webhook::params::validate_declared(declared)
+            }
+            Err(_) => {
+                crate::proxy::meclaw::params::validate_declared(declared)?;
+                crate::proxy::webhook::params::validate_declared(declared)
             }
         }
     }
@@ -176,6 +189,19 @@ impl CellFactory for ProxyCellFactory {
                 contract.ingress_carries_trace,
             )?),
             ProxyPlatform::Meclaw => Box::new(make_build_meclaw(
+                params,
+                path,
+                outputs_tx,
+                cell_dir,
+                colony_inbox_tx,
+                blob_store,
+                mailbox_capacity,
+                contract.consumes.clone(),
+                contract.transfer_bounds(),
+                contract.ingress_carries_trace,
+                Arc::clone(&self.surfaces),
+            )?),
+            ProxyPlatform::Webhook => Box::new(make_build_webhook(
                 params,
                 path,
                 outputs_tx,
@@ -279,6 +305,22 @@ impl CellFactory for ProxyCellFactory {
             ),
             ProxyPlatform::Meclaw => Box::new(
                 make_build_meclaw(
+                    params,
+                    path,
+                    outputs_tx,
+                    cell_dir,
+                    colony_inbox_tx,
+                    blob_store,
+                    mailbox_capacity,
+                    contract.consumes.clone(),
+                    contract.transfer_bounds(),
+                    contract.ingress_carries_trace,
+                    Arc::clone(&self.surfaces),
+                )
+                .ok()?,
+            ),
+            ProxyPlatform::Webhook => Box::new(
+                make_build_webhook(
                     params,
                     path,
                     outputs_tx,
@@ -576,6 +618,57 @@ fn make_build_meclaw(
     })
 }
 
+/// Build the closure that constructs a fresh `webhook`-variant `proxy` cell-task.
+///
+/// `make_build_meclaw` position for position: no DDL, no overlay (every key is
+/// immutable), the mount table travels in, and everything between the
+/// `cell.db` open and `build_long_running_task` is sync and await-free
+/// (phase-5 respawn-corridor tripwire).
+#[allow(clippy::too_many_arguments)]
+fn make_build_webhook(
+    params: JsonValue,
+    path: Path,
+    outputs_tx: mpsc::Sender<CellEmission>,
+    cell_dir: PathBuf,
+    colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
+    blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
+    mailbox_capacity: usize,
+    consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    bounds: meclaw_core::TransferBounds,
+    carries_trace: bool,
+    surfaces: Arc<SurfaceRegistry>,
+) -> Result<impl Fn() -> SpawnTuple, String> {
+    // Parsed once, outside the closure: a params error is a spawn failure,
+    // never a panic on the respawn path.
+    let parsed = WebhookParams::parse(&params)?;
+
+    Ok(move || -> SpawnTuple {
+        // 1. Open cell.db (sync). Nothing is written to it.
+        let (conn, _status) =
+            open_or_create_cell_db_with_status(&cell_dir.join("cell.db")).expect("open cell.db");
+        // 2. The cell and its mount half (sync).
+        let io = WebhookIo::new(&parsed, path.as_str(), Arc::clone(&surfaces));
+        let cell = WebhookCell::new(&parsed).with_io(io);
+        // No param names a DB timeout: nothing reads or writes this cell.db.
+        let db = DbConn::wrap(conn, Some(Duration::from_millis(5000)));
+        let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity);
+        let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(
+            path.clone(),
+            rx,
+            outputs_tx.clone(),
+            64,
+            cell,
+            db,
+            Some(colony_inbox_tx.clone()),
+            blob_store.clone(),
+            consumes.clone(),
+            bounds.clone(),
+            carries_trace,
+        );
+        (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +710,41 @@ mod tests {
                 "{platform:?}: the chat platforms stay unchecked"
             );
         }
+    }
+
+    /// GH #921: a literal `verify.secret` is refused wherever the file does
+    /// not name a chat platform, and the refusal never repeats it.
+    #[test]
+    fn a_literal_webhook_secret_is_refused_unless_the_file_names_a_chat_platform() {
+        let f = ProxyCellFactory::new(Arc::new(SurfaceRegistry::new()));
+        let with = |platform: &str, secret: &str| {
+            f.validate_declared_params(&json!({
+                "platform": platform,
+                "verify": {"kind": "hmac_sha256", "secret": secret, "header": "X-S"}
+            }))
+        };
+        for platform in ["webhook", "${HOOK_PLATFORM}"] {
+            let e = with(platform, "lit-921").expect_err("refused");
+            assert!(e.starts_with("verify.secret"), "{platform}: {e}");
+            assert!(!e.contains("lit-921"), "{e}");
+            assert_eq!(with(platform, "${HOOK_SECRET}"), Ok(()), "{platform}");
+        }
+        assert_eq!(with("telegram", "lit-921"), Ok(()));
+    }
+
+    /// GH #921: the factory's parse is the platform's parse.
+    #[test]
+    fn validate_params_takes_the_webhook_branch() {
+        let f = ProxyCellFactory::new(Arc::new(SurfaceRegistry::new()));
+        let ok = json!({"platform": "webhook", "mount": "probe-hook", "route": "probe",
+            "emit_to": "/", "verify": {"kind": "none", "because": "a test source"}});
+        assert_eq!(f.validate_params(&ok), Ok(()));
+        let mut bad = ok.clone();
+        bad["route"] = json!("");
+        assert!(
+            f.validate_params(&bad)
+                .expect_err("refused")
+                .contains("route")
+        );
     }
 }

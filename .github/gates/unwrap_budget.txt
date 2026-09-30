@@ -35,6 +35,13 @@
 # back to an unmounted I/O half instead of unwrapping, and the peer client is
 # built outside the closure, so its failure is a spawn error.
 #
+# meclaw-cells 75 -> 76 (GH #921): the `webhook` platform
+# of `proxy` has its own build closure with the one `expect` on the `cell.db`
+# open, the same call site and reason as the `meclaw` platform note above. It
+# writes nothing to that database, so it costs one. The params are parsed
+# outside the closure (a spawn error, never a panic on respawn), and the mount
+# handler answers 503 on a blank secret instead of unwrapping it.
+#
 # meclaw-testing 46 -> 45 (#653, 2026-09-11): back to what the tree measures.
 # The 46 was pinned for an `expect` on the bind in `surface_listener` (#654); the
 # fixture that shipped retries `free_port` instead and ends in an explicit
@@ -43,7 +50,7 @@
 
 meclaw 0
 meclaw-api 2
-meclaw-cells 75
+meclaw-cells 76
 meclaw-cli 0
 meclaw-colony 64
 meclaw-core 3

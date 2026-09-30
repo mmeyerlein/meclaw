@@ -125,6 +125,7 @@ fn parse_seed_entry(v: &JsonValue) -> Result<ScheduleRow, String> {
         emit_headers,
         status: "active".into(),
         iteration_n: 0,
+        catch_up: false,
     })
 }
 

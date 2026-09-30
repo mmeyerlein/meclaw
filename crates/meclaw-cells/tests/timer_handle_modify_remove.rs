@@ -42,6 +42,7 @@ fn cron_row(id: Uuid, cron: &str) -> ScheduleRow {
         emit_headers: Map::new(),
         status: "active".into(),
         iteration_n: 0,
+        catch_up: false,
     }
 }
 
@@ -55,6 +56,7 @@ fn at_row(id: Uuid) -> ScheduleRow {
         emit_headers: Map::new(),
         status: "active".into(),
         iteration_n: 0,
+        catch_up: false,
     }
 }
 
@@ -137,6 +139,51 @@ async fn handle_modify_at_on_cron_row_emits_kind_mismatch() {
         .expect("no error emission")
         .unwrap();
     assert_eq!(em.content["header"]["error_code"], "kind_mismatch");
+}
+
+/// GH #922 fix round 1 (review M-1): `modify` naming only `catch_up: true` on
+/// an existing `cron` row is refused by the handler (the parser cannot know the
+/// row's kind) with `invalid_params` / `catch_up_cron_unsupported`, and the row
+/// keeps its flag unset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handle_modify_catch_up_on_cron_row_emits_invalid_params() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    setup_timer_schema(&conn).unwrap();
+    let id = Uuid::now_v7();
+    insert_schedule(&conn, &cron_row(id, "*/1 * * * * *")).unwrap();
+    let mut db = DbConn::wrap(conn, None);
+    let mut cell = TimerCell::new(Path::new("/t"), vec![], 5000);
+
+    let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+    let (rc_tx, mut rc_rx) = mpsc::channel::<TimerReconfig>(8);
+
+    let msg = build_op_msg(json!({
+        "op": "modify",
+        "schedule_id": id.to_string(),
+        "catch_up": true,
+    }));
+    let sink = sink_from(&msg, out_tx);
+    cell.handle(msg, &sink, &mut db, &rc_tx).await;
+
+    let em = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
+        .await
+        .expect("no error emission")
+        .unwrap();
+    assert_eq!(em.target, Path::new("/reply"));
+    assert_eq!(em.content["header"]["error_code"], "invalid_params");
+    let detail = em.content["meta"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.starts_with(meclaw_cells::timer::op::CATCH_UP_CRON_UNSUPPORTED),
+        "detail: {detail}"
+    );
+    assert!(
+        rc_rx.try_recv().is_err(),
+        "a refused modify sends no snapshot"
+    );
+    let row = db
+        .call(move |c| load_schedule(c, id).unwrap().unwrap())
+        .await;
+    assert!(!row.catch_up, "the cron row keeps catch_up unset");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

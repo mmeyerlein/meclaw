@@ -23,6 +23,7 @@ fn cron_row(id: Uuid, cron: &str) -> ScheduleRow {
         emit_headers: Map::new(),
         status: "active".into(),
         iteration_n: 0,
+        catch_up: false,
     }
 }
 

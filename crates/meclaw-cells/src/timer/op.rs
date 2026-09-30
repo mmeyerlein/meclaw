@@ -38,6 +38,9 @@ pub enum TimerOp {
         new_at: Option<DateTime<Utc>>,
         /// Optional: new `emit_to` path.
         new_emit_to: Option<String>,
+        /// Optional: new `catch_up` flag (GH #922). The handler refuses
+        /// `Some(true)` on a cron row (`invalid_params`).
+        new_catch_up: Option<bool>,
     },
     /// Soft delete: sets `status='removed'` (no-delete conformant).
     Remove {
@@ -52,6 +55,29 @@ pub enum TimerOp {
         /// PK of the row to fire.
         schedule_id: Uuid,
     },
+}
+
+/// GH #922: the detail prefix of the refusal of `catch_up` on a `cron` row;
+/// the handler answers it with `error_code: "invalid_params"`. A missed cron
+/// occurrence is not caught up (#913 is its own issue, OR-OS-G11).
+pub const CATCH_UP_CRON_UNSUPPORTED: &str = "catch_up_cron_unsupported";
+
+fn catch_up_cron_refusal() -> String {
+    format!(
+        "{CATCH_UP_CRON_UNSUPPORTED}: `catch_up` applies to one-shot `at` rows only; \
+         a missed cron occurrence is not caught up"
+    )
+}
+
+/// An optional boolean flag of the op object. Only a JSON boolean is taken:
+/// a string "false" read as truthy would switch on what nobody meant to
+/// (GH #904). Absent or `null` is `None`.
+fn bool_flag(obj: &serde_json::Map<String, JsonValue>, name: &str) -> Result<Option<bool>, String> {
+    match obj.get(name) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::Bool(b)) => Ok(Some(*b)),
+        Some(other) => Err(format!("{name}: must be a boolean, got {other}")),
+    }
 }
 
 /// The three central UBF slots plus the two envelope slots every body may
@@ -133,6 +159,10 @@ fn parse_modify(
         Some(s) => Some(s.parse().map_err(|e| format!("at: {e}"))?),
         None => None,
     };
+    let new_catch_up = bool_flag(obj, "catch_up")?;
+    if new_catch_up == Some(true) && new_cron.is_some() {
+        return Err(catch_up_cron_refusal());
+    }
     Ok(TimerOp::Modify {
         schedule_id,
         new_name: obj
@@ -145,6 +175,7 @@ fn parse_modify(
             .get("emit_to")
             .and_then(|x| x.as_str())
             .map(String::from),
+        new_catch_up,
     })
 }
 
@@ -184,11 +215,13 @@ fn parse_add(
     // GH #904: a flag, not a new op (OR-FH-T1) -- the smallest contract that
     // lets one id hold one standing order. Only a JSON boolean is taken: a
     // string "false" read as truthy would replace rows nobody meant to.
-    let rearm = match obj.get("rearm") {
-        None | Some(JsonValue::Null) => false,
-        Some(JsonValue::Bool(b)) => *b,
-        Some(other) => return Err(format!("rearm: must be a boolean, got {other}")),
-    };
+    let rearm = bool_flag(obj, "rearm")?.unwrap_or(false);
+    // GH #922: opt-in per row (OR-OS-G11) -- a display clock that rang late
+    // after a restart would be wrong, so the default stays "missed = gone".
+    let catch_up = bool_flag(obj, "catch_up")?.unwrap_or(false);
+    if catch_up && matches!(kind, ScheduleKind::Cron(_)) {
+        return Err(catch_up_cron_refusal());
+    }
     Ok(TimerOp::Add {
         row: ScheduleRow {
             schedule_id,
@@ -199,6 +232,7 @@ fn parse_add(
             emit_headers,
             status: "active".into(),
             iteration_n: 0,
+            catch_up,
         },
         rearm,
     })
@@ -289,6 +323,92 @@ mod tests {
         bad["rearm"] = json!("true");
         let err = TimerOp::parse(&bad).unwrap_err();
         assert!(err.starts_with("rearm:"), "{err}");
+    }
+
+    /// GH #922: `catch_up` is a boolean on `add`, off unless given, stored in
+    /// the row; on a `cron` row it is refused with its own prefix (the
+    /// handler answers `invalid_params`), because a missed cron occurrence is
+    /// not caught up (#913 is its own issue).
+    #[test]
+    fn op_add_takes_catch_up_on_at_and_refuses_it_on_cron() {
+        let at = json!({
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000001",
+            "schedule_name": "x",
+            "at": "2099-01-01T00:00:00Z",
+            "emit_to": "/x",
+            "emit_body": {}
+        });
+        // (catch_up value, Ok(stored flag) | Err(prefix))
+        let table: Vec<(Option<JsonValue>, Result<bool, &str>)> = vec![
+            (None, Ok(false)),
+            (Some(JsonValue::Null), Ok(false)),
+            (Some(json!(false)), Ok(false)),
+            (Some(json!(true)), Ok(true)),
+            (Some(json!("true")), Err("catch_up:")),
+            (Some(json!(1)), Err("catch_up:")),
+        ];
+        for (value, expected) in table {
+            let mut op = at.clone();
+            if let Some(v) = value.clone() {
+                op["catch_up"] = v;
+            }
+            match (TimerOp::parse(&op), expected) {
+                (Ok(TimerOp::Add { row, .. }), Ok(flag)) => {
+                    assert_eq!(row.catch_up, flag, "value {value:?}")
+                }
+                (Err(e), Err(prefix)) => assert!(e.starts_with(prefix), "{value:?}: {e}"),
+                (got, want) => panic!("value {value:?}: got {got:?}, want {want:?}"),
+            }
+        }
+
+        let mut cron = at.clone();
+        cron.as_object_mut().unwrap().remove("at");
+        cron["cron"] = json!("0 0 9 * * *");
+        cron["catch_up"] = json!(true);
+        let err = TimerOp::parse(&cron).unwrap_err();
+        assert!(err.starts_with(CATCH_UP_CRON_UNSUPPORTED), "{err}");
+        // Without the flag (or with `false`) a cron add is what it always was.
+        cron["catch_up"] = json!(false);
+        assert!(matches!(
+            TimerOp::parse(&cron).unwrap(),
+            TimerOp::Add { ref row, .. } if !row.catch_up
+        ));
+    }
+
+    /// GH #922: `modify` carries `catch_up` as an optional change; together
+    /// with a new `cron` it is refused at the parser already.
+    #[test]
+    fn op_modify_carries_catch_up_and_refuses_it_with_a_cron() {
+        let base = json!({
+            "op": "modify",
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000001"
+        });
+        assert!(matches!(
+            TimerOp::parse(&base).unwrap(),
+            TimerOp::Modify {
+                new_catch_up: None,
+                ..
+            }
+        ));
+        let mut on = base.clone();
+        on["catch_up"] = json!(true);
+        assert!(matches!(
+            TimerOp::parse(&on).unwrap(),
+            TimerOp::Modify {
+                new_catch_up: Some(true),
+                ..
+            }
+        ));
+        let mut bad = base.clone();
+        bad["catch_up"] = json!("yes");
+        assert!(TimerOp::parse(&bad).unwrap_err().starts_with("catch_up:"));
+        let mut cron = on;
+        cron["cron"] = json!("*/5 * * * * *");
+        assert!(
+            TimerOp::parse(&cron)
+                .unwrap_err()
+                .starts_with(CATCH_UP_CRON_UNSUPPORTED)
+        );
     }
 
     #[test]

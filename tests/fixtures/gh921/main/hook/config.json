@@ -1,0 +1,72 @@
+{
+  "cell": {
+    "type": "proxy"
+  },
+  "params": {
+    "platform": "webhook",
+    "mount": "probe-hook",
+    "verify": {
+      "kind": "hmac_sha256",
+      "secret": "${PROBE_HOOK_SECRET}",
+      "header": "X-Probe-Signature",
+      "prefix": "sha256="
+    },
+    "headers_allow": [
+      "X-Probe-Event",
+      "X-Probe-Delivery"
+    ],
+    "route": "probe",
+    "emit_to": "/",
+    "max_body_kb": 1
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "webhook": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true
+        },
+        "peer_event": {
+          "type": "string",
+          "required": false
+        },
+        "lane": {
+          "type": "string",
+          "required": false
+        },
+        "boundary": {
+          "type": "string",
+          "required": false
+        },
+        "fields": {
+          "type": "array",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}

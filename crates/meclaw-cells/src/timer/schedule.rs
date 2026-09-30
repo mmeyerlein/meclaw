@@ -35,6 +35,10 @@ pub struct ScheduleRow {
     pub status: String,
     /// Iteration counter, relevant only for repeating schedules.
     pub iteration_n: u64,
+    /// GH #922: an `at` row whose moment passed while the cell was down fires
+    /// once on the next (re)spawn, marked `late`. Opt-in per row (OR-OS-G11:
+    /// display clocks must not ring late after a restart); never on `cron`.
+    pub catch_up: bool,
 }
 
 /// I/O-local working copy. The I/O sub-task holds exactly what it needs for

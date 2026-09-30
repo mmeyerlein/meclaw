@@ -25,6 +25,10 @@ pub struct TimerCell {
     /// A runtime `params` update merges over it and applies it to the `DbConn`
     /// live (path C); the next cell.db op runs under the new A timeout.
     pub(crate) query_timeout_ms: u64,
+    /// GH #922: the instant this incarnation's plan was loaded against. A
+    /// `catch_up` one-shot due at or before it was missed while the cell was
+    /// down, and its strike is `late` ([`is_late`]).
+    pub(crate) booted_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl TimerCell {
@@ -36,14 +40,23 @@ impl TimerCell {
             own_path,
             initial_io: Some(initial_active),
             query_timeout_ms,
+            booted_at: chrono::Utc::now(),
         }
+    }
+
+    /// GH #922: pin the boot instant to the one the factory loaded the plan
+    /// with, so "missed" means the same thing for the plan and the strike.
+    pub fn with_booted_at(mut self, booted_at: chrono::DateTime<chrono::Utc>) -> Self {
+        self.booted_at = booted_at;
+        self
     }
 }
 
 /// I/O-local state struct. Single owner (held by-value by the I/O sub-task).
 /// No mutex, no Arc.
 pub struct TimerIo {
-    /// Working copy of the active schedules (cron + future-at).
+    /// Working copy of the active schedules (cron + future-at + the missed
+    /// `catch_up` one-shots, GH #922).
     pub active: Vec<ActiveSchedule>,
     /// Issue #7: progress mark, set after every schedule this loop actually
     /// fired. Default = disabled (reports nowhere).
@@ -231,6 +244,9 @@ impl LongRunningCell for TimerCell {
                 Err(e) => {
                     let code = if e.starts_with("cron:") {
                         "invalid_cron"
+                    } else if e.starts_with(crate::timer::op::CATCH_UP_CRON_UNSUPPORTED) {
+                        // GH #922: a flag the row cannot carry, not a parse error.
+                        "invalid_params"
                     } else {
                         "parse_error"
                     };
@@ -340,6 +356,7 @@ impl LongRunningCell for TimerCell {
                     new_cron,
                     new_at,
                     new_emit_to,
+                    new_catch_up,
                 } => {
                     // Type-mismatch guard: a cron update on an at row or an at
                     // update on a cron row is rejected (spec: modify does not
@@ -391,6 +408,25 @@ impl LongRunningCell for TimerCell {
                         .await;
                         return;
                     }
+                    // GH #922: `catch_up` is for one-shots; a cron row refuses
+                    // it the way `add` does.
+                    if new_catch_up == Some(true)
+                        && matches!(cur.kind, crate::timer::schedule::ScheduleKind::Cron(_))
+                    {
+                        crate::timer::emit::emit_op_error_for(
+                            sink,
+                            &msg,
+                            "invalid_params",
+                            &format!(
+                                "{}: modify: `catch_up` applies to one-shot `at` rows only",
+                                crate::timer::op::CATCH_UP_CRON_UNSUPPORTED
+                            ),
+                            tool_call_id.as_deref(),
+                            op_schedule_id.as_deref(),
+                        )
+                        .await;
+                        return;
+                    }
                     // GH #231: the same refusal on the modify lane — moving a
                     // one-shot to a time that has already passed would leave an
                     // active row nothing will ever plan.
@@ -409,15 +445,23 @@ impl LongRunningCell for TimerCell {
                         return;
                     }
                     let n = match db
-                        .call_with_timeout(move |c| {
-                            crate::timer::db::modify_schedule_fields(
+                        .call_with_timeout(move |c| -> rusqlite::Result<usize> {
+                            let n = crate::timer::db::modify_schedule_fields(
                                 c,
                                 schedule_id,
                                 new_cron.as_deref(),
                                 new_name.as_deref(),
                                 new_emit_to.as_deref(),
                                 new_at,
-                            )
+                            )?;
+                            // GH #922: the flag rides in the same call, on the
+                            // row the UPDATE above just found.
+                            if n == 1
+                                && let Some(flag) = new_catch_up
+                            {
+                                crate::timer::db::set_catch_up(c, schedule_id, flag)?;
+                            }
+                            Ok(n)
                         })
                         .await
                     {
@@ -660,9 +704,24 @@ impl LongRunningCell for TimerCell {
             // 2. State before emit (phase-5 canon).
             let is_once = matches!(row.kind, crate::timer::schedule::ScheduleKind::At(_));
             if is_once {
-                let _ = db
+                let marked = db
                     .call_with_timeout(move |c| crate::timer::db::mark_completed(c, schedule_id))
                     .await;
+                // GH #922 fix round 1 (review M-A): a `catch_up` row whose mark
+                // did not land stays `active` and is planned again -- no emit.
+                let marked = match marked {
+                    Ok(Ok(n)) => Some(n),
+                    _ => None,
+                };
+                if !one_shot_strike_may_emit(row.catch_up, marked) {
+                    tracing::debug!(
+                        path = self.own_path.as_str(),
+                        ?schedule_id,
+                        ?marked,
+                        "fire: catch_up one-shot not marked completed, strike withheld"
+                    );
+                    return;
+                }
             } else {
                 let _ = db
                     .call_with_timeout(move |c| crate::timer::db::bump_iteration(c, schedule_id))
@@ -674,7 +733,9 @@ impl LongRunningCell for TimerCell {
             //    RFC-3339-Z via `to_rfc3339_opts(SecondsFormat::Secs, true)`.
             //    Emit via OriginSink → parent_message_id=None, fresh trace_id
             //    (overview l.852).
-            let content = build_fire_content(&row, scheduled_at, is_once);
+            // GH #922: a missed `catch_up` one-shot says so on its strike.
+            let late = is_late(&row, scheduled_at, forced, self.booted_at);
+            let content = build_fire_content(&row, scheduled_at, is_once, late);
             let _ = sink
                 .emit(meclaw_core::CellOutput {
                     target: row.emit_to.clone(),
@@ -694,10 +755,16 @@ impl LongRunningCell for TimerCell {
 /// `iteration_n` is the PRE-bump value: T11 already did the +1 in the DB, but
 /// `row` was loaded before that — so the first fire of a freshly INSERTed cron
 /// carries iteration_n=0 (spec: "from 0").
+///
+/// GH #922: a `late` strike (a missed `catch_up` one-shot) carries the auto
+/// header `late: true` next to its `scheduled_at` -- the moment it was due,
+/// not the boot. A strike that is not late carries no `late` key at all, so
+/// every existing emission is unchanged.
 fn build_fire_content(
     row: &crate::timer::schedule::ScheduleRow,
     scheduled_at: chrono::DateTime<chrono::Utc>,
     is_once: bool,
+    late: bool,
 ) -> meclaw_core::JsonValue {
     use chrono::SecondsFormat;
     use serde_json::json;
@@ -720,6 +787,9 @@ fn build_fire_content(
     if !is_once {
         headers.insert("iteration_n".into(), json!(row.iteration_n));
     }
+    if late {
+        headers.insert("late".into(), json!(true));
+    }
 
     let mut content = row.emit_body.clone();
     if !content.is_object() {
@@ -730,6 +800,38 @@ fn build_fire_content(
         .expect("content normalized to object above")
         .insert("header".into(), meclaw_core::JsonValue::Object(headers));
     content
+}
+
+/// GH #922: whether a strike is the late catch-up of a missed one-shot. True
+/// exactly for a sleep strike (not an operator trigger) of a `catch_up`
+/// one-shot, for its own moment (`scheduled_at == at`, the guard of GH #904
+/// already dropped any other), when that moment lay at or before the boot
+/// instant -- the `<=` the plan used to take the row up
+/// (`db::due_for_catch_up`). A catch-up row whose moment comes after the boot
+/// fires on time and is not late.
+fn is_late(
+    row: &crate::timer::schedule::ScheduleRow,
+    scheduled_at: chrono::DateTime<chrono::Utc>,
+    forced: bool,
+    booted_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    !forced
+        && row.catch_up
+        && matches!(
+            row.kind,
+            crate::timer::schedule::ScheduleKind::At(at) if at == scheduled_at && at <= booted_at
+        )
+}
+
+/// GH #922 fix round 1 (review M-A): whether a one-shot strike may emit
+/// after its state step. A `catch_up` one-shot emits only when
+/// `mark_completed` reported the row it completed (`Ok(1)`): a timed-out or
+/// failed mark leaves the row `active`, the next op snapshot or boot takes it
+/// up again through `db::due_for_catch_up`, and emitting now would strike
+/// twice -- the timer documents "rather once too few than twice". `marked` is
+/// the row count the mark returned, `None` when it timed out or failed.
+fn one_shot_strike_may_emit(catch_up: bool, marked: Option<usize>) -> bool {
+    !catch_up || marked == Some(1)
 }
 
 /// GH #231: the detail line for a one-shot whose `at` is not in the future, or
@@ -795,5 +897,161 @@ mod tests {
         let mut cell = TimerCell::new(Path::new("/t"), vec![], 5000);
         let io = <TimerCell as meclaw_colony::LongRunningCell>::split_io(&mut cell);
         assert!(io.active.is_empty());
+    }
+
+    fn at_row(
+        at: chrono::DateTime<chrono::Utc>,
+        catch_up: bool,
+    ) -> crate::timer::schedule::ScheduleRow {
+        crate::timer::schedule::ScheduleRow {
+            schedule_id: meclaw_core::Uuid::now_v7(),
+            schedule_name: "probe".into(),
+            kind: crate::timer::schedule::ScheduleKind::At(at),
+            emit_to: Path::new("/sink"),
+            emit_body: serde_json::json!({"messages": []}),
+            emit_headers: serde_json::Map::new(),
+            status: "active".into(),
+            iteration_n: 0,
+            catch_up,
+        }
+    }
+
+    /// GH #922 fix round 1 (review M-A): a `catch_up` one-shot whose
+    /// completion mark did not land stays `active` and would be planned again,
+    /// so its strike must not emit; a one-shot without the flag keeps its old
+    /// behaviour (an unmarked past row is dropped by the plan, no second strike).
+    #[test]
+    fn a_catch_up_one_shot_emits_only_after_its_completion_mark_landed() {
+        // (label, catch_up, marked, expected)
+        let table = [
+            ("catch_up, marked", true, Some(1), true),
+            ("catch_up, mark timed out", true, None, false),
+            ("catch_up, mark found no active row", true, Some(0), false),
+            ("plain, marked", false, Some(1), true),
+            ("plain, mark timed out", false, None, true),
+        ];
+        for (label, catch_up, marked, expected) in table {
+            assert_eq!(
+                one_shot_strike_may_emit(catch_up, marked),
+                expected,
+                "{label}"
+            );
+        }
+    }
+
+    /// GH #922: a strike is `late` exactly when it is the catch-up of a marked
+    /// one-shot whose moment lay at or before this incarnation's boot instant
+    /// (the same instant the plan partitioned "missed" against). Not late: an
+    /// unmarked row, a row that came due after the boot, an operator trigger,
+    /// a strike for another moment, a cron row.
+    #[test]
+    fn is_late_marks_only_the_catch_up_of_a_marked_missed_one_shot() {
+        use chrono::TimeZone;
+        let boot = chrono::Utc.with_ymd_and_hms(2030, 1, 1, 12, 0, 0).unwrap();
+        let s = chrono::Duration::seconds;
+        let missed = boot - s(3);
+        // (label, row, scheduled_at, forced, expected)
+        let table = vec![
+            ("marked missed", at_row(missed, true), missed, false, true),
+            (
+                "marked at the boot instant",
+                at_row(boot, true),
+                boot,
+                false,
+                true,
+            ),
+            (
+                "unmarked missed",
+                at_row(missed, false),
+                missed,
+                false,
+                false,
+            ),
+            (
+                "marked, due after boot",
+                at_row(boot + s(1), true),
+                boot + s(1),
+                false,
+                false,
+            ),
+            (
+                "marked missed, triggered",
+                at_row(missed, true),
+                missed,
+                true,
+                false,
+            ),
+            (
+                "marked missed, other moment",
+                at_row(missed, true),
+                missed - s(1),
+                false,
+                false,
+            ),
+        ];
+        for (label, row, scheduled_at, forced, expected) in table {
+            assert_eq!(
+                is_late(&row, scheduled_at, forced, boot),
+                expected,
+                "{label}"
+            );
+        }
+        let mut cron = at_row(missed, true);
+        cron.kind = crate::timer::schedule::ScheduleKind::Cron("0 0 9 * * *".into());
+        assert!(!is_late(&cron, missed, false, boot), "cron is never late");
+    }
+
+    /// GH #922: the late strike is today's body plus `late: true` next to the
+    /// `scheduled_at` it always carried; a strike that is not late is
+    /// byte-for-byte what it was (no `late` key at all).
+    #[test]
+    fn build_fire_content_adds_late_only_to_a_late_strike() {
+        use chrono::TimeZone;
+        let at = chrono::Utc
+            .with_ymd_and_hms(2030, 1, 1, 11, 59, 57)
+            .unwrap();
+        let mut row = at_row(at, true);
+        row.emit_headers
+            .insert("msg_type".into(), serde_json::json!("probe_tick"));
+        row.emit_headers
+            .insert("late".into(), serde_json::json!("forged"));
+
+        let on_time = build_fire_content(&row, at, true, false);
+        let header = on_time["header"].as_object().unwrap();
+        let mut keys: Vec<&str> = header.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "event_id",
+                "fired_at",
+                "late",
+                "msg_type",
+                "schedule_id",
+                "schedule_name",
+                "scheduled_at"
+            ],
+            "the auto header set is unchanged; a caller's own header passes through"
+        );
+        assert_eq!(
+            header["late"], "forged",
+            "not late: the caller's value is not touched"
+        );
+        assert_eq!(on_time["messages"], serde_json::json!([]));
+
+        let late = build_fire_content(&row, at, true, true);
+        assert_eq!(
+            late["header"]["late"], true,
+            "auto-set, overrides the caller's key"
+        );
+        assert_eq!(late["header"]["scheduled_at"], "2030-01-01T11:59:57Z");
+        assert_eq!(late["messages"], serde_json::json!([]));
+
+        row.emit_headers.remove("late");
+        let plain = build_fire_content(&row, at, true, false);
+        assert!(
+            plain["header"].get("late").is_none(),
+            "no `late` on a strike in time"
+        );
     }
 }

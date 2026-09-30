@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-09-30
+A proxy takes verified webhooks from outside and hands each on as one message, and a one-shot timer can
+fire once after a stop that made it miss its moment.
+
+### Added
+
+- **A proxy takes a verified webhook** ([#921](https://github.com/mmeyerlein/meclaw/issues/921)). The new platform `webhook` holds a mount, verifies each POST by `hmac_sha256` over the raw body or by a shared `token`, and hands an accepted request on as exactly one message on the declared lane; a request that does not prove itself is `401`, produces no message and is refused as `webhook_unverified`.
+- **A one-shot timer catches up what it missed while down** ([#922](https://github.com/mmeyerlein/meclaw/issues/922)). An `at` row added with `catch_up: true` whose moment passed while the cell was not running fires exactly once on the next start, marked `late: true`, and is then completed; `cron` rows refuse the flag. The builder's corpus carries both (`builder-librarian@2.2.12`, pinned by `builder@1.18.1` and `meclaw-os@2.1.4`).
+
 ## [0.52.0] — 2026-09-30
 A store filters, sorts and indexes on JSON paths; an installed app hears the sections of every brain, the
 sessions that close and pins its own blocks into every curator; and a turn that names its audience reaches

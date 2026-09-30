@@ -40,6 +40,7 @@ async fn fire_emission_for_repeating_carries_all_auto_headers_and_overrides_emit
             emit_headers,
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();
@@ -120,6 +121,7 @@ async fn fire_emission_for_once_omits_iteration_n() {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();

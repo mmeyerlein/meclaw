@@ -249,14 +249,18 @@ fn make_build(
         )
         .expect("restore timer query_timeout overlay")
         .query_timeout_ms;
-        // 4. Load the active set + filter out past one-shots (sync).
-        let active = load_active_filter_past(&conn, Utc::now()).expect("load_active_filter_past");
+        // 4. Load the active set + filter out past one-shots (sync). GH #922:
+        //    the missed `catch_up` one-shots stay in the set and fire late; the
+        //    cell gets the same instant, so plan and strike agree on "missed".
+        let booted_at = Utc::now();
+        let active = load_active_filter_past(&conn, booted_at).expect("load_active_filter_past");
         // 5. Build TimerCell + DbConn (sync), create the mailbox, then funnel the
         //    LR spawn through `build_long_running_task` — the single LR-spawn
         //    site. The helper mints the peace/stop/death_ack oneshot pairs
         //    internally and returns `(join, peace_rx, stop_tx, death_ack_rx)`. No
         //    `.await` inside the helper → await-free respawn corridor preserved.
-        let cell = TimerCell::new(path_cap.clone(), active, query_timeout_ms);
+        let cell =
+            TimerCell::new(path_cap.clone(), active, query_timeout_ms).with_booted_at(booted_at);
         let db = DbConn::wrap(conn, Some(Duration::from_millis(query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(

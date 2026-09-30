@@ -1,0 +1,19 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nsys.stdin.read()\nsys.stdout.write(json.dumps([]))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "consumes": {},
+    "capabilities": [
+      "shell:exec"
+    ]
+  }
+}

@@ -525,7 +525,7 @@ pub fn validate_declared(declared: &JsonValue) -> Result<(), String> {
 }
 
 /// `${NAME}`, the whole string, `NAME` from `[A-Za-z_][A-Za-z0-9_]*`.
-fn is_env_token(s: &str) -> bool {
+pub(crate) fn is_env_token(s: &str) -> bool {
     let Some(name) = s.strip_prefix("${").and_then(|r| r.strip_suffix('}')) else {
         return false;
     };

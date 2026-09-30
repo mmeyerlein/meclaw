@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.52.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.53.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.53.0: a proxy takes verified webhooks as one message each; a one-shot timer fires once after a stop
+  that made it miss its moment.
 - v0.52.0: a store filters, sorts and indexes on JSON paths; an installed app hears every brain, closed
   sessions and pins its own blocks; a turn that names its audience is answered again.
 - v0.51.0: a workspace is laid out on disk for a program and adopts what it wrote, travels through git,

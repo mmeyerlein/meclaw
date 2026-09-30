@@ -10,7 +10,26 @@ use rusqlite::Connection;
 
 /// Idempotent DDL for the `schedules` table. Calling it repeatedly is safe
 /// (`CREATE TABLE IF NOT EXISTS`). Invoked by the factory once per spawn.
+///
+/// GH #922: a `cell.db` created before the `catch_up` column existed gets it
+/// here (`ALTER TABLE ... ADD COLUMN`, default 0 = the old behaviour), only
+/// when it is missing -- the pattern of `persist::migrations` in the colony
+/// crate. No row is rewritten or deleted.
 pub fn setup_timer_schema(conn: &Connection) -> rusqlite::Result<()> {
+    create_schedules_table(conn)?;
+    let has_catch_up = conn
+        .prepare("SELECT 1 FROM pragma_table_info('schedules') WHERE name = 'catch_up'")?
+        .exists([])?;
+    if !has_catch_up {
+        conn.execute(
+            "ALTER TABLE schedules ADD COLUMN catch_up INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn create_schedules_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schedules (
             schedule_id        TEXT PRIMARY KEY NOT NULL,
@@ -23,7 +42,8 @@ pub fn setup_timer_schema(conn: &Connection) -> rusqlite::Result<()> {
             emit_headers_json  TEXT NOT NULL,
             status             TEXT NOT NULL CHECK(status IN ('active','completed','removed')),
             iteration_n        INTEGER NOT NULL DEFAULT 0,
-            created_at         TEXT NOT NULL
+            created_at         TEXT NOT NULL,
+            catch_up           INTEGER NOT NULL DEFAULT 0
         );",
     )
 }
@@ -38,8 +58,8 @@ pub fn insert_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result
     conn.execute(
         "INSERT INTO schedules
            (schedule_id, schedule_name, kind, cron_expr, at_utc, emit_to,
-            emit_body_json, emit_headers_json, status, iteration_n, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            emit_body_json, emit_headers_json, status, iteration_n, created_at, catch_up)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             row.schedule_id.to_string(),
             row.schedule_name,
@@ -51,7 +71,8 @@ pub fn insert_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result
             hdrs,
             row.status,
             row.iteration_n as i64,
-            now
+            now,
+            row.catch_up
         ],
     )?;
     Ok(())
@@ -137,7 +158,8 @@ pub fn add_schedule(
             && cur.schedule_name == row.schedule_name
             && cur.emit_to == row.emit_to
             && cur.emit_body == row.emit_body
-            && cur.emit_headers == row.emit_headers;
+            && cur.emit_headers == row.emit_headers
+            && cur.catch_up == row.catch_up;
         if identical {
             return Ok(AddOutcome::Same);
         }
@@ -175,7 +197,8 @@ fn replace_order(
     conn.execute(
         "UPDATE schedules SET
             schedule_name = ?2, kind = ?3, cron_expr = ?4, at_utc = ?5, emit_to = ?6,
-            emit_body_json = ?7, emit_headers_json = ?8, status = 'active', iteration_n = 0
+            emit_body_json = ?7, emit_headers_json = ?8, status = 'active', iteration_n = 0,
+            catch_up = ?10
           WHERE schedule_id = ?1 AND (?9 = 0 OR status = 'removed')",
         rusqlite::params![
             row.schedule_id.to_string(),
@@ -187,6 +210,7 @@ fn replace_order(
             body,
             hdrs,
             only_removed,
+            row.catch_up,
         ],
     )
 }
@@ -195,7 +219,7 @@ fn replace_order(
 pub fn load_schedule(conn: &Connection, id: Uuid) -> rusqlite::Result<Option<ScheduleRow>> {
     let mut stmt = conn.prepare(
         "SELECT schedule_name, kind, cron_expr, at_utc, emit_to,
-                emit_body_json, emit_headers_json, status, iteration_n
+                emit_body_json, emit_headers_json, status, iteration_n, catch_up
            FROM schedules WHERE schedule_id = ?1",
     )?;
     let mut rows = stmt.query([id.to_string()])?;
@@ -232,6 +256,15 @@ pub fn modify_schedule_fields(
     )
 }
 
+/// GH #922: set the row's `catch_up` flag (the `modify` op's `catch_up`).
+/// The caller has checked the row is a one-shot. Returns rows_changed.
+pub fn set_catch_up(conn: &Connection, id: Uuid, catch_up: bool) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE schedules SET catch_up = ?2 WHERE schedule_id = ?1",
+        rusqlite::params![id.to_string(), catch_up],
+    )
+}
+
 /// Status='removed'. No-delete conformant (no DELETE). Returns rows_changed.
 pub fn mark_removed(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
     conn.execute(
@@ -262,7 +295,8 @@ pub fn bump_iteration(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
 /// discarded"): `at <= now` is not taken into the I/O set (it
 /// stays in the DB with status='active' — read-only relief here; a later
 /// `modify`/`remove` op still addresses it by id). Only cron and future-at
-/// entries land in the Vec.
+/// entries land in the Vec -- plus, since GH #922, the past one-shots that
+/// carry `catch_up` ([`due_for_catch_up`]); the selection is [`plan_active`].
 ///
 /// GH #231: a dropped one-shot is logged. The spec says such a schedule is "not
 /// scheduled and only logged", and the log was the missing half — the drop
@@ -291,40 +325,91 @@ pub fn load_active_filter_past(
     now: DateTime<Utc>,
 ) -> rusqlite::Result<Vec<ActiveSchedule>> {
     let mut stmt = conn.prepare(
-        "SELECT schedule_id, kind, cron_expr, at_utc
+        "SELECT schedule_name, kind, cron_expr, at_utc, emit_to,
+                emit_body_json, emit_headers_json, status, iteration_n, catch_up,
+                schedule_id
            FROM schedules WHERE status='active' ORDER BY rowid",
     )?;
-    let mut out = Vec::new();
-    let mut rows = stmt.query([])?;
-    while let Some(r) = rows.next()? {
-        let id_s: String = r.get(0)?;
+    let mut rows = Vec::new();
+    let mut q = stmt.query([])?;
+    while let Some(r) = q.next()? {
+        let id_s: String = r.get(10)?;
         let id = Uuid::parse_str(&id_s).expect("uuid parse");
-        let kind_s: String = r.get(1)?;
-        let cron_expr: Option<String> = r.get(2)?;
-        let at_utc: Option<String> = r.get(3)?;
-        let kind = match kind_s.as_str() {
-            "cron" => ScheduleKind::Cron(cron_expr.unwrap()),
-            "at" => {
-                let t: DateTime<Utc> = at_utc.unwrap().parse().expect("at_utc parse");
-                if t <= now {
+        rows.push(row_from_sqlite(id, r)?);
+    }
+    Ok(plan_active(&rows, now))
+}
+
+/// GH #922: the one-shots a (re)spawn takes up although their moment has
+/// passed -- `active` (not fired: a strike marks a one-shot `completed`
+/// before it emits), `catch_up` set, `at <= now` -- ordered by `at`, a tie
+/// kept in the order the rows came in (rowid, GH #613).
+///
+/// The boundary is `<=`, the one [`plan_active`] draws for "past": with `<`
+/// a row due exactly at the load instant would be neither planned (not
+/// ahead) nor caught up, and the partition would lose it.
+///
+/// Each comes back planned at its own moment, so the strike the I/O task
+/// pushes for it carries `scheduled_at == at` and passes the stale-strike
+/// guard of GH #904 in `handle_event`; a past instant sleeps zero.
+pub fn due_for_catch_up(rows: &[ScheduleRow], now: DateTime<Utc>) -> Vec<ActiveSchedule> {
+    let mut due: Vec<(DateTime<Utc>, usize)> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| match r.kind {
+            ScheduleKind::At(at) if r.catch_up && r.status == "active" && at <= now => {
+                Some((at, i))
+            }
+            _ => None,
+        })
+        .collect();
+    due.sort_by_key(|&(at, i)| (at, i));
+    due.into_iter()
+        .map(|(at, i)| ActiveSchedule {
+            schedule_id: rows[i].schedule_id,
+            kind: ScheduleKind::At(at),
+        })
+        .collect()
+}
+
+/// The I/O working copy from the active rows (in rowid order): the caught-up
+/// one-shots first ([`due_for_catch_up`], GH #922), then every cron row and
+/// every one-shot still ahead of `now`, in schedule order. A past one-shot
+/// without `catch_up` is dropped and logged, as it always was (GH #231).
+pub fn plan_active(rows: &[ScheduleRow], now: DateTime<Utc>) -> Vec<ActiveSchedule> {
+    let mut out = due_for_catch_up(rows, now);
+    for a in &out {
+        if let ScheduleKind::At(t) = a.kind {
+            tracing::info!(
+                schedule_id = %a.schedule_id,
+                at = %t.to_rfc3339_opts(SecondsFormat::Millis, true),
+                now = %now.to_rfc3339_opts(SecondsFormat::Millis, true),
+                "timer: missed one-shot with catch_up fires late"
+            );
+        }
+    }
+    for r in rows.iter().filter(|r| r.status == "active") {
+        match &r.kind {
+            ScheduleKind::Cron(_) => {}
+            ScheduleKind::At(t) if *t > now => {}
+            ScheduleKind::At(t) => {
+                if !r.catch_up {
                     tracing::info!(
-                        schedule_id = %id,
-                        at = %t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                        now = %now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        schedule_id = %r.schedule_id,
+                        at = %t.to_rfc3339_opts(SecondsFormat::Millis, true),
+                        now = %now.to_rfc3339_opts(SecondsFormat::Millis, true),
                         "timer: one-shot in the past is not planned (row stays active in cell.db)"
                     );
-                    continue;
                 }
-                ScheduleKind::At(t)
+                continue;
             }
-            _ => continue,
-        };
+        }
         out.push(ActiveSchedule {
-            schedule_id: id,
-            kind,
+            schedule_id: r.schedule_id,
+            kind: r.kind.clone(),
         });
     }
-    Ok(out)
+    out
 }
 
 fn row_from_sqlite(id: Uuid, r: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleRow> {
@@ -354,6 +439,7 @@ fn row_from_sqlite(id: Uuid, r: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule
         emit_headers: emit_headers.as_object().cloned().unwrap_or_default(),
         status: r.get(7)?,
         iteration_n: r.get::<_, i64>(8)? as u64,
+        catch_up: r.get(9)?,
     })
 }
 
@@ -378,6 +464,7 @@ mod tests {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         };
         insert_schedule(&conn, &row).unwrap();
         let loaded = load_schedule(&conn, id).unwrap().expect("present");
@@ -397,6 +484,7 @@ mod tests {
             emit_headers: serde_json::Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         }
     }
 
@@ -410,6 +498,7 @@ mod tests {
             emit_headers: serde_json::Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         }
     }
 
@@ -720,6 +809,208 @@ mod tests {
             count(&conn),
             2,
             "one row for the id, no second row, no DELETE"
+        );
+    }
+
+    /// (label, at-or-cron, catch_up, status, expected in the result)
+    type Case = (
+        &'static str,
+        Option<DateTime<Utc>>,
+        bool,
+        &'static str,
+        bool,
+    );
+
+    /// GH #922: the boot's selection of missed one-shots, as a table. Taken:
+    /// `active`, `at` rows, `catch_up` set, `at <= now` -- the boundary is the
+    /// one `plan_active` draws for "past" (an `at == now` row is neither
+    /// planned nor dropped, it is caught up), so the two can never both skip a
+    /// row. Not taken: a row without the flag, a completed (fired) or removed
+    /// row, a row still ahead, a cron row. Order: by `at`, a tie by the order
+    /// the rows came in (= rowid, GH #613).
+    #[test]
+    fn due_for_catch_up_takes_only_marked_missed_active_one_shots_in_at_order() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2030, 1, 1, 12, 0, 0).unwrap();
+        let s = chrono::Duration::seconds;
+        // (label, at-or-cron, catch_up, status, expected in the result)
+        let table: Vec<Case> = vec![
+            ("late-2", Some(now - s(2)), true, "active", true),
+            ("late-9", Some(now - s(9)), true, "active", true),
+            ("boundary", Some(now), true, "active", true),
+            ("unflagged", Some(now - s(5)), false, "active", false),
+            ("fired", Some(now - s(5)), true, "completed", false),
+            ("removed", Some(now - s(5)), true, "removed", false),
+            ("ahead", Some(now + s(1)), true, "active", false),
+            ("cron", None, true, "active", false),
+            ("tie-with-late-2", Some(now - s(2)), true, "active", true),
+        ];
+        let rows: Vec<ScheduleRow> = table
+            .iter()
+            .map(|(label, at, catch_up, status, _)| {
+                let mut r = match at {
+                    Some(t) => at_fixture(Uuid::now_v7(), *t, label),
+                    None => cron_fixture(Uuid::now_v7(), "0 0 9 * * *", label),
+                };
+                r.catch_up = *catch_up;
+                r.status = (*status).into();
+                r
+            })
+            .collect();
+        let got: Vec<String> = due_for_catch_up(&rows, now)
+            .iter()
+            .map(|a| {
+                rows.iter()
+                    .find(|r| r.schedule_id == a.schedule_id)
+                    .unwrap()
+                    .schedule_name
+                    .clone()
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec!["late-9", "late-2", "tie-with-late-2", "boundary"],
+            "only the marked, missed, active one-shots, in `at` order"
+        );
+        for (label, _, _, _, expected) in &table {
+            assert_eq!(got.iter().any(|g| g == label), *expected, "row {label}");
+        }
+        // Each is planned at its own moment, so the strike carries it as
+        // `scheduled_at` and passes the stale-strike guard (GH #904).
+        let first = &due_for_catch_up(&rows, now)[0];
+        assert!(matches!(first.kind, ScheduleKind::At(t) if t == now - s(9)));
+    }
+
+    /// GH #922: the plan a (re)spawn and every op snapshot hand the I/O task
+    /// holds the caught-up rows next to cron and future rows; a past row
+    /// without the flag is still dropped, exactly as before.
+    #[test]
+    fn plan_active_keeps_marked_missed_rows_and_still_drops_unmarked_ones() {
+        use chrono::TimeZone;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_timer_schema(&conn).unwrap();
+        let past = chrono::Utc.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).unwrap();
+        let future = chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap();
+        let cron_id = Uuid::now_v7();
+        let marked = Uuid::now_v7();
+        let unmarked = Uuid::now_v7();
+        let fut_id = Uuid::now_v7();
+        insert_schedule(&conn, &cron_fixture(cron_id, "0 0 9 * * *", "c")).unwrap();
+        let mut m = at_fixture(marked, past, "m");
+        m.catch_up = true;
+        insert_schedule(&conn, &m).unwrap();
+        insert_schedule(&conn, &at_fixture(unmarked, past, "u")).unwrap();
+        insert_schedule(&conn, &at_fixture(fut_id, future, "f")).unwrap();
+
+        let ids: Vec<Uuid> = load_active_filter_past(&conn, Utc::now())
+            .unwrap()
+            .iter()
+            .map(|a| a.schedule_id)
+            .collect();
+        assert!(ids.contains(&cron_id));
+        assert!(ids.contains(&fut_id));
+        assert!(ids.contains(&marked), "a marked missed row is caught up");
+        assert!(
+            !ids.contains(&unmarked),
+            "an unmarked missed row is dropped"
+        );
+
+        // Once it fired it is `completed` and never taken up again.
+        assert_eq!(mark_completed(&conn, marked).unwrap(), 1);
+        let ids: Vec<Uuid> = load_active_filter_past(&conn, Utc::now())
+            .unwrap()
+            .iter()
+            .map(|a| a.schedule_id)
+            .collect();
+        assert!(!ids.contains(&marked), "fired once, taken up never again");
+    }
+
+    /// GH #922: the flag is stored per row and read back; `rearm` and a
+    /// revival carry the new order's flag; `set_catch_up` flips it on a row.
+    #[test]
+    fn catch_up_round_trips_and_follows_rearm_and_set_catch_up() {
+        use chrono::TimeZone;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_timer_schema(&conn).unwrap();
+        let id = Uuid::now_v7();
+        let t1 = chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap();
+        let t2 = chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 1, 0).unwrap();
+        let mut row = at_fixture(id, t1, "x");
+        row.catch_up = true;
+        assert_eq!(
+            add_schedule(&conn, &row, false).unwrap(),
+            AddOutcome::Inserted
+        );
+        assert!(load_schedule(&conn, id).unwrap().unwrap().catch_up);
+
+        // rearm with the same moment but without the flag: not `Same`.
+        let mut plain = row.clone();
+        plain.catch_up = false;
+        assert_eq!(
+            add_schedule(&conn, &plain, true).unwrap(),
+            AddOutcome::Rearmed
+        );
+        assert!(!load_schedule(&conn, id).unwrap().unwrap().catch_up);
+
+        assert_eq!(set_catch_up(&conn, id, true).unwrap(), 1);
+        assert!(load_schedule(&conn, id).unwrap().unwrap().catch_up);
+        assert_eq!(set_catch_up(&conn, Uuid::now_v7(), true).unwrap(), 0);
+
+        // A revival takes the new order's flag.
+        assert_eq!(mark_removed(&conn, id).unwrap(), 1);
+        let mut revived = at_fixture(id, t2, "x");
+        revived.catch_up = false;
+        assert_eq!(
+            add_schedule(&conn, &revived, false).unwrap(),
+            AddOutcome::Revived
+        );
+        assert!(!load_schedule(&conn, id).unwrap().unwrap().catch_up);
+    }
+
+    /// GH #922: a `cell.db` written before the column existed keeps working --
+    /// the schema setup adds `catch_up` (default 0), no row is lost, and every
+    /// standing row reads as "no catch-up" (unchanged behaviour).
+    #[test]
+    fn setup_adds_the_catch_up_column_to_an_older_table() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schedules (
+                schedule_id        TEXT PRIMARY KEY NOT NULL,
+                schedule_name      TEXT NOT NULL,
+                kind               TEXT NOT NULL CHECK(kind IN ('cron','at')),
+                cron_expr          TEXT,
+                at_utc             TEXT,
+                emit_to            TEXT NOT NULL,
+                emit_body_json     TEXT NOT NULL,
+                emit_headers_json  TEXT NOT NULL,
+                status             TEXT NOT NULL CHECK(status IN ('active','completed','removed')),
+                iteration_n        INTEGER NOT NULL DEFAULT 0,
+                created_at         TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        let id = Uuid::now_v7();
+        conn.execute(
+            "INSERT INTO schedules (schedule_id, schedule_name, kind, at_utc, emit_to,
+                 emit_body_json, emit_headers_json, status, iteration_n, created_at)
+             VALUES (?1, 'old', 'at', '2000-01-01T00:00:00.000Z', '/dst', '{}', '{}',
+                 'active', 0, '2000-01-01T00:00:00Z')",
+            [id.to_string()],
+        )
+        .unwrap();
+
+        setup_timer_schema(&conn).expect("upgrade");
+        setup_timer_schema(&conn).expect("and idempotent after the upgrade");
+
+        let r = load_schedule(&conn, id)
+            .unwrap()
+            .expect("the old row survives");
+        assert!(!r.catch_up, "an old row is not caught up");
+        assert!(
+            load_active_filter_past(&conn, Utc::now())
+                .unwrap()
+                .is_empty(),
+            "an old past row is still dropped, as before"
         );
     }
 

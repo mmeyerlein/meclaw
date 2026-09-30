@@ -96,6 +96,7 @@ async fn handle_add_dup_emits_schedule_id_exists_error_to_reply_to() {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();
@@ -166,6 +167,7 @@ async fn handle_add_of_the_same_order_is_one_order_and_revives_a_removed_one() {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();
@@ -294,6 +296,7 @@ async fn handle_add_with_rearm_arms_a_fired_order_again_in_place() {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();
@@ -442,6 +445,7 @@ async fn a_stale_strike_does_not_fire_the_order_a_rearm_put_in_its_place() {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();

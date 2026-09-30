@@ -24,6 +24,9 @@ pub enum ProxyPlatform {
     /// A peer colony, reached as a mount on this colony's one listener and
     /// dialled as one POST carrying a wire-v1 frame.
     Meclaw,
+    /// An inbound webhook: a mount on this colony's one listener that takes a
+    /// verified POST and emits it on a declared lane. One-way.
+    Webhook,
 }
 
 impl ProxyPlatform {
@@ -34,6 +37,7 @@ impl ProxyPlatform {
             ProxyPlatform::Telegram => "telegram",
             ProxyPlatform::Slack => "slack",
             ProxyPlatform::Meclaw => "meclaw",
+            ProxyPlatform::Webhook => "webhook",
         }
     }
 }
@@ -50,11 +54,12 @@ pub fn parse_platform(params: &JsonValue) -> Result<ProxyPlatform, String> {
         Some(JsonValue::String(s)) if s == "telegram" => Ok(ProxyPlatform::Telegram),
         Some(JsonValue::String(s)) if s == "slack" => Ok(ProxyPlatform::Slack),
         Some(JsonValue::String(s)) if s == "meclaw" => Ok(ProxyPlatform::Meclaw),
+        Some(JsonValue::String(s)) if s == "webhook" => Ok(ProxyPlatform::Webhook),
         Some(JsonValue::String(s)) => Err(format!(
-            "platform: unknown value {s:?} (accepted: \"telegram\", \"slack\", \"meclaw\")"
+            "platform: unknown value {s:?} (accepted: \"telegram\", \"slack\", \"meclaw\", \"webhook\")"
         )),
         Some(other) => Err(format!(
-            "platform: must be a string, got {other} (accepted: \"telegram\", \"slack\", \"meclaw\")"
+            "platform: must be a string, got {other} (accepted: \"telegram\", \"slack\", \"meclaw\", \"webhook\")"
         )),
     }
 }

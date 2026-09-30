@@ -225,6 +225,7 @@ async fn modify_that_moves_a_one_shot_into_the_past_is_refused() {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();
@@ -295,6 +296,7 @@ fn a_sub_second_at_survives_the_store_round_trip() {
             emit_headers: Map::new(),
             status: "active".into(),
             iteration_n: 0,
+            catch_up: false,
         },
     )
     .unwrap();
@@ -338,6 +340,7 @@ fn the_plan_filter_keeps_every_at_the_op_guard_would_accept() {
                 emit_headers: Map::new(),
                 status: "active".into(),
                 iteration_n: 0,
+                catch_up: false,
             },
         )
         .unwrap();

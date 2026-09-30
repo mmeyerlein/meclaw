@@ -1,4 +1,4 @@
-# `meclaw-os@2.1.3`
+# `meclaw-os@2.1.4`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -35,6 +35,8 @@ Since 2.1.2 it pins `builder@1.17.2` ([#905](https://github.com/mmeyerlein/mecla
 `projection` and the file tools; only the pin moved, so it is the third digit.
 Since 2.1.3 it pins `builder@1.18.0` ([#916](https://github.com/mmeyerlein/meclaw/issues/916)), whose `install_app`
 takes `close` and `pins`; only the pin moved, so it is the third digit.
+Since 2.1.4 it pins `builder@1.18.1` ([#921](https://github.com/mmeyerlein/meclaw/issues/921), [#922](https://github.com/mmeyerlein/meclaw/issues/922)), whose librarian's corpus carries the
+proxy platform `webhook` and the timer's `catch_up`; only the pin moved, so it is the third digit.
 
 Between 1.7.0 and 1.9.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it was
 four and not five. The **submitter** stopped being a hive of this level and became an occupant of the
@@ -588,7 +590,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.1.3"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.1.4"}}
 ```
 
 ```bash
@@ -672,7 +674,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.3"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.4"}],
           "add_edges": []}}
 ```
 
