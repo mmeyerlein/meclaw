@@ -1,4 +1,4 @@
-# `builder@1.18.1`
+# `builder@1.19.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -292,16 +292,17 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 ## A level is a recipe
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
-rewrote from scratch on every build: an organisation gets **18** transit edges, a
-member **18**, an assistant **30**, a channel **4**, a screen **3**, an app
+rewrote from scratch on every build: an organisation gets **20** transit edges, a
+member **20**, an assistant **32**, a channel **4**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
 
 A container level — an org, a member — costs the doors `in_turn`, `in_recall`,
-`in_brief`, `in_propose`, `in_build_result`, `in_export` and `mutation_committed`, and the exits
+`in_brief`, `in_propose`, `in_build_result`, `in_export`, `mutation_committed` and, since
+[#926](https://github.com/mmeyerlein/meclaw/issues/926), `in_stats`, and the exits
 `answer`, `bundle`, `ack`, `reject`, `error`, `write`, `turn_write`, `build`,
-`close_report`, `export_done` and `dump`. The two levels share one renderer
+`close_report`, `export_done`, `dump` and `stats`. The two levels share one renderer
 because they share one contract, lane for lane, one storey apart. `in_import` is
 the lane both accept and neither wires: an import addresses the level's own
 path, so an edge from the container could never deliver one. **The table stood
@@ -312,7 +313,7 @@ of that same set, `examples/memory-import/build_import.py`, had been writing it
 correctly the whole time, and the two are now compared element for element.
 
 **A container's children are ADDRESSES, not a broadcast** ([#478](https://github.com/mmeyerlein/meclaw/issues/478)). Each
-of those seven doors carries the child's own name beside the lane —
+of those eight doors carries the child's own name beside the lane —
 `(!has(context.member) || context.member == '<name>')` for a member,
 `context.org` for an organisation — because `Edge.to` is a static path one storey
 up as well. Without the name, a container holding two children fans every message
@@ -327,7 +328,10 @@ one child. It is the form the assistant level already writes for
 nothing was red, because every colony grown out of it held exactly one member per
 organisation — where an unguarded lane and an address are indistinguishable. Same
 blind spot as [#470](https://github.com/mmeyerlein/meclaw/issues/470), one guard
-over.
+over. One door is strict instead: `in_stats` ([#926](https://github.com/mmeyerlein/meclaw/issues/926))
+asks for one person's counts, so it carries `has(context.member) && context.member == '<name>'`
+(`context.org` for an organisation) and a question that names nobody stops at the
+container as `no_route` rather than being answered by every child.
 
 ### Where a level declares itself
 
@@ -379,7 +383,10 @@ the container and the keeper pairs `in_export` with `export_done` and
 `in_import` with `dump` in `params.required_drains`, and the probe that checks a
 pairing runs the described hop through the real edge evaluator — an edge that
 additionally tested a second hop key reads as no drain at all and the mutation
-is refused.
+is refused. Since [#926](https://github.com/mmeyerlein/meclaw/issues/926) two more
+ride beside them in the same form: `in_stats` down under the same strict
+`context.assistant` guard — a question about one brain names the generation that
+holds it — and `stats` back up on a plain exit.
 
 **Since `1.12.0` it costs one more: the `in_delegation` door**
 ([#803](https://github.com/mmeyerlein/meclaw/issues/803)). Since `member@1.9.0` the level is
@@ -884,7 +891,7 @@ level's own set and behind both older switches, so no index either of them rende
  "modifier": {"set_context": {"assistant": "'<name>'"}}}
 ```
 
-An assistant grown with `door: true` carries **31** edges: the level's own set and this one.
+An assistant grown with `door: true` carries **33** edges: the level's own set and this one.
 The edge takes the level's form. It is `.` → `./<name>` in the container, and
 `./assistants` → `./assistants/<name>` when `subscribe` or `credential` moved the declaration to
 the member. The absolute edge is the same either way, so the door adds no third reason for the

@@ -13,16 +13,15 @@
 //!     quarantined `cell_task` concurrency unit test.)
 //!   * (b) WORKER-PANIC ISOLATION: a panicking worker does NOT kill the
 //!     dispatcher — a follow-up message is still served.
-//!   * (c) DISPATCHER RESTART: when the dispatcher task dies, the colony
-//!     supervisor restarts it (real `RespawnFn`), and the restarted dispatcher
-//!     serves messages again.
+//!   * (c) DISPATCHER RESTART: when the dispatcher task dies (a real panic of
+//!     the task, reported by the colony's own watcher), the colony supervisor
+//!     restarts it (real `RespawnFn`), and the restarted dispatcher serves
+//!     messages again.
 //!
 //! (a)+(b) drive `stateless_dispatcher` directly (no colony) for deterministic
 //! rendezvous; (c) drives the real colony supervisor.
 
-use meclaw_colony::{
-    ColonyMsg, DeathKind, RespawnFn, SpawnedCellKind, StatelessCell, stateless_dispatcher,
-};
+use meclaw_colony::{ColonyMsg, RespawnFn, SpawnedCellKind, StatelessCell, stateless_dispatcher};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, CellOutput, Message, MessageBuilder, OutputSink, Path};
 use meclaw_testing::ColonyHandle;
@@ -247,13 +246,26 @@ async fn worker_panic_does_not_kill_dispatcher() {
 //
 // The dispatcher is robust by design (worker panics + backstops do NOT kill it),
 // so a genuine dispatcher death is only reachable via an actual task panic, which
-// production code never does from cell logic. We therefore inject the death the
-// watcher WOULD emit on a real dispatcher panic — `ColonyMsg::CellDied{Panic}` —
-// for a dispatcher registered with a REAL `RespawnFn`, and assert the colony
-// supervisor restarts it into a live dispatcher. (The watcher→`CellDied`-on-panic
-// emission is separately unit-pinned in `spawn_watcher` tests; the
+// production code never does from cell logic. The test therefore owns a kill
+// switch around the FIRST dispatcher task: firing it makes that task panic for
+// real, the colony's own watcher sees the panic and emits
+// `ColonyMsg::CellDied{Panic}`, and the supervisor restarts the dispatcher
+// through its REAL `RespawnFn`. (The watcher→`CellDied`-on-panic emission is
+// separately unit-pinned in `spawn_watcher` tests; the
 // `handle_cell_died{Panic}→respawn` restart in `handle_cell_died_panic_restarts`.
 // This composes both halves for a real stateless dispatcher end-to-end.)
+//
+// GH #920: this test used to SEND that `CellDied{Panic}` itself, for a
+// dispatcher that was still alive. The restart then swapped the entry's sender,
+// the old dispatcher's mailbox closed, the old task ended normally, and its
+// still-armed watcher reported `CellDied{Normal}` for the same path, which
+// removes the entry -- the fresh one (`handle_cell_died` is keyed by path).
+// Whether the probe below was served depended on whether it reached the colony
+// inbox before that second report: a race between the test task and three
+// hops on the colony side, lost once under integration-gate load (30 s marker,
+// "restarted /disp never emitted to /sink"). Production never reports a death
+// for a live task -- only the watcher emits `CellDied`, once, after the join --
+// so the synthetic death was the fault, not the supervisor.
 
 /// Stateless cell that emits one fixed UBF message to `/sink` per message — the
 /// positive liveness signal (a `/sink` receipt ⟺ the dispatcher is live).
@@ -282,14 +294,18 @@ impl StatelessCell for EmitToSinkCell {
 /// Spawn a fresh `EmitToSinkCell` dispatcher and return the Active wiring. The
 /// `RespawnFn` re-invokes this same builder, so the colony supervisor can restart
 /// the dispatcher on death (Phase-5 corridor: the respawn closure is await-free).
+/// `kill` arms the FIRST task only: sending on it makes that task panic, which is
+/// the one dispatcher death production can see (see the section comment). The
+/// respawned generations carry no switch.
 /// `spawn_count` is bumped synchronously on every (re)spawn — the deterministic
-/// proof that the supervisor actually called the `RespawnFn` (without it, the
-/// still-alive old task could serve the post-death probe and mask a no-op).
+/// proof that the supervisor actually called the `RespawnFn`, and the event the
+/// test waits on before it probes the restarted dispatcher.
 fn spawn_emit_dispatcher(
     path: Path,
     outputs_tx: mpsc::Sender<CellEmission>,
     colony_inbox_tx: mpsc::Sender<ColonyMsg>,
     spawn_count: Arc<AtomicUsize>,
+    kill: oneshot::Receiver<()>,
 ) -> SpawnedCellKind {
     let (tx, rx) = mpsc::channel::<Message>(64);
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
@@ -302,7 +318,7 @@ fn spawn_emit_dispatcher(
     let disp_path = path.clone();
     spawn_count.fetch_add(1, Ordering::SeqCst);
     let join = tokio::spawn(async move {
-        stateless_dispatcher(
+        let dispatcher = stateless_dispatcher(
             disp_path,
             rx,
             disp_outputs,
@@ -315,8 +331,13 @@ fn spawn_emit_dispatcher(
             Some(death_ack_tx),
             None,
             None,
-        )
-        .await;
+        );
+        // `Ok(())` and not `_`: a dropped switch is no death, the arm just
+        // disables itself and the dispatcher runs on.
+        tokio::select! {
+            () = dispatcher => {}
+            Ok(()) = kill => panic!("pre14_a3: injected dispatcher death (test kill switch)"),
+        }
     });
 
     // RespawnFn: re-spawn the dispatcher with fresh channels. Restarted cells lose
@@ -363,11 +384,36 @@ fn spawn_emit_dispatcher(
     }
 }
 
-async fn recv_bounded(rx: &mut mpsc::Receiver<Message>, what: &str) {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
-        .await
-        .unwrap_or_else(|_| panic!("30s failure-marker: {what}"))
-        .unwrap_or_else(|| panic!("/sink tap closed: {what}"));
+/// Wait for one `/sink` receipt; on the 30 s failure marker, name what the
+/// colony dead-lettered meanwhile (target + reason), so a red run says whether
+/// the probe was lost and why instead of only that nothing arrived.
+async fn recv_bounded(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, what: &str) {
+    match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => panic!("/sink tap closed: {what}"),
+        Err(_) => panic!(
+            "30s failure-marker: {what} -- dead letters: {:?}",
+            dead_letter_summary(h).await
+        ),
+    }
+}
+
+/// `(original target, reason)` of every dead letter the colony holds; drains it.
+///
+/// The drain is itself a round trip through the colony inbox, and a wedged
+/// colony task is one of the faults the failure markers above exist to report.
+/// So the diagnosis has a deadline of its own (5 s): past it, the marker still
+/// panics with its text instead of hanging until the runner's own timeout.
+async fn dead_letter_summary(h: &ColonyHandle) -> Vec<String> {
+    match tokio::time::timeout(Duration::from_secs(5), h.drain_dead_letters()).await {
+        Ok(letters) => letters
+            .iter()
+            .map(|d| format!("{} {:?}", d.original_target.as_str(), d.reason))
+            .collect(),
+        Err(_) => {
+            vec!["<unknown: the colony did not answer the dead-letter drain within 5 s>".into()]
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -383,11 +429,13 @@ async fn dispatcher_death_is_restarted_by_supervisor() {
 
     // Register /disp as an Active stateless dispatcher with a REAL respawn.
     let spawn_count = Arc::new(AtomicUsize::new(0));
+    let (kill_tx, kill_rx) = oneshot::channel::<()>();
     let disp = spawn_emit_dispatcher(
         Path::new("/disp"),
         h.runtime().outputs_tx,
         h.inbox_tx.clone(),
         spawn_count.clone(),
+        kill_rx,
     );
     h.register_spawned(Path::new("/disp"), disp).await;
     // W2 (A1): /disp emission to /sink now needs a wired edge (identity gone).
@@ -406,31 +454,51 @@ async fn dispatcher_death_is_restarted_by_supervisor() {
     // Baseline liveness: a probe to /disp emits to /sink.
     h.send_from(Path::new("/"), probe("/disp", json!({"messages": []})))
         .await;
-    recv_bounded(&mut sink_rx, "baseline /disp emission never reached /sink").await;
+    recv_bounded(
+        &h,
+        &mut sink_rx,
+        "baseline /disp emission never reached /sink",
+    )
+    .await;
 
-    // Inject the dispatcher death the watcher would emit on a real panic.
-    h.inbox_tx
-        .send(ColonyMsg::CellDied {
-            path: Path::new("/disp"),
-            death_kind: DeathKind::Panic,
-        })
-        .await
-        .expect("colony inbox closed");
+    // Kill the dispatcher task for real: it panics, the colony's watcher sees
+    // the panic and reports `CellDied{Panic}` -- the only death report there is.
+    kill_tx
+        .send(())
+        .expect("the first dispatcher is alive to be killed");
+
+    // Wait until the supervisor has called the RespawnFn. `handle_cell_died`
+    // swaps the entry's sender in the same await-free corridor, before the
+    // colony takes its next inbox message, so a probe sent after this point is
+    // routed to the NEW dispatcher. Without the wait, a probe could reach the
+    // colony while the dead task's mailbox is still the registered one.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while spawn_count.load(Ordering::SeqCst) < 2 {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "30s failure-marker: the supervisor never respawned the killed dispatcher \
+                 -- dead letters: {:?}",
+                dead_letter_summary(&h).await
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
 
     // After the supervisor restart, /disp serves again: a fresh probe emits to
     // /sink → positive receipt ⟹ the restarted dispatcher is live.
     h.send_from(Path::new("/"), probe("/disp", json!({"messages": []})))
         .await;
     recv_bounded(
+        &h,
         &mut sink_rx,
         "restarted /disp never emitted to /sink — supervisor did not restart the dispatcher",
     )
     .await;
 
-    // The receipt above is served by the NEW dispatcher (the colony processes the
-    // CellDied — swapping in the respawned sender — before the FIFO-later Route).
-    // `spawn_count == 2` is the unambiguous proof the supervisor actually invoked
-    // the RespawnFn (a no-op restart would leave it at 1, served by the old task).
+    // The receipt above is served by the NEW dispatcher: the old task is dead,
+    // its mailbox gone with it. `spawn_count == 2` is the unambiguous proof the
+    // supervisor invoked the RespawnFn exactly once (a no-op restart would
+    // leave it at 1, a second restart would make it 3).
     assert_eq!(
         spawn_count.load(Ordering::SeqCst),
         2,

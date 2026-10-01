@@ -16,7 +16,7 @@
 //! signal must wait for it. Same fixture, same 60 s budget, opposite verdicts.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 /// How long the cell stays inside `handle()` in the trip case.
@@ -140,6 +140,74 @@ fn capture_files(dir: &std::path::Path) -> (std::fs::File, std::fs::File) {
     )
 }
 
+/// The line the trip reporter writes for a FATAL trip, verbatim up to the
+/// reason (`crates/meclaw-cli/src/lib.rs`, the task that writes every trip
+/// down). The two non-fatal variants continue `watchdog trip (` instead of
+/// `watchdog trip — `, so this prefix names the trip that ends the process and
+/// no other: under load the independent witness can miss a window, and such a
+/// trip is written down as `uncorroborated` while the colony keeps running.
+const FATAL_TRIP_LINE: &str = "meclaw: watchdog trip — ";
+
+/// Stop our own child before a failure marker panics: `Child` does not kill on
+/// drop, and the unwind would otherwise close its stdin (the EOF door, up to one
+/// cell sleep long) while the temp root is deleted under the running process.
+fn fail_with_child(child: &mut Child, message: String) -> ! {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("{message}");
+}
+
+/// Block until `stderr.txt` in `root` holds a line starting with `prefix`;
+/// return when it was seen. Panics after 30 s (the failure-marker convention of
+/// these files) with the stderr it had.
+fn wait_for_stderr_line(
+    root: &std::path::Path,
+    prefix: &str,
+    child: &mut Child,
+) -> std::time::Instant {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let stderr = std::fs::read_to_string(root.join("stderr.txt")).unwrap_or_default();
+        if stderr.lines().any(|l| l.starts_with(prefix)) {
+            return std::time::Instant::now();
+        }
+        if std::time::Instant::now() >= deadline {
+            fail_with_child(
+                child,
+                format!("no stderr line starting with {prefix:?} within 30 s -- stderr: {stderr}"),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Block until the root lease is gone, i.e. until `run_with_hooks_tuned` has
+/// returned; panic after 30 s with the stderr it had.
+///
+/// The lease guard lives to the end of that function (`lease.rs`, and the
+/// comment at `lease::acquire` in `lib.rs`), which is past the shutdown door,
+/// the colony's teardown and the abort of the stdin reader. A vanished lease
+/// while the test still holds stdin open therefore says: the process chose its
+/// door and walked through it without the EOF door ever being on offer. Only
+/// the runtime is still waiting, for the blocking stdin read it cannot cancel.
+fn wait_until_lease_released(root: &std::path::Path, child: &mut Child) {
+    let lease = root.join(meclaw_cli::lease::LEASE_DIR);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while lease.exists() {
+        if std::time::Instant::now() >= deadline {
+            fail_with_child(
+                child,
+                format!(
+                    "the run never ended while stdin was open (lease still held after 30 s) \
+                     -- stderr: {}",
+                    std::fs::read_to_string(root.join("stderr.txt")).unwrap_or_default()
+                ),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// A trip with a LARGE drain budget still ends fast, and still ends non-zero.
 ///
 /// The two-sided assertion is the discriminator: a non-zero exit alone would
@@ -150,21 +218,39 @@ fn capture_files(dir: &std::path::Path) -> (std::fs::File, std::fs::File) {
 /// The timing bound is a semantic discriminator, so it is tight and argued: the
 /// cell sits inside `handle()` for 20 s and the drain has 60 s to wait for it,
 /// so a draining trip cannot end before the budgets the CLI puts in its way
-/// (pre-#47: 10 s of ack wait plus 5 s of join wait). A trip that skips the
-/// drain ends in boot time plus teardown — well under a second on an idle box,
-/// plus the deliberate 800 ms below. Five seconds sits between those, and the
-/// measured values were 0.9 s with the change and 16 s without it.
+/// (pre-#47: 10 s of ack wait plus 5 s of join wait) -- at least 15 s after the
+/// trip. A trip that skips the drain ends in teardown time. Five seconds sits
+/// between those; the measured values were 0.9 s with the change and 16 s
+/// without it, both counted from the spawn. The clock now starts at the fatal
+/// trip line instead of the spawn: boot time is the host's property, not the
+/// door's, and a bound that also counted a slow boot on a loaded runner would
+/// be a second race hidden inside the discriminator. Counted from the trip,
+/// the bound carries one premise: today a draining trip would end at the
+/// cell's quiescence, 20 s after the cell started, so it only overruns 5 s if
+/// the fatal trip lands within 15 s of that start. It lands ~60-100 ms after the
+/// watchdog is armed, the window the cell starts in; only 15 s of unbroken
+/// `uncorroborated` trips together with a draining regression could hollow the
+/// bound out. The stdout check at the end does not rest on that premise: a
+/// trip that skips the drain never delivers the answer in flight.
 ///
-/// **Why stdin is closed 800 ms in, and why that is not the shutdown.** The
-/// direct-mode stdin reader sits in a blocking read (`tokio::io::stdin`), which
-/// `abort()` cannot cancel and which the runtime waits for on its way out; a
-/// process whose stdin stays open therefore never leaves, whatever ended its
-/// colony. That is a property of the bridge and predates this lane — it was
-/// measured with `shutdown_drain_timeout_ms: 0`, byte-exact pre-#47 behaviour,
-/// and the process outlived its SIGTERM until the writing end was closed. The
-/// close here is that release and nothing else: the trip fires ~60 ms after
-/// boot, so the shutdown door has been chosen long before, and the exit code
-/// plus the stderr line below say which one it was.
+/// **Why stdin stays open until the run has ended, and why closing it is not
+/// the shutdown.** The direct-mode stdin reader sits in a blocking read
+/// (`tokio::io::stdin`), which `abort()` cannot cancel and which the runtime
+/// waits for on its way out; a process whose stdin stays open therefore never
+/// leaves, whatever ended its colony. That is a property of the bridge and
+/// predates this lane -- it was measured with `shutdown_drain_timeout_ms: 0`,
+/// byte-exact pre-#47 behaviour, and the process outlived its SIGTERM until the
+/// writing end was closed. The close is that release and nothing else, and the
+/// test makes it so by construction: it waits for the fatal trip line
+/// ([`FATAL_TRIP_LINE`]) and then for the root lease to be released
+/// ([`wait_until_lease_released`]) before it lets go of stdin. The EOF is a
+/// door of its own (a graceful shutdown, exit 0), so a close that lands before
+/// the trip has been acted on races the trip for the shutdown select.
+///
+/// GH #914: this test used to close stdin after a fixed 800 ms, on the
+/// assumption that the trip fires ~60 ms after boot. On a loaded CI runner
+/// (run 36601260904, shard 2 of 3) boot plus trip took longer than that, the
+/// close arrived first, and the process took the EOF door with status 0.
 #[test]
 fn a_watchdog_trip_skips_the_drain_and_still_exits_non_zero() {
     let td = tempfile::TempDir::new().unwrap();
@@ -182,7 +268,6 @@ fn a_watchdog_trip_skips_the_drain_and_still_exits_non_zero() {
     .unwrap();
 
     let (out, err) = capture_files(td.path());
-    let t0 = std::time::Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_meclaw"))
         .arg("--root")
         .arg(td.path())
@@ -195,15 +280,18 @@ fn a_watchdog_trip_skips_the_drain_and_still_exits_non_zero() {
     let mut stdin = child.stdin.take().expect("stdin piped");
     writeln!(stdin, "line-0").unwrap();
     stdin.flush().unwrap();
-    // The trip has fired and been acted on by now; see the doc comment.
-    std::thread::sleep(Duration::from_millis(800));
+    // The trip has been reported as fatal, and the run has ended through the
+    // door it chose, before stdin is let go; see the doc comment.
+    let tripped_at = wait_for_stderr_line(td.path(), FATAL_TRIP_LINE, &mut child);
+    wait_until_lease_released(td.path(), &mut child);
     drop(stdin);
 
     let status = child
         .wait()
         .expect("the trip must end the process, not hang");
-    let took = t0.elapsed();
+    let took = tripped_at.elapsed();
 
+    let stdout = std::fs::read_to_string(td.path().join("stdout.txt")).unwrap();
     let stderr = std::fs::read_to_string(td.path().join("stderr.txt")).unwrap();
     assert!(
         !status.success(),
@@ -215,7 +303,16 @@ fn a_watchdog_trip_skips_the_drain_and_still_exits_non_zero() {
     );
     assert!(
         took < Duration::from_secs(5),
-        "a trip must not sit out the {DRAIN_BUDGET_MS} ms drain budget — took {took:?}"
+        "a trip must not sit out the {DRAIN_BUDGET_MS} ms drain budget — took {took:?} \
+         from the fatal trip line to the exit"
+    );
+    // The clock-free half of the discriminator: the answer in flight is the
+    // drain's receipt (the counterpart below requires exactly this line), and a
+    // trip that walked past the drain never delivers it.
+    assert!(
+        !stdout.lines().any(|l| l == "line-0"),
+        "a trip must not deliver the answer that was in flight -- that is a drain; \
+         stdout was: {stdout:?}"
     );
 }
 

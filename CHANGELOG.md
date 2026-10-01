@@ -12,6 +12,27 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-10-01
+A curator's ledger knows which round each line belongs to and gives a round only what it was there for; a curator counts
+its own ledger on request, and the colony's control loop gets the lanes to measure goals per role from those counts and to
+change a text only behind an evaluation, shipped with every goal disabled and wired to nothing yet; restoring a message's
+TTL is a contract at named seams.
+
+### Added
+
+- **A curator's ledger carries the audience of each round** ([#925](https://github.com/mmeyerlein/meclaw/issues/925)). Every row `curator@1.3.0` writes carries `audience_set`, the audience of the round that caused it, and every reader -- the history tools, the window, the handover and summary blocks and the write at close -- serves a row only to a round that lies within it; a history tool called without a round is answered `missing_audience`, the window and the handover of a round-less call take only the running session's rows that declare no round either or name `*`, a pin without a round is refused, a row without the column reaches no round that declares one, the ledger marks a tool error, a clarifying question and a rewritten standing instruction once each, and a tool error names its tool only when the round's menu carries it.
+- **A curator counts its own ledger** ([#926](https://github.com/mmeyerlein/meclaw/issues/926)). The lane `in_stats` answers on `stats` with exact counts of calls and marks per kind inside a time window, samples that carry metadata only, with references handed out per answer instead of the ledger's ids, and `truncated` when the scan budget ran out; `talky@6.3.0`, `cogny@5.5.0` and `assistant@3.4.0` carry it, the assistant picking the brain by `hop.stats_role`, and the containers above pass a question only to the member and the generation it names, never to all of them.
+- **The control loop gets the lanes to measure goals per role and to change a text only behind an evaluation** ([#927](https://github.com/mmeyerlein/meclaw/issues/927)). `argus@1.3.0` can ask a curator for its counts on `stats`, hear them on `in_stats` and let its judge decide on the rates, and it applies a change to a text slot only when an evaluation lane returns a passing verdict on a large enough batch; a text of a class the charter marks `never` is refused, persona and behaviour are only proposed to the owner. It ships with every goal disabled, and nothing is wired to its questions, to its evaluation or to the text slot it would change.
+- **The control loop has a read lane and a hint lane** ([#928](https://github.com/mmeyerlein/meclaw/issues/928)). Another part of the colony pages through the charter, the cycles and the hints on `in_read`, and leaves a hint with an origin and a confidence on `in_hint`, which the next judged cycle sees as a hypothesis.
+- **Restoring a message's TTL is a contract at named seams** ([#929](https://github.com/mmeyerlein/meclaw/issues/929)). Every restoring edge in the shipped templates sits on one of the seams the specification names, a lint keeps it so, and chain-length locks pin that every measured segment spends no more than 48 of the 64 routing decisions; a generation's `in_turn` door now restores, and the finished document turn of `file-space@1.1.1` no longer does.
+
+### Fixed
+
+- **A replaced cron order no longer fires at its old moment** ([#913](https://github.com/mmeyerlein/meclaw/issues/913)). A strike already in flight when its order is modified or re-armed fires only if its moment belongs to the current expression; a forced fire still fires.
+- **A judge cannot order a revert** ([#930](https://github.com/mmeyerlein/meclaw/issues/930)). In `steward@2.1.3` a judge answer with `op: revert` is refused as `judge_cannot_revert`; a revert runs only on its own route.
+- **A history read decides release and re-read from what the round can see** ([#931](https://github.com/mmeyerlein/meclaw/issues/931)). Whether a block counts as released, and so whether a later read marks it as re-read, is decided only from the marks the asking round may see.
+- **Two test rigs wait for the event instead of a clock** ([#914](https://github.com/mmeyerlein/meclaw/issues/914), [#920](https://github.com/mmeyerlein/meclaw/issues/920)). The watchdog-trip test waits for the fatal trip line and the released lease instead of a fixed 800 ms, the supervisor-restart test kills its dispatcher instead of forging a death notice for a live task, and the quarantine entry that carried the second one is gone.
+
 ## [0.53.0] — 2026-09-30
 A proxy takes verified webhooks from outside and hands each on as one message, and a one-shot timer can
 fire once after a stop that made it miss its moment.

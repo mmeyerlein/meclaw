@@ -77,7 +77,7 @@ const SCRIPTED: &[Scripted] = &[
     Scripted {
         template: "argus",
         cell: "meter",
-        knobs: &[("max_ledger_rows", "_int")],
+        knobs: &[("max_ledger_rows", "_int"), ("hint_limit", "_int")],
         documented: &[],
     },
     Scripted {
@@ -318,7 +318,7 @@ fn nothing_in_the_three_templates_reads_a_behaviour_knob_out_of_the_environment(
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("probe_window_sec", 120)` is the
 /// value a cell uses when its config says nothing, and comparing the text is
-/// the complete check over all eighteen scripted knobs.
+/// the complete check over all nineteen scripted knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let mut total = 0usize;
@@ -386,9 +386,11 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
             group.cell
         );
     }
+    // Nineteen since GH #927: the meter's `hint_limit` (how many open hints a
+    // judge is shown) joined the inventory as a param from its first day.
     assert_eq!(
-        total, 18,
-        "the scripted half of the migration is eighteen knobs"
+        total, 19,
+        "the scripted half of the migration is nineteen knobs"
     );
 }
 

@@ -1,6 +1,6 @@
-# `argus@1.2.2`
+# `argus@1.3.0`
 
-The colony's watcher and its control loop, as a hive of seven cells. It is what
+The colony's watcher and its control loop, as a hive of eight cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
 
 > **Renamed from `steward` in [#462](https://github.com/mmeyerlein/meclaw/issues/462),
@@ -19,6 +19,7 @@ turns "the system can improve itself" from a claim into something you can check.
 | `mutator` | `code` | re-checks the decision, then sends it to the named cell as a params update |
 | `probe` | `code` | the immediate health check |
 | `receipts` | `store` | one append-only row per cycle |
+| `door` | `code` | reads the record and takes a hint, for another part of the colony |
 | `clock` | `timer` | the tick (six-field Quartz cron, **UTC**) |
 
 ## The loop
@@ -82,7 +83,12 @@ to avoid.
 
 ## Radius v1
 
-Autonomous: **model choice** and **numeric params** (caps, tiers). Nothing else,
+Autonomous: **model choice** and **numeric params** (caps, tiers). Since
+[#927](https://github.com/mmeyerlein/meclaw/issues/927) the charter's `rule:radius`
+also names **text slots**: a text change of a class in `rule:slot-classes` leaves
+on `eval` first and on `slot_update` only after a large enough evaluation batch
+backed it, `rule:owner-only` classes are proposed and never applied, and
+`rule:never` (identity) is refused before any other check. Nothing else,
 and the mechanism is the reason rather than the rule: a params update can only
 move a param of one cell. It cannot add a cell, remove one, or move an edge,
 because nothing in this hive authors a mutation diff at all.
@@ -358,7 +364,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.2.2",
+ "nodes": [{"name": "argus", "template": "argus@1.3.0",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},

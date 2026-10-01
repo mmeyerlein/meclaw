@@ -1095,6 +1095,8 @@ fn parse_address_line(line: &str, name: &str, pages: usize) -> Option<(String, S
 
 /// One row of the colony's message log, as far as this file reads it.
 struct Logged {
+    id: String,
+    parent: Option<String>,
     from: String,
     to: String,
     ttl: i64,
@@ -1141,15 +1143,18 @@ fn colony_account(root: &std::path::Path) -> Vec<String> {
     out
 }
 
-/// OR-FJ.I.21: a document turn reaches the assistants with no less TTL than
-/// it left the firewall with -- the TTL a text turn arrives with. The ingest
+/// OR-FJ.I.21, narrowed by GH #929: a document turn reaches the assistants
+/// with at least the floor below, and the door of the generation it enters
+/// restores it to 63 again. The ingest
 /// detour (store, extract, write, derive with its embedding and summary
 /// rounds) spends the hop budget: measured before the fix, both turns (2 and
 /// 30 pages) left the firewall with ttl=55 and reached the assistants with
 /// ttl=10 of 64, and every emission of the assistant inherits that rest (the
-/// double's `file_read` died `ttl_expired` at `store -> read`). `./ingest -> .` on `turn` restores it (GH #82), the way talky's and
-/// cogny's seams do for their own new journeys; its two requests out of
-/// `ingest` restore it for the detour itself.
+/// double's `file_read` died `ttl_expired` at `store -> read`). The two
+/// requests out of `ingest` restore it for the detour itself; since GH #929
+/// the finished turn leaves the space without a restore, because the door of
+/// the generation it enters (`in_turn`, two decisions behind the container
+/// this double stands for) restores it again.
 fn check_turn_ttl(root: &std::path::Path) {
     let log = message_log(root);
     let route = |r: &Logged| {
@@ -1173,13 +1178,29 @@ fn check_turn_ttl(root: &std::path::Path) {
         .map(|r| r.ttl)
         .collect();
     // m-2 of the closing review: the detour itself lives on the budget too.
-    // `./ingest -> ./extract` and `./ingest -> ./write` restore it (a cell
-    // emission; a hive's own `. -> ./ingest` would not, the substrate applies
-    // `restore_ttl` in the cell-emission arm only), so a `path_taken` retry
-    // or a turn that came in short cannot starve the chain inside the space.
+    // `./ingest -> ./extract` and `./ingest -> ./write` restore it, so a
+    // `path_taken` retry or a turn that came in short cannot starve the chain
+    // inside the space. (A hive's own out-edge restores in the transit too,
+    // GH #929 `s0_a_hive_out_edge_restores_in_transit`.) Only the detour
+    // counts: what the double sends once the turn is in (its `file_read`)
+    // starts, in a real member, behind the generation's `in_turn` door, which
+    // restores (GH #929) -- the double stands where the container stands and
+    // has no such door.
+    let by_id: std::collections::HashMap<&str, &Logged> =
+        log.iter().map(|r| (r.id.as_str(), r)).collect();
+    let after_the_turn = |r: &Logged| {
+        let mut at = Some(r);
+        while let Some(x) = at {
+            if x.to == "/person/assistants" {
+                return true;
+            }
+            at = x.parent.as_deref().and_then(|p| by_id.get(p).copied());
+        }
+        false
+    };
     let in_space = log
         .iter()
-        .filter(|r| r.to.starts_with("/person/file-space/"))
+        .filter(|r| r.to.starts_with("/person/file-space/") && !after_the_turn(r))
         .map(|r| r.ttl)
         .min()
         .unwrap_or(0);
@@ -1205,11 +1226,19 @@ fn check_turn_ttl(root: &std::path::Path) {
         2,
         "two document turns reached the assistants"
     );
-    let floor = left_firewall.iter().copied().max().unwrap_or(0);
+    // GH #929: the turn carries what the segment from the space's last
+    // restoring edge (63 behind it) to the generation's door may leave -- at
+    // most 48 spent (reserve 16), plus 2: the two decisions are `TO_THE_DOOR`
+    // of the chain lock, counted here from the arrival itself, so this floor is
+    // one decision stricter than the lock (which counts them from the arrival's
+    // parent) -- it can be red where the lock is green, never the other way
+    // round. The lock measures the small document; this floor holds both, the
+    // 30-page one included.
+    const FLOOR: i64 = 63 - 48 + 2;
     assert!(
-        arrived.iter().all(|t| *t >= floor),
-        "a document turn reaches the assistants with at least the TTL it left the firewall \
-         with ({floor}); arrived with {arrived:?}"
+        arrived.iter().all(|t| *t >= FLOOR),
+        "a document turn reaches the assistants with at least {FLOOR} of its budget \
+         (left the firewall with {left_firewall:?}); arrived with {arrived:?}"
     );
 }
 
@@ -1217,8 +1246,8 @@ fn message_log(root: &std::path::Path) -> Vec<Logged> {
     let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
     let mut st = conn
         .prepare(
-            "SELECT from_path, to_path, headers, body_kind, body_payload, ttl FROM message_log \
-             ORDER BY rowid",
+            "SELECT from_path, to_path, headers, body_kind, body_payload, ttl, id, \
+             parent_message_id FROM message_log ORDER BY rowid",
         )
         .expect("message_log");
     st.query_map([], |r| {
@@ -1229,6 +1258,8 @@ fn message_log(root: &std::path::Path) -> Vec<Logged> {
             body_kind: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
             body: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
             ttl: r.get::<_, Option<i64>>(5)?.unwrap_or_default(),
+            id: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            parent: r.get::<_, Option<String>>(7)?,
         })
     })
     .expect("query")

@@ -123,7 +123,24 @@ struct Hive {
     /// reads that carry `body` count apart as `blocks:body`): how much of the
     /// wall a call read, which is what a bounded read is measured by.
     reads: BTreeMap<String, usize>,
+    /// GH #925: the audience every wall row and mark this test sows carries
+    /// (`audience_set`, stored as given) -- `ROUND_E` unless the test sets
+    /// another; `None` sows a row from before the rule.
+    audience: Option<String>,
+    /// GH #925: the round a `history_in` call is served in
+    /// (`context.audience_set`, a TEXT as the colony carries it) -- `ROUND_E`
+    /// unless the test sets another; `Value::Null` declares none.
+    round: Value,
+    /// GH #925 (OR-BD-74): the store messages the ledger answered -- one
+    /// ledger round trip each, two routing decisions on the chain of a
+    /// history call (GH #929 S3).
+    trips: usize,
 }
+
+/// GH #925: the one round the harness gives what it sows and what it asks
+/// unless a test names another, so every test written before the gate reads
+/// the wall it sowed.
+const ROUND_E: &str = r#"["member:e"]"#;
 
 impl Hive {
     fn new() -> Self {
@@ -195,6 +212,9 @@ impl Hive {
             summ: VecDeque::new(),
             stderr: Vec::new(),
             reads: BTreeMap::new(),
+            audience: Some(ROUND_E.to_string()),
+            round: json!(ROUND_E),
+            trips: 0,
         }
     }
 
@@ -264,6 +284,7 @@ impl Hive {
     fn store(&mut self, msg: &Msg) -> Msg {
         use meclaw_cells::store::ops::dispatch;
         use meclaw_cells::store::output::{BundleLeg, build_bundle_result, build_tool_result};
+        self.trips += 1;
         let calls: Vec<Value> = msg
             .messages()
             .into_iter()
@@ -381,8 +402,14 @@ impl Hive {
     fn lane_from(&mut self, route: &str, context: Value, hop: Value, body: Value, reply_to: &str) {
         let mut hop = obj(hop);
         hop.insert("route".into(), json!(route));
+        // GH #925: a message the colony hands in carries its round; a test
+        // that names none gets the harness's, one that names `null` keeps it.
+        let mut context = obj(context);
+        if !context.contains_key("audience_set") {
+            context.insert("audience_set".into(), json!(ROUND_E));
+        }
         let msg = Msg {
-            context: obj(context),
+            context,
             hop,
             body: obj(body),
             reply_to: reply_to.to_string(),
@@ -488,22 +515,26 @@ impl Hive {
                 rusqlite::params![hash, kind, chars, body, when],
             )
             .expect("a block");
+        // GH #925: the row carries the audience of the round that sowed it
+        // (`self.audience`; NULL for a row from before the rule).
         self.db
             .execute(
                 "INSERT INTO wall (seq, session_id, turn_id, iter, kind, hash, nth, final, \
-                 episode_idx, at) VALUES (?1, ?2, ?3, 0, ?4, ?5, 0, 1, NULL, ?6)",
-                rusqlite::params![seq, session, turn, kind, hash, when],
+                 episode_idx, at, audience_set) \
+                 VALUES (?1, ?2, ?3, 0, ?4, ?5, 0, 1, NULL, ?6, ?7)",
+                rusqlite::params![seq, session, turn, kind, hash, when, self.audience],
             )
             .expect("a wall row");
     }
 
-    /// One `marks` row (README § 2, written by T's TRIM and topic ingress).
+    /// One `marks` row (README § 2, written by T's TRIM and topic ingress),
+    /// with the audience of the round that wrote it (GH #925, `self.audience`).
     fn mark(&mut self, seq: i64, session: &str, turn: &str, kind: &str, value: &str) {
         self.db
             .execute(
-                "INSERT INTO marks (seq, session_id, turn_id, kind, value, at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![seq, session, turn, kind, value, at(28, 12)],
+                "INSERT INTO marks (seq, session_id, turn_id, kind, value, at, audience_set) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![seq, session, turn, kind, value, at(28, 12), self.audience],
             )
             .expect("a mark (the `marks` table is the ledger's since GH #892)");
     }
@@ -519,8 +550,9 @@ impl Hive {
 
     fn history_in(&mut self, session: &str, turn: &str, name: &str, args: Value) -> (Msg, Value) {
         self.out.clear();
+        // GH #925: the round the call is served in (`self.round`, null = none).
         let ctx = json!({"session_id": session, "turn_id": turn, "iter": "1",
-                         "curator_call": "cc-893"});
+                         "curator_call": "cc-893", "audience_set": self.round.clone()});
         let hop = json!({"tool_name": name, "tool_call_id": CALL});
         let body = json!({"messages": [{"origin": "assistant", "type": "tool_call", "id": CALL,
                                         "text": args.to_string()}]});
@@ -1116,9 +1148,9 @@ fn read_a_released_block_whole_and_mark_reread() {
     // TRIM released the answer of session s1 by the id the window showed --
     // `./intake` writes the 12 hex digits without `#` (OR-KY.T.4).
     h.mark(5, "s1", "t1", "release", &w.noted[..12]);
-    // The question of s1 was released (a `#` form is read too) and pinned
-    // again later: the later word wins (OR-KY.T.13), it is no released block.
-    h.mark(6, "s1", "t1", "release", &short(&w.ada));
+    // The question of s1 was released and pinned again later: the later word
+    // wins (OR-KY.T.13), it is no released block.
+    h.mark(6, "s1", "t1", "release", &w.ada[..12]);
     h.mark(7, "s1", "t1", "pin", &w.ada[..12]);
     let (m, p) = h.history_in(
         "s-now",
@@ -1747,7 +1779,8 @@ fn the_hive_takes_the_call_and_hands_back_the_result() {
         ("read_budget", 40_000),
         ("scan_budget", 5_000),
         ("time_budget_ms", 3_000),
-        ("page_rows", 250),
+        // 400 since OR-BD-78: the longest search inside the GH #929 reserve.
+        ("page_rows", 400),
     ] {
         assert_eq!(cell["params"][knob], default, "{knob}");
         assert_eq!(
@@ -1940,4 +1973,1451 @@ fn the_curator_hands_a_channel_scope_on_unchanged() {
         "no allow half: every tool stays, the history tools with them"
     );
     assert_eq!(scoped(Value::Null), Value::Null, "no scope, no scope");
+}
+
+// ====================================== 4b. what a round may read of the wall
+
+/// A round as the colony stamps it (GH #925): a JSON array of `member:<name>`,
+/// carried as TEXT.
+fn round(names: &[&str]) -> String {
+    let members: Vec<String> = names.iter().map(|n| format!("member:{n}")).collect();
+    sj::to_string(&members).expect("a JSON array")
+}
+
+/// The text of the one answer, as the model reads it.
+fn text_of(m: &Msg) -> String {
+    m.messages()[0]["text"]
+        .as_str()
+        .expect("a text")
+        .to_string()
+}
+
+/// GH #925: a row reaches a round iff its audience holds the round -- what was
+/// said before {e, a, b} in another session is found, read and shown with its
+/// neighbours by a round of {e, a}.
+#[test]
+fn a_round_finds_what_a_wider_audience_heard_in_another_session() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    h.audience = Some(round(&["e", "a", "b"]));
+    let wide = h.sow(
+        1_000,
+        "s1",
+        "t1",
+        "user",
+        &user("The ferry leaves at nine."),
+        &at(20, 10),
+    );
+    let reply = h.sow(
+        1_001,
+        "s1",
+        "t1",
+        "assistant",
+        &said("Nine it is."),
+        &at(20, 10),
+    );
+    h.round = json!(round(&["e", "a"]));
+    let (m, p) = h.history(
+        "history_search",
+        json!({"query": "ferry leaves", "context": 1}),
+    );
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(ids(&p, "hits"), vec![short(&wide)], "{p}");
+    assert_eq!(p["hits"][0]["session_id"], "s1", "another session: {p}");
+    assert_eq!(ids(&p["hits"][0], "after"), vec![short(&reply)], "{p}");
+    let (m, p) = h.history("history_read", json!({"id": short(&wide)}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(p["blocks"][0]["block"], user("The ferry leaves at nine."));
+    let (_, p) = h.history("history_read", json!({"from_turn": "t1"}));
+    assert_eq!(ids(&p, "blocks"), vec![short(&wide), short(&reply)], "{p}");
+    let (_, p) = h.history("history_outline", json!({}));
+    assert_eq!(p["sessions"][0]["session_id"], "s1", "{p}");
+    // The answer goes back into the round it was asked in.
+    assert_eq!(m.context["audience_set"], json!(round(&["e", "a"])));
+}
+
+/// GH #925: a round WIDER than a row's audience finds nothing of it -- what
+/// {e, a, b} or {e, a} heard is not said before {e, a, b, c}. The outline
+/// names neither their sessions nor their topics, and a hidden row or topic
+/// mark inside a session the round may see moves no turn and names no topic.
+#[test]
+fn a_wider_round_finds_nothing_said_before_fewer() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    h.audience = Some(round(&["e", "a", "b"]));
+    h.sow(
+        1_000,
+        "s-three",
+        "t1",
+        "user",
+        &user("The code word is heron."),
+        &at(20, 10),
+    );
+    h.mark(
+        10,
+        "s-three",
+        "t1",
+        "topic",
+        &topic("start", "the code word"),
+    );
+    h.audience = Some(round(&["e", "a"]));
+    h.sow(
+        2_000,
+        "s-two",
+        "t2",
+        "user",
+        &user("The code word is still heron."),
+        &at(21, 10),
+    );
+    h.mark(
+        20,
+        "s-two",
+        "t2",
+        "topic",
+        &topic("start", "the second code"),
+    );
+    h.audience = Some(round(&["e", "a", "b", "c"]));
+    let open = h.sow(
+        3_000,
+        "s-four",
+        "t3",
+        "user",
+        &user("Hello to all four of us, heron fans."),
+        &at(22, 10),
+    );
+    h.mark(30, "s-four", "t3", "topic", &topic("start", "the greeting"));
+    // Inside the session the round may see: a later turn and a topic that
+    // only {e, a} heard.
+    h.audience = Some(round(&["e", "a"]));
+    h.sow(
+        3_001,
+        "s-four",
+        "t4",
+        "user",
+        &user("Just between the two of us: heron."),
+        &at(22, 11),
+    );
+    h.mark(
+        31,
+        "s-four",
+        "t4",
+        "topic",
+        &topic("start", "the private plan"),
+    );
+    h.round = json!(round(&["e", "a", "b", "c"]));
+    let (m, p) = h.history("history_search", json!({"query": "heron"}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(ids(&p, "hits"), vec![short(&open)], "{p}");
+    assert_eq!(p["total_hits"], 1, "a hidden hit is not counted: {p}");
+    assert_eq!(p["scanned"], 1, "a hidden row is not counted: {p}");
+    let (m, p) = h.history("history_outline", json!({}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(
+        p["sessions"],
+        json!([{"session_id": "s-four", "first_turn": "t3", "last_turn": "t3", "turns": 1,
+                "first_at": at(22, 10), "last_at": at(22, 10),
+                "topics": [{"name": "the greeting", "from_turn": "t3", "to_turn": "t3",
+                            "open": true}]}]),
+        "{p}"
+    );
+    assert_eq!(p["omitted_sessions"], 0, "{p}");
+    let text = text_of(&m);
+    for trace in ["s-three", "s-two", "code", "private", "t4"] {
+        assert!(!text.contains(trace), "`{trace}` in the outline: {text}");
+    }
+}
+
+/// GH #925: a sibling round -- {e, b} beside {e, a} -- neither finds nor reads
+/// the other's row. By its id, its turn or a range that reaches into it, the
+/// answer is `not_found` word for word as for an id or a turn this wall never
+/// carried, and an id that names a hidden block beside a visible one is no
+/// ambiguity: a hidden row leaves no id and no count behind.
+#[test]
+fn a_sibling_round_neither_finds_nor_reads_a_row() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    h.audience = Some(round(&["e", "a"]));
+    let secret = h.sow(
+        1_000,
+        "s1",
+        "t-secret",
+        "user",
+        &user("The spare key is under the blue pot."),
+        &at(20, 10),
+    );
+    h.audience = Some(round(&["e", "b"]));
+    let own = h.sow(
+        2_000,
+        "s2",
+        "t2",
+        "user",
+        &user("Where is the spare key?"),
+        &at(21, 10),
+    );
+    h.round = json!(round(&["e", "b"]));
+    let (m, p) = h.history("history_search", json!({"query": "spare key"}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(ids(&p, "hits"), vec![short(&own)], "{p}");
+    assert_eq!(p["total_hits"], 1, "{p}");
+    assert_eq!(p["scanned"], 1, "{p}");
+    assert!(!text_of(&m).contains("blue pot"), "{p}");
+
+    let foreign = sha256_hex(&canonical(&user("never said on this wall")));
+    let (m, as_foreign) = h.history("history_read", json!({"id": short(&foreign)}));
+    assert_eq!(error_of(&m), "not_found", "{as_foreign}");
+    let as_foreign = as_foreign
+        .to_string()
+        .replace(&foreign[..12], &secret[..12]);
+    for id in [short(&secret), secret.clone()] {
+        let (m, p) = h.history("history_read", json!({"id": id}));
+        assert_eq!(error_of(&m), "not_found", "{id}: {p}");
+        assert_eq!(
+            p.to_string(),
+            as_foreign,
+            "the same words as an id no wall carries"
+        );
+    }
+
+    let (_, unknown) = h.history("history_read", json!({"from_turn": "t-unknown"}));
+    let unknown = unknown.to_string().replace("t-unknown", "t-secret");
+    for range in [
+        json!({"from_turn": "t-secret"}),
+        json!({"from_turn": "t-secret", "to_turn": "t2"}),
+    ] {
+        let (m, p) = h.history("history_read", range.clone());
+        assert_eq!(error_of(&m), "not_found", "{range}: {p}");
+        assert_eq!(
+            p.to_string(),
+            unknown,
+            "{range}: a turn this wall never had"
+        );
+    }
+
+    let (m, p) = h.history("history_outline", json!({}));
+    assert_eq!(p["sessions"].as_array().map(Vec::len), Some(1), "{p}");
+    assert_eq!(p["sessions"][0]["session_id"], "s2", "{p}");
+    assert!(!text_of(&m).contains("t-secret"), "{p}");
+
+    // Two blocks share a prefix, one of them hidden: the prefix names the one
+    // this round may see, and the hidden one is no candidate.
+    let a = format!("abcdef012345{}", "0".repeat(52));
+    let b = format!("abcdef012345{}", "1".repeat(52));
+    h.audience = Some(round(&["e", "a"]));
+    h.sow_as(&a, 3_000, "s1", "t5", "user", &user("first"), &at(22, 1));
+    h.audience = Some(round(&["e", "b"]));
+    h.sow_as(&b, 3_001, "s2", "t6", "user", &user("second"), &at(22, 2));
+    let (m, p) = h.history("history_read", json!({"id": "#abcdef012345"}));
+    assert_eq!(error_of(&m), "", "no ambiguity: {p}");
+    assert_eq!(p["blocks"][0]["block"], user("second"), "{p}");
+    assert!(p.get("candidates").is_none(), "{p}");
+    // One block on the wall twice, once hidden: read where the round may see
+    // it, and counted once.
+    let twice = user("said twice");
+    h.audience = Some(round(&["e", "a"]));
+    let hash = h.sow(4_000, "s1", "t7", "user", &twice, &at(23, 1));
+    h.audience = Some(round(&["e", "b"]));
+    h.sow(4_001, "s2", "t8", "user", &twice, &at(23, 2));
+    let (m, p) = h.history("history_read", json!({"id": short(&hash)}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(p["blocks"][0]["session_id"], "s2", "{p}");
+    assert_eq!(p["blocks"][0]["seq"], 4_001, "{p}");
+    assert_eq!(p["blocks"][0]["appearances"], 1, "{p}");
+}
+
+/// GH #925: a call whose round declares no audience -- none at all, empty
+/// text, or text that is no JSON array -- is refused with `missing_audience`
+/// before a single ledger read, for every tool. The round is named before the
+/// arguments: no argument the model could fix would make the call readable.
+#[test]
+fn a_call_without_a_round_is_refused_before_a_read() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let w = sown(&mut h);
+    for no_round in [
+        Value::Null,
+        json!(""),
+        json!("member:e"),
+        json!(r#"{"member": "e"}"#),
+    ] {
+        h.round = no_round.clone();
+        for (tool, args) in [
+            ("history_search", json!({"query": "Ada"})),
+            ("history_read", json!({"id": short(&w.ada)})),
+            ("history_read", json!({"from_turn": "t1"})),
+            ("history_outline", json!({})),
+            ("history_search", json!({"query": "   "})),
+        ] {
+            h.reads.clear();
+            let (m, p) = h.history(tool, args.clone());
+            assert_eq!(
+                error_of(&m),
+                "missing_audience",
+                "{tool} {args} in {no_round}: {p}"
+            );
+            assert_eq!(p["error"], "missing_audience", "{p}");
+            assert!(
+                p["detail"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("audience_set")),
+                "the detail names what is missing: {p}"
+            );
+            // `count_read` files every select, an empty one too.
+            assert!(
+                h.reads.is_empty(),
+                "{tool} in {no_round}: not one ledger read: {:?}",
+                h.reads
+            );
+        }
+    }
+    h.round = Value::Null;
+    let (m, _) = h.history("history_rewrite", json!({}));
+    assert_eq!(
+        error_of(&m),
+        "unknown_tool",
+        "a tool this hive never serves"
+    );
+    assert!(h.rows("SELECT * FROM marks").is_empty());
+}
+
+/// GH #925 (OR-BD-5): a row from before the rule carries no audience and
+/// reaches no round -- not even the declared empty one, which every row WITH
+/// an audience reaches.
+#[test]
+fn a_row_from_before_the_rule_reaches_no_round() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    h.audience = None;
+    let old = h.sow(
+        1_000,
+        "s-old",
+        "t-old",
+        "user",
+        &user("An old remark about the garden."),
+        &at(20, 10),
+    );
+    h.audience = Some(round(&["e"]));
+    let new = h.sow(
+        2_000,
+        "s-new",
+        "t-new",
+        "user",
+        &user("A new remark about the garden."),
+        &at(21, 10),
+    );
+    h.audience = None;
+    h.mark(
+        5,
+        "s-new",
+        "t-new",
+        "topic",
+        &topic("start", "the old plan"),
+    );
+    h.round = json!("[]");
+    let (m, p) = h.history("history_search", json!({"query": "garden"}));
+    assert_eq!(error_of(&m), "", "the empty round is declared: {p}");
+    assert_eq!(ids(&p, "hits"), vec![short(&new)], "{p}");
+    let (m, _) = h.history("history_read", json!({"id": short(&old)}));
+    assert_eq!(error_of(&m), "not_found");
+    let (m, _) = h.history("history_read", json!({"from_turn": "t-old"}));
+    assert_eq!(error_of(&m), "not_found");
+    let (m, p) = h.history("history_outline", json!({}));
+    assert_eq!(
+        p["sessions"],
+        json!([{"session_id": "s-new", "first_turn": "t-new", "last_turn": "t-new",
+                "turns": 1, "first_at": at(21, 10), "last_at": at(21, 10), "topics": []}]),
+        "{p}"
+    );
+    assert!(!text_of(&m).contains("old"), "{p}");
+}
+
+/// GH #925: a neighbour the round may not see is no neighbour -- the nearest
+/// row it may see stands in its place, and not a word of the hidden one is in
+/// the answer.
+#[test]
+fn a_neighbour_of_another_round_is_left_out() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let first = h.sow(1, "s1", "t1", "user", &user("first words"), &at(20, 1));
+    h.audience = Some(round(&["a"]));
+    let aside = h.sow(
+        2,
+        "s1",
+        "t2",
+        "user",
+        &user("an aside for someone else"),
+        &at(20, 2),
+    );
+    h.audience = Some(ROUND_E.to_string());
+    let hit = h.sow(
+        3,
+        "s1",
+        "t3",
+        "user",
+        &user("the needle itself"),
+        &at(20, 3),
+    );
+    h.audience = None;
+    let old = h.sow(
+        4,
+        "s1",
+        "t4",
+        "assistant",
+        &said("an old reply"),
+        &at(20, 4),
+    );
+    h.audience = Some(round(&["e", "a"]));
+    let last = h.sow(5, "s1", "t5", "assistant", &said("last words"), &at(20, 5));
+    for width in [1, 2] {
+        let (m, p) = h.history(
+            "history_search",
+            json!({"query": "needle", "context": width}),
+        );
+        assert_eq!(error_of(&m), "", "{p}");
+        assert_eq!(ids(&p, "hits"), vec![short(&hit)], "{p}");
+        assert_eq!(ids(&p["hits"][0], "before"), vec![short(&first)], "{p}");
+        assert_eq!(ids(&p["hits"][0], "after"), vec![short(&last)], "{p}");
+        let text = text_of(&m);
+        for trace in ["aside", "old reply", "t2", "t4", &aside[..12], &old[..12]] {
+            assert!(!text.contains(trace), "`{trace}`: {text}");
+        }
+    }
+}
+
+/// GH #925: a turn range reads the rows the round may see and skips the rest
+/// without a gap -- no block, no size, no count of the hidden ones. A bound
+/// whose turn holds only hidden rows is a turn this wall never had.
+#[test]
+fn a_range_skips_the_rows_it_may_not_show() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let ask = user("what is the plan?");
+    let q = h.sow(1, "s1", "t1", "user", &ask, &at(20, 1));
+    h.audience = Some(round(&["b"]));
+    h.sow(
+        2,
+        "s1",
+        "t1",
+        "assistant",
+        &said("the plan for b only"),
+        &at(20, 1),
+    );
+    h.audience = Some(ROUND_E.to_string());
+    let all = said("the plan for all");
+    let a = h.sow(3, "s1", "t1", "assistant", &all, &at(20, 1));
+    h.audience = Some(round(&["b"]));
+    h.sow(4, "s1", "t2", "user", &user("b's own turn"), &at(20, 2));
+    h.audience = Some(ROUND_E.to_string());
+    let and_later = user("and later");
+    let later = h.sow(5, "s1", "t3", "user", &and_later, &at(20, 3));
+    let (m, p) = h.history("history_read", json!({"from_turn": "t1", "to_turn": "t3"}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(
+        ids(&p, "blocks"),
+        vec![short(&q), short(&a), short(&later)],
+        "{p}"
+    );
+    assert_eq!(p["skipped_history"], 0, "{p}");
+    assert_eq!(
+        p["size"],
+        canonical(&ask).len() + canonical(&all).len() + canonical(&and_later).len(),
+        "the size of what it shows: {p}"
+    );
+    assert!(!text_of(&m).contains("b only"), "{p}");
+    let (_, unknown) = h.history("history_read", json!({"from_turn": "t9"}));
+    for range in [
+        json!({"from_turn": "t2"}),
+        json!({"from_turn": "t1", "to_turn": "t2"}),
+    ] {
+        let (m, p) = h.history("history_read", range.clone());
+        assert_eq!(error_of(&m), "not_found", "{range}: {p}");
+        assert_eq!(
+            p.to_string(),
+            unknown.to_string().replace("t9", "t2"),
+            "{range}"
+        );
+    }
+}
+
+/// GH #925: the `reread` mark a read writes carries the round that read
+/// (`audience_of(context.audience_set)`), and a `release` mark another round
+/// wrote is not this round's to see -- its block is read as not released and
+/// marks no re-read.
+#[test]
+fn a_reread_mark_carries_the_round() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    h.audience = Some(round(&["e", "a", "b"]));
+    let kept = h.sow(
+        1_000,
+        "s1",
+        "t1",
+        "user",
+        &user("Ada Quill keeps the lighthouse."),
+        &at(20, 10),
+    );
+    let noted = h.sow(1_001, "s1", "t1", "assistant", &said("Noted."), &at(20, 10));
+    h.mark(5, "s1", "t1", "release", &kept[..12]);
+    h.audience = Some(round(&["b"]));
+    h.mark(6, "s1", "t1", "release", &noted[..12]);
+    // The round arrives as the colony writes it, unsorted and with spaces.
+    h.round = json!(r#"["member:e", "member:a"]"#);
+    let (m, p) = h.history("history_read", json!({"id": short(&kept)}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(p["blocks"][0]["released"], true, "{p}");
+    assert_eq!(
+        h.rows("SELECT value, audience_set FROM marks WHERE kind = 'reread'"),
+        vec![vec![
+            json!(kept.clone()),
+            json!(r#"["member:a","member:e"]"#)
+        ]],
+        "one `reread` mark, in the round's canonical audience"
+    );
+    let (m, p) = h.history("history_read", json!({"id": short(&noted)}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(
+        p["blocks"][0]["released"], false,
+        "a release another round wrote: {p}"
+    );
+    assert_eq!(
+        h.rows("SELECT * FROM marks WHERE kind = 'reread'").len(),
+        1,
+        "and no re-read of it"
+    );
+}
+
+/// GH #931: `released` -- and the `reread` mark a read writes -- is decided
+/// by the `release`/`pin` marks the round may see. The read took the newest
+/// `scan_budget` such marks of the whole ledger and gated them after, so marks
+/// of another round pushed the round's own out: under `scan_budget` 10 a block
+/// released by a visible mark read as not released from 10 hidden newer marks
+/// on (9 left it right), and a range of five released blocks lost them one by
+/// one (`-RRRR` at 6, `-----` and no `reread` mark from 10 on). Now a read
+/// takes the marks of its own blocks only, the newest `scan_budget` of them the
+/// round may see, and hidden marks count toward the row bound alone: below it
+/// the answer is the one without them, at it every wall answers in the one cut
+/// form of `history_read`, without a number, and writes no `reread` mark.
+#[test]
+fn released_is_decided_by_the_marks_the_round_may_see() {
+    if !shipped() {
+        return;
+    }
+    // One block `x`, released by a visible mark; `k` hidden marks newer than
+    // it, of other blocks (`same` false) or of `x` itself (pins, `same` true).
+    let by_id = |k: i64, same: bool| -> (String, Value, usize) {
+        let mut h = Hive::with(&[("history", "scan_budget", json!(10))]);
+        h.audience = Some(ROUND_E.to_string());
+        let x = h.sow(100, "s1", "t1", "user", &user("block x"), &at(20, 1));
+        h.mark(1, "s1", "t1", "release", &x[..12]);
+        h.audience = Some(round(&["a"]));
+        for j in 0..k {
+            if same {
+                h.mark(2 + j, "s-x", "tx", "pin", &x[..12]);
+            } else {
+                h.mark(
+                    2 + j,
+                    "s-x",
+                    "tx",
+                    "release",
+                    &format!("{:012x}", 0xabc000 + j),
+                );
+            }
+        }
+        h.audience = Some(ROUND_E.to_string());
+        let (code, p, _) = asked(&mut h, "history_read", json!({"id": short(&x)}));
+        let rereads = h.rows("SELECT * FROM marks WHERE kind = 'reread'").len();
+        (code, p, rereads)
+    };
+    let (code, plain, rereads) = by_id(0, false);
+    assert_eq!(code, "", "{plain}");
+    assert_eq!(plain["blocks"][0]["released"], true, "{plain}");
+    assert_eq!(rereads, 1);
+    for k in [9, 10, 25, 100] {
+        assert_eq!(
+            by_id(k, false),
+            (String::new(), plain.clone(), 1),
+            "{k} hidden marks of other blocks moved the read"
+        );
+    }
+    // Hidden marks of the block itself: below the row bound (twice
+    // `scan_budget` marks of the read's blocks, fewer than `scan_budget` of
+    // them visible) nothing moves -- a hidden pin is no later word.
+    for k in [10, 18] {
+        assert_eq!(
+            by_id(k, true),
+            (String::new(), plain.clone(), 1),
+            "{k} hidden pins of the block moved the read"
+        );
+    }
+    let cut: Vec<(String, Value, usize)> = [19, 25, 40].iter().map(|&k| by_id(k, true)).collect();
+    for (code, p, rereads) in &cut {
+        assert_eq!(code, "too_large", "{p}");
+        assert_eq!(
+            keys(p),
+            ["budget", "detail", "error", "tool"],
+            "the cut form and nothing else: {p}"
+        );
+        assert_eq!(p["budget"], 40000, "{p}");
+        assert_eq!(*rereads, 0, "a cut read marks no re-read");
+    }
+    assert!(
+        cut.windows(2).all(|w| w[0] == w[1]),
+        "one form on every wall at the bound: {cut:?}"
+    );
+
+    // A range of five blocks, each released by a visible mark, under `k`
+    // hidden newer marks of other blocks.
+    let range = |k: i64| -> (Value, usize) {
+        let mut h = Hive::with(&[("history", "scan_budget", json!(10))]);
+        h.audience = Some(ROUND_E.to_string());
+        for i in 1..=5_i64 {
+            let x = h.sow(
+                100 * i,
+                "s1",
+                &format!("t{i}"),
+                "user",
+                &user(&format!("block x{i}")),
+                &at(20, i as u32),
+            );
+            h.mark(10 * i, "s1", &format!("t{i}"), "release", &x[..12]);
+        }
+        h.audience = Some(round(&["a"]));
+        for j in 0..k {
+            h.mark(
+                1_000 + j,
+                "s-x",
+                "tx",
+                "release",
+                &format!("{:012x}", 0xabc000 + j),
+            );
+        }
+        h.audience = Some(ROUND_E.to_string());
+        let (code, p, _) = asked(
+            &mut h,
+            "history_read",
+            json!({"from_turn": "t1", "to_turn": "t5"}),
+        );
+        assert_eq!(code, "", "{p}");
+        (p, h.rows("SELECT * FROM marks WHERE kind = 'reread'").len())
+    };
+    let (plain, rereads) = range(0);
+    assert_eq!(
+        plain["blocks"]
+            .as_array()
+            .expect("blocks")
+            .iter()
+            .map(|b| b["released"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(true); 5],
+        "{plain}"
+    );
+    assert_eq!(rereads, 5);
+    for k in [6, 10, 30] {
+        assert_eq!(
+            range(k),
+            (plain.clone(), 5),
+            "{k} hidden marks moved the range"
+        );
+    }
+
+    // Blocks no longer compete for one window: a visibly released block stays
+    // released under more than `scan_budget` newer visible marks of others.
+    let mut h = Hive::with(&[("history", "scan_budget", json!(10))]);
+    h.audience = Some(ROUND_E.to_string());
+    let x = h.sow(100, "s1", "t1", "user", &user("block x"), &at(20, 1));
+    h.mark(1, "s1", "t1", "release", &x[..12]);
+    for j in 0..30_i64 {
+        h.mark(
+            2 + j,
+            "s1",
+            "t1",
+            "release",
+            &format!("{:012x}", 0xdef000 + j),
+        );
+    }
+    let (code, p, _) = asked(&mut h, "history_read", json!({"id": short(&x)}));
+    assert_eq!(code, "", "{p}");
+    assert_eq!(p["blocks"][0]["released"], true, "{p}");
+}
+
+/// GH #925 (OR-BD-74): a wall of `needle` rows the round may see (`visible`,
+/// session `s1`) and rows of another round (`hidden`, session `s-other`),
+/// sown in `seq` order under `scan_budget` 10 and `page_rows` 4 -- three
+/// visible pages of four, four and two rows.
+fn needle_wall(visible: &[i64], hidden: &[i64]) -> Hive {
+    let mut h = Hive::with(&[
+        ("history", "scan_budget", json!(10)),
+        ("history", "page_rows", json!(4)),
+    ]);
+    let mut seqs: Vec<i64> = visible.iter().chain(hidden).copied().collect();
+    seqs.sort_unstable();
+    for seq in seqs {
+        let hour = 1 + (seq / 100 % 20) as u32;
+        if hidden.contains(&seq) {
+            h.audience = Some(round(&["a"]));
+            h.sow(
+                seq,
+                "s-other",
+                &format!("th{seq}"),
+                "user",
+                &user(&format!("needle hidden {seq}")),
+                &at(20, hour),
+            );
+        } else {
+            h.audience = Some(ROUND_E.to_string());
+            h.sow(
+                seq,
+                "s1",
+                &format!("t{seq}"),
+                "user",
+                &user(&format!("needle number {seq}")),
+                &at(20, hour),
+            );
+        }
+    }
+    h.audience = Some(ROUND_E.to_string());
+    h
+}
+
+/// One call: its error code, its answer and the ledger round trips it took.
+fn asked(h: &mut Hive, tool: &str, args: Value) -> (String, Value, usize) {
+    h.trips = 0;
+    let (m, p) = h.history(tool, args);
+    (error_of(&m), p, h.trips)
+}
+
+/// The same call on the visible rows alone and with the hidden ones among
+/// them: the same answer, word for word, and at most one ledger round trip
+/// more. Returns the answer.
+fn alike(visible: &[i64], hidden: &[i64], tool: &str, args: Value) -> Value {
+    let (c1, p1, t1) = asked(&mut needle_wall(visible, &[]), tool, args.clone());
+    let (c2, p2, t2) = asked(&mut needle_wall(visible, hidden), tool, args.clone());
+    assert_eq!(
+        (c2.as_str(), &p2),
+        (c1.as_str(), &p1),
+        "{tool} {args}: the hidden rows {hidden:?} moved the answer"
+    );
+    assert!(
+        t2 <= t1 + 1,
+        "{tool} {args}: {t2} ledger round trips, {t1} without the hidden rows"
+    );
+    p1
+}
+
+/// GH #925 (review I-1, OR-BD-74): `scan_budget` and the pages of a search
+/// count only the rows the round may see. Rows of another round among them --
+/// in the newest page, in the last one, after the budget's last row -- move
+/// nothing the answer says: `scanned`, `total_hits`, `cut_by`, the hits and
+/// the page where `limit` stops are those of the same wall without them, so a
+/// cut is no counter of the hidden rows. They may cost one ledger round trip
+/// more (the read that plans the rest), never a page past the bound.
+#[test]
+fn a_budget_counts_only_the_rows_the_round_may_see() {
+    if !shipped() {
+        return;
+    }
+    let visible: Vec<i64> = (1..=14).map(|i| i * 100).collect();
+    // Seven hidden rows, fewer than (2 - 1) x `scan_budget`.
+    let hidden = [1_450, 1_250, 950, 650, 450, 50, 30];
+    let p = alike(
+        &visible,
+        &hidden,
+        "history_search",
+        json!({"query": "needle", "limit": 20}),
+    );
+    assert_eq!(p["scanned"], 10, "{p}");
+    assert_eq!(p["total_hits"], 10, "{p}");
+    assert_eq!(p["cut_by"], "scan_budget", "{p}");
+    assert_eq!(p["hits"].as_array().map(Vec::len), Some(10), "{p}");
+    assert_eq!(p["hits"][9]["seq"], 500, "the tenth visible row: {p}");
+    // `limit` stops at the visible page that fills it and counts it whole.
+    let p = alike(
+        &visible,
+        &hidden,
+        "history_search",
+        json!({"query": "needle", "limit": 5}),
+    );
+    assert_eq!(p["stopped_at_limit"], true, "{p}");
+    assert_eq!(p["total_hits"], 8, "two visible pages: {p}");
+    for args in [
+        json!({"query": "needle", "limit": 1}),
+        json!({"query": "needle", "limit": 6, "context": 1}),
+        json!({"query": "number (3|7|9)00$", "mode": "regex", "limit": 20}),
+    ] {
+        alike(&visible, &hidden, "history_search", args);
+    }
+    // Exactly the budget, then only hidden rows: no cut, as without them.
+    let p = alike(
+        &visible[..10],
+        &[1_450, 50, 40, 30],
+        "history_search",
+        json!({"query": "needle", "limit": 20}),
+    );
+    assert_eq!(p["truncated_scan"], false, "{p}");
+    // The newest page wholly hidden; hidden rows only in the last page.
+    for hidden in [&[1_410, 1_420, 1_430, 1_440][..], &[610, 620, 630][..]] {
+        alike(
+            &visible,
+            hidden,
+            "history_search",
+            json!({"query": "needle", "limit": 20}),
+        );
+    }
+    // The bound: the first read, ceil(10 / 4) + 1 pages, the neighbours' two.
+    let mut h = needle_wall(
+        &visible,
+        &[1_410, 1_420, 1_430, 1_440, 610, 620, 630, 450, 440],
+    );
+    let (_, p, trips) = asked(
+        &mut h,
+        "history_search",
+        json!({"query": "needle", "limit": 20, "context": 1}),
+    );
+    assert_eq!(p["scanned"], 10, "{p}");
+    assert!(trips <= 1 + 4 + 2, "{trips} ledger round trips");
+}
+
+/// The keys of an answer, in order (this crate's `serde_json` keeps a sorted
+/// map).
+fn keys(v: &Value) -> Vec<String> {
+    v.as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The cut form of a search (OR-BD-86): an answer, no hit, no `scanned`, no
+/// `total_hits`, `cut_by` `scan_budget` and the `detail` that names the cut --
+/// nothing a wall could move.
+fn assert_cut_search(code: &str, p: &Value) {
+    assert_eq!(code, "", "a cut search is an answer: {p}");
+    assert_eq!(
+        keys(p),
+        [
+            "cut_by",
+            "detail",
+            "hits",
+            "limit",
+            "mode",
+            "query",
+            "stopped_at_limit",
+            "tool",
+            "truncated_scan"
+        ],
+        "the cut form and nothing else: {p}"
+    );
+    assert_eq!(p["hits"], json!([]), "{p}");
+    assert_eq!(p["cut_by"], "scan_budget", "{p}");
+    assert_eq!(p["truncated_scan"], true, "{p}");
+    assert_eq!(p["stopped_at_limit"], false, "{p}");
+    assert!(
+        p["detail"].as_str().is_some_and(|d| d.contains("since")),
+        "the detail says what brings hits back: {p}"
+    );
+}
+
+/// GH #925 (OR-BD-74, OR-BD-86): hidden rows are read to a bound of their own
+/// -- twice `scan_budget` rows in all, hidden or not -- so a wall full of them
+/// keeps a search finite. Where that bound leaves the answer open the search
+/// answers in the cut form: nothing it read, no field that names the rows it
+/// read (with `scanned` 0 the closing review's counter was hidden; with
+/// visible rows in the read it was 2B - `scanned`). Below it the answer is the
+/// one without them.
+#[test]
+fn hidden_rows_past_their_bound_answer_in_the_cut_form() {
+    if !shipped() {
+        return;
+    }
+    let old = [10, 20, 30];
+    // 25 hidden rows, more than (2 - 1) x `scan_budget`, before three visible.
+    let crowd: Vec<i64> = (100..125).collect();
+    let (code, p, trips) = asked(
+        &mut needle_wall(&old, &crowd),
+        "history_search",
+        json!({"query": "needle", "limit": 8}),
+    );
+    assert_cut_search(&code, &p);
+    for raw in ["20", "25", "28"] {
+        assert!(!p.to_string().contains(raw), "`{raw}` in {p}");
+    }
+    assert!(trips <= 1 + 4, "{trips} ledger round trips");
+    // Nine hidden rows -- below the bound -- leave no trace.
+    let few: Vec<i64> = (100..109).collect();
+    let p = alike(
+        &old,
+        &few,
+        "history_search",
+        json!({"query": "needle", "limit": 8}),
+    );
+    assert_eq!(p["truncated_scan"], false, "{p}");
+    assert_eq!(p["scanned"], 3, "{p}");
+}
+
+/// `history_read` of the turn range `t1`..`t2` under `scan_budget` 10: turn
+/// `t1` holds the first half of `n` rows (`seq` 100, 200, ...), `t2` the
+/// rest; the `hidden` rows (another round's) stand among them in the same
+/// session.
+fn turn_range(n: i64, hidden: &[i64]) -> (String, Value, usize) {
+    let mut h = Hive::with(&[("history", "scan_budget", json!(10))]);
+    let mut seqs: Vec<i64> = (1..=n)
+        .map(|i| i * 100)
+        .chain(hidden.iter().copied())
+        .collect();
+    seqs.sort_unstable();
+    for seq in seqs {
+        let turn = if seq <= n * 50 { "t1" } else { "t2" };
+        let text = if hidden.contains(&seq) {
+            h.audience = Some(round(&["a"]));
+            format!("hidden {seq}")
+        } else {
+            h.audience = Some(ROUND_E.to_string());
+            format!("row {seq}")
+        };
+        h.sow(seq, "s1", turn, "user", &user(&text), &at(20, 1));
+    }
+    h.audience = Some(ROUND_E.to_string());
+    asked(
+        &mut h,
+        "history_read",
+        json!({"from_turn": "t1", "to_turn": "t2"}),
+    )
+}
+
+/// GH #925 (OR-BD-74): an outline covers the newest `scan_budget` rows the
+/// round may see, and a turn range is too large by the rows it may see --
+/// hidden rows neither shorten the one nor refuse the other, and a refusal
+/// names the count the same wall without them names.
+#[test]
+fn an_outline_and_a_range_count_only_the_rows_the_round_may_see() {
+    if !shipped() {
+        return;
+    }
+    let visible: Vec<i64> = (1..=14).map(|i| i * 100).collect();
+    let p = alike(
+        &visible,
+        &[1_450, 1_440, 1_430, 1_250, 950],
+        "history_outline",
+        json!({}),
+    );
+    assert_eq!(p["sessions"][0]["turns"], 10, "{p}");
+    assert_eq!(p["truncated_scan"], true, "{p}");
+    let (c1, p1, t1) = turn_range(8, &[]);
+    let (c2, p2, t2) = turn_range(8, &[150, 250, 350, 450, 550]);
+    assert_eq!(c1, "", "{p1}");
+    assert_eq!(
+        (c2, &p2),
+        (c1, &p1),
+        "eight rows it may see are no range too large"
+    );
+    assert!(t2 <= t1 + 1, "{t2} ledger round trips, {t1} without");
+    let (c1, p1, _) = turn_range(12, &[]);
+    let (c2, p2, _) = turn_range(12, &[150, 250, 350]);
+    assert_eq!(c1, "too_large", "{p1}");
+    assert_eq!(p1["block_count_at_least"], 11, "{p1}");
+    assert_eq!(
+        (c2, &p2),
+        (c1, &p1),
+        "the refusal names what the round may see"
+    );
+}
+
+/// GH #925 (OR-BD-86, closing review I-2): the one bit. Walls with the same
+/// visible rows and different numbers of hidden rows (another round's, on
+/// top of the wall) answer every call of every tool word for word alike --
+/// with the answer of the wall without hidden rows below the row bound, with
+/// the one cut form at it, however many hidden rows there are and whatever
+/// visible hits stand in the read. Under `scan_budget` 10 the closing review
+/// read the hidden count off the answer at the bound: 11/12/14/16/19 hidden ->
+/// `scanned` 9/8/6/4/1, a range's `block_count_at_least` 21 - hidden, and the
+/// sessions of an outline.
+#[test]
+fn past_the_row_bound_every_wall_answers_alike() {
+    if !shipped() {
+        return;
+    }
+    let visible: Vec<i64> = (1..=14).map(|i| i * 100).collect();
+    let on_top = |k: i64| -> Vec<i64> { (1..=k).map(|j| 1_400 + j).collect() };
+    // The search: the newest 20 rows (2 x `scan_budget`) hold `k` hidden ones
+    // and 20 - `k` visible needles -- hits the cut form does not show.
+    for (args, below, at_bound) in [
+        (json!({"query": "needle", "limit": 20}), 9, [10, 13, 19]),
+        (
+            json!({"query": "needle", "limit": 8, "context": 1}),
+            10,
+            [13, 16, 19],
+        ),
+        (
+            json!({"query": "number (3|7|9|11|13)00$", "mode": "regex", "limit": 20}),
+            9,
+            [10, 14, 19],
+        ),
+    ] {
+        alike(&visible, &on_top(below), "history_search", args.clone());
+        let answers: Vec<Value> = at_bound
+            .iter()
+            .map(|&k| {
+                let (code, p, _) = asked(
+                    &mut needle_wall(&visible, &on_top(k)),
+                    "history_search",
+                    args.clone(),
+                );
+                assert_cut_search(&code, &p);
+                p
+            })
+            .collect();
+        assert!(
+            answers.windows(2).all(|w| w[0] == w[1]),
+            "{args}: {at_bound:?} hidden rows, one answer: {answers:?}"
+        );
+    }
+    // The outline: the newest 21 rows hold more than 10 hidden ones.
+    alike(&visible, &on_top(10), "history_outline", json!({}));
+    let outlines: Vec<Value> = [11, 15, 19]
+        .iter()
+        .map(|&k| {
+            let (code, p, _) = asked(
+                &mut needle_wall(&visible, &on_top(k)),
+                "history_outline",
+                json!({}),
+            );
+            assert_eq!(code, "", "{p}");
+            assert_eq!(
+                keys(&p),
+                ["detail", "sessions", "tool", "truncated_scan"],
+                "{p}"
+            );
+            assert_eq!(p["sessions"], json!([]), "{p}");
+            assert_eq!(p["truncated_scan"], true, "{p}");
+            p
+        })
+        .collect();
+    assert!(outlines.windows(2).all(|w| w[0] == w[1]), "{outlines:?}");
+    // The turn range: eight visible rows, `k` hidden ones in turn `t1`; past
+    // 20 rows in all it is refused without a count.
+    let hidden = |k: i64| -> Vec<i64> { (1..=k).map(|j| 100 + j).collect() };
+    let (c1, p1, t1) = turn_range(8, &[]);
+    let (c2, p2, t2) = turn_range(8, &hidden(12));
+    assert_eq!(c1, "", "{p1}");
+    assert_eq!((c2, &p2), (c1, &p1), "twelve hidden rows: the plain read");
+    assert!(t2 <= t1 + 1, "{t2} ledger round trips, {t1} without");
+    let refusals: Vec<Value> = [13, 16, 30]
+        .iter()
+        .map(|&k| {
+            let (code, p, _) = turn_range(8, &hidden(k));
+            assert_eq!(code, "too_large", "{p}");
+            assert_eq!(keys(&p), ["budget", "detail", "error", "tool"], "{p}");
+            assert!(
+                p["detail"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("fewer turns")),
+                "{p}"
+            );
+            p
+        })
+        .collect();
+    assert!(refusals.windows(2).all(|w| w[0] == w[1]), "{refusals:?}");
+}
+
+/// Session `s1` around one `the needle` row: `older` visible rows before it
+/// and `newer` after it (`seq` 1000 apart), with `before` and `after` rows of
+/// another round of the SAME session right beside it.
+fn near_wall(
+    over: &[(&str, &str, Value)],
+    older: i64,
+    newer: i64,
+    before: i64,
+    after: i64,
+) -> Hive {
+    let mut h = Hive::with(over);
+    let needle = (older + 1) * 1_000;
+    let visible = (1..=older + 1 + newer).map(|i| i * 1_000);
+    let hidden = (1..=before)
+        .map(|j| needle - j)
+        .chain((1..=after).map(|j| needle + j));
+    let mut rows: Vec<(i64, bool)> = visible
+        .map(|s| (s, false))
+        .chain(hidden.map(|s| (s, true)))
+        .collect();
+    rows.sort_unstable();
+    for (seq, is_hidden) in rows {
+        let text = if is_hidden {
+            h.audience = Some(round(&["a"]));
+            format!("an aside {seq}")
+        } else {
+            h.audience = Some(ROUND_E.to_string());
+            if seq == needle {
+                "the needle".to_string()
+            } else {
+                format!("row {seq}")
+            }
+        };
+        h.sow(
+            seq,
+            "s1",
+            &format!("t{seq}"),
+            "user",
+            &user(&text),
+            &at(20, 1),
+        );
+    }
+    h.audience = Some(ROUND_E.to_string());
+    h
+}
+
+/// GH #925 (OR-BD-86, closing review I-2): the neighbours of a hit are the
+/// `context` nearest rows the round may see in its session, as on the wall
+/// without hidden rows -- for any number of hidden rows beside it up to the
+/// neighbours' share of the row bound. Before, `context` + 4 rows were read
+/// and hidden ones dropped: 5 (`context` 1) or 6 (`context` 2) hidden rows
+/// beside a hit took a neighbour away. A side whose read holds a hidden row
+/// is read again, wider (one ledger round trip); past its share the whole
+/// search answers in the cut form.
+#[test]
+fn the_neighbours_are_the_nearest_rows_the_round_may_see() {
+    if !shipped() {
+        return;
+    }
+    let ids_of = |p: &Value, side: &str| -> Vec<String> {
+        p["hits"][0][side]
+            .as_array()
+            .unwrap_or_else(|| panic!("`{side}` neighbours: {p}"))
+            .iter()
+            .map(|n| n["excerpt"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    for width in [1, 2] {
+        let args = json!({"query": "needle", "context": width});
+        let (c1, p1, t1) = asked(
+            &mut near_wall(&[], 6, 6, 0, 0),
+            "history_search",
+            args.clone(),
+        );
+        assert_eq!(c1, "", "{p1}");
+        let (before, after) = if width == 1 {
+            (&["row 6000"][..], &["row 8000"][..])
+        } else {
+            (&["row 5000", "row 6000"][..], &["row 8000", "row 9000"][..])
+        };
+        assert_eq!(ids_of(&p1, "before"), before, "{p1}");
+        assert_eq!(ids_of(&p1, "after"), after, "{p1}");
+        for (b, a) in [(1, 0), (5, 0), (6, 6), (0, 6), (8, 3), (40, 40)] {
+            let (c2, p2, t2) = asked(
+                &mut near_wall(&[], 6, 6, b, a),
+                "history_search",
+                args.clone(),
+            );
+            assert_eq!(
+                (c2.as_str(), &p2),
+                (c1.as_str(), &p1),
+                "context {width}, {b} hidden before and {a} after the hit"
+            );
+            assert!(
+                t2 <= t1 + 1,
+                "{t2} ledger round trips, {t1} without the hidden rows"
+            );
+        }
+    }
+    // The neighbours' share of the row bound: `scan_budget` 10 -> 20 rows for
+    // the one side short of its window (`context` 2: six rows the round may
+    // see). `limit` 1 and `page_rows` 1 stop the scan itself after the hit.
+    let over = [
+        ("history", "scan_budget", json!(10)),
+        ("history", "page_rows", json!(1)),
+    ];
+    let args = json!({"query": "needle", "context": 2, "limit": 1});
+    let (c1, p1, _) = asked(
+        &mut near_wall(&over, 20, 0, 0, 0),
+        "history_search",
+        args.clone(),
+    );
+    let (c2, p2, _) = asked(
+        &mut near_wall(&over, 20, 0, 14, 0),
+        "history_search",
+        args.clone(),
+    );
+    assert_eq!(c1, "", "{p1}");
+    assert_eq!(ids_of(&p1, "before"), ["row 19000", "row 20000"], "{p1}");
+    assert_eq!(
+        (c2, &p2),
+        (c1, &p1),
+        "14 hidden rows beside: 20 rows hold six"
+    );
+    let cuts: Vec<Value> = [15, 18]
+        .iter()
+        .map(|&b| {
+            let (code, p, _) = asked(
+                &mut near_wall(&over, 20, 0, b, 0),
+                "history_search",
+                args.clone(),
+            );
+            assert_cut_search(&code, &p);
+            p
+        })
+        .collect();
+    assert_eq!(cuts[0], cuts[1], "one cut form");
+}
+
+// ======================================================= 5. the audience gate
+
+/// The cells of this hive that write or read `wall`, `calls`, `marks`,
+/// `summaries` or `pins` (GH #925) -- `./writer` too: it hands the wall rows
+/// of the session it closes to the memory, and only those the close round may
+/// see (closing review I-3, OR-BD-86).
+const GATED_CELLS: [&str; 6] = ["intake", "policy", "push", "handover", "history", "writer"];
+
+/// The four gate functions of every gated cell, read with `ast`, run against
+/// one table: the affinity rows (`templates/affinity/README.md`) plus the
+/// edges -- `*`, a row without an audience, the declared empty round, a round
+/// that is no JSON array, the round-less read of the running session (only
+/// its rows no round declared, or that name `*`, review M-7), and the
+/// intersection a summary or a handover block carries.
+const GATE_TABLE: &str = r##"# The gate table (GH #925): runs the gate functions of every curator cell that
+# carries them and prints one JSON document. Input: JSON {cell: script} on stdin.
+import ast, json, sys
+NAMES = ("audience_of", "allowed", "passes", "audience_meet")
+scripts = json.load(sys.stdin)
+src_of, results = {}, {}
+E, A, B, C = "member:e", "member:a", "member:b", "member:c"
+L = lambda *xs: json.dumps(list(xs))
+CASES = [
+    ["allowed", [L(E, A, B, C), L(E, A, B)], False],
+    ["allowed", [L(E, A), L(E, A, B)], True],
+    ["allowed", [L(E, B), L(E, A)], False],
+    ["allowed", [L(E, A), L("*")], True],
+    ["allowed", [L(E, A), None], False],
+    ["allowed", [L(E, A), ""], False],
+    ["allowed", ["[]", L(E)], True],
+    ["allowed", [None, L("*")], False],
+    ["allowed", ["not json", L(E, A)], False],
+    ["allowed", ['"member:e"', L(E, A)], False],
+    ["allowed", [[A, E], '["member:e","member:b","member:a"]'], True],
+    ["audience_of", ['["member:e","member:a","member:a"]'], '["member:a","member:e"]'],
+    ["audience_of", [[B, A]], '["member:a","member:b"]'],
+    ["audience_of", ["[]"], "[]"],
+    ["audience_of", [" [ \"*\" ] "], '["*"]'],
+    ["audience_of", [""], None],
+    ["audience_of", [None], None],
+    ["audience_of", ["x"], None],
+    ["audience_of", ['{"a": 1}'], None],
+    ["audience_of", [5], None],
+    ["passes", [{"session_id": "s1"}, None, "s1"], True],
+    ["passes", [{"session_id": "s2", "audience_set": L("*")}, None, "s1"], False],
+    ["passes", [{}, None, ""], False],
+    ["passes", [{"session_id": "s2", "audience_set": L(E, A, B)}, L(E, A), "s1"], True],
+    ["passes", [{"session_id": "s1", "audience_set": L(E)}, L(E, A), "s1"], False],
+    ["passes", [{"session_id": "s1"}, "", "s1"], True],
+    # Review M-7: without a round, a row a declared round said in the running
+    # session stays -- only what no round declared, or what names `*`, passes.
+    ["passes", [{"session_id": "s1", "audience_set": L(E, B)}, None, "s1"], False],
+    ["passes", [{"session_id": "s1", "audience_set": "[]"}, None, "s1"], False],
+    ["passes", [{"session_id": "s1", "audience_set": None}, None, "s1"], True],
+    ["passes", [{"session_id": "s1", "audience_set": L("*")}, None, "s1"], True],
+    ["passes", [{"session_id": "s1", "audience_set": L(E, A)}, "", "s1"], False],
+    ["audience_meet", [[L(E, A, B), L(E, A)]], '["member:a","member:e"]'],
+    ["audience_meet", [[L("*"), L(E, A)]], '["member:a","member:e"]'],
+    ["audience_meet", [[L("*"), L("*")]], '["*"]'],
+    ["audience_meet", [[L(E, A), None]], None],
+    ["audience_meet", [[]], None],
+    ["audience_meet", [[L(E), L(A)]], "[]"],
+]
+for cell, script in sorted(scripts.items()):
+    tree = ast.parse(script)
+    defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in NAMES}
+    src_of[cell] = {k: ast.get_source_segment(script, v) for k, v in defs.items()}
+    ns = {"json": json}
+    for name in NAMES:
+        if name in defs:
+            exec(compile(ast.Module(body=[defs[name]], type_ignores=[]), cell, "exec"), ns)
+    bad = []
+    for fn, args, want in CASES:
+        if fn not in ns:
+            bad.append("%s missing" % fn)
+            continue
+        got = ns[fn](*args)
+        if got != want:
+            bad.append("%s%r = %r, want %r" % (fn, tuple(args), got, want))
+    results[cell] = bad
+print(json.dumps({"sources": src_of, "failures": results}))"##;
+
+#[test]
+fn the_audience_gate_is_one_rule_in_every_cell() {
+    if !shipped() {
+        return;
+    }
+    let scripts: Map<String, Value> = GATED_CELLS
+        .iter()
+        .map(|c| (c.to_string(), Value::String(script_of(c))))
+        .collect();
+    let mut child = Command::new("python3")
+        .arg("-c")
+        .arg(GATE_TABLE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(Value::Object(scripts).to_string().as_bytes())
+        .expect("write the scripts");
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success(),
+        "the table ran: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = sj::from_slice(&out.stdout).expect("one JSON document");
+    for cell in GATED_CELLS {
+        assert_eq!(
+            report["failures"][cell],
+            json!([]),
+            "`{cell}` answers the gate table"
+        );
+    }
+    let first = &report["sources"][GATED_CELLS[0]];
+    for name in ["audience_of", "allowed", "passes", "audience_meet"] {
+        assert!(
+            first[name].is_string(),
+            "`{}` defines `{name}`",
+            GATED_CELLS[0]
+        );
+    }
+    for cell in &GATED_CELLS[1..] {
+        assert_eq!(
+            &report["sources"][cell], first,
+            "`{cell}` carries the gate as the same text as `{}`",
+            GATED_CELLS[0]
+        );
+    }
+}
+
+/// GH #929 reserve, as a history search spends it: every ledger round trip is
+/// two routing decisions on the chain of the call, and the rest of the S3
+/// segment (brain -> dispatcher -> curator -> `./history` -> `tool_result` ->
+/// curator entry) is fixed -- the chain-length lock measured 18 used at four
+/// round trips, so 10.
+const S3_FIXED: usize = 10;
+/// The most a segment between two seams may use: the default ttl 64 less the
+/// reserve 16 (GH #929).
+const SEGMENT_MAX: usize = 64 - 16;
+
+/// GH #925 (OR-BD-78, OR-BD-86): at the SHIPPED settings the longest search
+/// -- the first read, every page `scan_budget` needs, the one read a hidden
+/// row adds (OR-BD-74), the neighbours' two and the one read hidden rows
+/// beside a hit add -- stays inside the GH #929 reserve: 18 ledger round
+/// trips, 46 on the chain. Worked out from `params` first, so a changed knob
+/// fails here before any colony runs, then run: a wall past the budget, the
+/// one hit in its oldest scanned row with `context` 2, one row of another
+/// round on top and six of the hit's own session on either side of it.
+#[test]
+fn the_longest_search_at_the_shipped_settings_fits_the_chain_reserve() {
+    if !shipped() {
+        return;
+    }
+    let params = &cell_config("history")["params"];
+    let knob = |k: &str| -> usize {
+        params[k]
+            .as_u64()
+            .or_else(|| params[k].as_str().and_then(|s| s.parse().ok()))
+            .unwrap_or_else(|| panic!("history `{k}` is a number: {params}")) as usize
+    };
+    let (budget, page) = (knob("scan_budget"), knob("page_rows"));
+    let bound = 1 + budget.div_ceil(page) + 1 + 2 + 1;
+    assert!(
+        S3_FIXED + 2 * bound <= SEGMENT_MAX,
+        "scan_budget {budget} / page_rows {page}: up to {bound} ledger round trips, a \
+         history call of {} on the chain -- over the reserve of {SEGMENT_MAX} (GH #929)",
+        S3_FIXED + 2 * bound
+    );
+
+    let mut h = Hive::new();
+    let newest = budget as i64 + 1_000;
+    let hit = (newest - budget as i64 + 1) * 10;
+    for seq in (1..=newest).map(|i| i * 10) {
+        h.audience = Some(ROUND_E.to_string());
+        let text = if seq == hit {
+            format!("needle number {seq}")
+        } else {
+            format!("hay number {seq}")
+        };
+        h.sow(
+            seq,
+            "s1",
+            &format!("t{seq}"),
+            "user",
+            &user(&text),
+            &at(20, 1),
+        );
+    }
+    h.audience = Some(round(&["a"]));
+    h.sow(
+        newest * 10 + 5,
+        "s-other",
+        "t-other",
+        "user",
+        &user("needle hidden"),
+        &at(20, 2),
+    );
+    for seq in (1..=6).flat_map(|d| [hit - d, hit + d]) {
+        h.sow(
+            seq,
+            "s1",
+            &format!("t{seq}"),
+            "user",
+            &user(&format!("an aside {seq}")),
+            &at(20, 1),
+        );
+    }
+    let (code, p, trips) = asked(
+        &mut h,
+        "history_search",
+        json!({"query": "needle", "limit": 8, "context": 2}),
+    );
+    assert_eq!(code, "", "{p}");
+    assert_eq!(p["total_hits"], 1, "the hit in the oldest scanned row: {p}");
+    assert_eq!(p["cut_by"], "scan_budget", "{p}");
+    let near = |side: &str| -> Vec<String> {
+        p["hits"][0][side]
+            .as_array()
+            .unwrap_or_else(|| panic!("`{side}`: {p}"))
+            .iter()
+            .map(|n| n["excerpt"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    assert_eq!(
+        near("before"),
+        [
+            format!("hay number {}", hit - 20),
+            format!("hay number {}", hit - 10)
+        ],
+        "the nearest rows the round may see, past six hidden ones: {p}"
+    );
+    assert_eq!(
+        near("after"),
+        [
+            format!("hay number {}", hit + 10),
+            format!("hay number {}", hit + 20)
+        ],
+        "{p}"
+    );
+    assert!(
+        trips <= bound,
+        "{trips} ledger round trips, more than the {bound} worked out from the settings"
+    );
 }

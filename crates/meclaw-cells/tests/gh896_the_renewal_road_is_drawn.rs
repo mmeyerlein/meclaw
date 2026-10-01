@@ -21,6 +21,12 @@
 //! `./assistants/<generation>`) are the instantiating mutation's, exactly as
 //! for `delegation` (templates/member/README.md), and are not walked here.
 //!
+//! The round rides the whole road (GH #925): the channel's leg stamps the
+//! call's `context.audience_set` on `renewed` as on every lane it promotes
+//! (templates/voice/README.md), and `./handover` gates what the block may tell
+//! by the round of the renewal it serves -- so no edge of the road may drop or
+//! rewrite it, nor the `session_id` a renewal without a round keeps to.
+//!
 //! Guarded like every template-reading test (GH #49).
 
 use meclaw_colony::cel_eval::{
@@ -107,6 +113,10 @@ fn one(
     got.remove(0)
 }
 
+/// The call's round as the channel's leg stamps it (GH #925): TEXT, one
+/// member.
+const ROUND: &str = r#"["member:e"]"#;
+
 fn obj(v: Value) -> Map<String, Value> {
     v.as_object().cloned().unwrap_or_default()
 }
@@ -119,7 +129,12 @@ fn a_renewal_reaches_the_curator_and_its_handover_reaches_the_call() {
     }
     // Up. What `voice` emits (templates/voice/README.md, lane `renewed`), with
     // the context the channel's own edge minted when the call came in.
-    let ctx = obj(json!({"session_id": "call-9", "channel": "call-9", "channel_node": "phone"}));
+    // The context the channel's own edge minted when the call came in, the
+    // call's round among it.
+    let ctx = obj(
+        json!({"session_id": "call-9", "channel": "call-9", "channel_node": "phone",
+                         "audience_set": ROUND}),
+    );
     let hop = obj(
         json!({"route": "renewed", "session_id": "call-9", "call_id": "call-9",
                          "platform": "voice", "mode": "auto", "engine": "duplex",
@@ -142,6 +157,17 @@ fn a_renewal_reaches_the_curator_and_its_handover_reaches_the_call() {
     let h = one("curator", ".", "./handover", &h.context, &h.hop);
     assert_eq!(h.hop["route"], "in_renewed");
     assert_eq!(h.hop["renewal_n"], 1);
+    assert_eq!(
+        h.context.get("audience_set").and_then(Value::as_str),
+        Some(ROUND),
+        "the renewal reaches the handover in the round of its call, which decides what the \
+         block may tell (GH #925)"
+    );
+    assert_eq!(
+        h.context.get("session_id").and_then(Value::as_str),
+        Some("call-9"),
+        "and with the session a renewal without a round keeps to (OR-BD-4)"
+    );
 
     // Down. What `./handover` emits for it (templates/curator/README.md,
     // route `sidecar`), under the context the renewal came with.
@@ -168,6 +194,11 @@ fn a_renewal_reaches_the_curator_and_its_handover_reaches_the_call() {
     assert_eq!(
         h.context.get("call_id").and_then(Value::as_str),
         Some("call-9")
+    );
+    assert_eq!(
+        h.context.get("audience_set").and_then(Value::as_str),
+        Some(ROUND),
+        "the round rides back with the block"
     );
     let h = one("freeswitch", ".", "./voice", &h.context, &h.hop);
     assert_eq!(h.hop["route"], "in_advise");

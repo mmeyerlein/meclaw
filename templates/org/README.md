@@ -1,4 +1,4 @@
-# `org@2.0.0`
+# `org@2.1.0`
 
 The namespace, and nothing else.
 
@@ -53,15 +53,18 @@ The contract carries exactly what must cross this level to reach or leave a memb
 | accepts | `in_import` | one part of a memory document, on its way into the hive of the member it belongs to. The return leg of `in_export`, and transit in the same sense: the level reads no part and decides nothing about what may enter |
 | emits | `close_report` | the receipt of one close pass: what the strong model added, sharpened, corrected, closed or restated when it read an ended session whole |
 | emits | `export_done` | one member's memory is written out completely, marker file and all |
+| accepts | `in_stats` | a question an observer asks about one brain of one generation of a member: what its curator counted in a window (GH #926). The member hands it on to the generation `context.assistant` names; this level only carries it into `./members` |
+| emits | `stats` | the answer to one `in_stats`, on its way back out to whoever asked, matched by its `hop.stats_tag` |
 
 Each lane's `because` says the same thing in the hive's own words: **the level is a
 boundary and a namespace, not a participant.** It reads nothing, decides nothing and
 holds nothing, and it translates nothing -- hop and context cross untouched.
 
-The internal graph is nineteen edges and nothing else: **eight doors** `.` into
-`./members`, one per accepted lane, and **eleven exits** `./members` back out to `.`, one
+The internal graph is twenty-one edges and nothing else: **nine doors** `.` into
+`./members`, one per accepted lane, and **twelve exits** `./members` back out to `.`, one
 per emitted lane. The pair that arrived with GH #425, the three with GH #447, `pack_ack`
-with GH #458 (gone again since GH #877), `in_import` with GH #467 and `bundle` with GH #533 add no cell
+with GH #458 (gone again since GH #877), `in_import` with GH #467, `bundle` with GH #533 and
+`in_stats`/`stats` with GH #926 add no cell
 and no decision — thinness
 is the property under test here (ADR-0013 corollary b), and a lane pair through an empty
 container is exactly what this level already does for `in_turn`/`answer`. Below the container there is nothing to route to until a member is instantiated,
@@ -74,15 +77,16 @@ level: *a level declares the union of what its occupants accept and emit at the 
 it was derived from, minus the lanes a sibling inside the level consumes itself.*
 
 The occupant of this level is `member`. Its accepts list is `in_turn`, `in_recall`,
-`in_brief`, `in_propose`, `in_build_result`, `in_export`, `in_import`; its emits list is
+`in_brief`, `in_propose`, `in_build_result`, `in_export`, `in_import`, `mutation_committed`,
+`in_stats`; its emits list is
 `answer`, `bundle`, `ack`, `reject`, `error`, `write`, `turn_write`, `build`,
-`close_report`, `export_done`, `dump`. **Nothing is subtracted**, because the only
+`close_report`, `export_done`, `dump`, `stats`. **Nothing is subtracted**, because the only
 thing inside an org is the container -- there is no sibling here to consume anything. So
 the union is the whole of both lists, and every `because` in `config.json` names the
 version it came from.
 
 `write`, `turn_write` and `build` are the member's own pass-through
-of what an assistant raises (`assistant` emits eight lanes; the member consumes `answer`,
+of what an assistant raises (`assistant` emits nine lanes; the member consumes `answer`,
 `recall`, `extraction`, `dump` and, since GH #877, `pack_ack`, **fans** `write` and — since
 [#527](https://github.com/mmeyerlein/meclaw/issues/527) — `turn_write` into its own memory
 hive while still letting the copy go, and lets the rest go untouched). A fan-out one storey
@@ -177,7 +181,7 @@ the first second.
 
 Two mutations, in this order.
 
-1. **The organisation.** One `add_nodes` with the template `org@2.0.0`, plus the transit
+1. **The organisation.** One `add_nodes` with the template `org@2.1.0`, plus the transit
    edges -- one per accepted lane onto the org's own path, and one per emitted lane
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor. The inbound edges carry
@@ -188,7 +192,8 @@ Two mutations, in this order.
 2. **Each member, afterwards, one at a time.** An `add_nodes` into `<org>/members` with
    the `member` template at a pinned version, and in the *same* mutation the edges that
    member needs -- inbound ones guarded on `context.member`, for the same reason and in
-   the same permissive form. The container
+   the same permissive form, except `in_stats` (GH #926), which asks for one person's
+   counts and is guarded strictly at both containers. The container
    is open precisely so that this mutation is legal.
 
 Pin the version rather than writing a bare name: a bare `org` resolves to the highest

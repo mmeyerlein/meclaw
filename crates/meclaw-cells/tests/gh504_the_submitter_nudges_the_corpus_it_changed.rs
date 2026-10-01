@@ -435,7 +435,9 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // 1.18.0 takes `close` and `pins` in `install_app` and pins its librarian at
         // `builder-librarian@2.2.11` (GH #916).
         // 1.18.1 pins its librarian at `builder-librarian@2.2.12` (GH #921, GH #922).
-        "builder@1.18.1"
+        // 1.19.0 draws the `stats` edges in `grow_level` and pins its librarian at
+        // `builder-librarian@2.2.13` (GH #926).
+        "builder@1.19.0"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

@@ -245,6 +245,24 @@ const CONSUMED_INSIDE: &[&str] = &[
 /// never listed here — see `the_org_lanes_cross_this_level_unchanged`.
 const TENANT: &str = "org";
 
+/// GH #926 -- the stats pair, which an organisation and the control loop both
+/// declare under the same two names in opposite directions. An organisation
+/// is ASKED on `in_stats` (what one brain's curator counted) and answers on
+/// `stats`; the control loop ASKS on `stats` and is answered on `in_stats`.
+/// At this rim each route has exactly one meaning, and it is the control
+/// loop's: `in_stats` enters only `./argus`, `stats` leaves only from
+/// `./argus`. The organisation's half gets no door into the container and no
+/// exit out of it here, because the one asker of a curator at this level is
+/// that sibling, and the edge wiring `./argus` to `./orgs` is not drawn yet.
+/// A door on `in_stats` into `./orgs` beside the loop's would hand every
+/// answer meant for the loop to the curators as a question, and a second exit
+/// on `stats` would let two different lanes leave under one name. Asserted as
+/// a decision in
+/// `every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane`.
+const ASKED_BY_A_SIBLING: &[&str] = &["in_stats", "stats"];
+/// The same pair by direction: the organisation's question in, its answer out.
+const ASKED_BY_A_SIBLING_PAIR: (&str, &str) = ("in_stats", "stats");
+
 fn core_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -977,24 +995,90 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
     // The builder pair is skipped here and asserted in its own shape below: its
     // door is not the rim but a SIBLING, which is the whole of what "a level
     // owns what its siblings must share" buys.
-    for route in tenant_in
-        .iter()
-        .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
-    {
+    for route in tenant_in.iter().filter(|r| {
+        !CONSUMED_INSIDE.contains(&r.as_str()) && !ASKED_BY_A_SIBLING.contains(&r.as_str())
+    }) {
         assert!(
             carries(".", &child, route),
             "no `. -> {child}` edge on `{route}` — `{TENANT}` accepts that lane and this level \
              declares it, so the container needs a door for it"
         );
     }
-    for route in tenant_out
-        .iter()
-        .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
-    {
+    for route in tenant_out.iter().filter(|r| {
+        !CONSUMED_INSIDE.contains(&r.as_str()) && !ASKED_BY_A_SIBLING.contains(&r.as_str())
+    }) {
         assert!(
             carries(&child, ".", route),
             "no `{child} -> .` edge on `{route}` — `{TENANT}` emits that lane and this level \
              declares it, so the container needs an exit for it"
+        );
+    }
+
+    // GH #926 -- the stats pair, asserted as the decision it is (see
+    // ASKED_BY_A_SIBLING): the organisation still ships both lanes, each in its
+    // own direction, and at this rim each crosses once, for the control loop.
+    // Asked of the edge table the colony would build, not of the edges' text:
+    // a catch-all `./orgs -> .` on `has(hop.route)` names no lane and still
+    // lets every curator's answer out of the shell.
+    let (question, answer) = ASKED_BY_A_SIBLING_PAIR;
+    assert!(
+        tenant_in.iter().any(|r| r == question),
+        "the exemption of `{question}` is stale: `{TENANT}` no longer accepts it"
+    );
+    assert!(
+        tenant_out.iter().any(|r| r == answer),
+        "the exemption of `{answer}` is stale: `{TENANT}` no longer emits it"
+    );
+    let loop_path = format!("{HIVE}/{LOOP}");
+    let orgs_path = Path::new(&format!("{HIVE}/{CONTAINER}"));
+    let loop_src = Path::new(&loop_path);
+    // Every context any edge of this rim tests for, so a guarded edge is
+    // probed with what it asks for as well as bare.
+    let mut probes = vec![probe_guarded(question, None)];
+    probes.extend(
+        hp.graph
+            .edges
+            .iter()
+            .filter(|e| e.from == "." || e.to == ".")
+            .filter_map(|e| e.condition.as_deref())
+            .map(|c| probe_guarded(question, Some(c))),
+    );
+    for headers in &probes {
+        let targets: Vec<String> = meclaw_colony::edge_table::apply_edges(&table, &hive, headers)
+            .iter()
+            .map(|d| d.target.as_str().to_string())
+            .collect();
+        assert_eq!(
+            targets,
+            vec![loop_path.clone()],
+            "`{question}` enters this rim somewhere other than `{loop_path}` alone \
+             (probe {headers:?}) -- a door into `./{CONTAINER}` would hand the loop's \
+             answers to the curators as questions"
+        );
+    }
+    let answer_probes: Vec<meclaw_core::Headers> = std::iter::once(probe_guarded(answer, None))
+        .chain(
+            hp.graph
+                .edges
+                .iter()
+                .filter(|e| e.to == ".")
+                .filter_map(|e| e.condition.as_deref())
+                .map(|c| probe_guarded(answer, Some(c))),
+        )
+        .collect();
+    for headers in &answer_probes {
+        assert!(
+            !meclaw_colony::edge_table::apply_edges(&table, &orgs_path, headers)
+                .iter()
+                .any(|d| d.target.as_str() == HIVE),
+            "`{answer}` leaves this rim out of `./{CONTAINER}` (probe {headers:?}): one \
+             route, two meanings, and every curator's counts leave the shell"
+        );
+        assert!(
+            meclaw_colony::edge_table::apply_edges(&table, &loop_src, headers)
+                .iter()
+                .any(|d| d.target.as_str() == HIVE),
+            "`{answer}` does not leave this rim out of `{loop_path}` (probe {headers:?})"
         );
     }
 

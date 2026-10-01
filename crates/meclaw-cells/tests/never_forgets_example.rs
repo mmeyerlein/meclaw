@@ -95,7 +95,9 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// all. GH #895 a ninth (`push`): twenty-one from `talky`, twenty-six in all.
 /// GH #896 a tenth (`handover`) carries a session's handover block into the
 /// next one: twenty-two from `talky`, twenty-seven in all. MEASURED.
-const CELLS_AFTER_GROW: usize = 27;
+/// GH #926 an eleventh (`stats`) counts the curator's own ledger on
+/// `in_stats`: twenty-three from `talky`, twenty-eight in all. MEASURED.
+const CELLS_AFTER_GROW: usize = 28;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

@@ -10,6 +10,9 @@
 //! `prune` (GH #889, the chain fell with the collector's lane) and `pack_ack`
 //! (GH #877, the member books every identity receipt at its own `./affinity`,
 //! so none leaves it). Seven doors down, eleven exits up: eighteen edges.
+//! GH #926 adds one pair, `in_stats` down and `stats` up, the stats question
+//! crossing both container levels the way `in_export` does: 7 + 1 = eight
+//! doors, 11 + 1 = twelve exits, 18 + 2 = twenty edges.
 //!
 //! Nothing was red, and the reason is worth naming: the table is pinned byte
 //! for byte against `examples/organism/grow-*.json`
@@ -163,9 +166,9 @@ fn a_grown_container_level_draws_no_exit_for_pack_ack_or_prune() {
         }
         assert_eq!(
             (down(edges, name).len(), exits.len(), edges.len()),
-            (7, 11, 18),
-            "a {level} grown by grow_level no longer renders seven doors and \
-             eleven exits: the exits are {exits:?}"
+            (8, 12, 20),
+            "a {level} grown by grow_level no longer renders eight doors and \
+             twelve exits: the exits are {exits:?}"
         );
     }
     // One level further in, GH #889 took the same exit: an assistant grown by
@@ -232,8 +235,8 @@ fn the_recipe_and_the_import_tool_render_the_same_member_edges() {
     };
     assert_eq!(
         want.len(),
-        18,
-        "the import tool stopped writing eighteen edges — re-read it before \
+        20,
+        "the import tool stopped writing twenty edges — re-read it before \
          trusting this comparison"
     );
     assert_eq!(
@@ -274,4 +277,116 @@ fn the_two_container_levels_are_still_the_same_shape_one_level_apart() {
          (examples/memory-import/build_import.py, edges()), so a container edge \
          for it is one nothing can ever deliver to"
     );
+}
+
+/// The container `.` of one rendered level, as the colony's own edge table
+/// would hold it: every child's edges at once, `.` at `/c`, `./<name>` at
+/// `/c/<name>`, each condition compiled by the substrate's CEL.
+fn container_table(edges: &[Value]) -> meclaw_colony::edge_table::EdgeTable {
+    let abs = |ep: &str| -> String {
+        match ep {
+            "." => "/c".to_string(),
+            other => format!("/c/{}", other.trim_start_matches("./")),
+        }
+    };
+    let mut t = meclaw_colony::edge_table::EdgeTable::new();
+    for e in edges {
+        let condition = e["condition"].as_str().map(|src| {
+            meclaw_colony::cel_eval::parse_condition(src)
+                .unwrap_or_else(|err| panic!("condition {src:?}: {err}"))
+        });
+        t.insert(meclaw_colony::edge_table::Edge {
+            id: meclaw_core::Uuid::now_v7(),
+            from: meclaw_core::Path::new(&abs(e["from"].as_str().unwrap_or_default())),
+            to: meclaw_core::Path::new(&abs(e["to"].as_str().unwrap_or_default())),
+            condition,
+            modifier: None,
+            is_default: e["default"].as_bool().unwrap_or(false),
+            lane: None,
+        });
+    }
+    t
+}
+
+/// The children of `/c` a message on `route` with `context` reaches.
+fn reached(
+    table: &meclaw_colony::edge_table::EdgeTable,
+    route: &str,
+    context: &[(&str, &str)],
+) -> Vec<String> {
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".to_string(), json!(route));
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    for (k, v) in context {
+        ctx.insert((*k).to_string(), json!(v));
+    }
+    let headers = meclaw_core::Headers::from_parts(ctx, hop);
+    let mut out: Vec<String> =
+        meclaw_colony::edge_table::apply_edges(table, &meclaw_core::Path::new("/c"), &headers)
+            .iter()
+            .map(|d| d.target.as_str().to_string())
+            .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn a_stats_question_names_its_child_or_reaches_none() {
+    // GH #926 -- the counts and samples of a curator belong to one person. A
+    // stats question on the permissive guard the other doors carry would be
+    // handed to EVERY child that does not name itself, and each child's answer
+    // would leave under the asker's one tag: the observer would be told about
+    // people it did not address. So `in_stats` is the one door of a container
+    // level on the STRICT guard, the form the assistant level writes for a
+    // turn: without `context.org` / `context.member` no edge fires and the
+    // question stops as `no_route` at the container (fail-closed).
+    for (level, key, scope, names) in [
+        ("org", "org", "/os", ["acme", "beta"]),
+        ("member", "member", "/os/orgs/acme", ["alex", "sam"]),
+    ] {
+        let mut edges = Vec::new();
+        for name in names {
+            edges.extend(rendered_edges(json!({"scope": scope, "level": level,
+                                               "name": name,
+                                               "template": "a-template@1.0.0"})));
+        }
+        let table = container_table(&edges);
+        // The probe fires edges at all: the permissive `in_export` door reaches
+        // both children of a question that names neither.
+        assert_eq!(
+            reached(&table, "in_export", &[]),
+            [format!("/c/{}", names[0]), format!("/c/{}", names[1])],
+            "the {level} probe reaches no child on the permissive `in_export` door"
+        );
+        assert_eq!(
+            reached(&table, "in_stats", &[]),
+            Vec::<String>::new(),
+            "a stats question that names no {key} reached a {level} -- the door is \
+             permissive, and every child would answer under one tag"
+        );
+        assert_eq!(
+            reached(&table, "in_stats", &[(key, names[1])]),
+            [format!("/c/{}", names[1])],
+            "a stats question that names `{}` reached another {level} as well, or not it",
+            names[1]
+        );
+        assert_eq!(
+            reached(&table, "in_stats", &[(key, "nobody")]),
+            Vec::<String>::new(),
+            "a stats question naming no child of this container reached one"
+        );
+    }
+    // The second generator writes the same door.
+    if let Some(want) = import_tool_edges() {
+        let table = container_table(&want);
+        assert_eq!(
+            reached(&table, "in_stats", &[]),
+            Vec::<String>::new(),
+            "examples/memory-import/build_import.py writes a permissive stats door"
+        );
+        assert_eq!(
+            reached(&table, "in_stats", &[("member", "alex")]),
+            ["/c/alex"]
+        );
+    }
 }

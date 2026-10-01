@@ -486,7 +486,14 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// Moved 77 -> 78 with GH #894: `cogny` grew `ask`, the cell that turns the
 /// core's `ask_requester` call into its question back (1 x 1). Derived; the
 /// strand's cargo round measures it.
-const TEMPLATE_BORN_ROWS: usize = 78;
+///
+/// Moved 78 -> 79 with GH #928: `argus` grew `door`, the cell that reads its
+/// record out and takes a hint in, and `grow-argus.json` grows one argus
+/// (1 x 1). Measured red in the strand's single-test run (79 against 78).
+///
+/// Moved 79 -> 82 with GH #926: every `curator` grew an eleventh cell,
+/// `stats`, which counts its own ledger on `in_stats` (3 x 1). MEASURED.
+const TEMPLATE_BORN_ROWS: usize = 82;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -769,7 +776,25 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// the splitter's second road: every section its curator does not take leaves
 /// on `.`). Two talkies and one cogny: 2 x 1 + 1 x 2. Measured red in the
 /// strand gate (372 against 368).
-const EDGES: usize = 372;
+///
+/// Moved 372 -> 377 with GH #927: the one `argus` grown by
+/// `grow-argus.json` draws five edges more -- the doors `. -> ./meter` on
+/// `in_stats` and `. -> ./mutator` on `in_eval`, and the exits `./meter -> .`
+/// on `stats` and `./mutator -> .` on `eval` and on `slot_update`. One argus:
+/// 1 x 5. Measured red in the strand gate (377 against 372).
+///
+/// Moved 377 -> 383 with GH #928: the door of that one argus draws six edges
+/// -- `. -> ./door` on `in_read`/`in_hint`, its two store round trips
+/// (`./door -> ./charter`, `./charter -> ./door`, `./door -> ./receipts`,
+/// `./receipts -> ./door`) and the exit `./door -> .` on `read`/`hint_ack`.
+/// One argus: 1 x 6. Measured in the strand's single-test run (green at 383).
+///
+/// Moved 383 -> 401 with GH #926: every `curator` carries four edges more
+/// (the `in_stats` door onto `./stats`, its two ledger roads, the `stats`
+/// exit), and `talky@6` and `cogny@5` two each of their own (`. -> ./curator`
+/// on `in_stats`, `./curator -> .` on `stats`). Two talkies and one cogny:
+/// 3 x 4 + 2 x 2 + 1 x 2. MEASURED.
+const EDGES: usize = 401;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

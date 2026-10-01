@@ -1,4 +1,4 @@
-# `file-space@1.1.0`
+# `file-space@1.1.1`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -36,7 +36,7 @@ A version is the sha256 of the raw bytes; every answer names it by its first 12 
 | `derived` | `{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller` |
 | `tool_schemas` | `{schemas[], unknown[], sidecar[]}` for `in_schemas`, the shape of `memory-hive` |
 | `tool_result` | one turn under the call's id for `in_tool`: the answer as JSON text without `op_id` and `caller`; `hop.error_code` on a refusal |
-| `turn` | the turn of an `in_ingest`, once, without `attachments`: one text turn after the caption, `[file fh-<id>@<v12> "<name>", <n> pages: <oneline>]` (the page count only for a PDF, counted from its `derived` parts), or `[file "<name>" could not be stored: <code>]`; caption and hop keys unchanged; the edge `./ingest -> .` restores the TTL (`restore_ttl`), because storing, extracting and deriving a document spends some 45 hops of it and the assistant's round starts after them |
+| `turn` | the turn of an `in_ingest`, once, without `attachments`: one text turn after the caption, `[file fh-<id>@<v12> "<name>", <n> pages: <oneline>]` (the page count only for a PDF, counted from its `derived` parts), or `[file "<name>" could not be stored: <code>]`; caption and hop keys unchanged; the turn leaves on what its last try left of the TTL (`./ingest -> ./extract` and `./ingest -> ./write` restore it once per try), and the door of the hive that owns the turn restores it again (GH #929) |
 
 ## Request and answer
 

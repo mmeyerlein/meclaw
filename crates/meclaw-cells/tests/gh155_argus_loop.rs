@@ -7,7 +7,8 @@
 //!
 //! The tests below hold up the parts of that claim that can be wrong quietly:
 //!
-//! - the mutation **radius** (model choice and numeric params, nothing else),
+//! - the mutation **radius** (model choice, numeric params and, since GH #927,
+//!   the charter's text-slot classes -- nothing else),
 //! - the **charter rule** that a cycle without a pre-authored revert plan is
 //!   invalid, and that the plan must actually restore the original,
 //! - the **significance floor**, so noise never triggers action,
@@ -47,6 +48,9 @@ mod mock_openai;
 const MUTATOR: &str = "../../templates/argus/mutator/config.json";
 const METER: &str = "../../templates/argus/meter/config.json";
 const PROBE: &str = "../../templates/argus/probe/config.json";
+/// The door (GH #928): the one script of the hive that answers the outside,
+/// on `read` and `hint_ack`.
+const DOOR: &str = "../../templates/argus/door/config.json";
 const CHARTER: &str = "../../templates/argus/charter/config.json";
 const HIVE: &str = "../../templates/argus/config.json";
 const README: &str = "../../templates/argus/README.md";
@@ -524,7 +528,7 @@ fn the_revert_run_also_passes_the_cells_own_declaration() {
                     "plan": {"target": "/main/talky/brain", "kind": "model",
                              "to": "anthropic/claude-opus-4"}
                 }).to_string()}],
-            "header": {"hop": {}, "context": {}}
+            "header": {"hop": {"route": "revert"}, "context": {}}
         }),
     );
     assert_the_declaration_admits(MUTATOR, &out);
@@ -728,7 +732,7 @@ fn a_revert_uses_the_plan_that_was_authored_beforehand() {
                     "plan": {"target": "/main/talky/brain", "kind": "model",
                              "to": "anthropic/claude-opus-4"}
                 }).to_string()}],
-            "header": {"hop": {}, "context": {}}
+            "header": {"hop": {"route": "revert"}, "context": {}}
         }),
     );
     let m = mutation(&out).expect("the inverse change");
@@ -754,7 +758,7 @@ async fn a_revert_moves_the_brains_live_model_back() {
                     "plan": {"target": "/main/talky/brain", "kind": "model",
                              "to": "anthropic/claude-opus-4"}
                 }).to_string()}],
-            "header": {"hop": {}, "context": {}}
+            "header": {"hop": {"route": "revert"}, "context": {}}
         }),
     );
     let m = mutation(&out).expect("the inverse change").clone();
@@ -790,7 +794,7 @@ fn a_revert_without_a_plan_is_recorded_rather_than_improvised() {
         serde_json::json!({
             "messages": [{"origin":"assistant","type":"tool_call","id":"c1","text":
                 serde_json::json!({"op": "revert", "cycle_id": "cycle:1", "plan": {}}).to_string()}],
-            "header": {"hop": {}, "context": {}}
+            "header": {"hop": {"route": "revert"}, "context": {}}
         }),
     );
     assert!(mutation(&out).is_none(), "nothing is invented here");
@@ -810,12 +814,13 @@ fn updated(out: &[serde_json::Value], table: &str) -> Option<serde_json::Value> 
     })
 }
 
-/// A revert order for `plan`, as the meter sends one.
+/// A revert order for `plan`, as the meter sends one — on the lane `revert`,
+/// the only lane the mutator takes a way back from (GH #927).
 fn revert_order(plan: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "messages": [{"origin":"assistant","type":"tool_call","id":"c1","text":
             serde_json::json!({"op": "revert", "cycle_id": "cycle:1", "plan": plan}).to_string()}],
-        "header": {"hop": {}, "context": {}}
+        "header": {"hop": {"route": "revert"}, "context": {}}
     })
 }
 
@@ -1134,8 +1139,11 @@ fn a_reject_of_the_store_error_receipt_does_not_write_another() {
     assert!(inserted(&out, "cycles").is_none(), "no second row: {out:?}");
 }
 
+/// Since GH #927 a tick first closes the asks an earlier tick left unanswered
+/// and only then reads the charter, so the deadline runs in an idle tick too
+/// (review finding I1). The charter read is the next step of the same tick.
 #[test]
-fn a_tick_reads_the_charter_before_anything_else() {
+fn a_tick_closes_overdue_asks_then_reads_the_charter() {
     let out = emit(
         &script(METER),
         serde_json::json!({
@@ -1143,6 +1151,24 @@ fn a_tick_reads_the_charter_before_anything_else() {
             "header": {"hop": {"schedule_name": "argus-cycle"}, "context": {}}
         }),
     );
+    assert_eq!(out.len(), 1, "{out:?}");
+    let args: serde_json::Value =
+        serde_json::from_str(out[0]["messages"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(args["table"], "waits", "the overdue asks first: {args}");
+    assert_eq!(args["where"]["status"], "open", "{args}");
+    assert_eq!(out[0]["header"]["route"], "rstore");
+    assert_eq!(out[0]["header"]["phase"], "stale");
+
+    let out = emit(
+        &script(METER),
+        serde_json::json!({
+            "messages": [{"origin":"tool","type":"tool_result","id":"c1","text":"[]"}],
+            "header": {"hop": {"operation": "select"},
+                       "context": {"ar_phase": "stale",
+                                   "ar_carry": out[0]["header"]["carry"].clone()}}
+        }),
+    );
+    assert_eq!(out.len(), 1, "nothing overdue, only the charter: {out:?}");
     let args: serde_json::Value =
         serde_json::from_str(out[0]["messages"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(args["table"], "goals");
@@ -1414,8 +1440,10 @@ fn the_wait_row_carries_the_prices_and_the_goal() {
 #[test]
 fn a_refused_ledger_read_closes_the_wait_instead_of_hanging() {
     // A filter the colony cannot read is refused without a `query` echo at all
-    // (GH #341/#359) — so the tag is missing and the oldest open ask is the one
-    // that was refused.
+    // (GH #341/#359) — so the tag is missing and the oldest open LEDGER ask is
+    // the one that was refused. Since GH #927 `waits` also holds asks to a
+    // curator (`stats`) and to an evaluator (`eval`), and "the oldest open row"
+    // alone would close one of those on a ledger refusal.
     let refusal = serde_json::json!({
         "status": "error", "error_code": "invalid_query",
         "details": "`query.group_by` must be \"model\""
@@ -1427,8 +1455,8 @@ fn a_refused_ledger_read_closes_the_wait_instead_of_hanging() {
     let args = store_call(&lookup, "select", "waits").expect("a refusal is still an answer");
     assert_eq!(
         args["where"],
-        serde_json::json!({"status": "open"}),
-        "with no tag, the open ask is the one that was refused: {args}"
+        serde_json::json!({"status": "open", "kind": {"in": ["baseline", "effect"]}}),
+        "with no tag, the oldest open ledger ask is the one that was refused: {args}"
     );
 
     let out = resume(
@@ -2044,7 +2072,7 @@ fn an_unhealthy_cycle_without_a_stored_plan_closes_for_a_human() {
 fn every_declared_out_lane_has_an_emitter_and_an_edge() {
     let hive = config(HIVE);
     // The scripts with their comment lines dropped and their whitespace
-    // collapsed. Both halves are needed: all three scripts MENTION every lane in
+    // collapsed. Both halves are needed: the scripts MENTION every lane in
     // their prose, so a raw substring match would call a paragraph an emitter,
     // and a real emission is regularly wrapped across lines.
     let code_of = |path: &str| -> String {
@@ -2061,6 +2089,7 @@ fn every_declared_out_lane_has_an_emitter_and_an_edge() {
         ("meter", code_of(METER)),
         ("mutator", code_of(MUTATOR)),
         ("probe", code_of(PROBE)),
+        ("door", code_of(DOOR)),
     ];
     let edges = hive["params"]["graph"]["edges"]
         .as_array()
@@ -2100,7 +2129,7 @@ fn every_declared_out_lane_has_an_emitter_and_an_edge() {
                     .is_some_and(|c| c.contains(&format!("'{route}'")))),
             "no edge carries `{route}` off the hive path"
         );
-        // `emit("<route>"` and not a bare substring: all three scripts MENTION
+        // `emit("<route>"` and not a bare substring: the scripts MENTION
         // every lane in their comments, so a substring match would call a
         // paragraph an emitter. What is asked for here is the emission call
         // itself, which is the only thing that puts a message on the lane.
@@ -2172,6 +2201,13 @@ fn the_charter_carries_the_radius_and_the_revert_rule_as_data() {
         "require_revert_plan",
         "budget_eur_per_cycle",
         "quality_floor_pct",
+        // GH #927: the text-slot half of the radius is charter data as well --
+        // the batch floor, the classes it may change, the ones it may only
+        // propose and the one it may never touch.
+        "eval_min_batch",
+        "slot_classes",
+        "owner_only",
+        "never",
     ] {
         assert!(
             kinds.contains(&required),
@@ -2179,8 +2215,11 @@ fn the_charter_carries_the_radius_and_the_revert_rule_as_data() {
         );
     }
     let radius = rows.iter().find(|r| r["kind"] == "radius").unwrap();
+    // GH #927 widened the shipped radius by exactly this row, which is the
+    // mechanism the assertion is about: text slots joined it here and nowhere
+    // in code.
     assert_eq!(
-        radius["value"], "model,numeric_params",
+        radius["value"], "model,numeric_params,text_slots",
         "the radius widens by editing this row, never by editing code"
     );
 }

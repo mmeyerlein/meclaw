@@ -913,7 +913,7 @@ fn number_word(n: usize) -> String {
         return ONES[n].to_string();
     }
     let tens = [
-        "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+        "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty",
     ];
     let t = tens
         .get(n / 10)

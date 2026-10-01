@@ -130,6 +130,9 @@ fn word(n: usize) -> &'static str {
         (20, "twenty"),
         (21, "twenty-one"),
         (22, "twenty-two"),
+        // GH #926: the curator's `stats` cell takes a grown talky to
+        // twenty-three cells.
+        (23, "twenty-three"),
         (24, "twenty-four"),
         (25, "twenty-five"),
         (26, "twenty-six"),
@@ -158,6 +161,9 @@ fn word(n: usize) -> &'static str {
         (49, "forty-nine"),
         // GH #916: another hive's pin reaches the curator on `in_pin` -- fifty.
         (50, "fifty"),
+        // GH #926: an observer's question reaches the curator on `in_stats` and
+        // its answer leaves on `stats` -- fifty-two.
+        (52, "fifty-two"),
     ]
     .into_iter()
     .collect();

@@ -112,8 +112,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// seventh cell of its own (`schemas`), so twenty-five. MEASURED. GH #893 adds
 /// an eighth (`history`): twenty-six. GH #895 a ninth (`push`, the recall
 /// push): twenty-seven. GH #896 a tenth (`handover`): twenty-eight.
-/// MEASURED.
-const CELLS_AFTER_GROW: usize = 28;
+/// MEASURED. GH #926 an eleventh (`stats`, the read-only counting lane):
+/// 1 + 4 + 23 + 1 = twenty-nine. MEASURED.
+const CELLS_AFTER_GROW: usize = 29;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -131,8 +132,10 @@ const CELLS_AFTER_GROW: usize = 28;
 /// more in [`CELLS_AFTER_GROW`] -- forty-two. GH #896 a tenth (`handover`):
 /// sixteen, and one more in [`CELLS_AFTER_GROW`] -- forty-four. MEASURED. GH #894:
 /// and `./ask`, which turns the core's `ask_requester` call into its question
-/// back, so the core adds seventeen -- forty-five.
-const CELLS_AFTER_COGNY: usize = 45;
+/// back, so the core adds seventeen -- forty-five. GH #926 gives its curator an
+/// eleventh (`stats`): eighteen, and one more in [`CELLS_AFTER_GROW`] --
+/// 29 + 18 = forty-seven. MEASURED.
+const CELLS_AFTER_COGNY: usize = 47;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));

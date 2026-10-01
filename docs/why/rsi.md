@@ -20,7 +20,7 @@ that the manifest's bytes are the ones its digest was drawn over, reads the requ
 envelope and asks the capability broker. A manifest that wants to author executable behaviour, a
 script override or an `add_templates`, is a second question (`code.author`).
 
-`argus` is the control loop, a hive of seven cells. It reads a charter, measures its colony out of
+`argus` is the control loop, a hive of eight cells. It reads a charter, measures its colony out of
 the substrate's ledger, has a model judge against those numbers, sends the decision to a named
 cell as a params update, then measures the effect and keeps or reverts it. A cycle without a
 pre-authored revert plan is refused with `no_revert_plan`, and every tick leaves an append-only

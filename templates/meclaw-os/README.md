@@ -1,4 +1,4 @@
-# `meclaw-os@2.1.4`
+# `meclaw-os@2.2.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -135,9 +135,9 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The sixty edges
+## The sixty-nine edges
 
-Forty of them are a door or an exit, and every declared lane has at least one. The
+Forty-nine of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
@@ -590,7 +590,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.1.4"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.0"}}
 ```
 
 ```bash
@@ -674,7 +674,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.1.4"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.0"}],
           "add_edges": []}}
 ```
 
@@ -696,7 +696,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.0.0"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.0"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",
@@ -714,7 +714,7 @@ whatever the scope. Endpoints are scope-relative, always.
 A fully wired organisation costs one such edge per lane the [`org`](../org/) level
 declares — its accepts down into the node, its emits back up into the container.
 [`examples/organism`](../../examples/organism/) is the whole stack written out that way:
-five declarations, one per level, and its organisation step draws the seventeen its
+five declarations, one per level, and its organisation step draws the twenty its
 walkthrough exercises.
 
 The broker starts inert by design — every seeded policy row ships disabled — and so does

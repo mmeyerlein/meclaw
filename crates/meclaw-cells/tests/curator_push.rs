@@ -15,7 +15,12 @@
 //!   of the same session begins with that pair in its window, once, written
 //!   into the wall by `./intake` -- the wall's one writer; nothing found,
 //!   nothing written; a duplex turn also says it as a `fact`;
-//! * the prompt hygiene stands in the model's `system.instructions`.
+//! * the prompt hygiene stands in the model's `system.instructions`;
+//! * what leaves the hive is only what the round was present for (GH #925):
+//!   the entities, the topic and a short id's words in the question come from
+//!   rows whose audience holds the round, a find is handed to a round only if
+//!   the round it was found for holds it, and every mark the push writes
+//!   carries the round that caused it (§ 6).
 //!
 //! The harness is `support/curator_hive.rs` (GH #892): the shipped
 //! `script_inline` programs run under python3, the edges are the hive's own
@@ -53,24 +58,73 @@ fn ask_hop(session: &str, turn: &str, text: &str) -> Value {
            "recall_window_from": "", "recall_window_to": ""})
 }
 
+/// The round every turn of §§ 1-5 is spoken in (GH #925): the harness's
+/// standard round, declared here by every helper itself, so that what one turn
+/// writes the next one may read -- whatever a lane of the harness declares
+/// when a test declares nothing.
+const TEST_ROUND: &str = r#"["member:e"]"#;
+
+fn test_round() -> Value {
+    json!(TEST_ROUND)
+}
+
 /// The collector's ask of one turn, as its `recall_ask` spells it; returns
 /// every `recall` that left the hive for it.
 fn ask(h: &mut Hive, session: &str, turn: &str, text: &str) -> Vec<Msg> {
+    ask_as(h, &test_round(), session, turn, text)
+}
+
+/// The same ask spoken in `round` (`null`: a round nobody declared).
+fn ask_as(h: &mut Hive, round: &Value, session: &str, turn: &str, text: &str) -> Vec<Msg> {
     h.out.clear();
     h.lane(
         "in_recall_ask",
-        json!({"session_id": session, "channel": "test",
-               "audience_set": "[\"member:test\"]"}),
+        json!({"session_id": session, "channel": "test", "audience_set": round}),
         ask_hop(session, turn, text),
         json!({"messages": [user(text)]}),
     );
     h.routed("recall")
 }
 
+/// One round on `in_curate` spoken in `round`, the way the harness's `curate`
+/// sends one; returns the call that left for the model.
+fn curate_as(h: &mut Hive, round: &Value, session: &str, turn: &str, text: &str) -> Msg {
+    h.out.clear();
+    h.lane(
+        "in_curate",
+        json!({"session_id": session, "turn_id": turn, "iter": "0", "channel": "test",
+               "audience_set": round}),
+        json!({"session_id": session, "turn_id": turn, "iter": "0", "phase": ""}),
+        json!({"messages": [user(text)], "system": mode("")}),
+    );
+    let calls = h.routed("brain");
+    assert_eq!(
+        calls.len(),
+        1,
+        "one round, one call: {:?} {:?}",
+        h.out,
+        h.stderr
+    );
+    calls[0].clone()
+}
+
 /// A whole turn the way talky runs it: the ask first, the round after its
 /// bundle came home, the answer on the tap. Returns the call.
 fn round(h: &mut Hive, session: &str, turn: &str, text: &str, reply: &str) -> Msg {
-    let asks = ask(h, session, turn, text);
+    round_as(h, &test_round(), session, turn, text, reply)
+}
+
+/// The same turn spoken in `round`: the ask, the call and the answer on the
+/// tap all carry it, as the member's door stamps every message of a turn.
+fn round_as(
+    h: &mut Hive,
+    round: &Value,
+    session: &str,
+    turn: &str,
+    text: &str,
+    reply: &str,
+) -> Msg {
+    let asks = ask_as(h, round, session, turn, text);
     assert_eq!(
         asks.len(),
         1,
@@ -78,7 +132,7 @@ fn round(h: &mut Hive, session: &str, turn: &str, text: &str, reply: &str) -> Ms
         h.out,
         h.stderr
     );
-    let call = h.curate(session, turn, 0, json!([user(text)]), mode(""));
+    let call = curate_as(h, round, session, turn, text);
     h.tap(&call, "stop", json!({}), json!([said(reply)]));
     call
 }
@@ -86,12 +140,24 @@ fn round(h: &mut Hive, session: &str, turn: &str, text: &str, reply: &str) -> Ms
 /// The section `gap` of the answer of `turn`, as the splitter cuts it and the
 /// parent hands it in (`in_section`); `payload` is the splitter's slot.
 fn gap_of(h: &mut Hive, session: &str, turn: &str, payload: Value, engine: &str) -> Vec<Msg> {
+    gap_in(h, &test_round(), session, turn, payload, engine)
+}
+
+/// The same section of an answer spoken in `round`.
+fn gap_in(
+    h: &mut Hive,
+    round: &Value,
+    session: &str,
+    turn: &str,
+    payload: Value,
+    engine: &str,
+) -> Vec<Msg> {
     h.out.clear();
     h.lane(
         "in_section",
         json!({"session_id": session, "turn_id": turn, "iter": "0",
                "curator_call": "c-1", "channel": "test", "engine": engine,
-               "audience_set": "[\"member:test\"]"}),
+               "audience_set": round}),
         json!({"section": "gap"}),
         json!({"messages": [], "section": "gap", "payload": payload}),
     );
@@ -104,17 +170,27 @@ fn gap(h: &mut Hive, session: &str, turn: &str, text: &str, engine: &str) -> Vec
     gap_of(h, session, turn, json!({"payload": text}), engine)
 }
 
+/// The same gap in an answer spoken in `round`.
+fn gap_as(h: &mut Hive, round: &Value, session: &str, turn: &str, text: &str) -> Vec<Msg> {
+    gap_in(h, round, session, turn, json!({"payload": text}), "")
+}
+
 /// The section `memory` of the answer of `turn`, naming `topic`, as the
 /// splitter cuts it and the parent hands it in (`in_section`). `./intake`
 /// files the `topic` mark out of it -- the one way a live mark comes to be
 /// (OR-KY-71); a mark sown by SQL would only pin the form the test assumes
 /// (review I-1).
 fn memory_section(h: &mut Hive, session: &str, turn: &str, topic: Value) {
+    memory_section_as(h, &test_round(), session, turn, topic);
+}
+
+/// The same section of an answer spoken in `round`.
+fn memory_section_as(h: &mut Hive, round: &Value, session: &str, turn: &str, topic: Value) {
     h.lane(
         "in_section",
         json!({"session_id": session, "turn_id": turn, "iter": "0",
                "curator_call": "c-1", "channel": "test",
-               "audience_set": "[\"member:test\"]"}),
+               "audience_set": round}),
         json!({"section": "memory"}),
         json!({"messages": [], "section": "memory", "payload": {"topic": topic}}),
     );
@@ -968,4 +1044,357 @@ fn the_menu_offers_the_gap_section() {
         "write what you were unsure about or missed; it will be looked up after this answer"
     );
     assert_eq!(gap["required"], false);
+}
+
+// ============================================================ 6. the audience
+
+/// GH #925 rounds in the affinity vocabulary, in the form the colony carries
+/// them: TEXT, a JSON array in a string -- deliberately out of the canonical
+/// order the ledger's column keeps.
+const EAB: &str = r#"["member:e","member:a","member:b"]"#;
+const EA: &str = r#"["member:e","member:a"]"#;
+const EB: &str = r#"["member:e","member:b"]"#;
+const EABC: &str = r#"["member:e","member:a","member:b","member:c"]"#;
+/// `EA` as the ledger keeps it.
+const EA_CANON: &str = r#"["member:a","member:e"]"#;
+
+fn declared(round: &str) -> Value {
+    json!(round)
+}
+
+/// `(kind, audience_set)` of every mark the push writes, oldest first; a
+/// NULL column is `None`.
+fn push_marks(h: &Hive) -> Vec<(String, Option<String>)> {
+    h.rows(
+        "SELECT kind, audience_set FROM marks \
+         WHERE kind IN ('gap', 'addendum', 'addendum_done') ORDER BY seq",
+    )
+    .into_iter()
+    .map(|r| {
+        (
+            r[0].as_str().unwrap_or("").to_string(),
+            r[1].as_str().map(str::to_string),
+        )
+    })
+    .collect()
+}
+
+/// The question leaves the hive -- toward the memory, and in the memory pair
+/// back into a window -- so the entities in it come only from rows whose
+/// audience holds the round: {e,a} was present for what {e,a,b} said, not for
+/// what {e,b} said, and {e,a,b,c} was present for neither (GH #925, the
+/// affinity rule). A hidden row leaves no trace in the question.
+#[test]
+fn the_question_names_only_what_the_round_was_present_for() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round_as(
+        &mut h,
+        &declared(EAB),
+        "s1",
+        "t1",
+        "My sister Hannah moved to Porto.",
+        "Porto, how lovely.",
+    );
+    round_as(
+        &mut h,
+        &declared(EB),
+        "s2",
+        "t1",
+        "I met Bea and Carlos in Lisbon.",
+        "Lisbon in spring, lovely.",
+    );
+    let q = query_of(&ask_as(&mut h, &declared(EA), "s3", "t1", "where again?")[0]);
+    assert_eq!(
+        q, "[mentioned: Hannah, Porto] where again?",
+        "{{e,a}} is asked with what {{e,a,b}} said and nothing {{e,b}} said"
+    );
+    let q = query_of(&ask_as(&mut h, &declared(EABC), "s4", "t1", "where again?")[0]);
+    assert_eq!(q, "where again?", "{{e,a,b,c}} was present for neither");
+}
+
+/// A duplex find is said at once only to a round that may hear it (review
+/// M-10, R2-I-14). The gap's round rides the ask out and home, but the call on
+/// the line may have widened since: the find goes to the voice as a `fact`
+/// only when the round of the session's newest call may see the addendum --
+/// read in the bundle that keeps it, no round trip more -- and it is kept as
+/// an addendum all the same.
+#[test]
+fn a_duplex_find_is_said_only_to_a_round_that_may_hear_it() {
+    if !push_shipped() {
+        return;
+    }
+    for (live, spoken) in [(EA, true), (EAB, false), (EB, false)] {
+        let mut h = talky(&[]);
+        round_as(&mut h, &declared(EA), "s1", "t1", "hi", "hello");
+        let ask = gap_in(
+            &mut h,
+            &declared(EA),
+            "s1",
+            "t1",
+            json!({"payload": "whether the ferry left"}),
+            "duplex",
+        )[0]
+        .clone();
+        if live != EA {
+            round_as(
+                &mut h,
+                &declared(live),
+                "s1",
+                "t2",
+                "who is there?",
+                "Everyone.",
+            );
+        }
+        gap_bundle(&mut h, &ask, json!({}), "- The ferry left at nine");
+        assert_eq!(
+            h.routed("sidecar").len(),
+            usize::from(spoken),
+            "live round {live}: {:?}",
+            h.out
+        );
+        assert!(
+            push_marks(&h).contains(&("addendum".to_string(), Some(EA_CANON.to_string()))),
+            "live round {live}: the find is kept as an addendum: {:?}",
+            push_marks(&h)
+        );
+    }
+}
+
+/// OR-BD-4 / OR-BD.A.2: a round nobody declared is asked with what its own
+/// session said WITHOUT a round, and nothing of another session -- and its
+/// ask leaves all the same. What a declared round said in the same session
+/// stays (review M-7): nobody declared who hears the round-less call.
+#[test]
+fn a_round_nobody_declared_is_asked_with_its_own_session_only() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round_as(
+        &mut h,
+        &declared(EAB),
+        "s1",
+        "t1",
+        "My sister Hannah moved to Porto.",
+        "Porto, how lovely.",
+    );
+    round_as(
+        &mut h,
+        &declared(EA),
+        "s2",
+        "t1",
+        "We sailed to Madeira with Tomas.",
+        "Madeira, wonderful.",
+    );
+    let asks = ask_as(&mut h, &Value::Null, "s2", "t2", "and then?");
+    assert_eq!(asks.len(), 1, "the ask always leaves: {:?}", h.out);
+    assert_eq!(
+        query_of(&asks[0]),
+        "and then?",
+        "what {{e,a}} said in the session is not asked with"
+    );
+    round_as(
+        &mut h,
+        &Value::Null,
+        "s2",
+        "t3",
+        "We flew to Faro with Ines.",
+        "Faro, wonderful.",
+    );
+    let asks = ask_as(&mut h, &Value::Null, "s2", "t4", "and then?");
+    assert_eq!(asks.len(), 1, "the ask always leaves: {:?}", h.out);
+    assert_eq!(
+        query_of(&asks[0]),
+        "[mentioned: Faro, Ines] and then?",
+        "what the session said without a round is"
+    );
+    let asks = ask_as(&mut h, &Value::Null, "s9", "t1", "and then?");
+    assert_eq!(asks.len(), 1, "the ask always leaves: {:?}", h.out);
+    assert_eq!(
+        query_of(&asks[0]),
+        "and then?",
+        "a session with nothing of its own is asked with nothing"
+    );
+}
+
+/// A short id in the person's words is said in the question only where the
+/// round may see a row that carries it: an id copied out of a conversation of
+/// {e,b} names nothing to {e,a} (GH #925).
+#[test]
+fn a_short_id_is_resolved_only_for_a_row_the_round_may_see() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round_as(
+        &mut h,
+        &declared(EB),
+        "s1",
+        "t1",
+        "my sister moved to porto.",
+        "ok",
+    );
+    round_as(
+        &mut h,
+        &declared(EAB),
+        "s2",
+        "t1",
+        "we sailed to madeira.",
+        "ok",
+    );
+    let id = |h: &Hive, s: &str| -> String {
+        h.rows(&format!(
+            "SELECT hash FROM wall WHERE session_id = '{s}' AND kind = 'user'"
+        ))[0][0]
+            .as_str()
+            .expect("a hash")[..12]
+            .to_string()
+    };
+    let (hidden, seen) = (id(&h, "s1"), id(&h, "s2"));
+    let text = format!("what about [#{hidden}] and [#{seen}]?");
+    let q = query_of(&ask_as(&mut h, &declared(EA), "s3", "t1", &text)[0]);
+    assert!(q.ends_with(&text), "the person's words, whole: {q}");
+    assert!(q.contains("refers to: we sailed to madeira."), "{q}");
+    assert!(
+        !q.contains("porto"),
+        "what {{e,b}} said is not named to {{e,a}}: {q}"
+    );
+}
+
+/// The topic is a row like any other: a round that was not present when it
+/// was named -- somebody joined the call -- is not asked with it.
+#[test]
+fn a_topic_is_asked_with_only_by_a_round_present_for_it() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round_as(
+        &mut h,
+        &declared(EA),
+        "s1",
+        "t1",
+        "we are moving",
+        "Good luck with it.",
+    );
+    memory_section_as(
+        &mut h,
+        &declared(EA),
+        "s1",
+        "t1",
+        json!({"movement": "start", "name": "the move"}),
+    );
+    let q = query_of(&ask_as(&mut h, &declared(EAB), "s1", "t2", "and then?")[0]);
+    assert_eq!(q, "and then?", "{{e,a,b}} was not present for the topic");
+    let q = query_of(&ask_as(&mut h, &declared(EA), "s1", "t3", "and then?")[0]);
+    assert_eq!(q, "[topic: the move] and then?");
+}
+
+/// A find is handed to a round only if the round its gap was asked in holds
+/// it: {e,a,b,c} -- a wider round of the same session -- is not handed what
+/// {e,a} was told, and the find is not marked done for it; it waits, and the
+/// next round of {e,a} begins with it.
+#[test]
+fn an_addendum_is_handed_only_to_a_round_its_find_was_for() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round_as(&mut h, &declared(EA), "s1", "t1", "hi", "hello");
+    let ask = gap_as(&mut h, &declared(EA), "s1", "t1", "the ferry")[0].clone();
+    gap_bundle(
+        &mut h,
+        &ask,
+        json!({}),
+        "- Hannah took the ferry Estrela do Norte",
+    );
+    assert_eq!(marks(&h, "addendum").len(), 1, "the find is kept");
+    let call = round_as(
+        &mut h,
+        &declared(EABC),
+        "s1",
+        "t2",
+        "and when does it leave?",
+        "At nine.",
+    );
+    assert!(
+        !window(&call).iter().any(|x| x.contains("Estrela do Norte")),
+        "{:?}",
+        window(&call)
+    );
+    assert!(
+        marks(&h, "addendum_done").is_empty(),
+        "a find not handed over is not done: {:?}",
+        marks(&h, "addendum_done")
+    );
+    assert_eq!(
+        h.rows("SELECT COUNT(*) FROM wall WHERE kind = 'recall'"),
+        vec![vec![json!(0)]],
+        "and not in the wall"
+    );
+    let call = round_as(&mut h, &declared(EA), "s1", "t3", "and then?", "Home.");
+    let t = window(&call);
+    assert!(
+        t.iter()
+            .any(|x| x.starts_with(ADDENDUM) && x.contains("Estrela do Norte")),
+        "the round it was found for begins with it: {t:?}"
+    );
+    let done = marks(&h, "addendum_done");
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].1, "t3");
+    assert_eq!(done[0].2["delivered"], 1);
+}
+
+/// Every mark the push writes carries the round of the message that caused it
+/// in the ledger's one form (sorted, no duplicates, no whitespace): the gap's
+/// round, which rides the gap's ask out and its answer home (the addendum),
+/// and the round the find is handed to (`addendum_done`). A round nobody
+/// declared leaves the column NULL and the lookup goes on.
+#[test]
+fn every_mark_of_the_push_carries_its_round() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    let messy = json!(r#"[ "member:e", "member:a", "member:e" ]"#);
+    round_as(&mut h, &messy, "s1", "t1", "hi", "hello");
+    let ask = gap_as(&mut h, &messy, "s1", "t1", "the ferry")[0].clone();
+    assert_eq!(
+        ask.context.get("audience_set"),
+        Some(&messy),
+        "the gap's ask leaves in the round it was asked in"
+    );
+    gap_bundle(
+        &mut h,
+        &ask,
+        json!({}),
+        "- Hannah took the ferry Estrela do Norte",
+    );
+    round_as(
+        &mut h,
+        &messy,
+        "s1",
+        "t2",
+        "and when does it leave?",
+        "At nine.",
+    );
+    let canon = Some(EA_CANON.to_string());
+    assert_eq!(
+        push_marks(&h),
+        vec![
+            ("gap".to_string(), canon.clone()),
+            ("addendum".to_string(), canon.clone()),
+            ("addendum_done".to_string(), canon),
+        ]
+    );
+    let asks = gap_as(&mut h, &Value::Null, "s2", "t1", "the bridge");
+    assert_eq!(asks.len(), 1, "looked up all the same: {:?}", h.out);
+    assert_eq!(
+        push_marks(&h).pop(),
+        Some(("gap".to_string(), None)),
+        "no round, no audience"
+    );
 }

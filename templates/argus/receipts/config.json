@@ -17,7 +17,10 @@
         "verified": "json",
         "effect": "json",
         "outcome": "text",
-        "reason_code": "text"
+        "reason_code": "text",
+        "role": "text",
+        "evidence": "json",
+        "hints": "json"
       },
       "waits": {
         "id": "text",
@@ -25,6 +28,14 @@
         "kind": "text",
         "carry": "json",
         "status": "text"
+      },
+      "hints": {
+        "id": "text",
+        "at": "text",
+        "origin": "text",
+        "confidence": "int",
+        "line": "text",
+        "consumed_by": "text"
       }
     },
     "write_surface": "internal",
@@ -79,7 +90,7 @@
   },
   "description": {
     "purpose": "One append-only row per cycle: what was measured, what the judge decided, what it simulated, what was changed, how it would be undone, what the probe saw, what the effect turned out to be, and whether the change was kept or reverted.",
-    "use_when": "One per argus hive. It is also the loop's own memory, twice over: an applied cycle stays open until its measurement window has passed, and an ask at /colony/ledger stays in `waits` until the colony answers it -- a reply from an endpoint carries no context of ours, so without the row there would be nothing to resume.",
-    "not_in_scope": "No deletion and no update of the fields that record the past -- only `effect`, `outcome` and `status` are filled in later, which is the difference between completing a record and rewriting one. The recursive claim is only as good as these rows."
+    "use_when": "One per argus hive. It is also the loop's own memory, twice over: an applied cycle stays open until its measurement window has passed, and an ask at /colony/ledger stays in `waits` until the colony answers it -- a reply from an endpoint carries no context of ours, so without the row there would be nothing to resume. The third table, `hints`, holds hypotheses another part of the colony handed in: the judge is shown them as hypotheses and never as measurements.",
+    "not_in_scope": "No deletion and no update of the fields that record the past -- only `verified`, `effect`, `evidence`, `outcome`, `reason_code` and `status` are filled in later, and `at` once more when a text change is applied (a text change waits for its evaluation batch as `open`/`eval_pending` and is completed from there), which is the difference between completing a record and rewriting one. `role`, `hints` and every other column are written with the row and never again. The `at` of an applied row is the moment the change was applied -- for a text slot the apply after its evaluation verdict, not the evaluation order -- because the effect window is measured from it. A hint is written once by the hive's door and gets exactly one later field, `consumed_by`, set by the cycle whose judge was shown it. The recursive claim is only as good as these rows."
   }
 }

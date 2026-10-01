@@ -13,6 +13,22 @@
         {
           "route": "in_model",
           "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./judge`, the one llm cell of this hive, past every other cell, because a params body is not a request. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
+        },
+        {
+          "route": "in_stats",
+          "because": "the counts a curator answered to this hive's `stats` question: body `{messages: [], stats: {from, to, counts, samples, truncated}}`, `hop.stats_tag` echoing the ask. It goes to `./meter` and nowhere else, and it is matched to its ask by the tag alone -- an answer whose tag names no open ask is dropped without a word, and an ask nobody answered is closed by the next tick as `stats_unanswered`. A parent that draws no edge back gets a loop whose role goals never measure"
+        },
+        {
+          "route": "in_eval",
+          "because": "the verdict of an evaluation batch on one proposed text change: body `{messages: [], eval: {verdict, batch_id, n, baseline, candidate, delta_pct}}`, `hop.eval_tag` echoing the order. It goes to `./mutator`, which applies the change only on a `pass` over a batch at least `max(eval_min_batch, min_samples)` large that moves the metric past the goal's floor, and discards it otherwise. An order nobody answered is discarded by the next tick as `eval_unanswered`"
+        },
+        {
+          "route": "in_read",
+          "because": "another part of the colony reads this hive's record: `hop.read_what` names the charter (`goals` and `rules` rows, each with its `table`), the cycle receipts or the hints; `read_since` (RFC 3339) pages cycles and hints oldest first, `read_limit` is 1..100 (default 20), `read_tag` is echoed. Rows come as stored, every column. The lane decides nothing: `./door` only reads, and a read starts no cycle. Without an edge onto it nobody reads"
+        },
+        {
+          "route": "in_hint",
+          "because": "a hypothesis from another part of the colony, in the body slot `hint: {origin, confidence, line}` -- a slot, never a turn: `origin` `[a-z0-9-]{1,64}`, `confidence` a JSON integer 0..100, `line` one line of 1..500 characters after trimming. `./door` stores it in the receipts' `hints` table and does nothing else: no edge leads from the door into the loop, so a hint triggers no cycle; the loop shows it to its judge at the earliest in its next cycle, marked as a hypothesis, and a hint never counts as a measurement -- a change resting on hints alone still needs its evidence. Without an edge onto it nobody is heard"
         }
       ],
       "emits": [
@@ -31,6 +47,26 @@
         {
           "route": "model_refused",
           "because": "a model package pushed through `in_model` that `./judge` refused (GH #863): its error, with the judge's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of reaching `./mutator` as a verdict -- before 1.2.1 the judge's out-edge was unconditional, so a refusal was read as a decision. A push addressed to another cell is refused as `invalid_input` without the two keys and still reaches the verdict edge -- the forward that caused it is the defect. `meclaw-os` carries it back to its registry's `in_refused` lane; a parent without that edge dead-letters it `no_route`, loudly"
+        },
+        {
+          "route": "stats",
+          "because": "a question to a curator about its own ledger, for a goal whose `source` names a role: `hop.stats_role`, `hop.stats_tag`, `hop.stats_from`/`stats_to` (RFC 3339, the goal's window), `hop.stats_kinds` (a JSON array as text) and `hop.stats_samples`, body `{messages: []}`. The parent draws it to an assistant's stats lane and brings the answer back as `in_stats`; a parent that draws none gets role goals that are receipted as unanswered on every tick and never judged"
+        },
+        {
+          "route": "eval",
+          "because": "one proposed text change, sent to an evaluator before anything is applied: body `{messages: [], eval: {cycle_id, target, key, from, to, batch_min}}`, `hop.eval_tag` naming the order. The cycle stays `open` as `eval_pending` until the verdict comes back on `in_eval`. Without an edge for it no text change is ever applied -- every one is discarded as unanswered, which is the safe way for this lane to be missing"
+        },
+        {
+          "route": "slot_update",
+          "because": "a text change that passed its evaluation batch, or the way back from one: body `{messages: [], slot: {name, text}}`, `hop.target` naming the cell and `hop.cycle_id` the cycle, so the health check can see it arrive. The parent draws one edge per cell whose text the loop may reach, exactly like `mutate`; a text slot has no receiver unless one is drawn"
+        },
+        {
+          "route": "read",
+          "because": "the answer to `in_read`: body `{messages: [], rows: [...], next_since}` -- `next_since` is the `at` of the last row delivered, the cursor for the next page, empty for the charter or an empty page -- with `hop.read_tag` and `hop.read_what` echoed and `hop.error_code` empty, `invalid_input` (`hop.detail` names the hop key) or `store_error` (`hop.detail` carries the store's reason). A failed read is never an empty page"
+        },
+        {
+          "route": "hint_ack",
+          "because": "the answer to `in_hint`: `hop.hint_id` of the stored hint and an empty `hop.error_code`, or `invalid_hint` with `hop.detail` naming the field and nothing stored, or `store_error`. An acknowledgement says the hint is kept, not that anything will be done about it"
         }
       ]
     },
@@ -52,6 +88,30 @@
           "from": ".",
           "to": "./judge",
           "condition": "has(hop.route) && hop.route == 'in_model'"
+        },
+        {
+          "from": ".",
+          "to": "./meter",
+          "condition": "has(hop.route) && hop.route == 'in_stats'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'meter'",
+              "ar_phase": "''",
+              "ar_carry": "''"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./mutator",
+          "condition": "has(hop.route) && hop.route == 'in_eval'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'mutator'",
+              "ar_phase": "''",
+              "ar_carry": "''"
+            }
+          }
         },
         {
           "from": "./clock",
@@ -103,7 +163,10 @@
               "ar_cycle": "hop.cycle_id",
               "ar_goal": "hop.goal",
               "ar_measured": "hop.measured",
-              "ar_require_plan": "hop.require_plan"
+              "ar_require_plan": "hop.require_plan",
+              "ar_rules": "hop.rules",
+              "ar_goal_spec": "hop.goal_spec",
+              "ar_hints": "hop.hints"
             }
           }
         },
@@ -124,10 +187,13 @@
               "ar_carry",
               "ar_cycle",
               "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
               "ar_measured",
               "ar_phase",
               "ar_reason",
               "ar_require_plan",
+              "ar_rules",
               "argus_origin"
             ]
           }
@@ -149,7 +215,8 @@
           "modifier": {
             "set_context": {
               "argus_origin": "'mutator'",
-              "ar_phase": "hop.phase"
+              "ar_phase": "hop.phase",
+              "ar_carry": "hop.carry"
             }
           }
         },
@@ -212,10 +279,13 @@
               "ar_carry",
               "ar_cycle",
               "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
               "ar_measured",
               "ar_phase",
               "ar_reason",
               "ar_require_plan",
+              "ar_rules",
               "argus_origin"
             ]
           }
@@ -229,10 +299,13 @@
               "ar_carry",
               "ar_cycle",
               "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
               "ar_measured",
               "ar_phase",
               "ar_reason",
               "ar_require_plan",
+              "ar_rules",
               "argus_origin"
             ]
           }
@@ -246,10 +319,13 @@
               "ar_carry",
               "ar_cycle",
               "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
               "ar_measured",
               "ar_phase",
               "ar_reason",
               "ar_require_plan",
+              "ar_rules",
               "argus_origin"
             ]
           }
@@ -273,10 +349,139 @@
               "ar_carry",
               "ar_cycle",
               "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
               "ar_measured",
               "ar_phase",
               "ar_reason",
               "ar_require_plan",
+              "ar_rules",
+              "argus_origin"
+            ]
+          }
+        },
+        {
+          "from": "./meter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'stats'",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "ar_rules",
+              "argus_origin"
+            ]
+          }
+        },
+        {
+          "from": "./mutator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'eval'",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "ar_rules",
+              "argus_origin"
+            ]
+          }
+        },
+        {
+          "from": "./mutator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'slot_update'",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "ar_rules",
+              "argus_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./door",
+          "condition": "has(hop.route) && (hop.route == 'in_read' || hop.route == 'in_hint')",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'door'",
+              "ar_phase": "''",
+              "ar_carry": "''"
+            }
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./charter",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'door'",
+              "ar_phase": "hop.phase",
+              "ar_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./charter",
+          "to": "./door",
+          "condition": "context.argus_origin == 'door'"
+        },
+        {
+          "from": "./door",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'door'",
+              "ar_phase": "hop.phase",
+              "ar_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./receipts",
+          "to": "./door",
+          "condition": "context.argus_origin == 'door'"
+        },
+        {
+          "from": "./door",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'read' || hop.route == 'hint_ack')",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_goal_spec",
+              "ar_hints",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "ar_rules",
               "argus_origin"
             ]
           }
@@ -287,8 +492,8 @@
   "description": {
     "purpose": "Scope marker of the argus hive: the colony's control loop and its watcher. Charter -> measure -> judge (and simulate) -> params update to the named cell -> health check -> measure the effect -> keep or revert -> receipt. EVERY tick leaves a receipt, the tick that found nothing enabled and the cycle that died at a store reject included, so the table is a chain rather than a list of the moments something was decided. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
     "use_when": "Once per colony, under /colony's sibling level. The charter ships every goal DISABLED, so a freshly grown argus changes nothing until somebody turns a row on -- it does still tick, and every one of those ticks is receipted as `idle`, because a loop whose clock has stopped and a loop with an empty charter must not write the same nothing.",
-    "not_in_scope": "No operator lane -- a change leaves as an ordinary message and only reaches a cell a human wired an edge to. No mutation at all, in fact: nothing in here authors a diff, so the loop cannot add, remove or rewire a cell. No topology change either: radius v1 is model choice plus numeric params, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only.",
-    "contract_in": "One lane, at the hive path. in_cycle -- run a cycle now instead of waiting for the clock. Which cell starts it is this hive's business.",
-    "contract_out": "Three lanes, out of the hive path. mutate -- the decided change as an ordinary params update, hop.target naming the cell it is for; a parent wires one edge per cell the loop may reach, and a parent that wires none gets an argus that measures and receipts and changes nothing. alert -- a watched symptom crossed zero, deterministically and without a model: the metric, its count and the window. error -- a step of the cycle could not complete."
+    "not_in_scope": "No operator lane -- a change leaves as an ordinary message and only reaches a cell a human wired an edge to. No mutation at all, in fact: nothing in here authors a diff, so the loop cannot add, remove or rewire a cell. No topology change either: the radius is model choice, numeric params and text slots, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only.",
+    "contract_in": "Three lanes, at the hive path. in_cycle -- run a cycle now instead of waiting for the clock. in_stats -- a curator's counts, answering the meter's `stats` question. in_eval -- an evaluator's verdict on one text change, answering the mutator's `eval` order. Which cell starts or resumes a cycle is this hive's business.",
+    "contract_out": "Six lanes, out of the hive path. mutate -- the decided change as an ordinary params update, hop.target naming the cell it is for; a parent wires one edge per cell the loop may reach, and a parent that wires none gets an argus that measures and receipts and changes nothing. slot_update -- the same for a text slot, applied only after an evaluation batch backed it. stats -- a question to a curator about its own ledger. eval -- a text change sent for evaluation before anything moves. alert -- a watched symptom crossed zero, deterministically and without a model: the metric, its count and the window. error -- a step of the cycle could not complete."
   }
 }

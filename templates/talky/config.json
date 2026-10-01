@@ -87,6 +87,10 @@
         {
           "route": "mutation_committed",
           "because": "the mutation receipt on its last hop, GH #553: the graph moved, and the collector inside this composite is what has to hear it -- the tool menu is re-asked on it. The lane keeps ONE name from the mutation door down to here, and this rim is a plain door for it: the composite's own edge carries it to `./collector`, which turns it into its internal `in_menu_tick`. It replaces a five-minute poll timer that used to sit inside the collector, and the boot receipt is the first ask, so an agent has its menu before its first turn. Derived from collector@4.0.0"
+        },
+        {
+          "route": "in_stats",
+          "because": "a question an observer asks about this brain's window (GH #926): the hop keys of the curator's own `in_stats` (`stats_tag`, `stats_from`, `stats_to`, `stats_kinds`, `stats_samples`), handed unchanged to `./curator`, which counts its ledger and answers on `stats`"
         }
       ],
       "emits": [
@@ -148,6 +152,10 @@
             "./brain"
           ],
           "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
+        },
+        {
+          "route": "stats",
+          "because": "the curator's answer to one `in_stats`, unchanged: `stats: {from, to, counts, samples, truncated}` with `hop.stats_tag` echoed, `hop.error_code` and `hop.detail` (`templates/curator/README.md`). One answer per question; the asker matches it by its tag"
         }
       ]
     },
@@ -643,6 +651,22 @@
             "set_context": {
               "call_id": "has(hop.call_id) ? hop.call_id : ''"
             }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_stats'"
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'stats'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call"
+            ]
           }
         }
       ]

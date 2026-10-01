@@ -988,8 +988,10 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     // `in_tool` and `tool_schemas` to `in_menu` with `tool_answerer = 'files'`).
     // 39 -> 40 with GH #907: a turn that carried a document comes back off
     // `./file-space` on `turn`, its address line in place of the bytes.
+    // 40 -> 42 with GH #926: the stats question passes through, one plain door
+    // into the container on `in_stats` and one exit out of it on `stats`.
     assert_eq!(
-        declared, 40,
+        declared, 42,
         "the member's own edges to and from its assistants container are the member \
          template's, drawn ONCE at member instantiation. These reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
@@ -1060,7 +1062,8 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          road's other half: `tool`, on the one tool name that leaves a generation, and \
          `schemas`, the menu tick that asks what it looks like, and \u{2014} since GH #834 \
          \u{2014} `brief` into `./affinity` as `in_brief`, stamped with the turn, the asker \
-         and `brief_caller`. The push itself draws no \
+         and `brief_caller`. Since GH #926 one lane more crosses each way, plain: the \
+         stats question `in_stats` in and its answer `stats` out. The push itself draws no \
          edge here: producer and \
          consumer are siblings, so it addresses \
          `<member>/assistants/<agent>` at its own path. A second agent must not move this \

@@ -381,7 +381,7 @@ def edges(name):
                "in_build_result", "in_export"]
     outbound = ["answer", "bundle", "ack", "reject", "error", "write",
                 "turn_write", "build", "close_report", "export_done",
-                "dump"]
+                "dump", "stats"]
     # The doors carry the member's own name as well (GH #478). `Edge.to` is a
     # static path, so a container with two members needs two addresses -- and
     # the guard is PERMISSIVE, because nothing promotes `context.member` today:
@@ -397,6 +397,12 @@ def edges(name):
     # permissive half is true for every member.
     out.append({"from": ".", "to": "./" + name,
                 "condition": "has(hop.route) && hop.route == 'mutation_committed'%s" % guard})
+    # GH #926 -- the stats question, on the STRICT guard: it asks for one
+    # person's counts, so a question that names no member reaches none rather
+    # than every one of them (fail-closed). Its answer `stats` is the last exit.
+    out.append({"from": ".", "to": "./" + name,
+                "condition": "has(hop.route) && hop.route == 'in_stats' "
+                             "&& has(context.member) && context.member == '%s'" % name})
     out += [{"from": "./" + name, "to": ".",
              "condition": "has(hop.route) && hop.route == '%s'" % route}
             for route in outbound]

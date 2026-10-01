@@ -143,6 +143,11 @@ pub fn obj(v: Value) -> Map<String, Value> {
     v.as_object().cloned().unwrap_or_default()
 }
 
+/// The standard round of this harness (GH #925): the audience a lane message
+/// carries when a test names none, and the audience of a row a test sows by
+/// hand -- as the TEXT the colony carries it in.
+pub const ROUND_E: &str = "[\"member:e\"]";
+
 struct Edge {
     from: String,
     to: String,
@@ -151,9 +156,10 @@ struct Edge {
 }
 
 /// The cells of the shipped hive, `schemas` included since GH #892, `push`
-/// since GH #895 and `handover` since GH #896 (`./policy` hands the first
-/// call of every new session through it).
-pub const CELLS: [&str; 9] = [
+/// since GH #895, `handover` since GH #896 (`./policy` hands the first
+/// call of every new session through it) and `stats` since GH #926 (the
+/// ledger's counts on `in_stats`).
+pub const CELLS: [&str; 10] = [
     "intake",
     "policy",
     "writer",
@@ -163,6 +169,7 @@ pub const CELLS: [&str; 9] = [
     "schemas",
     "push",
     "handover",
+    "stats",
 ];
 
 /// The curator hive in one process: its cells, its edges, its ledger.
@@ -178,6 +185,10 @@ pub struct Hive {
     /// edge's `from`, never the cell the answer is addressed to): who writes
     /// which table is measured here, at the store, not read off a script.
     pub ledger_ops: Vec<(String, Value)>,
+    /// A test that breaks the ledger on purpose sets this (GH #926,
+    /// `store_error`): the store's refusal then travels on like any
+    /// answer. Unset, a refused ledger op fails the test where it happens.
+    pub ledger_may_refuse: bool,
 }
 
 impl Hive {
@@ -238,6 +249,7 @@ impl Hive {
             summ: VecDeque::new(),
             stderr: Vec::new(),
             ledger_ops: Vec::new(),
+            ledger_may_refuse: false,
         }
     }
 
@@ -333,11 +345,15 @@ impl Hive {
             build_bundle_result(&legs, 0)
         };
         for r in body["results"].as_array().cloned().unwrap_or_default() {
-            if let Some(code) = r["error_code"].as_str() {
+            if let Some(code) = r["error_code"].as_str()
+                && !self.ledger_may_refuse
+            {
                 panic!("a ledger op failed ({code}): {r} in {:?}", msg.body);
             }
         }
-        if let Some(code) = hop.get("error_code").and_then(Value::as_str) {
+        if let Some(code) = hop.get("error_code").and_then(Value::as_str)
+            && !self.ledger_may_refuse
+        {
             panic!("a ledger op failed ({code}): {body} in {:?}", msg.body);
         }
         Msg {
@@ -408,8 +424,15 @@ impl Hive {
     pub fn lane(&mut self, route: &str, context: Value, hop: Value, body: Value) {
         let mut hop = obj(hop);
         hop.insert("route".into(), json!(route));
+        // GH #925: every lane message of a colony carries the audience of its
+        // round. A test that names none gets the standard round; one that sets
+        // the key to `null` keeps it null -- a round that declares nothing.
+        let mut context = obj(context);
+        context
+            .entry("audience_set")
+            .or_insert_with(|| json!(ROUND_E));
         let msg = Msg {
-            context: obj(context),
+            context,
             hop,
             body: obj(body),
             reply_to: String::new(),
@@ -417,15 +440,32 @@ impl Hive {
         self.pump(".", msg);
     }
 
-    /// The strike of an order the clock holds, as the timer emits it.
+    /// The strike of an order the clock holds, as the timer emits it: a
+    /// fresh root without a context, the row's `emit_headers` as hop keys and
+    /// the timer's own headers over them (`timer::cell::build_fire_content`).
+    /// The row under one id is the order armed LAST (`rearm` replaces it), so
+    /// its `emit_headers` ride -- the round of the newest call (GH #925,
+    /// OR-BD.A.6); an order the clock never saw brings its own.
     pub fn fire(&mut self, order: &Msg) {
+        let id = order.body.get("schedule_id");
+        let armed = self
+            .clock
+            .iter()
+            .rev()
+            .find(|m| m.body.get("op") == Some(&json!("add")) && m.body.get("schedule_id") == id)
+            .unwrap_or(order);
+        let mut hop = obj(armed.body.get("emit_headers").cloned().unwrap_or_default());
+        for (k, v) in obj(json!({
+            "event_id": "0190a3f2-0000-7000-8000-000000000892",
+            "schedule_id": order.body["schedule_id"],
+            "schedule_name": order.body["schedule_name"],
+            "scheduled_at": order.body["at"], "fired_at": order.body["at"]}))
+        {
+            hop.insert(k, v);
+        }
         let msg = Msg {
             context: Map::new(),
-            hop: obj(json!({
-                "event_id": "0190a3f2-0000-7000-8000-000000000892",
-                "schedule_id": order.body["schedule_id"],
-                "schedule_name": order.body["schedule_name"],
-                "scheduled_at": order.body["at"], "fired_at": order.body["at"]})),
+            hop,
             body: obj(order.body["emit_body"].clone()),
             reply_to: String::new(),
         };
@@ -499,7 +539,7 @@ impl Hive {
         let hop = json!({"session_id": session, "turn_id": turn, "iter": iter.to_string(),
                          "phase": ""});
         let ctx = json!({"session_id": session, "turn_id": turn, "iter": iter.to_string(),
-                         "channel": "test", "audience_set": "[\"member:test\"]"});
+                         "channel": "test", "audience_set": ROUND_E});
         let mut body = json!({"messages": round});
         if system.is_object() {
             body["system"] = system;
@@ -551,9 +591,26 @@ impl Hive {
 
     /// A wall row written straight into the ledger, the way `./intake` writes
     /// one, at a stamp of the test's choosing -- a wall of yesterday cannot be
-    /// grown through the lanes today. Returns `(seq, hash)`.
+    /// grown through the lanes today -- under the standard round. Returns
+    /// `(seq, hash)`.
     pub fn row(
         &mut self,
+        at: chrono::DateTime<chrono::Utc>,
+        session: &str,
+        turn: &str,
+        kind: &str,
+        el: &Value,
+        final_: i64,
+    ) -> (i64, String) {
+        self.row_under(Some(ROUND_E), at, session, turn, kind, el, final_)
+    }
+
+    /// [`Hive::row`] under the audience `aud` (GH #925): a JSON text, or
+    /// `None` for a row from before the rule (column NULL).
+    #[allow(clippy::too_many_arguments)]
+    pub fn row_under(
+        &mut self,
+        aud: Option<&str>,
         at: chrono::DateTime<chrono::Utc>,
         session: &str,
         turn: &str,
@@ -586,15 +643,16 @@ impl Hive {
         self.db
             .execute(
                 "INSERT INTO wall (seq, session_id, turn_id, iter, kind, hash, nth, final, \
-                 episode_idx, at) VALUES (?1, ?2, ?3, 0, ?4, ?5, 0, ?6, NULL, ?7)",
-                rusqlite::params![seq, session, turn, kind, hash, final_, stamp],
+                 episode_idx, at, audience_set) \
+                 VALUES (?1, ?2, ?3, 0, ?4, ?5, 0, ?6, NULL, ?7, ?8)",
+                rusqlite::params![seq, session, turn, kind, hash, final_, stamp, aud],
             )
             .unwrap();
         (seq, hash)
     }
 
     /// A `marks` row written straight into the ledger at a stamp of the
-    /// test's choosing.
+    /// test's choosing, under the standard round (GH #925).
     pub fn mark(
         &mut self,
         at: chrono::DateTime<chrono::Utc>,
@@ -605,15 +663,16 @@ impl Hive {
     ) {
         self.db
             .execute(
-                "INSERT INTO marks (seq, session_id, turn_id, kind, value, at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO marks (seq, session_id, turn_id, kind, value, at, audience_set) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     at.timestamp_micros(),
                     session,
                     turn,
                     kind,
                     value,
-                    at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+                    at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string(),
+                    ROUND_E
                 ],
             )
             .unwrap();

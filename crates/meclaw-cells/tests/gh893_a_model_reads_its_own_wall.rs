@@ -24,6 +24,15 @@
 //!    match it.
 //! 5. **No dead letter** in the run.
 //!
+//! Since GH #925 a wall answers a round, not a model: a row reaches a call only
+//! when its `audience_set` holds the round of the call (`context.audience_set`),
+//! and a row without one never does (OR-BD-5). So every sown row carries the
+//! round of this file ([`AUDIENCE`]) and every message at a door carries that
+//! round -- the proof above is unchanged, now with the round it needs. A second
+//! pin asks the same tree without a round: the curator refuses the call with
+//! `missing_audience`, the refusal reaches the collector under the call id,
+//! and the model reads the refusal and nothing of the wall.
+//!
 //! Free of a real provider by construction: each brain talks to its own local
 //! stub, every other `llm` cell (the curators' summarizers) to a closed local
 //! port.
@@ -63,8 +72,13 @@ const QUERY: &str = r#"{"query":"is called"}"#;
 
 const TALKY_CALL: &str = "call-893-talky";
 const COGNY_CALL: &str = "call-893-cogny";
+const NO_ROUND_CALL: &str = "call-893-no-round";
 const CHANNEL: &str = "chat:893";
-const AUDIENCE: &str = r#"["member:owner","agent:voice"]"#;
+/// The round of every turn and consult of this file and the audience every
+/// sown row carries, in the ledger's canonical form (a sorted JSON array
+/// without whitespace, GH #925): the rows pass the gate because they hold
+/// exactly the round that asks.
+const AUDIENCE: &str = r#"["member:a","member:e"]"#;
 const CONSULT_ID: &str = "k-893";
 const CONSULT_SESSION: &str = "s-893";
 const QUESTION: &str = r#"{"question":"who is called what?"}"#;
@@ -275,8 +289,11 @@ fn sha256_hex(s: &str) -> String {
 /// A wall of one row, sown as seed files of a copied curator's ledger -- the
 /// block under the sha256 of its canonical JSON, the row as `./intake` writes
 /// it. The header of each file is the shipped schema of its table, so a column
-/// the ledger gains is a column the seed names. Returns the block's hash.
-fn sow(ledger: &std::path::Path, session: &str, turn: &str, text: &str) -> String {
+/// the ledger gains is a column the seed names. The row carries `audience`,
+/// the canonical text of the round that caused it: a row without one is
+/// hidden from every round (GH #925, OR-BD-5) and would be no hit. Returns the
+/// block's hash.
+fn sow(ledger: &std::path::Path, session: &str, turn: &str, text: &str, audience: &str) -> String {
     let schema =
         read_json(&repo("templates/curator/ledger/config.json"))["params"]["schema"].clone();
     let el = json!({"origin": "user", "type": "text", "text": text});
@@ -288,7 +305,7 @@ fn sow(ledger: &std::path::Path, session: &str, turn: &str, text: &str) -> Strin
                        "first_seen": when});
     let row = json!({"seq": 1_000_i64, "session_id": session, "turn_id": turn, "iter": 0,
                      "kind": "user", "hash": hash, "nth": 0, "final": 1, "episode_idx": 0,
-                     "at": when});
+                     "at": when, "audience_set": audience});
     for (table, line) in [("blocks", block), ("wall", row)] {
         let header = json!({"schema": schema[table].clone()});
         std::fs::write(
@@ -393,17 +410,22 @@ fn build(td: &tempfile::TempDir, talky_url: &str, cogny_url: &str) -> (String, S
         &main.join("config.json"),
         &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}}),
     );
+    // Both walls in the one round this file asks in: what keeps the talky's
+    // block out of the core's search is the ledger each curator owns (R-27-3),
+    // not the gate.
     let talky = sow(
         &main.join("talky/curator/ledger"),
         "s-old",
         "t-old",
         TALKY_SAID,
+        AUDIENCE,
     );
     let cogny = sow(
         &main.join("cogny/curator/ledger"),
         "s-core",
         "t-core",
         COGNY_SAID,
+        AUDIENCE,
     );
     quiet_timers(&main);
     let brains = BTreeMap::from([
@@ -470,11 +492,16 @@ fn map(v: Value) -> Map<String, Value> {
     v.as_object().cloned().expect("an object")
 }
 
-/// A person's turn at the talky's door, with the round the channel stamps.
-fn talky_turn() -> Message {
+/// A person's turn at the talky's door, with the round the channel stamps --
+/// or, with `round` false, a channel that declares none (GH #925).
+fn talky_turn(round: bool) -> Message {
+    let mut ctx = json!({"channel": CHANNEL});
+    if round {
+        ctx["audience_set"] = json!(AUDIENCE);
+    }
     MessageBuilder::new(Path::new("/talky"))
         .hop(map(json!({"route": "in_turn"})))
-        .context(map(json!({"channel": CHANNEL, "audience_set": AUDIENCE})))
+        .context(map(ctx))
         .body(Body::Inline(json!({"messages": [
             {"origin": "user", "type": "text", "text": "who keeps the lighthouse again?"}]})))
         .ttl(400)
@@ -482,14 +509,19 @@ fn talky_turn() -> Message {
 }
 
 /// A consult at cogny's door, in the shape a talky's dispatcher sends it and
-/// with the context the documented ingress edge sets.
+/// with the context the documented ingress edge sets. It carries the talky's
+/// round (GH #925) because a real consult does: no edge on its way deletes
+/// `audience_set` -- talky `./dispatcher -> .` on `tool` deletes only
+/// `tool_answerer` and `curator_call`, assistant `./talky -> ./cogny` on
+/// `consult_cogny` only `turn_id`, `tools_allow` and `tools_deny`, and cogny
+/// `. -> ./collector` on `in_turn` has no modifier.
 fn consult() -> Message {
     MessageBuilder::new(Path::new("/cogny"))
         .hop(map(json!({"route": "in_turn", "consult_id": CONSULT_ID,
                         "session_id": CONSULT_SESSION, "tool_name": "consult_cogny"})))
         .context(map(
             json!({"consult_id": CONSULT_ID, "session_id": CONSULT_SESSION,
-                            "col_phase": ""}),
+                            "col_phase": "", "audience_set": AUDIENCE}),
         ))
         .body(Body::Inline(json!({"messages": [
             {"origin": "assistant", "type": "tool_call", "id": CONSULT_ID, "text": QUESTION}]})))
@@ -606,6 +638,31 @@ fn tool_content(req: &OpenAiRequestSnapshot, call_id: &str) -> String {
     m["content"].as_str().unwrap_or_default().to_string()
 }
 
+/// `hop` of every delivery into `to` on `route` that carries `call_id`, in the
+/// order the colony logged them -- the message as its receiver gets it, after
+/// the edge that handed it over.
+fn deliveries_of(root: &std::path::Path, to: &str, route: &str, call_id: &str) -> Vec<Value> {
+    let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
+    let mut st = conn
+        .prepare("SELECT to_path, headers FROM message_log ORDER BY rowid")
+        .expect("message_log");
+    st.query_map([], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        ))
+    })
+    .expect("query")
+    .filter_map(Result::ok)
+    .filter(|(path, _)| path == to)
+    .map(|(_, headers)| {
+        let h: Value = meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
+        h["hop"].clone()
+    })
+    .filter(|hop| hop["route"] == route && hop["tool_call_id"] == call_id)
+    .collect()
+}
+
 // ═══════════════════════════════════════════════════════════════════════ pins
 
 /// The shipped talky and cogny, each with a wall of its own: both menus offer
@@ -634,7 +691,7 @@ async fn a_model_reads_its_own_wall_and_never_another() {
     await_menu(td.path(), "talky").await;
     await_menu(td.path(), "cogny").await;
 
-    h.send(talky_turn()).await;
+    h.send(talky_turn(true)).await;
     answer_or_explain(&mut ports.talky, td.path(), "talky").await;
     h.send(consult()).await;
     answer_or_explain(&mut ports.cogny, td.path(), "cogny").await;
@@ -707,5 +764,64 @@ async fn a_model_reads_its_own_wall_and_never_another() {
     );
 
     // 5. Nothing lost.
+    assert!(dead.is_empty(), "dead letters in the run: {dead:#?}");
+}
+
+/// The same tree asked without a round (GH #925): the talky's history call is
+/// refused with `missing_audience` before a single ledger read, the refusal
+/// reaches the collector under the call id, and the model reads the refusal
+/// and nothing of the wall -- neither the sown words nor the block's id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_without_a_round_is_refused_with_missing_audience() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let talky_brain = MockOpenAI::start(vec![
+        canned_tool_calls(vec![(NO_ROUND_CALL, "history_search", QUERY)]),
+        canned_chat_completion("I cannot look that up.", "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().expect("tempdir");
+    // The core is never asked here: its brain talks to the closed port.
+    let (talky_block, _) = build(&td, &talky_brain.base_url, CLOSED_PORT);
+    let (h, mut ports) = boot(&td).await;
+    await_menu(td.path(), "talky").await;
+
+    h.send(talky_turn(false)).await;
+    answer_or_explain(&mut ports.talky, td.path(), "talky without a round").await;
+    let at_collector = deliveries_of(td.path(), "/talky/collector", "in_tool", NO_ROUND_CALL);
+    let dead = unexpected_dead_letters(td.path());
+    let reqs = talky_brain.recorded_requests().await;
+    h.shutdown().await;
+
+    // At the receiver: the tool result as the collector gets it names the code.
+    assert!(
+        !at_collector.is_empty(),
+        "no tool result under `{NO_ROUND_CALL}` reached the collector -- the refusal is an \
+         answer too, and the round of the call must close"
+    );
+    for hop in &at_collector {
+        assert_eq!(
+            hop["error_code"], "missing_audience",
+            "a round-less call is refused with `missing_audience`: {hop:#?}"
+        );
+    }
+
+    // And at the brain: the refusal under the call id, nothing of the wall.
+    assert_eq!(
+        reqs.len(),
+        2,
+        "the refusal closes the tool round: two provider calls"
+    );
+    let text = tool_content(&reqs[1], NO_ROUND_CALL);
+    assert!(
+        text.contains("missing_audience"),
+        "the model reads the refusal: {text}"
+    );
+    assert!(
+        !text.contains(TALKY_SAID) && !text.contains(&talky_block[..12]),
+        "a call without a round read the wall: {text}"
+    );
     assert!(dead.is_empty(), "dead letters in the run: {dead:#?}");
 }

@@ -1,0 +1,87 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json, re, uuid, datetime, unicodedata\n\n# The door of the argus: one lane to READ this hive's record and one lane to\n# HAND IT A HINT, for another part of the colony. The hive is sealed\n# (`params.ports` is empty), so without this cell nothing outside could see a\n# charter row or a cycle receipt, and nothing could put a hypothesis in front\n# of the judge.\n#\n# What the door does NOT do is the point of it:\n#\n#   - It decides nothing and starts nothing. No edge leads from here to the\n#     meter, the judge or the mutator. A hint is stored in `hints` and\n#     acknowledged; the loop shows it to its judge at the earliest in its next\n#     cycle, as a hypothesis, and a hint never counts as a measurement -- the\n#     measuring path stays free of opinions.\n#   - It writes nothing but that one insert. Never `goals`, `rules`, `cycles`\n#     or `waits`, and never an update of a `hints` row: `consumed_by` belongs\n#     to the loop that consumed the hint.\n#   - It filters nothing. A read returns rows as the store holds them, every\n#     column. The store has no wildcard select (`columns` is mandatory), so\n#     COLUMNS below names every column of every table the door reads, and a\n#     column a later version adds needs its entry there: a test pins the list\n#     to the store schemas, so a column added without the door fails that\n#     test instead of disappearing from every answer.\n#\n# A read is one or two store round trips; the question travels in the\n# context the hive's own edges set (`ar_phase`, `ar_carry`), exactly like the\n# meter's, because a store answer carries no hop of ours.\n\nWHATS = (\"charter\", \"cycles\", \"hints\")\nDEFAULT_LIMIT = 20\nMAX_LIMIT = 100\nMAX_TAG = 64\nMAX_LINE = 500\n\nORIGIN = re.compile(r\"[a-z0-9-]{1,64}\")\n\n# RFC 3339 date-time: a date, `T`, a time with optional fraction, and an\n# offset that is `Z` or `+hh:mm`/`-hh:mm` (both letters in either case). The\n# digits are spelled `[0-9]`: a Python `\\d` also takes every other Unicode\n# decimal digit, and `int()` would turn those into a valid-looking cursor.\nRFC3339 = re.compile(\n    r\"([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt]([0-9]{2}):([0-9]{2}):([0-9]{2})\"\n    r\"(\\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})\")\n\n# Every column of every table the door reads (see the header).\nCOLUMNS = {\n    \"goals\": [\"id\", \"metric\", \"direction\", \"window_minutes\", \"min_samples\",\n              \"min_delta_pct\", \"quality_gate\", \"enabled\", \"note\", \"source\"],\n    \"rules\": [\"id\", \"kind\", \"value\", \"note\"],\n    \"cycles\": [\"id\", \"goal\", \"at\", \"status\", \"measured\", \"judged\",\n               \"simulated\", \"change\", \"revert_plan\", \"verified\", \"effect\",\n               \"outcome\", \"reason_code\", \"role\", \"evidence\", \"hints\"],\n    \"hints\": [\"id\", \"at\", \"origin\", \"confidence\", \"line\", \"consumed_by\"],\n}\n\n\ndef stamp(dt):\n    \"\"\"The one `at` form of this hive's receipts: UTC, microseconds, `Z`.\n\n    Every writer in the hive stamps it this way, and that is what makes `at`\n    comparable as TEXT: the store compares strings, and `...:00Z` sorts AFTER\n    `...:00.5Z` (`Z` is above `.`), so a `read_since` in any other spelling\n    would page wrongly without a word. Written out digit by digit because\n    `strftime(\"%Y\")` does not pad a year below 1000 on every platform.\n    \"\"\"\n    return \"%04d-%02d-%02dT%02d:%02d:%02d.%06dZ\" % (\n        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,\n        dt.microsecond)\n\n\ndef now():\n    return stamp(datetime.datetime.now(datetime.timezone.utc))\n\n\ndef since_of(text):\n    \"\"\"An RFC 3339 instant, in the stored form. Raises on anything else.\n\n    Digits past the sixth are cut, not rounded: every stored `at` is a whole\n    microsecond, so `at > 12.1234567` and `at > 12.123456` select the same\n    rows.\n    \"\"\"\n    m = RFC3339.fullmatch(text)\n    if not m:\n        raise ValueError(\"not an RFC 3339 date-time\")\n    y, mo, d, h, mi, s = (int(m.group(i)) for i in range(1, 7))\n    frac = m.group(7) or \"\"\n    micro = int((frac[1:] + \"000000\")[:6]) if frac else 0\n    off = m.group(8)\n    if off in (\"Z\", \"z\"):\n        minutes = 0\n    else:\n        oh, om = int(off[1:3]), int(off[4:6])\n        if oh > 23 or om > 59:\n            raise ValueError(\"offset out of range\")\n        minutes = (oh * 60 + om) * (-1 if off[0] == \"-\" else 1)\n    tz = datetime.timezone(datetime.timedelta(minutes=minutes))\n    dt = datetime.datetime(y, mo, d, h, mi, s, micro, tzinfo=tz)\n    return stamp(dt.astimezone(datetime.timezone.utc))\n\n\ndef _blank(v):\n    # An edge that always writes a key writes \"\" where it means \"not set\".\n    return v is None or v == \"\"\n\n\ndef _whole(v):\n    \"\"\"A whole number from a JSON integer or a string of decimal digits.\n\n    Digits are accepted because a hop value is often written by an edge's\n    `set_hop`, where the literal may well be a string; a bool, a float (even\n    `20.0`) and any other spelling are not a count.\n    \"\"\"\n    if isinstance(v, bool):\n        return None\n    if isinstance(v, int):\n        return v\n    if isinstance(v, str) and re.fullmatch(r\"[0-9]{1,3}\", v):\n        return int(v)\n    return None\n\n\ndef parse_read(hop):\n    \"\"\"The `in_read` question, or the hop key it is refused on.\n\n    Returns `(request, None)` or `(None, key)`; the checks run in the order\n    `read_what`, `read_since`, `read_limit`, `read_tag`, and the first failing\n    key is the one named.\n    \"\"\"\n    if not isinstance(hop, dict):\n        return None, \"read_what\"\n    what = hop.get(\"read_what\")\n    if not isinstance(what, str) or what not in WHATS:\n        return None, \"read_what\"\n    since = None\n    raw = hop.get(\"read_since\")\n    # The charter has no time axis; `read_since` means nothing there and is\n    # not looked at.\n    if what != \"charter\" and not _blank(raw):\n        if not isinstance(raw, str):\n            return None, \"read_since\"\n        try:\n            since = since_of(raw)\n        except Exception:\n            return None, \"read_since\"\n    raw = hop.get(\"read_limit\")\n    if _blank(raw):\n        limit = DEFAULT_LIMIT\n    else:\n        limit = _whole(raw)\n        if limit is None or not 1 <= limit <= MAX_LIMIT:\n            return None, \"read_limit\"\n    tag = hop.get(\"read_tag\")\n    if not isinstance(tag, str) or not 1 <= len(tag) <= MAX_TAG:\n        return None, \"read_tag\"\n    return {\"what\": what, \"since\": since, \"limit\": limit, \"tag\": tag}, None\n\n\ndef parse_hint(body):\n    \"\"\"The `hint` body slot, or the field it is refused on.\n\n    A body slot and never a turn: text from elsewhere in the colony must not\n    become a conversation turn of anybody. `line` is trimmed and then held to\n    1..500 characters; a control character or a line break anywhere in it is\n    a refusal rather than something to clean up, because a hint is shown to a\n    model as one line and a second line would be a second, unchecked hint.\n    \"\"\"\n    hint = body.get(\"hint\") if isinstance(body, dict) else None\n    if not isinstance(hint, dict):\n        return None, \"hint\"\n    origin = hint.get(\"origin\")\n    if not isinstance(origin, str) or not ORIGIN.fullmatch(origin):\n        return None, \"origin\"\n    conf = hint.get(\"confidence\")\n    if isinstance(conf, bool) or not isinstance(conf, int) \\\n            or not 0 <= conf <= 100:\n        return None, \"confidence\"\n    line = hint.get(\"line\")\n    if not isinstance(line, str) or any(\n            unicodedata.category(ch) in (\"Cc\", \"Zl\", \"Zp\") for ch in line):\n        return None, \"line\"\n    line = line.strip()\n    if not 1 <= len(line) <= MAX_LINE:\n        return None, \"line\"\n    return {\"origin\": origin, \"confidence\": conf, \"line\": line}, None\n\n\ndef emit(route, hop, body=None):\n    head = {\"route\": route}\n    head.update(hop)\n    m = {\"header\": head, \"messages\": []}\n    m.update(body or {})\n    return m\n\n\ndef store(route, phase, carry, args):\n    return {\"header\": {\"route\": route, \"phase\": phase,\n                       \"carry\": json.dumps(carry)},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": uuid.uuid4().hex[:12],\n                          \"text\": json.dumps(args)}]}\n\n\ndef select(table, phase, carry, limit, since=None):\n    args = {\"operation\": \"select\", \"table\": table,\n            \"columns\": COLUMNS[table], \"limit\": limit}\n    if table in (\"cycles\", \"hints\"):\n        # Oldest first, strictly after the cursor: paging by `at` is what\n        # lets a reader ask again with the `next_since` it was given and see\n        # every row once.\n        args[\"order_by\"] = [{\"col\": \"at\", \"dir\": \"asc\"}]\n        if since:\n            args[\"where\"] = {\"at\": {\"gt\": since}}\n        return store(\"rstore\", phase, carry, args)\n    args[\"order_by\"] = [{\"col\": \"id\", \"dir\": \"asc\"}]\n    return store(\"cstore\", phase, carry, args)\n\n\ndef rows_of(body):\n    msgs = body.get(\"messages\") or []\n    if not msgs:\n        return []\n    try:\n        v = json.loads(msgs[-1].get(\"text\") or \"null\")\n    except Exception:\n        return []\n    return [r for r in v if isinstance(r, dict)] if isinstance(v, list) else []\n\n\ndef answer(what, tag, rows, error=\"\", detail=\"\"):\n    nxt = \"\"\n    if rows and what != \"charter\":\n        nxt = str(rows[-1].get(\"at\") or \"\")\n    return emit(\"read\", {\"read_tag\": tag, \"read_what\": what,\n                         \"error_code\": error, \"detail\": detail},\n                {\"rows\": rows, \"next_since\": nxt})\n\n\ndef ack(hint_id, error=\"\", detail=\"\"):\n    return emit(\"hint_ack\", {\"hint_id\": hint_id, \"error_code\": error,\n                             \"detail\": detail})\n\n\ndef echo(v):\n    # A refused question is still answered with what it asked, bounded.\n    return v[:MAX_TAG] if isinstance(v, str) else \"\"\n\n\ndef start_read(hop):\n    req, bad = parse_read(hop)\n    if bad:\n        return [answer(echo(hop.get(\"read_what\")), echo(hop.get(\"read_tag\")),\n                       [], \"invalid_input\", bad)]\n    if req[\"what\"] == \"charter\":\n        return [select(\"goals\", \"goals\", req, req[\"limit\"])]\n    return [select(req[\"what\"], \"rows\", req, req[\"limit\"], req[\"since\"])]\n\n\ndef start_hint(body):\n    hint, bad = parse_hint(body)\n    if bad:\n        return [ack(\"\", \"invalid_hint\", bad)]\n    hid = \"hint:\" + uuid.uuid4().hex\n    row = {\"id\": hid, \"at\": now(), \"consumed_by\": \"\"}\n    row.update(hint)\n    return [store(\"rstore\", \"hint\", {\"hint_id\": hid},\n                  {\"operation\": \"insert\", \"table\": \"hints\", \"row\": row})]\n\n\ndef resume(phase, carry, hop, body):\n    \"\"\"A store answered. Its reason travels as `detail` on a refusal.\"\"\"\n    err = str(hop.get(\"error_code\") or \"\")\n    if phase == \"hint\":\n        if err:\n            return [ack(\"\", \"store_error\", err)]\n        return [ack(str(carry.get(\"hint_id\") or \"\"))]\n    what, tag = str(carry.get(\"what\") or \"\"), str(carry.get(\"tag\") or \"\")\n    if what not in WHATS:\n        return []\n    if err:\n        # \"The read failed\" must never look like \"there is nothing\".\n        return [answer(what, tag, [], \"store_error\", err)]\n    rows = rows_of(body)\n    limit = int(carry.get(\"limit\") or DEFAULT_LIMIT)\n    if phase == \"goals\":\n        rows = [dict(r, table=\"goals\") for r in rows][:limit]\n        if len(rows) >= limit:\n            return [answer(what, tag, rows)]\n        carry[\"goals\"] = rows\n        return [select(\"rules\", \"rules\", carry, limit - len(rows))]\n    if phase == \"rules\":\n        goals = [r for r in (carry.get(\"goals\") or []) if isinstance(r, dict)]\n        return [answer(what, tag, goals + [dict(r, table=\"rules\")\n                                           for r in rows])]\n    if phase == \"rows\":\n        return [answer(what, tag, rows)]\n    return []\n\n\ndef step(hop, context, body):\n    # The two lanes are told apart by their route FIRST. A store's answer\n    # carries no route, and only a message on neither lane is read as one:\n    # a question whose hop happens to carry `operation` is still a question,\n    # where reading it as a store answer would end it with no answer and no\n    # dead letter.\n    route = str(hop.get(\"route\") or \"\")\n    if route == \"in_read\":\n        return start_read(hop)\n    if route == \"in_hint\":\n        return start_hint(body)\n    if \"operation\" in hop:\n        # A store's answer. The phase and the question come back in the\n        # context the hive's edges set on the way out; the entry edge clears\n        # both, so a caller cannot pose as a store.\n        phase = str(context.get(\"ar_phase\") or \"\")\n        try:\n            carry = json.loads(str(context.get(\"ar_carry\") or \"{}\"))\n        except Exception:\n            carry = {}\n        if not isinstance(carry, dict):\n            return []\n        return resume(phase, carry, hop, body)\n    return []\n\n\ndef main():\n    doc = json.load(sys.stdin)\n    header = (doc.get(\"envelope\") or {}).get(\"header\") or {}\n    hop = header.get(\"hop\") or {}\n    context = header.get(\"context\") or {}\n    body = doc.get(\"body\") or {}\n    sys.stdout.write(json.dumps(step(hop, context, body)))\n\n\nif __name__ == \"__main__\":\n    main()\n\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "rows": {
+          "type": "array",
+          "required": false
+        },
+        "next_since": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "cstore",
+            "rstore",
+            "read",
+            "hint_ack"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "carry": {
+          "type": "string",
+          "required": false
+        },
+        "read_tag": {
+          "type": "string",
+          "required": false
+        },
+        "read_what": {
+          "type": "string",
+          "required": false
+        },
+        "hint_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "detail": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "hint": {
+          "type": "object",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The door of the argus: reads the charter, the cycle receipts and the hints for another part of the colony, rows as stored and page by page, and stores a hint -- a one-line hypothesis with an origin and a confidence -- in the receipts' `hints` table. It is the only cell of the hive that answers the outside and is not part of the loop.",
+    "use_when": "One per argus hive, behind the hive lanes `in_read` and `in_hint`. A parent that draws no edge onto them has a door nobody knocks on, which is a legitimate way to run it.",
+    "not_in_scope": "No decision and no trigger: no edge leads from here to the meter, the judge or the mutator, so a read or a hint never starts a cycle, and a hint is at most shown to the judge in a later cycle as a hypothesis -- never counted as a measurement. No write but one insert into `hints`: never `goals`, `rules`, `cycles` or `waits`, and never an update of a hint (`consumed_by` is the loop's). No filter: a read returns every column as stored."
+  }
+}

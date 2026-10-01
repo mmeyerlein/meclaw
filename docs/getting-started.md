@@ -18,7 +18,7 @@ curl -fsSL https://github.com/mmeyerlein/meclaw/releases/latest/download/start.s
 On a terminal the run asks for an OpenRouter key before it installs anything, and does not echo
 it while you type. It writes the key and the model tokens the shipped declarations read into one
 file, the colony's `.env`, mode `0600`. `MECLAW_EXAMPLE=organism` picks the seed whose root tree
-declares the `meclaw-os` shell: the first boot grows it, thirty-five cells, and one more
+declares the `meclaw-os` shell: the first boot grows it, thirty-nine cells, and one more
 declaration adds the colony's front door and the terminal its answers stop in. Leave the variable
 out and you get the flat assistant of the [quick start](../README.md) instead, which answers one
 question and has no room below it.
@@ -71,7 +71,7 @@ meclaw ask --api 127.0.0.1:7777 --target /door "Say hello in one short sentence.
 `ask` posts one turn and reads the answer out of `GET /colony/trace`, where every other hop of
 that turn is waiting too. `/door` puts the turn on the `in_turn` lane and stamps which agent it
 is for, which is what a channel does for the person using it; the shipped door names `scribe`
-unless the caller already said otherwise. The colony is ninety-three cells by then, and the
+unless the caller already said otherwise. The colony is one hundred and sixty-one cells by then, and the
 trace shows every hop the turn took through them.
 
 ## Where to read next

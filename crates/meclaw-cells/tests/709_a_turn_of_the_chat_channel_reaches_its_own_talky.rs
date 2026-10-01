@@ -269,11 +269,12 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     // GH #908: seventy-two -- the `file_` tools leave each keeper on `tool`, and
     // the core's `file_` tools leave `./cogny` the same way. GH #916:
     // seventy-six -- the `in_pin` door into each keeper and the core, and the
-    // core's own `sidecar` exit.
+    // core's own `sidecar` exit. GH #926: eighty-two -- the `in_stats` door into
+    // each keeper and the core, and the `stats` answer out of each of the three.
     assert_eq!(
         hp.graph.edges.len(),
-        76,
-        "forty-six edges and thirty twins. The number is asserted so that an \
+        82,
+        "forty-nine edges and thirty-three twins. The number is asserted so that an \
          edge added on one side and forgotten on the other is loud"
     );
 }

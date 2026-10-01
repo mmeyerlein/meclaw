@@ -41,6 +41,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const SESSION: &str = "s-888";
+/// The audience of the driver's rounds (GH #925), as the TEXT a colony carries
+/// on the context. The rebuild starts on a strike of the clock, a fresh root;
+/// the round rides with the order (`emit_headers`, OR-BD.A.6), and without one
+/// the rebuild keeps the old window and makes no summary.
+const ROUND: &str = r#"["member:e"]"#;
 const SUMMARY: &str = "The person said hello and was greeted.";
 
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -221,7 +226,7 @@ async fn boot(
 /// One round at the curator's door, as the collector hands it.
 fn round(turn_id: &str, iter: u32, messages: Value) -> meclaw_core::Message {
     let ctx: Map<String, Value> = json!({"session_id": SESSION, "turn_id": turn_id,
-                                         "iter": iter.to_string()})
+                                         "iter": iter.to_string(), "audience_set": ROUND})
     .as_object()
     .cloned()
     .unwrap();

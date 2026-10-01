@@ -2,7 +2,7 @@
 //!
 //! Two things this file establishes, and the second one is the interesting one:
 //!
-//! 1. The argus is an ordinary declaration. `grow-argus.json` adds seven
+//! 1. The argus is an ordinary declaration. `grow-argus.json` adds eight
 //!    cells to a colony that is already up — no reboot, no special path.
 //! 2. **It cannot give itself the power to act.** The edge that lets its
 //!    mutations reach `/colony/mutations` is not something a mutation can
@@ -214,13 +214,14 @@ async fn the_argus_grows_as_an_ordinary_declaration() {
         "/argus/probe",
         "/argus/receipts",
         "/argus/clock",
+        "/argus/door",
     ] {
         assert!(
             paths.iter().any(|p| p == expected),
             "{expected} did not grow: {paths:?}"
         );
     }
-    assert_eq!(paths.len(), before + 7, "seven cells, no more: {paths:?}");
+    assert_eq!(paths.len(), before + 8, "eight cells, no more: {paths:?}");
 
     h.shutdown().await;
 }

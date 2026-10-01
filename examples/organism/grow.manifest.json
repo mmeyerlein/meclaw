@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.1.4"
+            "template": "meclaw-os@2.2.0"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.0.0"
+            "template": "org@2.1.0"
           }
         ],
         "add_edges": [
@@ -58,6 +58,11 @@
             "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.org) || context.org == 'acme')"
           },
           {
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'in_stats' && has(context.org) && context.org == 'acme'"
+          },
+          {
             "from": "./acme",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'answer'"
@@ -111,6 +116,11 @@
             "from": "./acme",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'dump'"
+          },
+          {
+            "from": "./acme",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'stats'"
           }
         ]
       }
@@ -121,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.2.1"
+            "template": "member@2.3.0"
           }
         ],
         "add_edges": [
@@ -161,6 +171,11 @@
             "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.member) || context.member == 'alex')"
           },
           {
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'in_stats' && has(context.member) && context.member == 'alex'"
+          },
+          {
             "from": "./alex",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'answer'"
@@ -214,6 +229,11 @@
             "from": "./alex",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'dump'"
+          },
+          {
+            "from": "./alex",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'stats'"
           }
         ]
       }
@@ -229,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@3.3.0",
+            "template": "assistant@3.4.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -451,6 +471,16 @@
             "from": "./scribe",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'dump'"
+          },
+          {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_stats' && has(context.assistant) && context.assistant == 'scribe'"
+          },
+          {
+            "from": "./scribe",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'stats'"
           },
           {
             "from": ".",

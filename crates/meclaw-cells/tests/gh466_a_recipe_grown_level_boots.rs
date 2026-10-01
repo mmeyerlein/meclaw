@@ -590,8 +590,8 @@ async fn a_rendered_level_is_addressable_from_its_container_and_answers_back() {
         .count();
     assert_eq!(
         (down, up),
-        (7, 11),
-        "the person is not wired the way the level wires one — seven doors down          (in_turn, in_recall, in_brief, in_propose, in_build_result, in_export and,          since GH #553, mutation_committed — the mutation door's receipt, which          every child of a container hears because it carries no context to be          addressed by), eleven exits back up — `bundle` since GH #533, the answer to the question the second of those doors takes, and `dump` since GH #555, the receipt of an applied import part, which used to end inside the member in a cell that read it and said nothing; `prune` left with GH #889 and `pack_ack` with GH #877, which books every receipt at the member's own ./affinity; a level reached by a door with no exit is a level          that answers into nothing, and a level with no in_export door cannot be          asked for its memory at all (GH #470)"
+        (8, 12),
+        "the person is not wired the way the level wires one — eight doors down          (in_turn, in_recall, in_brief, in_propose, in_build_result, in_export,          since GH #553 mutation_committed — the mutation door's receipt, which          every child of a container hears because it carries no context to be          addressed by — and, since GH #926, in_stats), twelve exits back up — `stats` since GH #926, `bundle` since GH #533, the answer to the question the second of those doors takes, and `dump` since GH #555, the receipt of an applied import part, which used to end inside the member in a cell that read it and said nothing; `prune` left with GH #889 and `pack_ack` with GH #877, which books every receipt at the member's own ./affinity; a level reached by a door with no exit is a level          that answers into nothing, and a level with no in_export door cannot be          asked for its memory at all (GH #470)"
     );
     assert!(
         drawn.rows.iter().any(|r| r.path.starts_with(&alex)),

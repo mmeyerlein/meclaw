@@ -627,6 +627,10 @@ impl LongRunningCell for TimerCell {
     /// 1. `load_schedule` — fetch the row. None or `status != "active"`: skip
     ///    (race: a remove/complete op happened between the I/O fire push and
     ///    handle_event).
+    ///
+    ///    1b. `strike_is_stale` — a strike that is not a moment of the current
+    ///    order is skipped: no state step, no emission (GH #904, GH #913). An
+    ///    operator trigger fires the order as it stands.
     /// 2. Persist: repeating → `bump_iteration`; one-shot → `mark_completed`.
     /// 3. Emit (T15).
     #[allow(clippy::manual_async_fn)]
@@ -687,17 +691,27 @@ impl LongRunningCell for TimerCell {
             // (test `a_stale_strike_does_not_fire_the_order_a_rearm_put_in_its_place`).
             // The new order's own strike follows from the SetActive the op sent.
             // An operator trigger (GH #17) fires the schedule as it stands.
-            if !forced
-                && let crate::timer::schedule::ScheduleKind::At(at) = row.kind
-                && at != scheduled_at
-            {
-                tracing::debug!(
-                    path = self.own_path.as_str(),
-                    ?schedule_id,
-                    %at,
-                    %scheduled_at,
-                    "fire: one-shot re-armed for another moment, stale strike skipped"
-                );
+            // GH #913: the same holds for a cron row -- `modify` and
+            // `add … rearm` change its expression in place, and the strike
+            // queued for the old expression must not fire the new order at a
+            // moment the new expression does not have ([`strike_is_stale`]).
+            if strike_is_stale(&row.kind, scheduled_at, forced) {
+                match &row.kind {
+                    crate::timer::schedule::ScheduleKind::At(at) => tracing::debug!(
+                        path = self.own_path.as_str(),
+                        ?schedule_id,
+                        %at,
+                        %scheduled_at,
+                        "fire: one-shot re-armed for another moment, stale strike skipped"
+                    ),
+                    crate::timer::schedule::ScheduleKind::Cron(expr) => tracing::debug!(
+                        path = self.own_path.as_str(),
+                        ?schedule_id,
+                        cron = expr.as_str(),
+                        %scheduled_at,
+                        "fire: cron order changed to an expression without this moment, stale strike skipped"
+                    ),
+                }
                 return;
             }
 
@@ -821,6 +835,51 @@ fn is_late(
             row.kind,
             crate::timer::schedule::ScheduleKind::At(at) if at == scheduled_at && at <= booted_at
         )
+}
+
+/// GH #904 / GH #913: whether a sleep strike belongs to an order the row no
+/// longer holds, so `handle_event` drops it before any state step (no emit,
+/// `iteration_n` untouched). A strike is pushed for the moment the I/O task
+/// slept for; an op that lands between that push and its handling replaces
+/// the row in place, still `active`. The strike is stale exactly when the
+/// row's CURRENT order does not strike at `scheduled_at`: a one-shot whose
+/// `at` is another moment (#904), a cron row whose current expression does
+/// not have that moment. A moment the old and the new expression share is
+/// the new order's own moment -- it fires, with the new body, once (the I/O
+/// task plans the next one strictly after it). An operator trigger (`forced`,
+/// GH #17) is never stale.
+fn strike_is_stale(
+    kind: &crate::timer::schedule::ScheduleKind,
+    scheduled_at: chrono::DateTime<chrono::Utc>,
+    forced: bool,
+) -> bool {
+    use crate::timer::schedule::ScheduleKind;
+    if forced {
+        return false;
+    }
+    match kind {
+        ScheduleKind::At(at) => *at != scheduled_at,
+        ScheduleKind::Cron(expr) => !cron_strikes_at(expr, scheduled_at),
+    }
+}
+
+/// GH #913: whether `moment` is an occurrence of the cron expression `expr`,
+/// read with the parser `run_io` plans with (six fields, seconds required,
+/// UTC). No generation stamp and no schema change (OR-BD-14): the row's
+/// expression itself says whether the moment is still its own. A strike's
+/// moment is a whole second (`compute_next_occurrence` anchors on it, GH
+/// #626), and croner matches each field of that second. An expression that
+/// does not parse has no moment; every entrance (`add`, `modify`, the seed)
+/// refuses one, so no row holds it.
+fn cron_strikes_at(expr: &str, moment: chrono::DateTime<chrono::Utc>) -> bool {
+    use croner::parser::{CronParser, Seconds};
+    CronParser::builder()
+        .seconds(Seconds::Required)
+        .build()
+        .parse(expr)
+        .ok()
+        .and_then(|c| c.is_time_matching(&moment).ok())
+        .unwrap_or(false)
 }
 
 /// GH #922 fix round 1 (review M-A): whether a one-shot strike may emit
@@ -999,6 +1058,139 @@ mod tests {
         let mut cron = at_row(missed, true);
         cron.kind = crate::timer::schedule::ScheduleKind::Cron("0 0 9 * * *".into());
         assert!(!is_late(&cron, missed, false, boot), "cron is never late");
+    }
+
+    /// GH #913: a strike without `forced` fires only on a moment of the order
+    /// the row holds NOW. The cron rows model `modify`/`add … rearm` from
+    /// `*/5` to `*/7` (seconds field) with the strike for the old expression
+    /// still queued; the one-shot rows are the #904 cases, unchanged. Edges:
+    /// the moment both expressions share fires (it is the new order's own),
+    /// the minute turn, a minute-field expression one second either side of
+    /// its moment, and an expression that does not parse (it has no moment;
+    /// every entrance validates, so a row never holds one).
+    #[test]
+    fn a_strike_is_stale_unless_the_current_order_strikes_at_its_moment() {
+        use crate::timer::schedule::ScheduleKind;
+        use chrono::TimeZone;
+        let t = |h: u32, m: u32, s: u32| chrono::Utc.with_ymd_and_hms(2030, 1, 1, h, m, s).unwrap();
+        let cron = |e: &str| ScheduleKind::Cron(e.into());
+        let every5 = "*/5 * * * * *";
+        let every7 = "*/7 * * * * *";
+        // (label, the row's order now, scheduled_at, forced, stale)
+        let table = vec![
+            (
+                "row now */7, strike for */5 on :05",
+                cron(every7),
+                t(12, 0, 5),
+                false,
+                true,
+            ),
+            (
+                "row now */7, strike on :07",
+                cron(every7),
+                t(12, 0, 7),
+                false,
+                false,
+            ),
+            (
+                "row now */7, :35 lies on both",
+                cron(every7),
+                t(12, 0, 35),
+                false,
+                false,
+            ),
+            (
+                "row now */7, :56 is its last of the minute",
+                cron(every7),
+                t(12, 0, 56),
+                false,
+                false,
+            ),
+            (
+                "row now */7, :59 is not on it",
+                cron(every7),
+                t(12, 0, 59),
+                false,
+                true,
+            ),
+            (
+                "row now */7, the minute turn :00",
+                cron(every7),
+                t(12, 1, 0),
+                false,
+                false,
+            ),
+            (
+                "same expression after a modify",
+                cron(every5),
+                t(12, 0, 5),
+                false,
+                false,
+            ),
+            (
+                "minute field, on the moment",
+                cron("0 */5 * * * *"),
+                t(12, 35, 0),
+                false,
+                false,
+            ),
+            (
+                "minute field, a second before",
+                cron("0 */5 * * * *"),
+                t(12, 34, 59),
+                false,
+                true,
+            ),
+            (
+                "minute field, a second after",
+                cron("0 */5 * * * *"),
+                t(12, 35, 1),
+                false,
+                true,
+            ),
+            (
+                "row now */7, forced off the expression",
+                cron(every7),
+                t(12, 0, 5),
+                true,
+                false,
+            ),
+            (
+                "an expression that does not parse",
+                cron("not a cron"),
+                t(12, 0, 5),
+                false,
+                true,
+            ),
+            (
+                "one-shot, its own moment",
+                ScheduleKind::At(t(12, 0, 0)),
+                t(12, 0, 0),
+                false,
+                false,
+            ),
+            (
+                "one-shot re-armed, old moment",
+                ScheduleKind::At(t(12, 5, 0)),
+                t(12, 0, 0),
+                false,
+                true,
+            ),
+            (
+                "one-shot re-armed, forced",
+                ScheduleKind::At(t(12, 5, 0)),
+                t(12, 0, 0),
+                true,
+                false,
+            ),
+        ];
+        for (label, kind, scheduled_at, forced, expected) in table {
+            assert_eq!(
+                strike_is_stale(&kind, scheduled_at, forced),
+                expected,
+                "{label}"
+            );
+        }
     }
 
     /// GH #922: the late strike is today's body plus `late: true` next to the

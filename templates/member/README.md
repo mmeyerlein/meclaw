@@ -1,7 +1,7 @@
-# `member@2.2.1`
+# `member@2.3.0`
 
 One person, as a level. **Five holders, three open containers and no cell of
-its own** — eight nodes and seventy-four edges.
+its own** — eight nodes and seventy-six edges.
 
 | holder | what it holds |
 |---|---|
@@ -62,13 +62,13 @@ further: so does the way the person is reached.
 
 ## What crosses the boundary
 
-Eight lanes in, eleven out — **plus six that are not at this rim at all**: `recall` and
+Nine lanes in, twelve out — **plus six that are not at this rim at all**: `recall` and
 `in_bundle` ([#562](https://github.com/mmeyerlein/meclaw/issues/562)) and, since 1.6.0,
 `tool`, `in_tool`, `schemas` and `in_menu` ([#552](https://github.com/mmeyerlein/meclaw/issues/552))
 carry `at: ["./assistants"]`. Both roads start inside `./assistants` and end inside
 `./memory-hive`, siblings in here; the declaration is what makes this level a hop nothing
 may skip, because this level is where the round a recall is asked in gets stamped. Every one
-of the twenty-five is a lane an occupant actually has at the version pinned above; nothing
+of the twenty-seven is a lane an occupant actually has at the version pinned above; nothing
 here describes a lane a holder lost.
 
 ### The memory road has two legs (1.6.0)
@@ -102,6 +102,7 @@ road per generation, and an edge on disk is an edge an audit can read.
 | `in_build_result` | `./assistants`, under the same name | nothing. Which generation it belongs to is decided by the per-instance edge inside the container, the same way `in_bundle` finds its way home |
 | `in_export` | **all three holders**, unchanged — and `./assistants` as a fourth when the caller names a generation | nothing, or `context.assistant`. All three holders declare an empty context: an export is about the whole member, never about a round. The fourth target is the exception and it is an ADDRESS rather than a round: a member with two generations has two session ledgers, so the keeper is named, never fanned to ([#475](https://github.com/mmeyerlein/meclaw/issues/475)). Since 1.4.0 the lane fans out — until [#471](https://github.com/mmeyerlein/meclaw/issues/471) only the memory answered it |
 | `in_import` | the holder `hop.import_hive` names, memory by default | nothing, or `context.assistant` when `hop.import_hive` ends in `/session-keeper` (`talky/session-keeper`, `talky-chat/session-keeper`) — that part has to reach one generation, and the container reads the same key a turn is addressed with. One export part per message, idempotent; the receipt rides the `dump` lane this level already drains (since 1.4.0, GH #467, GH #471 and GH #475) |
+| `in_stats` | `./assistants`, unchanged, on a plain door | `context.assistant`, which the container's per-generation edge reads to pick the generation, and `hop.stats_role` for the brain inside it (`talky` when absent). A question about one brain's curator: what it counted in a window, by kind (GH #926). Nothing here reads it; a question that names no generation stops at the container as `no_route` |
 
 | out | from | what it is |
 |---|---|---|
@@ -116,9 +117,11 @@ road per generation, and an edge on disk is an edge an audit can read.
 | `close_report` | the memory | what one close pass did to an ended session: added, sharpened, corrected, closed, restated, and the three counts that say what it could not do |
 | `export_done` | a holder, or a generation's keeper | that holder's seed set is complete on disk — every table written and `export_final.json` beside them, written last. `hop.seed_dir` says where, RELATIVE to the fence that holder's store declares, and `hop.export_hive` says which holder; three travel per export, four when a generation was named. Since 1.6.0 the holder says it ITSELF ([#555](https://github.com/mmeyerlein/meclaw/issues/555)); before that a cell of this level said it for all of them |
 | `dump` | a holder, or a generation's keeper | the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row. It is the only positive signal an import has, and since 1.6.0 it LEAVES the level — until then it ended inside the member, in the cell that existed for the export half and read a receipt without saying anything about it |
+| `stats` | an assistant | the answer to one `in_stats`, out of the generation that was asked, unchanged — counts in the body, `hop.stats_tag` to match it by, `hop.error_code` / `hop.detail` when the question was refused (GH #926). Nothing inside consumes it, so it leaves the way `export_done` does |
 
-The `assistant` level emits **eight** lanes at its own path since
-[#889](https://github.com/mmeyerlein/meclaw/issues/889), and this
+The `assistant` level emits **nine** lanes at its own path — eight since
+[#889](https://github.com/mmeyerlein/meclaw/issues/889), and `stats` since
+[#926](https://github.com/mmeyerlein/meclaw/issues/926) — and this
 level places every one of them. The one lane it ACCEPTS that this member does not
 carry, beside the three operator lanes, is `in_pack` (GH #458): its producer is
 inside this level rather than above it — `<member>/affinity` is the record two
@@ -139,6 +142,7 @@ sends.
 | `write` | **both**: fanned onto the memory's `in_close_pass` *and* out on `write` |
 | `turn_write` | **both** (since #527): fanned onto the memory's `in_episode` *and* out on `turn_write` |
 | `error`, `build` | out, untranslated. Nothing here consumes them |
+| `stats` | out, untranslated (GH #926). The answer to a question an observer outside asked; nothing here consumes it |
 | `pack_ack` | **consumed** since GH #877 — every receipt, into the record as `in_pack_ack` with the row it answers for on `context.pack_sub` (which the push stamped and the curator carried back), because a pack counts as delivered only when its receipt comes back clean and affinity is where a delivery is booked; above this level nobody consumes one. A receipt naming no row (a pack this member's affinity did not send) is dropped there with a line on stderr. Three travel per pack, one per rim of the generation (`talky`, `talky-chat`, `cogny`); each leaves its RIM on a v-lane (GH #561) and stops at `./assistants` |
 
 A level that declared a lane without the edge, or carried the edge without
@@ -846,7 +850,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.2.1` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.3.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1065,7 +1069,8 @@ edge per member, guarded on `context.member`. The only difference is the FORM:
 names no generation has nowhere to go (unless the member has a door, § *The
 member's door*), while `context.member` is permissive
 (`!has(…) || … == 'alex'`) because nothing promotes it yet and a strict guard
-would strand every turn a running colony has. Both are the same rule: `Edge.to`
+would strand every turn a running colony has — except `in_stats`, strict there too
+(#926), because a stats question asks for one person's counts. Both are the same rule: `Edge.to`
 is static, so a container with two children costs two edges and each one says
 which child it is for.
 
@@ -1081,7 +1086,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.2.1"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.3.0"}]
 }}
 ```
 
@@ -1090,7 +1095,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.3.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.4.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1348,10 +1353,11 @@ version its `because` names:
   the member's own door and is delivered here as well, and since #475 so do
   `in_export` and `in_import` — the transfer lanes of the generation's session
   keeper, the only two that name a generation with `context.assistant` at the
-  member's own door rather than at a channel's.
-- **out** — the **eight** an assistant emits: `answer`, `write`, `turn_write`,
-  `sidecar`, `recall`, `error`, `build` and — since #475 — `dump`,
-  the only one of them this level consumes rather than re-emits.
+  member's own door rather than at a channel's — and since #926 `in_stats`,
+  which names one the same way.
+- **out** — the **nine** an assistant emits: `answer`, `write`, `turn_write`,
+  `sidecar`, `recall`, `error`, `build`, since #475 `dump` and since #926
+  `stats`.
 
 **What transits `./channels`** — `turn`, `error`, `event` and `receipt` up;
 `answer` and `view` down. The container reads nothing in any of them: it carries
@@ -1578,11 +1584,12 @@ DECLARATION and the way back.
 
 ### Five inbound lanes this level deliberately does not carry
 
-Of the lanes the `assistant` level accepts, five cross this level:
+Of the lanes the `assistant` level accepts, six cross this level:
 `in_turn` (handed down by the screen), `in_bundle` (handed down by the memory),
-`in_build_result` (which enters at the member's own door and is forwarded) and,
-since #475, `in_export` and `in_import` (which enter at the same door and are
-forwarded the same way). Five more — **`in_advice`**, **`in_sweep`**,
+`in_build_result` (which enters at the member's own door and is forwarded),
+since #475 `in_export` and `in_import` (which enter at the same door and are
+forwarded the same way) and, since #926, `in_stats` (the same door, the same
+way). Five more — **`in_advice`**, **`in_sweep`**,
 **`in_round_sweep`**, **`in_pack`** and, since #916, **`in_pin`** — are **not** lanes of
 this member, and that is a decision rather than an omission (orchestrator ruling
 W7-R5).

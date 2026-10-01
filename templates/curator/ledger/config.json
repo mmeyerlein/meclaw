@@ -21,7 +21,8 @@
         "nth": "int",
         "final": "int",
         "episode_idx": "int",
-        "at": "text"
+        "at": "text",
+        "audience_set": "text"
       },
       "calls": {
         "call_id": "text",
@@ -38,7 +39,8 @@
         "cost": "json",
         "cache_expires_at": "text",
         "system_hash": "text",
-        "actions": "json"
+        "actions": "json",
+        "audience_set": "text"
       },
       "call_blocks": {
         "call_id": "text",
@@ -51,7 +53,8 @@
         "hash": "text",
         "sources": "json",
         "model": "text",
-        "at": "text"
+        "at": "text",
+        "audience_set": "text"
       },
       "slots": {
         "path": "text",
@@ -69,13 +72,15 @@
         "turn_id": "text",
         "kind": "text",
         "value": "text",
-        "at": "text"
+        "at": "text",
+        "audience_set": "text"
       },
       "pins": {
         "hash": "text",
         "source": "text",
         "until": "text",
-        "at": "text"
+        "at": "text",
+        "audience_set": "text"
       }
     },
     "write_surface": "internal",
@@ -131,9 +136,9 @@
     ]
   },
   "description": {
-    "purpose": "The ledger of one model's window. `blocks` holds every element once, keyed by the sha256 of its canonical JSON (keys sorted, UTF-8, no whitespace; the first 12 hex digits are its short id); `wall` is the endless, append-only order in which elements entered (`seq` is minted by `./intake`, microseconds since the epoch, strictly increasing); `calls` is one row per call with its usage, `call_blocks` the ordered block list of exactly what that call carried; `summaries` the condensations (the newest counts), `slots` the system part the hive owns, `state` the hive's few pointers. `marks` is the hive's own record of what a model or a cell of the hive said about the window (`topic` -- the canonical JSON `{\"movement\",\"name\"}` of the movement start/continue/end -- out of the memory section, `release` and `pin` out of the window section, and the kinds other cells add: `gap`, `addendum`, `addendum_done`, `reread`, `handover`); `seq` is minted by the writing cell, microseconds since the epoch, monotonic in that cell only. `pins` holds what must stay in the window: a block pinned through `in_pin` (source the pinning hive) or by the model (source `model`), until `until` or until it is released.",
+    "purpose": "The ledger of one model's window. `blocks` holds every element once, keyed by the sha256 of its canonical JSON (keys sorted, UTF-8, no whitespace; the first 12 hex digits are its short id); `wall` is the endless, append-only order in which elements entered (`seq` is minted by `./intake`, microseconds since the epoch, strictly increasing); `calls` is one row per call with its usage, `call_blocks` the ordered block list of exactly what that call carried; `summaries` the condensations (the newest counts), `slots` the system part the hive owns, `state` the hive's few pointers. `marks` is the hive's own record of what a model or a cell of the hive said about the window (`topic` -- the canonical JSON `{\"movement\",\"name\"}` of the movement start/continue/end -- out of the memory section, `release` and `pin` out of the window section, and the kinds other cells add: `gap`, `addendum`, `addendum_done`, `reread`, `handover`, `tool_error`, `ask`, `correction`, `missing_audience`); `seq` is minted by the writing cell, microseconds since the epoch, monotonic in that cell only. `pins` holds what must stay in the window: a block pinned through `in_pin` (source the pinning hive) or by the model (source `model`), until `until` or until it is released. Every row of `wall`, `calls`, `marks`, `summaries` and `pins` carries `audience_set` (GH #925): the canonical JSON array of the round that caused it -- for a summary or a handover leaf the intersection of its sources and of the round it was made for, for a handover note that of every row of its session -- or NULL when that round declared none, and a NULL row is shown to no round. `blocks`, `call_blocks`, `slots` and `state` carry none: a block is reached only through a row, and slots and state are configuration.",
     "use_when": "Inside the curator only; `write_surface` is internal, so nothing outside the hive writes here.",
-    "not_in_scope": "No constraints (a core defer of the cell type): the keys named in the README are kept by the one writer of each table, read before it writes. No deletes except parked payloads, retired slot leaves, released model pins, the pointers in `state`, and a window form (`view`) the policy puts again -- delete + insert, the one idempotent put a store without a unique key has.",
+    "not_in_scope": "No constraints (a core defer of the cell type): the keys named in the README are kept by the one writer of each table, read before it writes. No deletes except parked payloads, retired slot leaves (a slot of one session an older ledger still holds among them), released model pins, the pointers in `state`, the handover leaf with `handover_audience` and `handover_for`, which `./handover` puts whole, the summary leaf's `summary_audience`, which the `sum` bundle puts whole, and a window form (`view`) the policy puts again -- delete + insert, the one idempotent put a store without a unique key has.",
     "emits_meaning": "ONE answer per inbound message: a tool_result per operation, `hop.operation` `bundle` with `results[]` for two or more.",
     "consumes_meaning": "tool_call turns whose text is a store operation."
   }

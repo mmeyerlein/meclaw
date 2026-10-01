@@ -2199,6 +2199,26 @@ release a cell type has been live is in `CHANGELOG.md`.
   (`session_id`, `turn_id`, `user_id`) pass through unchanged, because they are mentioned neither in
   `set_context` nor in `delete_context`.
 
+**Seams of `restore_ttl` (GH #929).** A restoring edge stands only at a named seam. Every restoring
+edge of a shipped template belongs to exactly one row of this table, otherwise it is a defect; source
+and peer boundary are the substrate's and carry no edge.
+A hive's own out-edge (`from: "."`) restores in the hive transit exactly like the edge behind a
+cell, which is why a door can stand at the hive itself.
+
+| Seam | Where | Bound against loops | How |
+|---|---|---|---|
+| **Source** | fresh root: ingress without `carries_trace`, a timer strike, the answer of a `/colony/*` cell | no edge: the substrate stamps `message_default_ttl` | substrate |
+| **Peer boundary** | an ingress with `contract.ingress.carries_trace` | the budget comes from the wire and is **not** restored at the boundary, only at the door behind it | substrate |
+| **Door** | a unit of work enters the hive that owns it: `in_turn` of an assistant generation; a consult between the two brains of a generation; a file job inside a file space | every crossing costs a new turn, model call or job (the script bounds the retries of a file job), and no routing circle returns to the door without one; the condition names the lane | edge, `restore_ttl` + `condition` |
+| **Curator entry** | `./collector -> ./curator` (`curate`) | the round's iteration counter in the condition (`int(hop.iter) < 12`) | edge |
+| **Round** | the loopback of a shape whose round is made of routing: `./curator -> ./brain`, builder `./weave -> ./compose` (`fire`, `repair`) | an iteration counter in the condition | edge |
+
+Every segment between two seams stays ≤ `message_default_ttl` − 16; the reserve covers nesting (a
+generation placed one level deeper under its member) and stages still to come. When a segment does
+not fit, a seam is sought first, and the default is raised only with evidence from the chain-length
+locks. Pinned by `gh929_every_restoring_edge_sits_on_a_seam` (the table) and
+`gh929_every_budget_segment_fits_its_reserve` (the segments).
+
 - `default` (boolean, default `false`, GH #283, live since v0.18.0) makes the edge a default edge.
   Spelling: `"default": true` beside `from` and `to`; with the key absent the edge is an ordinary
   one. The rule in one sentence: a default edge **fires exactly when no regular out-edge of the same sender**
@@ -2509,7 +2529,8 @@ A shape whose round is itself made of routing wants its budget back per round, w
 larger of its ingress budget and the colony default. The substrate rejects a restoring edge without
 a `condition` at config load (`BootstrapError::EdgeTtlRestoreUnconditional`) and at `add_edges`
 validation, because the runaway guard for such a loop is its iteration bound. The default
-`message_default_ttl` stays 64.
+`message_default_ttl` stays 64; where an edge may take the budget back is the seam table in § Edge
+model.
 
 ### Envelope setter authority
 

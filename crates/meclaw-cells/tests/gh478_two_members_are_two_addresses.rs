@@ -33,6 +33,10 @@
 //! name` would strand every existing colony's turns at the container. Without
 //! the key the behaviour is exactly what it was; with it, the turn reaches one
 //! child. Both halves are asserted below, against the real edge evaluator.
+//!
+//! One door is strict since GH #926: `in_stats` asks for one person's counts,
+//! so a question that names no child reaches none (fail-closed) rather than
+//! every child answering under the asker's one tag.
 
 use meclaw_colony::cel_eval::{evaluate_condition, parse_condition};
 use meclaw_core::serde_json::{Map, Value, json};
@@ -191,11 +195,25 @@ fn the_new_guard_is_permissive_so_a_colony_that_addresses_nobody_is_unchanged() 
             )
         })
         .collect();
+    // GH #926 -- the one door on the strict guard, and the only one: a stats
+    // question asks for one person's counts and must name the person.
+    const STRICT: &[&str] = &["in_stats"];
+    assert!(
+        STRICT.iter().all(|l| all.iter().any(|a| a == l)),
+        "the strict exception is stale: the level no longer draws {STRICT:?}"
+    );
+    let permissive: Vec<String> = all
+        .iter()
+        .filter(|l| !STRICT.contains(&l.as_str()))
+        .cloned()
+        .collect();
     assert_eq!(
         accepted(&editor, json!({})),
-        all,
-        "a hop that names no member must still reach the member — the guard is \
-         additive, and a colony that addresses nobody keeps today's behaviour"
+        permissive,
+        "a hop that names no member must still reach the member on every door but \
+         {STRICT:?} — the guard is additive, and a colony that addresses nobody \
+         keeps today's behaviour; and a stats question that names nobody reaches \
+         nobody"
     );
     assert_eq!(
         accepted(&editor, json!({"member": "editor"})),

@@ -362,8 +362,15 @@ impl Hive {
     fn lane_from(&mut self, route: &str, context: Value, hop: Value, body: Value, reply_to: &str) {
         let mut hop = obj(hop);
         hop.insert("route".into(), json!(route));
+        // GH #925: every lane message of a colony carries the audience of its
+        // round. A test that names none gets the standard round; one that sets
+        // the key to `null` keeps it null -- a round that declares nothing.
+        let mut context = obj(context);
+        context
+            .entry("audience_set")
+            .or_insert_with(|| json!(ROUND_E));
         let msg = Msg {
-            context: obj(context),
+            context,
             hop,
             body: obj(body),
             reply_to: reply_to.to_string(),
@@ -371,15 +378,32 @@ impl Hive {
         self.pump(".", msg);
     }
 
-    /// The strike of an order the clock holds, as the timer emits it.
+    /// The strike of an order the clock holds, as the timer emits it: a
+    /// fresh root without a context, the row's `emit_headers` as hop keys and
+    /// the timer's own headers over them (`timer::cell::build_fire_content`).
+    /// The row under one id is the order armed LAST (`rearm` replaces it), so
+    /// its `emit_headers` ride -- the round of the newest call (GH #925,
+    /// OR-BD.A.6); an order the clock never saw brings its own.
     fn fire(&mut self, order: &Msg) {
+        let id = order.body.get("schedule_id");
+        let armed = self
+            .clock
+            .iter()
+            .rev()
+            .find(|m| m.body.get("op") == Some(&json!("add")) && m.body.get("schedule_id") == id)
+            .unwrap_or(order);
+        let mut hop = obj(armed.body.get("emit_headers").cloned().unwrap_or_default());
+        for (k, v) in obj(json!({
+            "event_id": "0190a3f2-0000-7000-8000-000000000888",
+            "schedule_id": order.body["schedule_id"],
+            "schedule_name": order.body["schedule_name"],
+            "scheduled_at": order.body["at"], "fired_at": order.body["at"]}))
+        {
+            hop.insert(k, v);
+        }
         let msg = Msg {
             context: Map::new(),
-            hop: obj(json!({
-                "event_id": "0190a3f2-0000-7000-8000-000000000888",
-                "schedule_id": order.body["schedule_id"],
-                "schedule_name": order.body["schedule_name"],
-                "scheduled_at": order.body["at"], "fired_at": order.body["at"]})),
+            hop,
             body: obj(order.body["emit_body"].clone()),
             reply_to: String::new(),
         };
@@ -436,11 +460,25 @@ impl Hive {
 
     /// One round on `in_curate`; returns the call that left for the model.
     fn curate(&mut self, session: &str, turn: &str, iter: u32, round: Value, system: Value) -> Msg {
+        self.curate_as(json!(ROUND_E), session, turn, iter, round, system)
+    }
+
+    /// The same round under an audience of its own (GH #925): the context
+    /// value as the colony carries it, a JSON array in a TEXT.
+    fn curate_as(
+        &mut self,
+        audience: Value,
+        session: &str,
+        turn: &str,
+        iter: u32,
+        round: Value,
+        system: Value,
+    ) -> Msg {
         self.out.clear();
         let hop = json!({"session_id": session, "turn_id": turn, "iter": iter.to_string(),
                          "phase": ""});
         let ctx = json!({"session_id": session, "turn_id": turn, "iter": iter.to_string(),
-                         "channel": "test", "audience_set": "[\"member:test\"]"});
+                         "channel": "test", "audience_set": audience});
         let mut body = json!({"messages": round});
         if system.is_object() {
             body["system"] = system;
@@ -470,6 +508,10 @@ impl Hive {
     }
 }
 
+/// The standard round of this file (GH #925): the audience a lane message
+/// carries when a test names none, as the TEXT the colony carries it in.
+const ROUND_E: &str = "[\"member:e\"]";
+
 fn user(text: &str) -> Value {
     json!({"origin": "user", "type": "text", "text": text})
 }
@@ -489,6 +531,18 @@ fn tool_result(id: &str, text: &str) -> Value {
 
 fn mode(text: &str) -> Value {
     json!({"instructions": {"mode": {"text": text}}})
+}
+
+/// `system` with the collector's menu beside it (`system.tools`, one leaf per
+/// tool under `$replace`, as collector `tools_slot` writes it): a `tool_error`
+/// names only a tool the menu holds (OR-BD-92).
+fn with_menu(mut system: Value, names: &[&str]) -> Value {
+    let mut tools = json!({"$replace": true});
+    for n in names {
+        tools[*n] = json!({"text": json!({"name": n}).to_string()});
+    }
+    system["tools"] = tools;
+    system
 }
 
 fn sha256_hex(s: &str) -> String {
@@ -543,7 +597,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.2.0");
+    assert_eq!(t["version"], "1.3.0");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -556,7 +610,8 @@ fn curator_template_shape() {
             .collect()
     };
     // GH #892 added the sections, the pin door and the menu question, and
-    // the two routes that answer them.
+    // the two routes that answer them; GH #926 the stats question and its
+    // answer.
     assert_eq!(
         lanes("accepts"),
         [
@@ -572,7 +627,8 @@ fn curator_template_shape() {
             "in_history_call",
             "in_recall_ask",
             "in_gap_bundle",
-            "in_renewed"
+            "in_renewed",
+            "in_stats"
         ]
     );
     assert_eq!(
@@ -586,7 +642,8 @@ fn curator_template_shape() {
             "sidecar",
             "tool_schemas",
             "tool_result",
-            "recall"
+            "recall",
+            "stats"
         ]
     );
     let types: Vec<(&str, &str)> = vec![
@@ -600,6 +657,7 @@ fn curator_template_shape() {
         ("history", "code"),
         ("push", "code"),
         ("handover", "code"),
+        ("stats", "code"),
     ];
     for (cell, ty) in &types {
         let cfg = cell_config(cell);
@@ -611,19 +669,20 @@ fn curator_template_shape() {
     }
     let ledger = cell_config("ledger");
     let schema = &ledger["params"]["schema"];
+    // GH #925: every row a round causes carries its audience (`audience_set`).
     let expect = json!({
         "blocks": ["hash", "kind", "chars", "body", "first_seen"],
         "wall": ["seq", "session_id", "turn_id", "iter", "kind", "hash", "nth", "final",
-                 "episode_idx", "at"],
+                 "episode_idx", "at", "audience_set"],
         "calls": ["call_id", "session_id", "turn_id", "iter", "trigger", "started_at", "model",
                   "tokens_prompt", "tokens_completion", "tokens_cached", "tokens_cache_write",
-                  "cost", "cache_expires_at", "system_hash", "actions"],
+                  "cost", "cache_expires_at", "system_hash", "actions", "audience_set"],
         "call_blocks": ["call_id", "pos", "hash"],
-        "summaries": ["id", "covers_to_seq", "hash", "sources", "model", "at"],
+        "summaries": ["id", "covers_to_seq", "hash", "sources", "model", "at", "audience_set"],
         "slots": ["path", "hash", "owner", "at"],
         "state": ["key", "value"],
-        "marks": ["seq", "session_id", "turn_id", "kind", "value", "at"],
-        "pins": ["hash", "source", "until", "at"],
+        "marks": ["seq", "session_id", "turn_id", "kind", "value", "at", "audience_set"],
+        "pins": ["hash", "source", "until", "at", "audience_set"],
     });
     // GH #892: `marks` and `pins` joined the seven of 1.0.0.
     assert_eq!(schema.as_object().unwrap().len(), 9, "nine tables");
@@ -1039,7 +1098,10 @@ fn a_duplex_pair_is_two_episodes() {
 
 /// The collector's own slots (`in_slots`: the menu, the sidecar contract) cause
 /// no call; they ride with the next call whose system changed, a `$replace` in
-/// them dropping the collector's leaves the new tree no longer names.
+/// them dropping the collector's leaves the new tree no longer names. Beside
+/// them every call carries whole the two families gated by the round and the
+/// families of the session's own slots (`roster`, `consult`, `instructions`),
+/// here empty but for `instructions` (GH #925).
 #[test]
 fn slots_from_the_collector_ride_the_next_call() {
     if !shipped() {
@@ -1061,7 +1123,9 @@ fn slots_from_the_collector_ride_the_next_call() {
         json!({"instructions": {"$replace": true, "mode": {"text": "Be brief."},
                                 "sidecar": {"text": "Fence it."}},
                "tools": {"$replace": true, "x": {"text": "{\"a\":1}"},
-                         "y": {"text": "{\"b\":1}"}}})
+                         "y": {"text": "{\"b\":1}"}},
+               "history": {"$replace": true}, "pinned": {"$replace": true},
+               "roster": {"$replace": true}, "consult": {"$replace": true}})
     );
     h.lane(
         "in_slots",
@@ -1072,8 +1136,12 @@ fn slots_from_the_collector_ride_the_next_call() {
     let call = h.curate("s1", "t2", 0, json!([user("q2")]), mode("Be brief."));
     assert_eq!(
         call.body["system"],
-        json!({"tools": {"$replace": true, "x": {"text": "{\"a\":1}"}}}),
-        "only the family that moved"
+        json!({"tools": {"$replace": true, "x": {"text": "{\"a\":1}"}},
+               "history": {"$replace": true}, "pinned": {"$replace": true},
+               "instructions": {"$replace": true, "mode": {"text": "Be brief."},
+                                "sidecar": {"text": "Fence it."}},
+               "roster": {"$replace": true}, "consult": {"$replace": true}}),
+        "only the family that moved, beside the gated and the session families"
     );
     assert_eq!(
         h.rows("SELECT path FROM slots WHERE path LIKE 'tools.%'"),
@@ -1115,21 +1183,30 @@ fn window_is_summary_then_wall_then_round() {
     );
 }
 
+/// A family of slots is sent only when it changed. The two families a round
+/// gates (`history`, `pinned`) are the exception: every call carries them
+/// whole, empty when the round sees nothing -- the model holds ONE system
+/// tree, and a call that trusted the diff of an overlapping call of another
+/// round would keep that round's summary leaf (GH #925, review I-2). So are
+/// the families that hold a session's slots (`roster`, `consult`, and
+/// `instructions` for its `peer` leaf), for the same reason one session
+/// further (review I-4). The same text is the same prompt, so the provider's
+/// cache keeps.
 #[test]
 fn system_leaves_only_when_changed() {
     if !shipped() {
         return;
     }
     let mut h = Hive::new();
+    let every_call = json!({"instructions": {"$replace": true, "mode": {"text": "Be brief."}},
+                            "history": {"$replace": true}, "pinned": {"$replace": true},
+                            "roster": {"$replace": true}, "consult": {"$replace": true}});
     let c1 = turn(&mut h, "s1", "t1", "a", "b", json!({}));
-    assert_eq!(
-        c1.body["system"],
-        json!({"instructions": {"$replace": true, "mode": {"text": "Be brief."}}})
-    );
+    assert_eq!(c1.body["system"], every_call);
     let c2 = turn(&mut h, "s1", "t2", "c", "d", json!({}));
-    assert!(
-        c2.body.get("system").is_none(),
-        "nothing changed, nothing sent: {:?}",
+    assert_eq!(
+        c2.body["system"], every_call,
+        "nothing changed, nothing sent but the gated and the session families: {:?}",
         c2.body
     );
     h.lane(
@@ -1139,37 +1216,70 @@ fn system_leaves_only_when_changed() {
         json!({"system": {"identity": {"text": "You are T."}}}),
     );
     let c3 = turn(&mut h, "s1", "t3", "e", "f", json!({}));
+    let mut want = every_call.clone();
+    want["identity"] = json!({"$replace": true, "text": "You are T."});
     assert_eq!(
-        c3.body["system"],
-        json!({"identity": {"$replace": true, "text": "You are T."}}),
+        c3.body["system"], want,
         "only the family that changed, as one $replace root"
     );
 }
 
+/// The collector wins at its own leaf: a pack leaf on a path the collector
+/// holds (here the sidecar contract of its menu) is not written. The advise
+/// mode is no leaf of the hive at all (review R2-I-1): it is the session's,
+/// rides with the call, and a pack that names it writes nothing.
 #[test]
 fn collector_slot_wins_at_its_leaf() {
     if !shipped() {
         return;
     }
     let mut h = Hive::new();
-    h.curate("s1", "t1", 0, json!([user("a")]), mode("collector says"));
+    h.lane(
+        "in_slots",
+        json!({}),
+        json!({}),
+        json!({"system": {"instructions": {"sidecar": {"text": "collector says"}}}}),
+    );
+    h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("a")]),
+        mode("the session's mode"),
+    );
     h.lane(
         "in_pack",
         json!({}),
         json!({}),
-        json!({"system": {"instructions": {"mode": {"text": "pack says"},
+        json!({"system": {"instructions": {"sidecar": {"text": "pack says"},
+                                           "mode": {"text": "pack says"},
                                            "reply": {"text": "reply kindly"}}}}),
     );
-    let call = h.curate("s1", "t2", 0, json!([user("b")]), mode("collector says"));
-    assert_eq!(
-        call.body["system"],
-        json!({"instructions": {"$replace": true, "mode": {"text": "collector says"},
-                                "reply": {"text": "reply kindly"}}}),
-        "the pack's leaf beside the collector's, the collector's at its own path"
+    let call = h.curate(
+        "s1",
+        "t2",
+        0,
+        json!([user("b")]),
+        mode("the session's mode"),
     );
     assert_eq!(
-        h.rows("SELECT owner FROM slots WHERE path = 'instructions.mode'"),
+        call.body["system"],
+        json!({"instructions": {"$replace": true, "mode": {"text": "the session's mode"},
+                                "reply": {"text": "reply kindly"},
+                                "sidecar": {"text": "collector says"}},
+               "history": {"$replace": true}, "pinned": {"$replace": true},
+               "roster": {"$replace": true}, "consult": {"$replace": true}}),
+        "the pack's leaf beside the collector's, the collector's at its own path, the \
+         call's own mode"
+    );
+    assert_eq!(
+        h.rows("SELECT owner FROM slots WHERE path = 'instructions.sidecar'"),
         vec![vec![json!("collector")]]
+    );
+    assert!(
+        h.rows("SELECT owner FROM slots WHERE path = 'instructions.mode'")
+            .is_empty(),
+        "the mode is the session's, never the hive's"
     );
 }
 
@@ -1403,6 +1513,10 @@ fn tap_arms_the_clock_under_one_id() {
         add.body["emit_body"]["curator_call"],
         json!(h.state("last_call"))
     );
+    // GH #925 (OR-BD.A.6): the strike is a fresh root without a context, so
+    // the order carries the call's round as a header of the strike -- the
+    // rebuild it starts has a round and may make a summary.
+    assert_eq!(add.body["emit_headers"], json!({"audience_set": ROUND_E}));
 }
 
 /// An order that fired is done at the timer (`completed`): the next tap
@@ -1724,11 +1838,8 @@ fn a_second_trigger_during_a_rebuild_merges() {
     assert_eq!(h.state("rebuild_running"), "", "the lock is released");
     assert_eq!(
         h.rows("SELECT path FROM slots ORDER BY path"),
-        vec![
-            vec![json!("history.summary")],
-            vec![json!("identity")],
-            vec![json!("instructions.mode")]
-        ]
+        vec![vec![json!("history.summary")], vec![json!("identity")]],
+        "the advise mode rides with each call, never in `slots` (review R2-I-1)"
     );
 }
 
@@ -1965,6 +2076,129 @@ fn close_batches_the_session_in_the_collector_contract() {
     assert_eq!(w[0].messages(), Vec::<Value>::new());
 }
 
+/// The close batch is a reader of the ledger like the window (GH #925,
+/// review I-3): it hands on only the rows whose audience holds the close
+/// round, `context.audience_set` of `in_close` -- the round the session
+/// keeper took from the turn that opened the generation. One session with
+/// rows under {e,a} and {e,b} (a tool round in each, review R2-I-5: the
+/// raw rows are gated like the said ones) and no round at all:
+/// before the gate a close in {e,a} handed on all six participant turns
+/// (`turn_count` 6 in the fix round's driver), so the memory gave {e,a} what
+/// only {e,b} heard and what no round declared. A close without a round
+/// reads nothing and leaves an empty batch.
+#[test]
+fn a_close_hands_on_only_the_rows_its_round_may_see() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    // The close round as a caller may write it: unsorted, with spaces.
+    let ea = json!("[ \"member:e\", \"member:a\" ]");
+    let call = h.curate_as(
+        ea.clone(),
+        "s1",
+        "t1",
+        0,
+        json!([
+            user("ea: the gate opens with quince"),
+            tool_call("c1", "look"),
+            tool_result("c1", "ea: under the step")
+        ]),
+        Value::Null,
+    );
+    h.tap(
+        &call,
+        "stop",
+        json!({}),
+        json!([said("ea: noted\n\n```sidecar\n{}\n```")]),
+    );
+    let call = h.curate_as(
+        json!("[\"member:e\",\"member:b\"]"),
+        "s1",
+        "t2",
+        0,
+        json!([
+            user("eb: the key is behind the kettle"),
+            tool_call("c2", "peek"),
+            tool_result("c2", "eb: behind the kettle, wrapped")
+        ]),
+        Value::Null,
+    );
+    h.tap(&call, "stop", json!({}), json!([said("eb: noted")]));
+    let call = h.curate_as(
+        Value::Null,
+        "s1",
+        "t3",
+        0,
+        json!([user("none: the lantern hangs under the stairs")]),
+        Value::Null,
+    );
+    h.tap(&call, "stop", json!({}), json!([said("none: noted")]));
+    assert_eq!(
+        h.rows(
+            "SELECT DISTINCT audience_set FROM wall WHERE session_id = 's1' \
+             ORDER BY audience_set"
+        ),
+        vec![
+            vec![Value::Null],
+            vec![json!(ROUND_AE)],
+            vec![json!("[\"member:b\",\"member:e\"]")]
+        ],
+        "the session holds rows of {{e,a}}, of {{e,b}} and of no round"
+    );
+
+    h.out.clear();
+    h.lane(
+        "in_close",
+        json!({"session_id": "s1", "audience_set": ea}),
+        json!({}),
+        json!({"messages": []}),
+    );
+    let w = h.routed("write");
+    assert_eq!(w.len(), 1, "one close, one batch");
+    assert_eq!(
+        w[0].messages(),
+        vec![user("ea: the gate opens with quince"), said("ea: noted")],
+        "only the turns of {{e,a}}, the answer without its block"
+    );
+    let rounds: Vec<Value> = w[0].body["rounds"]
+        .as_array()
+        .expect("rounds")
+        .iter()
+        .map(|r| r["turn"].clone())
+        .collect();
+    assert_eq!(
+        rounds,
+        vec![
+            tool_call("c1", "look"),
+            tool_result("c1", "ea: under the step")
+        ],
+        "only the tool round of {{e,a}}, not {{e,b}}'s beside it"
+    );
+    assert_eq!(w[0].hop["turn_count"], "2", "counts what was handed on");
+    assert_eq!(w[0].hop["round_count"], "2", "counts what was handed on");
+    let batch = sj::to_string(&w[0].body).expect("serialise");
+    assert!(
+        !batch.contains("eb:") && !batch.contains("none:"),
+        "no word of {{e,b}} or of the round-less round: {batch}"
+    );
+
+    // A close without a round: nothing passes, the batch is empty.
+    h.out.clear();
+    h.lane(
+        "in_close",
+        json!({"session_id": "s1", "audience_set": null}),
+        json!({}),
+        json!({"messages": []}),
+    );
+    let w = h.routed("write");
+    assert_eq!(w.len(), 1, "a close without a round still closes");
+    assert_eq!(w[0].hop["turn_count"], "0");
+    assert_eq!(w[0].hop["round_count"], "0");
+    assert_eq!(w[0].messages(), Vec::<Value>::new());
+    assert_eq!(w[0].body["rounds"], json!([]));
+}
+
 // =============================================================== 7. the pack
 
 #[test]
@@ -1993,7 +2227,10 @@ fn a_valid_pack_is_acked_empty_and_reaches_the_next_call() {
     assert_eq!(
         call.body["system"],
         json!({"identity": {"$replace": true, "text": "You are T."},
-               "persona": {"$replace": true, "voice": {"text": "calm"}}})
+               "persona": {"$replace": true, "voice": {"text": "calm"}},
+               "history": {"$replace": true}, "pinned": {"$replace": true},
+               "instructions": {"$replace": true, "mode": {"text": "Be brief."}},
+               "roster": {"$replace": true}, "consult": {"$replace": true}})
     );
 }
 
@@ -2112,5 +2349,513 @@ fn a_tap_without_a_call_is_dropped_and_said() {
         h.stderr.iter().any(|l| l.contains("curator_call")),
         "{:?}",
         h.stderr
+    );
+}
+
+// ======================================== GH #925: the audience of the round
+
+/// A refusal of a `history_*` tool: its code in `error` (curator/history).
+const HISTORY_REFUSAL: &str =
+    r#"{"detail":"no block has this id","error":"not_found","tool":"history_read"}"#;
+/// A refusal of a file-space tool: `ok` false, the code in `error.code`.
+const FILE_REFUSAL: &str =
+    r#"{"error":{"code":"no_such_file","message":"nothing at /a"},"ok":false,"op":"read"}"#;
+/// A final answer whose block rewrites a standing instruction.
+const CORRECTED: &str =
+    "Done.\n\n```sidecar\n{\"correction\": \"Confirm the date before booking.\"}\n```";
+/// A round of two members, as its context carries it (unsorted, the way a
+/// caller may write it) and as a row keeps it (canonical).
+const ROUND_EA: &str = "[\"member:e\",\"member:a\"]";
+const ROUND_AE: &str = "[\"member:a\",\"member:e\"]";
+
+/// A section of the model's block on `in_section`, the way the splitter
+/// hands it with the answer's context.
+fn section(h: &mut Hive, audience: Value, turn_id: &str, name: &str, payload: Value) {
+    h.lane(
+        "in_section",
+        json!({"session_id": "s1", "turn_id": turn_id, "audience_set": audience}),
+        json!({"section": name}),
+        json!({"messages": [], "section": name, "payload": payload}),
+    );
+}
+
+/// A gap's find on the internal lane `in_addendum`, the way `./push` hands it.
+fn addendum(h: &mut Hive, audience: Value, turn_id: &str, pair: Value) {
+    let msg = Msg {
+        context: obj(json!({"session_id": "s1", "turn_id": turn_id, "audience_set": audience})),
+        hop: obj(json!({"route": "in_addendum", "session_id": "s1", "turn_id": turn_id})),
+        body: obj(json!({"messages": pair})),
+        reply_to: String::new(),
+    };
+    h.pump("./push", msg);
+}
+
+/// One pin of the hive `probe` through the pin door, under `audience`.
+fn pin(h: &mut Hive, audience: Value, text: &str) {
+    h.lane(
+        "in_pin",
+        json!({"audience_set": audience}),
+        json!({}),
+        json!({"pins": [{"text": text, "source": "probe"}]}),
+    );
+}
+
+/// Every row a round causes carries the round's audience, in its canonical
+/// form (sorted, no duplicates, no whitespace): the wall rows of the round, of
+/// the model's answer and of a gap's find, and every mark -- one out of a
+/// failed tool, one out of the answer's block, one out of a section.
+#[test]
+fn the_round_is_written_on_every_row_it_causes() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate_as(
+        json!(ROUND_EA),
+        "s1",
+        "t1",
+        0,
+        json!([
+            user("look it up"),
+            tool_call("c1", "history_read"),
+            tool_result("c1", HISTORY_REFUSAL)
+        ]),
+        with_menu(mode("Be brief."), &["history_read"]),
+    );
+    h.tap(&call, "stop", json!({}), json!([said(CORRECTED)]));
+    section(
+        &mut h,
+        json!(ROUND_EA),
+        "t1",
+        "window",
+        json!({"pin": "#0123456789ab"}),
+    );
+    addendum(
+        &mut h,
+        json!(ROUND_EA),
+        "t1",
+        json!([
+            tool_call("r1", "memory_recall"),
+            tool_result("r1", "found it")
+        ]),
+    );
+    assert_eq!(
+        h.rows("SELECT kind FROM wall ORDER BY seq"),
+        [
+            "user",
+            "tool_call",
+            "tool_result",
+            "assistant",
+            "recall",
+            "recall"
+        ]
+        .iter()
+        .map(|k| vec![json!(k)])
+        .collect::<Vec<_>>(),
+        "{:?}",
+        h.stderr
+    );
+    assert_eq!(
+        h.rows("SELECT DISTINCT audience_set FROM wall"),
+        vec![vec![json!(ROUND_AE)]]
+    );
+    assert_eq!(
+        h.rows("SELECT kind, value FROM marks ORDER BY kind"),
+        vec![
+            vec![json!("correction"), json!("")],
+            vec![json!("pin"), json!("0123456789ab")],
+            vec![json!("tool_error"), json!("history_read:not_found")]
+        ]
+    );
+    assert_eq!(
+        h.rows("SELECT DISTINCT audience_set FROM marks"),
+        vec![vec![json!(ROUND_AE)]]
+    );
+}
+
+/// A round that declares no audience is written all the same, its rows with
+/// `audience_set` NULL: nothing refuses the round, and no reader hands such
+/// a row to another one (OR-BD-5). Its call is marked once `missing_audience`
+/// by `./policy` (OR-BD-4), that mark NULL like every row of the round.
+#[test]
+fn a_round_without_an_audience_writes_null() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    h.lane(
+        "in_curate",
+        json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "audience_set": null}),
+        json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "phase": ""}),
+        json!({"messages": [
+            user("look it up"),
+            tool_call("c1", "history_read"),
+            tool_result("c1", HISTORY_REFUSAL)
+        ]}),
+    );
+    section(
+        &mut h,
+        Value::Null,
+        "t1",
+        "window",
+        json!({"release": "#0123456789ab"}),
+    );
+    assert_eq!(
+        h.rows("SELECT kind, audience_set FROM wall ORDER BY seq"),
+        vec![
+            vec![json!("user"), Value::Null],
+            vec![json!("tool_call"), Value::Null],
+            vec![json!("tool_result"), Value::Null]
+        ]
+    );
+    assert_eq!(
+        h.rows("SELECT kind, audience_set FROM marks ORDER BY kind"),
+        vec![
+            vec![json!("missing_audience"), Value::Null],
+            vec![json!("release"), Value::Null],
+            vec![json!("tool_error"), Value::Null]
+        ]
+    );
+}
+
+/// A pin without a round is refused whole, in the form of every refusal of
+/// the pin door: nothing parked, nothing read, nothing written, nothing out.
+#[test]
+fn a_pin_without_a_round_is_refused() {
+    if !shipped() {
+        return;
+    }
+    for audience in [Value::Null, json!(""), json!("member:e")] {
+        let mut h = Hive::new();
+        pin(&mut h, audience.clone(), "keep this");
+        for table in ["pins", "blocks", "state WHERE key LIKE 'pending:%'"] {
+            assert_eq!(
+                h.rows(&format!("SELECT COUNT(*) FROM {table}"))[0][0],
+                json!(0),
+                "{audience}: {table}"
+            );
+        }
+        assert!(h.out.is_empty(), "{audience}: {:?}", h.out);
+        assert!(
+            h.stderr
+                .iter()
+                .any(|l| l.contains("in_pin refused: missing_audience")),
+            "{audience}: {:?}",
+            h.stderr
+        );
+    }
+}
+
+/// A pin carries the round it came in. The same text pinned again under
+/// another round takes that round (OR-BD.A.3: the latest pin decides) and
+/// stays one row.
+#[test]
+fn a_pin_carries_its_round_and_the_latest_pin_decides() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    pin(&mut h, json!(ROUND_EA), "keep this");
+    assert_eq!(
+        h.rows("SELECT audience_set, until FROM pins"),
+        vec![vec![json!(ROUND_AE), json!("")]]
+    );
+    pin(&mut h, json!("[\"member:b\"]"), "keep this");
+    assert_eq!(
+        h.rows("SELECT audience_set, until FROM pins"),
+        vec![vec![json!("[\"member:b\"]"), json!("")]],
+        "{:?}",
+        h.stderr
+    );
+}
+
+/// A tool's refusal in its own words: a sentence with a path, no code.
+const FREE_TEXT_REFUSAL: &str = r#"{"error":"cannot read /srv/data/notes.txt: permission denied"}"#;
+
+/// A tool result that reports a failure leaves one `tool_error` mark,
+/// `<tool>:<code>`, per result: the wall's own key makes it once, so a round
+/// sent again or grown by an iteration marks nothing twice. The tool's name
+/// comes from the call of the same id (`unknown` without one), the code from
+/// the result (`error` without one). A clean result marks nothing, and nor
+/// does an evidence pair -- it is no tool result of the model's. The value
+/// reaches a judge as a sample (GH #925, OR-BD-6: never text), so a name
+/// only enters it in code form (`[a-z0-9_.-]{1,64}`) and a code only in the
+/// narrow form `[a-z][a-z_]{0,31}` (review m-5: one word with a dot is a file
+/// name, `report.txt` is no code; review R2-I-2: a word with a digit or a `-`
+/// is a password, a card number, a name -- `hunter2`, `4111111111111111`,
+/// `secret-name` are none): a sentence or such a word is `error`, a name
+/// that is none is `unknown`. A name enters only when the menu holds the tool
+/// (OR-BD-92: a model can make one up out of the person's words in the form
+/// of a name -- `lookup_alice`, `lookup.alice-smith` reached a judge); one
+/// it does not hold is `unknown` too. An `error` that says there is none
+/// (`none`, `null`, `false`, any case) is no failure.
+#[test]
+fn a_failed_tool_result_is_one_tool_error_mark() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    // (call id, the tool it calls -- "" for no call --, the result, the mark).
+    let table: [(&str, &str, &str, Option<&str>); 22] = [
+        (
+            "c1",
+            "history_read",
+            HISTORY_REFUSAL,
+            Some("history_read:not_found"),
+        ),
+        (
+            "c2",
+            "file_read",
+            FILE_REFUSAL,
+            Some("file_read:no_such_file"),
+        ),
+        (
+            "c3",
+            "file_read",
+            r#"{"ok":true,"op":"read","text":"fine"}"#,
+            None,
+        ),
+        ("r1", "memory_recall", r#"{"error":"store_refused"}"#, None),
+        ("x9", "", r#"{"ok":false}"#, Some("unknown:error")),
+        (
+            "c5",
+            "web_fetch",
+            FREE_TEXT_REFUSAL,
+            Some("web_fetch:error"),
+        ),
+        (
+            "c6",
+            "file_edit",
+            r#"{"error_code":"No Such File"}"#,
+            Some("file_edit:error"),
+        ),
+        (
+            "c7",
+            "web_search",
+            r#"{"error_code":"rate_limited"}"#,
+            Some("web_search:rate_limited"),
+        ),
+        (
+            "c8",
+            "Fetch Page",
+            r#"{"error":"timeout"}"#,
+            Some("unknown:timeout"),
+        ),
+        ("c9", "file_write", r#"{"error":"none"}"#, None),
+        (
+            "c10",
+            "file_write",
+            r#"{"error":"Null","op":"write"}"#,
+            None,
+        ),
+        ("c11", "file_write", r#"{"error":" FALSE "}"#, None),
+        // Review m-5: a file name is no code; the tool's dotted name keeps
+        // its form, and a dotted code falls to the next place in the body.
+        (
+            "c12",
+            "file.read",
+            r#"{"error":"report.txt"}"#,
+            Some("file.read:error"),
+        ),
+        (
+            "c13",
+            "file_read",
+            r#"{"ok":false,"error":{"code":"io.denied"}}"#,
+            Some("file_read:error"),
+        ),
+        (
+            "c14",
+            "file_read",
+            r#"{"error":"v1.2","error_code":"denied"}"#,
+            Some("file_read:denied"),
+        ),
+        // Review R2-I-2: a digit, a `-`, a long word -- never a code.
+        (
+            "c15",
+            "login",
+            r#"{"ok":false,"error":{"code":"hunter2"}}"#,
+            Some("login:error"),
+        ),
+        (
+            "c16",
+            "pay",
+            r#"{"error":"4111111111111111"}"#,
+            Some("pay:error"),
+        ),
+        (
+            "c17",
+            "file_read",
+            r#"{"error":"secret-name"}"#,
+            Some("file_read:error"),
+        ),
+        (
+            "c18",
+            "web_fetch",
+            r#"{"error_code":"http_404"}"#,
+            Some("web_fetch:error"),
+        ),
+        (
+            "c19",
+            "web_search",
+            r#"{"error_code":"a_code_longer_than_thirty_two_chars"}"#,
+            Some("web_search:error"),
+        ),
+        // OR-BD-92: a name in the form of a name that no menu holds.
+        (
+            "c20",
+            "lookup_alice",
+            r#"{"error":"not_found"}"#,
+            Some("unknown:not_found"),
+        ),
+        (
+            "c21",
+            "lookup.alice-smith",
+            r#"{"error":"not_found"}"#,
+            Some("unknown:not_found"),
+        ),
+    ];
+    // The menu: every tool of the table but the two made-up names.
+    let offered = with_menu(
+        mode("Be brief."),
+        &[
+            "history_read",
+            "history_search",
+            "file_read",
+            "file.read",
+            "file_edit",
+            "file_write",
+            "memory_recall",
+            "web_fetch",
+            "web_search",
+            "Fetch Page",
+            "login",
+            "pay",
+        ],
+    );
+    let mut round = vec![user("read a few things")];
+    round.extend(
+        table
+            .iter()
+            .filter(|(_, name, _, _)| !name.is_empty())
+            .map(|(id, name, _, _)| tool_call(id, name)),
+    );
+    round.extend(table.iter().map(|(id, _, text, _)| tool_result(id, text)));
+    let marks = |h: &Hive| {
+        h.rows(
+            "SELECT value, session_id, turn_id, audience_set FROM marks \
+             WHERE kind = 'tool_error' ORDER BY value",
+        )
+    };
+    let mut values: Vec<&str> = table.iter().filter_map(|(_, _, _, mark)| *mark).collect();
+    values.sort_unstable();
+    let want: Vec<Vec<Value>> = values
+        .iter()
+        .map(|v| vec![json!(v), json!("s1"), json!("t1"), json!(ROUND_E)])
+        .collect();
+    h.curate("s1", "t1", 1, json!(round), offered.clone());
+    assert_eq!(marks(&h), want, "{:?}", h.stderr);
+    h.curate("s1", "t1", 1, json!(round), offered.clone());
+    assert_eq!(marks(&h), want, "the same round twice marks nothing twice");
+    let mut grown = round.clone();
+    grown.push(tool_call("c4", "history_search"));
+    grown.push(tool_result("c4", r#"{"hits":[],"tool":"history_search"}"#));
+    h.curate("s1", "t1", 2, json!(grown), mode("Be brief."));
+    assert_eq!(marks(&h), want, "a clean result marks nothing");
+    assert_eq!(
+        h.rows("SELECT COUNT(*) FROM marks")[0][0],
+        json!(values.len())
+    );
+    assert!(
+        h.rows("SELECT at FROM marks")
+            .iter()
+            .all(|r| !r[0].as_str().unwrap_or("").is_empty()),
+        "every mark says when"
+    );
+}
+
+/// The model's own output leaves two marks off the tap: `ask` when it calls
+/// the ask-back tool, `correction` when the block of its final answer
+/// rewrites a standing instruction -- each once per round (OR-BD.A.4), so the
+/// same output delivered twice marks nothing twice. Any other tool, the block
+/// beside a call, a section without words and the legacy single-section
+/// fence mark nothing.
+#[test]
+fn an_ask_and_a_correction_are_marked_once_off_the_tap() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("book a table")]),
+        mode("Be brief."),
+    );
+    for _ in 0..2 {
+        h.tap(
+            &call,
+            "tool_calls",
+            json!({}),
+            json!([tool_call("q1", "ask_requester")]),
+        );
+    }
+    let call = h.curate(
+        "s1",
+        "t2",
+        0,
+        json!([user("for two, at eight")]),
+        mode("Be brief."),
+    );
+    for _ in 0..2 {
+        h.tap(&call, "stop", json!({}), json!([said(CORRECTED)]));
+    }
+    let marks = |h: &Hive| {
+        h.rows("SELECT kind, value, session_id, turn_id, audience_set FROM marks ORDER BY seq")
+    };
+    let want = vec![
+        vec![
+            json!("ask"),
+            json!("ask_requester"),
+            json!("s1"),
+            json!("t1"),
+            json!(ROUND_E),
+        ],
+        vec![
+            json!("correction"),
+            json!(""),
+            json!("s1"),
+            json!("t2"),
+            json!(ROUND_E),
+        ],
+    ];
+    assert_eq!(marks(&h), want, "{:?}", h.stderr);
+    let call = h.curate("s1", "t3", 0, json!([user("why?")]), mode("Be brief."));
+    h.tap(
+        &call,
+        "tool_calls",
+        json!({}),
+        json!([tool_call("k1", "consult_cogny"), said(CORRECTED)]),
+    );
+    let call = h.curate("s1", "t4", 0, json!([user("and now?")]), mode("Be brief."));
+    h.tap(
+        &call,
+        "stop",
+        json!({}),
+        json!([said(
+            "Fine.\n\n```sidecar\n{\"memory\": {\"nothing_new\": true}, \"correction\": \" \"}\n```"
+        )]),
+    );
+    let call = h.curate("s1", "t5", 0, json!([user("and then?")]), mode("Be brief."));
+    h.tap(
+        &call,
+        "stop",
+        json!({}),
+        json!([said("Old.\n\n```memory\n{\"correction\": \"x\"}\n```")]),
+    );
+    assert_eq!(
+        marks(&h),
+        want,
+        "no other tool, no block beside a call, no empty section, no legacy fence"
     );
 }

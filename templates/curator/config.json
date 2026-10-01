@@ -8,7 +8,7 @@
       "accepts": [
         {
           "route": "in_curate",
-          "because": "one call of the model this hive serves: `messages[]` is the whole running round as it stands (the opening turn, the evidence pairs, every tool iteration so far), never history; `system` the per-round slots; `tool_scope` passes through; `hop.session_id`, `hop.turn_id`, `hop.iter` name the round. Answered by exactly one `brain`"
+          "because": "one call of the model this hive serves: `messages[]` is the whole running round as it stands (the opening turn, the evidence pairs, every tool iteration so far), never history; `system` the per-round slots; `tool_scope` passes through; `hop.session_id`, `hop.turn_id`, `hop.iter` name the round. Answered by exactly one `brain`. Every row the round leaves in the ledger carries its `context.audience_set` (GH #925), and the window shows a row of another session only when the round is a subset of that row's audience (or it names `*`); a round that declares none sees only the rows of its own session that declare none either (or name `*`), and the call is marked `missing_audience`"
         },
         {
           "route": "in_slots",
@@ -24,7 +24,7 @@
         },
         {
           "route": "in_close",
-          "because": "a closed session (`context.session_id`): answered by one `write` batch in the collector's close contract, empty when the session left nothing"
+          "because": "a closed session (`context.session_id`), in the round its generation was opened in (`context.audience_set`, which the session keeper recorded from the turn that opened it): answered by one `write` batch in the collector's close contract that carries only the rows whose audience holds that round (GH #925) -- a row without an audience never, and a close without a round reads nothing and leaves an empty batch, like a session that left nothing. The note it prepares for the next session carries the intersection of the audiences of every row of the session (GH #925), and a new session receives it only when its own round passes that set"
         },
         {
           "route": "in_model",
@@ -36,7 +36,7 @@
         },
         {
           "route": "in_pin",
-          "because": "the door other hives pin through (GH #892): `pins[]`, each `{text, source, until?}` -- `source` the pinning hive's name (one path segment, never `model`), `until` RFC 3339 or absent; optional `replace_sources[]` (at most 16 names by the same rule) ends every live pin of those sources first (`until` = now, no row deleted; a hash of the new set that lives stays alive; `pins: []` with it empties them). Each pin becomes a block of kind `pin` and a `pins` row, and stands in the window under `system.pinned.<source>.<id>` (at the next rebuild; until then as a message where it arrived, `broadcast_mode tail`). Nothing else of this hive is written through it"
+          "because": "the door other hives pin through (GH #892): `pins[]`, each `{text, source, until?}` -- `source` the pinning hive's name (one path segment, never `model`), `until` RFC 3339 or absent; optional `replace_sources[]` (at most 16 names by the same rule) ends every live pin of those sources first (`until` = now, no row deleted; a hash of the new set that lives stays alive; `pins: []` with it empties them). Each pin becomes a block of kind `pin` and a `pins` row, and stands in the window under `system.pinned.<source>.<id>` (at the next rebuild; until then as a message where it arrived, `broadcast_mode tail`). Nothing else of this hive is written through it. A pin without `context.audience_set` is refused (`missing_audience`, a stderr line like every pin refusal, nothing written); a kept pin carries that round and reaches only a window whose round passes it (GH #925)"
         },
         {
           "route": "in_schemas",
@@ -44,7 +44,7 @@
         },
         {
           "route": "in_history_call",
-          "because": "a `history_*` tool call of the model this hive serves (GH #893), in the dispatcher's shape: one `tool_call` turn with the arguments as its text, `hop.tool_call_id`, `hop.tool_name`, and the round's context (`session_id`, `turn_id`). Answered by exactly one `tool_result` out of this hive's own ledger"
+          "because": "a `history_*` tool call of the model this hive serves (GH #893), in the dispatcher's shape: one `tool_call` turn with the arguments as its text, `hop.tool_call_id`, `hop.tool_name`, and the round's context (`session_id`, `turn_id`). Answered by exactly one `tool_result` out of this hive's own ledger. The round's `context.audience_set` is required (GH #925): without it the answer is the refusal `missing_audience` and nothing is read; with it the tools see only rows whose audience holds the round (or names `*`), and a row that does not pass leaves no hit, id, count or gap"
         },
         {
           "route": "in_recall_ask",
@@ -57,6 +57,10 @@
         {
           "route": "in_renewed",
           "because": "a duplex session of a running call was renewed at its provider's limit (GH #896, `voice` route `renewed`): `hop.call_id` names the call and `hop.renewal_n` counts the renewals. Answered by one `sidecar` section `context` -- the running conversation put together without a model -- for the call's new session"
+        },
+        {
+          "route": "in_stats",
+          "because": "a question an observer asks about this hive (GH #926), all hop: `stats_tag` (1 to 64 characters, echoed), `stats_from` and `stats_to` (RFC 3339; `from` counts, `to` does not; `from` before `to`, at most 31 days apart), `stats_kinds` (a JSON array as text, not empty, out of `calls`, `gap`, `reread`, `ask`, `correction`, `tool_error`), `stats_samples` (0 to 50, default 0); the body `{messages: []}`. `./stats` counts it out of the ledger alone, in one round trip and without writing, and answers it exactly once on `stats` -- a question that does not hold too"
         }
       ],
       "emits": [
@@ -70,7 +74,7 @@
         },
         {
           "route": "write",
-          "because": "a closed session as ONE batch in the collector's close contract: `messages[]` the participant turns, `rounds` everything else raw, `hop.turn_count`/`hop.round_count`"
+          "because": "a closed session as ONE batch in the collector's close contract: `messages[]` the participant turns, `rounds` everything else raw, `hop.turn_count`/`hop.round_count`, only the rows whose audience holds the close round (GH #925)"
         },
         {
           "route": "pack_ack",
@@ -90,11 +94,15 @@
         },
         {
           "route": "tool_result",
-          "because": "the answer to one `in_history_call`: one `tool_result` turn under the call id, its text a JSON object, `hop.tool_call_id`, `hop.tool_name` and `hop.error_code` (empty, or the refusal the text names too). The context of the call rides on, so the parent's edge hands it to its collector's `in_tool` like any tool result"
+          "because": "the answer to one `in_history_call`: one `tool_result` turn under the call id, its text a JSON object, `hop.tool_call_id`, `hop.tool_name` and `hop.error_code` (empty, or the refusal the text names too). The context of the call rides on, so the parent's edge hands it to its collector's `in_tool` like any tool result. A call whose round declares no audience is answered with `hop.error_code` `missing_audience` (GH #925)"
         },
         {
           "route": "recall",
           "because": "a memory ask: the collector's, with its hop keys unchanged and the question built here, or a gap's own, with the same keys, the gap as its question and `gap_ask`, which the parent's edge lifts into context so the answer comes back on `in_gap_bundle`"
+        },
+        {
+          "route": "stats",
+          "because": "the answer to one `in_stats`: `{messages: [], stats: {from, to, counts, samples, truncated}}`. `counts` holds exactly the asked kinds: `calls` the `calls` rows started in the window, every other kind the `marks` rows of that kind stamped in it (`correction` counts the model rewriting a standing instruction in its sidecar, not a person correcting it). `samples` are the newest of the counted marks (under `truncated` the newest of the window's counted, oldest part), metadata only -- `at`, `kind`, `session_id`, `turn_id`, `value`, where a gap's value is its `searched` flag and a correction's is empty, and `session_id`/`turn_id` are references this answer hands out (`s1`, `s2`, ... in the order the samples first name a session, `s1#1`, `s1#2`, ... for its turns the same way), never the ledger's ids, which carry the channel -- a phone number, a chat id: no text, no audience, no identity. `truncated` is true when the window held more rows than `./stats` `scan_budget`; the count is then partial and meant to be thrown away. `hop.stats_tag` echoed, `hop.error_code` empty, `invalid_input` or `store_error`, `hop.detail` the hop key a refused question failed on (`invalid_input`) or the ledger table whose read the store refused (`store_error`: `calls`, `marks`, both comma-joined, or `ledger` when its answer names neither); a refusal carries empty `counts` and `samples`"
         }
       ]
     },
@@ -214,6 +222,9 @@
           "modifier": {
             "set_hop": {
               "route": "'in_cache_expired'"
+            },
+            "set_context": {
+              "audience_set": "has(hop.audience_set) ? hop.audience_set : ''"
             }
           }
         },
@@ -441,6 +452,42 @@
             "set_context": {
               "call_id": "has(hop.call_id) ? hop.call_id : ''"
             },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./stats",
+          "condition": "has(hop.route) && hop.route == 'in_stats'"
+        },
+        {
+          "from": "./stats",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./stats",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-stats'"
+        },
+        {
+          "from": "./stats",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'stats'",
+          "modifier": {
             "delete_context": [
               "cur_origin",
               "cur_phase",

@@ -1,4 +1,4 @@
-# `cogny@5.4.0`
+# `cogny@5.5.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.2.0"},
+{"cell": {"type": "ref", "template": "curator@1.3.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.0.0` above it in its provenance chain.
+`cogny@5.5.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -525,7 +525,7 @@ nothing ever answers.
 
 ## The internal wiring, edge by edge
 
-Forty edges in this hive's `params.graph`, plus the five the sealed collector brings
+Forty-two edges in this hive's `params.graph`, plus the five the sealed collector brings
 with it and those the sealed curator brings
 ([`../curator/README.md`](../curator/README.md)) -- those are their own door and store
 edges and are neither drawn nor wireable from here. Every edge below names `collector` and
@@ -564,6 +564,7 @@ curator    --(tool_result)-------> collector  in_tool
 .          --(mutation_committed)-> collector
 .          --(in_pack)-----------> curator           <- THE DOOR IN THE WALL, #458
 .          --(in_pin)------------> curator           <- another hive's pin, #916
+.          --(in_stats)----------> curator           <- an observer's question, #926
 .          --(in_schemas)--------> schemas           <- #528
 .          --(in_model)----------> brain             <- THE MODEL DOOR, #855
 .          --(in_model, subscriber ends /curator/summarizer)--> curator   <- #889
@@ -572,6 +573,7 @@ curator    --(recall, !gap_ask)--> .                  <- the ask, question built
 curator    --(recall, gap_ask)---> .  context.gap_ask := hop.gap_ask   <- #895
 curator    --(pack_ack)---------> .
 curator    --(model_refused)----> .                  <- the summarizer's refused push, #889
+curator    --(stats, !refused_subscriber)--> .       <- its answer, #926
 collector  --(schemas)----------> .
 schemas    --(operation == schemas, audience != 'core')--> .  route := 'tool_schemas'
 collector  --(schemas)----------> schemas  route := 'in_schemas', hop.tool_caller := 'cogny'  <- #894
@@ -673,7 +675,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.4.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.5.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -729,7 +731,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the two port PAIRS plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with seventeen cells (plus three hive markers); the `store` and `llm`
+The composite comes up with eighteen cells (plus three hive markers); the `store` and `llm`
 cells report `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a
 stateful cell. Two things to have ready before the mutation:
 

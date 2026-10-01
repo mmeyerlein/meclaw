@@ -16,7 +16,7 @@
 #      the refusal out of the colony's own trace.
 #      meclaw-os (needs a key) -- seventeen cells, the shipped assistant. It
 #      sends one turn with `meclaw ask` and prints the answer.
-#      organism (needs a key) -- the meclaw-os shell, thirty-five cells, plus a
+#      organism (needs a key) -- the meclaw-os shell, thirty-nine cells, plus a
 #      front door and a terminal. Nothing answers yet: an organisation, a member
 #      and an agent are the three declarations docs/getting-started.md walks
 #      through, and the run prints them.
