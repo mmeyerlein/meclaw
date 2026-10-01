@@ -3317,14 +3317,22 @@ const S3_FIXED: usize = 10;
 /// reserve 16 (GH #929).
 const SEGMENT_MAX: usize = 64 - 16;
 
+/// GH #925 (OR-BD-78, OR-BD-86): the ledger round trips of the longest search
+/// at `scan_budget` `budget` and `page_rows` `page` -- the first read, every
+/// page the budget needs, the one read a hidden row adds (OR-BD-74), the
+/// neighbours' two and the one read hidden rows beside a hit add. It depends
+/// on the number of pages alone, not on the rows in them, which is what lets
+/// `the_longest_search_takes_the_round_trips_worked_out_from_its_settings`
+/// prove it on a small wall.
+fn longest_search_trips(budget: usize, page: usize) -> usize {
+    1 + budget.div_ceil(page) + 1 + 2 + 1
+}
+
 /// GH #925 (OR-BD-78, OR-BD-86): at the SHIPPED settings the longest search
-/// -- the first read, every page `scan_budget` needs, the one read a hidden
-/// row adds (OR-BD-74), the neighbours' two and the one read hidden rows
-/// beside a hit add -- stays inside the GH #929 reserve: 18 ledger round
-/// trips, 46 on the chain. Worked out from `params` first, so a changed knob
-/// fails here before any colony runs, then run: a wall past the budget, the
-/// one hit in its oldest scanned row with `context` 2, one row of another
-/// round on top and six of the hit's own session on either side of it.
+/// stays inside the GH #929 reserve: 18 ledger round trips, 46 on the chain.
+/// Worked out from `params` alone, so a changed knob fails here without a
+/// colony and without a clock; that the script takes exactly these trips is
+/// pinned by the run below.
 #[test]
 fn the_longest_search_at_the_shipped_settings_fits_the_chain_reserve() {
     if !shipped() {
@@ -3338,86 +3346,121 @@ fn the_longest_search_at_the_shipped_settings_fits_the_chain_reserve() {
             .unwrap_or_else(|| panic!("history `{k}` is a number: {params}")) as usize
     };
     let (budget, page) = (knob("scan_budget"), knob("page_rows"));
-    let bound = 1 + budget.div_ceil(page) + 1 + 2 + 1;
+    let bound = longest_search_trips(budget, page);
     assert!(
         S3_FIXED + 2 * bound <= SEGMENT_MAX,
         "scan_budget {budget} / page_rows {page}: up to {bound} ledger round trips, a \
          history call of {} on the chain -- over the reserve of {SEGMENT_MAX} (GH #929)",
         S3_FIXED + 2 * bound
     );
+}
 
-    let mut h = Hive::new();
-    let newest = budget as i64 + 1_000;
-    let hit = (newest - budget as i64 + 1) * 10;
-    for seq in (1..=newest).map(|i| i * 10) {
-        h.audience = Some(ROUND_E.to_string());
-        let text = if seq == hit {
-            format!("needle number {seq}")
-        } else {
-            format!("hay number {seq}")
+/// GH #925 (OR-BD-78, OR-BD-86): the longest search takes EXACTLY the round
+/// trips `longest_search_trips` works out -- a wall past the budget, the one
+/// hit in its oldest scanned row with `context` 2, one row of another round
+/// on top and six of the hit's own session on either side of it.
+///
+/// Run at small settings, not the shipped ones: at 5000 / 400 the wall is
+/// 6000 rows, 1.7 s here, and the public CI runner (2026-10-01) spent the
+/// shipped 3000 ms `time_budget_ms` at 4000 of them -- `cut_by` `time_budget`,
+/// a cut of its own and not the row bounds this test is about. The clock
+/// stays as shipped; the wall shrinks instead. 50 / 4 is the shipped ratio
+/// (13 pages, the last one short: the same 18 trips over 60 rows), 48 / 4
+/// ends on a full page, 20 / 20 is one page. Every budget stays above the 13
+/// hidden rows, below which OR-BD-86 answers in the cut form (at 12 it does).
+#[test]
+fn the_longest_search_takes_the_round_trips_worked_out_from_its_settings() {
+    if !shipped() {
+        return;
+    }
+    for (budget, page) in [(50_usize, 4_usize), (48, 4), (20, 20)] {
+        let at_settings = format!("scan_budget {budget} / page_rows {page}");
+        let mut h = Hive::with(&[
+            ("history", "scan_budget", json!(budget)),
+            ("history", "page_rows", json!(page)),
+        ]);
+        let newest = (budget + budget / 5) as i64;
+        let hit = (newest - budget as i64 + 1) * 10;
+        for seq in (1..=newest).map(|i| i * 10) {
+            h.audience = Some(ROUND_E.to_string());
+            let text = if seq == hit {
+                format!("needle number {seq}")
+            } else {
+                format!("hay number {seq}")
+            };
+            h.sow(
+                seq,
+                "s1",
+                &format!("t{seq}"),
+                "user",
+                &user(&text),
+                &at(20, 1),
+            );
+        }
+        h.audience = Some(round(&["a"]));
+        h.sow(
+            newest * 10 + 5,
+            "s-other",
+            "t-other",
+            "user",
+            &user("needle hidden"),
+            &at(20, 2),
+        );
+        for seq in (1..=6).flat_map(|d| [hit - d, hit + d]) {
+            h.sow(
+                seq,
+                "s1",
+                &format!("t{seq}"),
+                "user",
+                &user(&format!("an aside {seq}")),
+                &at(20, 1),
+            );
+        }
+        let (code, p, trips) = asked(
+            &mut h,
+            "history_search",
+            json!({"query": "needle", "limit": 8, "context": 2}),
+        );
+        assert_eq!(code, "", "{at_settings}: {p}");
+        assert_ne!(
+            p["cut_by"], "time_budget",
+            "{at_settings}: the shipped `time_budget_ms` ran out before the row bounds -- \
+             the host was too slow even for this small wall; a cut of its own, not the \
+             round trips this test pins: {p}"
+        );
+        assert_eq!(
+            p["total_hits"], 1,
+            "{at_settings}: the hit in the oldest scanned row: {p}"
+        );
+        assert_eq!(p["cut_by"], "scan_budget", "{at_settings}: {p}");
+        let near = |side: &str| -> Vec<String> {
+            p["hits"][0][side]
+                .as_array()
+                .unwrap_or_else(|| panic!("{at_settings}: `{side}`: {p}"))
+                .iter()
+                .map(|n| n["excerpt"].as_str().unwrap_or("").to_string())
+                .collect()
         };
-        h.sow(
-            seq,
-            "s1",
-            &format!("t{seq}"),
-            "user",
-            &user(&text),
-            &at(20, 1),
+        assert_eq!(
+            near("before"),
+            [
+                format!("hay number {}", hit - 20),
+                format!("hay number {}", hit - 10)
+            ],
+            "{at_settings}: the nearest rows the round may see, past six hidden ones: {p}"
+        );
+        assert_eq!(
+            near("after"),
+            [
+                format!("hay number {}", hit + 10),
+                format!("hay number {}", hit + 20)
+            ],
+            "{at_settings}: {p}"
+        );
+        assert_eq!(
+            trips,
+            longest_search_trips(budget, page),
+            "{at_settings}: the ledger round trips of the longest search"
         );
     }
-    h.audience = Some(round(&["a"]));
-    h.sow(
-        newest * 10 + 5,
-        "s-other",
-        "t-other",
-        "user",
-        &user("needle hidden"),
-        &at(20, 2),
-    );
-    for seq in (1..=6).flat_map(|d| [hit - d, hit + d]) {
-        h.sow(
-            seq,
-            "s1",
-            &format!("t{seq}"),
-            "user",
-            &user(&format!("an aside {seq}")),
-            &at(20, 1),
-        );
-    }
-    let (code, p, trips) = asked(
-        &mut h,
-        "history_search",
-        json!({"query": "needle", "limit": 8, "context": 2}),
-    );
-    assert_eq!(code, "", "{p}");
-    assert_eq!(p["total_hits"], 1, "the hit in the oldest scanned row: {p}");
-    assert_eq!(p["cut_by"], "scan_budget", "{p}");
-    let near = |side: &str| -> Vec<String> {
-        p["hits"][0][side]
-            .as_array()
-            .unwrap_or_else(|| panic!("`{side}`: {p}"))
-            .iter()
-            .map(|n| n["excerpt"].as_str().unwrap_or("").to_string())
-            .collect()
-    };
-    assert_eq!(
-        near("before"),
-        [
-            format!("hay number {}", hit - 20),
-            format!("hay number {}", hit - 10)
-        ],
-        "the nearest rows the round may see, past six hidden ones: {p}"
-    );
-    assert_eq!(
-        near("after"),
-        [
-            format!("hay number {}", hit + 10),
-            format!("hay number {}", hit + 20)
-        ],
-        "{p}"
-    );
-    assert!(
-        trips <= bound,
-        "{trips} ledger round trips, more than the {bound} worked out from the settings"
-    );
 }
