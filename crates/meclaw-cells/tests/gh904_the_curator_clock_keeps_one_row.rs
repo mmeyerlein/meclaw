@@ -4,7 +4,8 @@
 //! (`uuid5("cache:" + call)`) and removed the call before; the timer never
 //! deletes a row (`docs/cell-types.md` `timer`), so `schedules` grew by one row
 //! per call -- in a long-running curator colony without bound. Now the policy
-//! re-arms one order under one id (`add` with `rearm`).
+//! re-arms one order under one id (`add` with `rearm`) -- one per round since
+//! GH #943; every call here runs in the harness's standard round.
 //!
 //! Measured at the receiver: the shipped curator hive runs in one process
 //! (`support/curator_hive.rs`), and every order it sends to `./clock` is handed
@@ -135,7 +136,7 @@ fn the_curator_clock_keeps_one_row() {
         assert_eq!(row.status, "active", "after call {i}: armed");
         assert_eq!(
             row.emit_body["curator_call"],
-            json!(h.state("last_call")),
+            json!(h.state_in("last_call", ROUND_E)),
             "the clock stands on the newest call"
         );
         assert!(
@@ -147,7 +148,11 @@ fn the_curator_clock_keeps_one_row() {
             // The cache went cold once: the order strikes, the curator hears it.
             clock.strike(&mut h);
             struck += 1;
-            assert_eq!(h.state("armed_call"), "", "the struck order is disarmed");
+            assert_eq!(
+                h.state_in("armed_call", ROUND_E),
+                "",
+                "the struck order is disarmed"
+            );
             assert!(
                 load_active_filter_past(&clock.db, chrono::Utc::now())
                     .unwrap()

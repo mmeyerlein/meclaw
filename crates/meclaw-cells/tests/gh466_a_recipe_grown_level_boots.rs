@@ -414,8 +414,9 @@ fn rendered_levels() -> Vec<Value> {
                "override_params": {"cogny/brain": {"temperature": 0.2}}}),
         // GH #517 -- and, for a channel, the PERSON its turns are spoken
         // with: the round is provenance and is never derived from the path.
+        // GH #940 -- and the one chat it is bound to, the example's literal.
         json!({"scope": "/os/orgs/acme/members/alex", "level": "channel",
-               "name": "telegram", "assistant": "scribe",
+               "name": "telegram", "assistant": "scribe", "bind_chat": "4711",
                "ctx": {"member_person": "alex"}}),
     ];
     // The template each wish names comes OFF the shipped declaration. What is

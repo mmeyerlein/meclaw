@@ -1,4 +1,4 @@
-# `builder@1.20.1`
+# `builder@1.21.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -439,6 +439,7 @@ on a `channel` (§ *A round is provenance*).
 | `template` | always | the class to instantiate, pinned |
 | `assistant` | `channel` | the agent a turn defaults to. A CEL guard is evaluated against `hop` and `context` and cannot read a node's `params`, so the default of a channel has nowhere to live but the edge that applies it |
 | `screen` | `app` | the one screen the app writes its views onto |
+| `bind_chat` | `channel`, except the self-bound templates | the one `chat_id` whose turns carry the member's round (GH #940). The ingress edge takes that chat and no other — `string(hop.chat_id)` equal to it, or, for Slack's composite id, one of its threads — and a turn from any other chat finds no edge: no turn, no round, a dead letter, and nothing is said to the stranger. A literal or exactly `${NAME}` (bound from the colony's `.env` when the manifest is applied; a missing variable fails the mutation). A channel wish without it, or with a default `${NAME:-…}`, renders nothing and is asked as **`channel_unbound`**. `chat-channel`, `voice`, `web` and `terminal` stamp no foreign chat id and grow without it (`SELF_BOUND_CHANNELS` in `recipes`); `telegram-connector` and `slack-agent` never do |
 | `ctx` | optional, **`member_person` required for `channel`** | the declaration's own `ctx` block, mutation-wide. The recipe reads exactly one key out of it — `member_person`, the identity of the person a channel speaks with — and a channel wish without it renders nothing and asks instead, as `wish_incomplete` (§ *A round is provenance*) |
 | `override_params` | optional | addressed per cell of the template (`{"cogny/brain": {"temperature": 0.2}}`) |
 | `birth` | optional | `active` or `inactive` — the door's own vocabulary, written top-level on the `add_nodes` entry. A name the door does not know is refused here as `birth_unknown`, one hop from the wish that made it, rather than at the door one hop from the manifest. The default is the door's (`active`) for every level except `channel`, which is born **asleep** |

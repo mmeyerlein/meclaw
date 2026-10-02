@@ -19,6 +19,11 @@
 //! The colony case -- the same hive booted, a real `llm` cell and a stub
 //! provider -- is `gh888_the_ledger_rebuilds_what_the_provider_received.rs`.
 
+// The round key and the summary slot of a round (GH #943) are the shared
+// harness's; only those two are used, qualified, beside this file's own hive.
+#[path = "support/curator_hive.rs"]
+mod curator_hive;
+
 use meclaw_colony::cel_eval::{
     CompiledCondition, CompiledModifier, apply_modifier, evaluate_condition, parse_condition,
     parse_modifier,
@@ -180,6 +185,12 @@ impl Hive {
         let schema: BTreeMap<String, BTreeMap<String, String>> =
             sj::from_value(cells["ledger"]["params"]["schema"].clone()).expect("schema");
         meclaw_cells::store::ddl::apply_schema_ddl(&db, &schema).expect("ddl");
+        // GH #915/#943: the named indexes between schema and seed, as the
+        // store builds them (the unique `state.key` makes a round's first row
+        // a compare-and-set).
+        let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
+            .expect("the ledger params parse");
+        meclaw_cells::store::ddl::apply_index_ddl(&db, &ledger.indexes).expect("index ddl");
         meclaw_cells::store::seed::load_seed_if_present(
             &db,
             &repo("templates/curator/ledger"),
@@ -450,6 +461,11 @@ impl Hive {
             .unwrap_or_default()
     }
 
+    /// The state row `key` of the round `round` (GH #943).
+    fn state_in(&self, key: &str, round: &str) -> String {
+        self.state(&format!("{key}:{}", curator_hive::round_key(round)))
+    }
+
     fn routed(&self, route: &str) -> Vec<Msg> {
         self.out
             .iter()
@@ -606,7 +622,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.4.1");
+    assert_eq!(t["version"], "1.5.0");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -1487,7 +1503,7 @@ fn tap_fills_usage_and_expiry() {
             json!("2099-01-01T00:00:00Z")
         ]]
     );
-    assert_eq!(h.state("last_call"), id);
+    assert_eq!(h.state_in("last_call", ROUND_E), id);
 }
 
 /// The clock stands on the newest call, under ONE id (GH #904, PP-7): every
@@ -1534,7 +1550,7 @@ fn tap_arms_the_clock_under_one_id() {
     assert_eq!(add.body["schedule_name"], "cache");
     assert_eq!(
         add.body["emit_body"]["curator_call"],
-        json!(h.state("last_call"))
+        json!(h.state_in("last_call", ROUND_E))
     );
     // GH #925 (OR-BD.A.6): the strike is a fresh root without a context, so
     // the order carries the call's round as a header of the strike -- the
@@ -1562,7 +1578,11 @@ fn a_fired_order_is_not_removed() {
     );
     let first = last_add(&h);
     h.fire(&first);
-    assert_eq!(h.state("armed_call"), "", "the fired order is disarmed");
+    assert_eq!(
+        h.state_in("armed_call", ROUND_E),
+        "",
+        "the fired order is disarmed"
+    );
     turn(
         &mut h,
         "s1",
@@ -1580,12 +1600,12 @@ fn a_fired_order_is_not_removed() {
     assert_eq!(orders[0].1, orders[1].1, "re-armed under the same id");
     let second = last_add(&h);
     assert_eq!(second.body["rearm"], json!(true));
-    let armed = h.state("armed_call");
+    let armed = h.state_in("armed_call", ROUND_E);
     assert_eq!(json!(armed), second.body["emit_body"]["curator_call"]);
     // A strike for the first call now (the race: it fired while the second tap
     // armed) must not disarm the second order.
     h.fire(&first);
-    assert_eq!(h.state("armed_call"), armed);
+    assert_eq!(h.state_in("armed_call", ROUND_E), armed);
 }
 
 #[test]
@@ -1821,8 +1841,12 @@ fn summary_block_names_its_sources() {
         json!({"type": "summary", "text": "What was said."})
     );
     assert_eq!(
-        h.rows("SELECT owner FROM slots WHERE path = 'history.summary'"),
-        vec![vec![json!("curator")]]
+        h.rows(&format!(
+            "SELECT owner FROM slots WHERE path = '{}'",
+            curator_hive::summary_slot(ROUND_E)
+        )),
+        vec![vec![json!("curator")]],
+        "the summary slot of the round (GH #943)"
     );
 }
 
@@ -1854,14 +1878,21 @@ fn a_second_trigger_during_a_rebuild_merges() {
     assert_eq!(
         h.summ.len(),
         1,
-        "one rebuild at a time: the second trigger merges"
+        "one rebuild of a round at a time: the second trigger merges"
     );
     h.answer("Merged.", "stop");
     assert_eq!(h.rows("SELECT COUNT(*) FROM summaries")[0][0], json!(1));
-    assert_eq!(h.state("rebuild_running"), "", "the lock is released");
+    assert_eq!(
+        h.state_in("rebuild_running", ROUND_E),
+        "",
+        "the lock is released"
+    );
     assert_eq!(
         h.rows("SELECT path FROM slots ORDER BY path"),
-        vec![vec![json!("history.summary")], vec![json!("identity")]],
+        vec![
+            vec![json!(curator_hive::summary_slot(ROUND_E))],
+            vec![json!("identity")]
+        ],
         "the advise mode rides with each call, never in `slots` (review R2-I-1)"
     );
 }
@@ -1889,7 +1920,7 @@ fn a_failed_summary_keeps_the_old_window() {
             json!(0),
             "{finish}"
         );
-        assert_eq!(h.state("rebuild_running"), "");
+        assert_eq!(h.state_in("rebuild_running", ROUND_E), "");
         let call = h.curate("s1", "t3", 0, json!([user("q3")]), mode("Be brief."));
         assert_eq!(texts(&call), vec!["q1", "a1", "q2", "a2", "q3"], "{finish}");
         let actions = h.rows(&format!(
@@ -2352,7 +2383,7 @@ fn a_round_without_ids_is_a_round_of_its_own() {
             vec![json!("default"), json!(call), json!("assistant"), json!(1)],
         ]
     );
-    assert_eq!(h.state("last_call"), call);
+    assert_eq!(h.state_in("last_call", ROUND_E), call);
 }
 
 // ========================================================== review focus K-3

@@ -135,6 +135,15 @@ T2='all()'
 # its own child. Same file as the runner's, same switch to move it.
 LOCK="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
 
+# Is the token file of this host armed with build lanes? It lives beside the
+# cargo lock (`scripts/strand.sh`, THE CARGO TOKEN); without one, no.
+lanes_active() {
+    local tokens="${MECLAW_STRAND_TOKENS:-${LOCK%.lock}.tokens}"
+    [ -f "$tokens" ] || return 1
+    python3 -c 'import json, sys
+sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("lanes") else 1)' "$tokens" 2>/dev/null
+}
+
 run_nextest() {
     local filter="$1"
     shift
@@ -148,6 +157,25 @@ run_nextest() {
     # in dry mode as well, or the refusal could not be tested; skipped in CI
     # and inside a gate, which checked for itself or belongs to the
     # orchestrator; and a throw-away repo without the kit has nothing to ask.
+    # The lanes, before the token (GH #942): while a wave builds on the build
+    # hosts (`strand.sh token init --lanes ...`), this machine builds nothing
+    # -- it runs the owner's live and lab colonies, and a lab colony died at
+    # load 15 while strands built beside it (2026-10-02). Every form of the
+    # tier is refused with exit 3; a single test goes to the held lane with
+    # `scripts/strand.sh test '<filter>'`. Not asked: CI, a tier inside a gate
+    # (the gate decided for itself), the tier ON a lane (`MECLAW_TIER_LANE`,
+    # set by the kit's remote call), and `MECLAW_LANE_LOCAL_OK=<reason>`.
+    if [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
+       && [ -z "${MECLAW_TIER_LANE:-}" ] && lanes_active; then
+        if [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
+            echo "=== lanes active, local cargo allowed: $MECLAW_LANE_LOCAL_OK"
+        else
+            echo "test-tier: lanes active: use scripts/strand.sh test|gate --host <lane>" \
+                 "(MECLAW_LANE_LOCAL_OK=<reason> overrides)" >&2
+            return 3
+        fi
+    fi
+
     if [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
        && [ -x "$root/scripts/strand.sh" ]; then
         "$root/scripts/strand.sh" token check --pid $$ || return $?

@@ -439,11 +439,12 @@ async fn the_ledger_rebuilds_what_the_provider_received() {
         .await;
     requests(&mock, 3).await;
 
-    // The stamp two seconds ahead strikes once: one summary.
+    // The stamp two seconds ahead strikes once: one summary, in the summary
+    // slot of the round (`history.summary:<round key>`, GH #943).
     until_count(&td, "SELECT COUNT(*) FROM summaries", 1).await;
     until_count(
         &td,
-        "SELECT COUNT(*) FROM slots WHERE path = 'history.summary'",
+        "SELECT COUNT(*) FROM slots WHERE path LIKE 'history.summary:%'",
         1,
     )
     .await;

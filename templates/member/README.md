@@ -1,13 +1,14 @@
-# `member@2.3.2`
+# `member@2.4.0`
 
-One person, as a level. **Five holders, three open containers and no cell of
-its own** — eight nodes and seventy-six edges.
+One person, as a level. **Six holders, three open containers and no cell of
+its own** — nine nodes and seventy-nine edges.
 
 | holder | what it holds |
 |---|---|
 | [`affinity`](../affinity/README.md) | **identity and meaning** — the curated record of who this person is and who their people are to them. Curated, fail-closed, quotable: it answers *who is X to me* and it is the only thing that answers it. |
 | [`memory-hive`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
 | [`file-space`](../file-space/README.md) | **the files** — since GH #908. This person's knowledge space: every file under one address `fh-<12 hex>`, versioned, read by line and changed only against the version a writer read. |
+| [`graph-space`](../graph-space/README.md) | **the graph of the files** — since GH #945. Every node of every file of `file-space` (functions, classes, sections; address `fh-<12 hex>#<anchor>`) and the edges between them, kept current from the space's `source_changed` and asked on `in_graph`, so a question across files wakes no file. |
 | [`firewall`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
 | [`access`](../access/README.md) | **the keys** — since 1.5.0 (GH #560). The provider credentials this person's agents authenticate with, held by the person rather than by the OS. Nothing in this level's graph reaches it but the drain for its `error` lane; a brain asks it over a v-lane. |
 
@@ -88,6 +89,9 @@ memory answers it itself:
 | `./file-space -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` |
 | `./assistants -> ./file-space` | `schemas` | the same menu tick into the file space's `in_schemas` |
 | `./file-space -> ./assistants` | `tool_schemas` | restamped to `in_menu` under `context.tool_answerer = 'files'` |
+| `./file-space -> ./graph-space` | `source_changed` | a head moved in the file space; `restore_ttl` — the door of an index job in the graph space (GH #945) |
+| `./graph-space -> ./file-space` | `pull` | the graph space's `outline`/`links`/`near` request, restamped to `in_read`; it carries no `caller`, so the answer leaves the space |
+| `./file-space -> ./graph-space` | `answer`, `hop.op_id.startsWith('gs:')` | that answer, restamped to `in_pulled`; every other answer of the space stays where it was (a tool's answer travels as `tool_result`) |
 
 They are **template** edges rather than v-lanes, and that is the one place the two legs
 differ: this level is a mandatory hop for both, so nothing is bought by drawing the tool
@@ -850,7 +854,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.3.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.4.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1086,7 +1090,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.3.2"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.4.0"}]
 }}
 ```
 
@@ -1095,7 +1099,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.4.2"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.5.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

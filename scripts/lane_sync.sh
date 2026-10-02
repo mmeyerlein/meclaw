@@ -6,6 +6,7 @@
 #     scripts/lane_sync.sh push <ssh-target> <strand>     commit + overlay onto the host, prints `<rev> <hash>`
 #     scripts/lane_sync.sh run <ssh-target> <strand> <mode> <base> [gate.sh options]
 #     scripts/lane_sync.sh fetch <ssh-target> <strand> <dir>
+#     scripts/lane_sync.sh test <ssh-target> <strand> <filterset> [nextest args]
 #     scripts/lane_sync.sh status <ssh-target>            one status word line for `strand.sh lanes status`
 #
 # `scripts/strand.sh gate --host <lane>` is the caller; nobody needs to run
@@ -45,6 +46,17 @@
 # out would gate a different tree. Either way the push is refused with the
 # path, before anything reaches the host (exit 5). A tracked `*.example` is
 # a template without values and travels like any file.
+#
+# WHAT THE HOST GETS BESIDE THE TREE (GH #942), so that a lane runs every
+# station and the owner's machine none:
+#   * a `.env` in the host's tree, written THERE by `scripts/gate_plan.py
+#     --print lane-env` -- names with constant non-secret placeholders
+#     (a provider key name carries `lane-stub`), never derived from a file
+#     of this machine, never a credential;
+#   * the refs `github-main` and `master`, when this clone has them: the
+#     export audit diffs against the first and a release exports the second;
+#   * the URL of `origin` for the export audit's drift check, but only a plain
+#     `https://` URL without credentials -- anything else stays here.
 #
 # THE OVERLAY HASH. After the overlay, both sides hash the same list -- HEAD,
 # then per path its sha256 or `absent` -- and the push is refused when the
@@ -147,9 +159,25 @@ cmd_push() {
     # The bare repository; a fresh host (tmpfs) has none.
     remote "$target" "mkdir -p $(q "$ROOT/wt") && { test -d $(q "$ROOT/meclaw.git") || git init -q --bare $(q "$ROOT/meclaw.git"); }" \
         || die "the host $target did not answer"
+    # The commit, and the refs the export audit reads (GH #942).
+    local refs=("$sha:refs/heads/lane/$strand") ref url
+    for ref in github-main master; do
+        git rev-parse --verify --quiet "refs/heads/$ref" >/dev/null \
+            && refs+=("refs/heads/$ref:refs/heads/$ref")
+    done
     GIT_SSH_COMMAND="ssh ${SSH_OPTS[*]}" \
-        git push -q --force "$target:$ROOT/meclaw.git" "$sha:refs/heads/lane/$strand" \
+        git push -q --force "$target:$ROOT/meclaw.git" "${refs[@]}" \
         || die "git push to $target failed"
+    url=$(git remote get-url origin 2>/dev/null || true)
+    case "$url" in
+        https://*@*|*[[:space:]]*) url="" ;;
+        https://*) ;;
+        *) url="" ;;
+    esac
+    if [ -n "$url" ]; then
+        remote "$target" "git --git-dir=$(q "$ROOT/meclaw.git") config remote.origin.url $(q "$url")" \
+            || die "the host $target did not answer"
+    fi
 
     # The worktree: checked out at the commit, cleaned of the last overlay.
     # `git clean` without -x keeps the ignored files a run left behind; the
@@ -181,6 +209,11 @@ cmd_push() {
         remote "$target" "cd $(q "$wt") && xargs -0 rm -f --" <"$list" \
             || { rm -f "$list"; die "the deletions on $target failed"; }
     fi
+    # The secret-free `.env` of a lane, written there from the tree's own table
+    # (`gate_plan.py --print lane-env`). Not part of the overlay hash: its
+    # name says secret, so it is in neither list on either side.
+    remote "$target" "cd $(q "$wt") && python3 scripts/gate_plan.py --print lane-env >.env" \
+        || { rm -f "$list"; die "the lane env on $target failed"; }
     # The same tree on both sides, or no remote gate (exit 5).
     local here there
     digest_list >"$list"
@@ -208,6 +241,21 @@ cmd_run() {
         "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && rm -rf $(q "$runs") && mkdir -p $(q "$runs") && CARGO_TARGET_DIR=$(q "$ROOT/target") scripts/gate.sh $(q "$mode") --lane --base $(q "$base") --log-dir $(q "$runs")$args"
 }
 
+# `test`: one nextest filterset in the strand's tree on the host, through the
+# tier script -- the same lock, target directory and ghost-binary guard as
+# every tier run there. `MECLAW_TIER_LANE` tells the tier it runs ON a lane
+# (the lanes check is for the owner's machine), and a build host runs no
+# colony, so the tests run at full width. Exit = the remote exit, 255 when
+# ssh lost the host.
+cmd_test() {
+    local target="$1" strand="$2"; shift 2
+    local wt="$ROOT/wt/$strand" args="" a
+    for a in "$@"; do args+=" $(q "$a")"; done
+    # shellcheck disable=SC2029
+    ssh "${SSH_OPTS[@]}" -o ServerAliveInterval=60 "$target" \
+        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && CARGO_TARGET_DIR=$(q "$ROOT/target") MECLAW_TIER_LANE=1 NEXTEST_TEST_THREADS=\$(nproc) scripts/test-tier.sh filter$args"
+}
+
 cmd_fetch() {
     local target="$1" strand="$2" dest="$3"
     mkdir -p "$dest" || die "cannot create $dest"
@@ -217,17 +265,20 @@ cmd_fetch() {
 
 cmd_status() {
     local target="$1" out
+    # Line 1: the file system type and the free G of the lane root -- a tmpfs
+    # until the host got its disk, then a real file system (GH #942). Line 2:
     # `bare` = the number of strand refs the host holds, `none` without a repo.
-    out=$(remote "$target" "df -BG --output=avail $(q "$ROOT") 2>/dev/null | tail -1 | tr -dc 0-9; echo; if test -d $(q "$ROOT/meclaw.git"); then git --git-dir=$(q "$ROOT/meclaw.git") for-each-ref refs/heads/lane | wc -l; else echo none; fi" 2>/dev/null) \
+    out=$(remote "$target" "df -BG --output=fstype,avail $(q "$ROOT") 2>/dev/null | tail -1; echo; if test -d $(q "$ROOT/meclaw.git"); then git --git-dir=$(q "$ROOT/meclaw.git") for-each-ref refs/heads/lane | wc -l; else echo none; fi" 2>/dev/null) \
         || { echo "unreachable"; return 0; }
-    local free bare
-    free=$(printf '%s\n' "$out" | sed -n 1p)
-    bare=$(printf '%s\n' "$out" | sed -n 2p | tr -d ' ')
+    local fs free bare
+    fs=$(printf '%s\n' "$out" | sed -n 1p | awk '{print $1}')
+    free=$(printf '%s\n' "$out" | sed -n 1p | awk '{print $2}' | tr -dc 0-9)
+    bare=$(printf '%s\n' "$out" | sed -n '2,$p' | sed '/^$/d' | head -1 | tr -d ' ')
     [ "$bare" = none ] || bare="$bare refs"
-    printf 'reachable  free %sG  bare %s\n' "${free:-?}" "$bare"
+    printf 'reachable  fs %s  free %sG  bare %s\n' "${fs:-?}" "${free:-?}" "$bare"
 }
 
-[ $# -ge 1 ] || die "expected files|digest|push|run|fetch|status"
+[ $# -ge 1 ] || die "expected files|digest|push|run|test|fetch|status"
 sub="$1"; shift
 case "$sub" in
     files)  cd "$(git rev-parse --show-toplevel 2>/dev/null)" || die "not a git repository"
@@ -236,6 +287,7 @@ case "$sub" in
             digest_list | bash -c "$DIGEST" ;;
     push)   [ $# -eq 2 ] || die "push <ssh-target> <strand>"; cmd_push "$@" ;;
     run)    [ $# -ge 4 ] || die "run <ssh-target> <strand> <mode> <base> [options]"; cmd_run "$@" ;;
+    test)   [ $# -ge 3 ] || die "test <ssh-target> <strand> <filterset> [nextest args]"; cmd_test "$@" ;;
     fetch)  [ $# -eq 3 ] || die "fetch <ssh-target> <strand> <dir>"; cmd_fetch "$@" ;;
     status) [ $# -eq 1 ] || die "status <ssh-target>"; cmd_status "$@" ;;
     *) die "unknown subcommand: $sub" ;;

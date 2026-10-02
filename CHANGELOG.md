@@ -12,6 +12,19 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-10-02
+
+### Added
+
+- **Build lanes run every station** ([#942](https://github.com/mmeyerlein/meclaw/issues/942)). Single tests, environment stations, the integration pass and the release gate run on the remote build hosts, so no Cargo step needs the local machine any more.
+- **A file is read as typed nodes and links** ([#944](https://github.com/mmeyerlein/meclaw/issues/944)). `file-space@1.2.0` cuts the head of every file into nodes with semantic anchors and extracted outgoing links, answers `outline`, `links` and `near` (also as the tools `file_outline` and `file_links`), and announces every head that moves as `source_changed`.
+- **A knowledge space keeps its own graph** ([#945](https://github.com/mmeyerlein/meclaw/issues/945)). The new `graph-space@1.0.0`, a sixth holder of `member@2.4.0`, resolves names across files into resolved, unresolved, broken and external edges and answers cross-file questions from its own store without waking a file.
+
+### Fixed
+
+- **A channel carries a round only for the chat it is bound to** ([#940](https://github.com/mmeyerlein/meclaw/issues/940)). `builder@1.21.0` binds a channel to one chat id, a turn from any other chat finds no edge, a generation of `session-keeper@2.3.0` ends when the round of its channel changes, and the brief names a counterpart only as far as the disclosure releases it.
+- **A curator keeps one window plan per round** ([#943](https://github.com/mmeyerlein/meclaw/issues/943)). `curator@1.5.0` no longer lets the rebuild of one round set the cut, the shrunk results or the stubs of another round's window, and bounds the plans it keeps.
+
 ## [0.55.1] — 2026-10-02
 
 ### Fixed

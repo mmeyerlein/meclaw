@@ -9,6 +9,7 @@ adr	status	anchor_home	target
 0001-header-model-lifetime-and-contract-interface.md	accepted	self	test:the_two_inbound_compartments_do_not_cross
 0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md	accepted	README	test:the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing
 0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md	accepted	README	test:the_edge_pinned_audience_set_is_a_round_in_both_directions
+0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md	accepted	README	test:a_round_change_ends_the_generation
 0003-rust-toolchain-floating-stable.md	accepted	self	file:rust-toolchain.toml#channel = "stable"
 0005-blobs-live-colony-wide.md	accepted	self	code:pub struct DiskBlobStore
 0005-blobs-live-colony-wide.md	accepted	self	code:cli.root.join("blobs")

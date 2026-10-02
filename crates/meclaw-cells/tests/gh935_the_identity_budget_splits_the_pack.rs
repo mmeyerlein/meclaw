@@ -13,14 +13,18 @@
 //! - `split`: the system family `identity` carries the short form alone, in
 //!   EVERY call. The full text stands as ONE element at the head of
 //!   `messages` from the first call of a session on (and from the call after
-//!   a rebuild or a renewal of that session): a snapshot. The following calls
-//!   of the session take no new one -- the window holds the same element,
-//!   byte for byte (the provider's prefix cache stays warm), even when the
-//!   pack changes in between; only the short form moves. It stays until the
-//!   next rebuild or renewal of the session's own window (a rebuild another
-//!   session caused, or another session's renewal, leaves it standing), a new
-//!   session starts or the round changes. Nothing of it is trimmable: it is
-//!   no block of the wall, a release cannot reach it.
+//!   a rebuild of the session's round or a renewal of that session): a
+//!   snapshot. The following calls of the session take no new one -- the
+//!   window holds the same element, byte for byte (the provider's prefix
+//!   cache stays warm), even when the pack changes in between; only the short
+//!   form moves. It stays until the next rebuild of THIS round or renewal of
+//!   the session's own window (a rebuild another session caused, a rebuild
+//!   of another round, or another session's renewal, leaves it standing), a
+//!   new session starts or the round changes. Since GH #943 every round has a
+//!   plan of its own, because one plan per hive let the rebuild of one round
+//!   replace the window of another: a rebuild is an event only for the
+//!   windows of its round. Nothing of it is trimmable: it is no block of the
+//!   wall, a release cannot reach it.
 //! - The snapshot, the renewal it was taken after and the note below are kept
 //!   PER SESSION (`identity_full:<session>`, `renewed_last:<session>`,
 //!   `identity_short_missing:<session>`): two sessions of one hive, of two
@@ -383,10 +387,23 @@ fn a_rebuild_takes_the_snapshot_anew() {
     while !h.summ.is_empty() {
         h.answer("S1: q1 a1.", "stop");
     }
-    assert_ne!(h.plan(), json!({}), "the rebuild finished: {:?}", h.stderr);
+    assert_ne!(
+        h.plan_in(ROUND_E),
+        json!({}),
+        "the rebuild finished: {:?}",
+        h.stderr
+    );
+    // The call runs in the round the rebuild ran in, because a snapshot is
+    // taken anew only after a rebuild of its own round (GH #943).
     let c3 = turn(&mut h, "s1", "t3", "q3", "a3", json!({}));
     hold(&mut held, &c3);
-    assert_split(&c3, &held, KURZ2, VOLL2, "the call after the rebuild");
+    assert_split(
+        &c3,
+        &held,
+        KURZ2,
+        VOLL2,
+        "the call after the rebuild of its round",
+    );
 }
 
 #[test]
@@ -672,12 +689,18 @@ fn a_renewal_or_rebuild_of_another_session_leaves_the_snapshot_standing() {
     while !h.summ.is_empty() {
         h.answer("S1: p1 b1.", "stop");
     }
-    let plan = h.plan();
+    // The rebuild is {e,b}'s: s2's round holds the new plan, and s1's round
+    // {e,a} has none, because since GH #943 a rebuild writes the plan of its
+    // own round only -- s1's snapshot stands for that reason alone, and for
+    // the session rule (review I-4) besides.
+    let plan = h.plan_in(EB);
     assert_ne!(plan, json!({}), "the rebuild finished: {:?}", h.stderr);
     assert_eq!(
         plan["session"], "s2",
         "s2's call caused the rebuild: {plan}"
     );
+    assert_eq!(h.plan(), plan, "the newest plan is {{e,b}}'s");
+    assert_eq!(h.plan_in(EA), json!({}), "{{e,a}} was not rebuilt");
     h.ledger_ops.clear();
     let a3 = turn_in(&mut h, EA, "s1", "t3", "q3", "a3", json!({}));
     hold(&mut held, &a3);

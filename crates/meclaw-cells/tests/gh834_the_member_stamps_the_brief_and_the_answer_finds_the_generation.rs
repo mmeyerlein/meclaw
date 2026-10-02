@@ -408,7 +408,13 @@ fn build_tree(td: &tempfile::TempDir, with_trust: bool) {
     );
 
     copy_cells(&repo("templates/member"), &root.join("main/person"));
-    for holder in ["access", "memory-hive", "file-space", "firewall"] {
+    for holder in [
+        "access",
+        "memory-hive",
+        "file-space",
+        "graph-space",
+        "firewall",
+    ] {
         write(
             root,
             &format!("main/person/{holder}/config.json"),

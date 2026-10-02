@@ -282,23 +282,37 @@
 # builds cold; still short after that, it refuses with exit 2. The cargo lock stays: one host is one lane is one run, and the lock
 # only ever guards against a second run by hand.
 #
-# A build host never gets a `.env`. The stations whose runner reads one
-# (`gate_plan.py --print env-stations`) are reported as `SKIP no-env (lane)`,
-# and the kit runs exactly those on the owner's machine afterwards. No `.env`
-# link is made either. The same holds for what else a host lacks (OR-S3-96):
-# `display-lab` needs `node` (`SKIP no-node (lane)`), `export-audit` the
-# `github-main` ref (`SKIP no-ref (lane)`) -- one list, `--print lane-local`.
-# The kit hands the lane's receipt to that local run as
-# `MECLAW_GATE_LANE_RECEIPT`: its stations go into this run's receipt (all but
-# the ones this run performs itself), and a RED or ASK among them is the
-# receipt's verdict -- so `export-audit` here grades the whole run, not the
-# few stations it shares a runner with. The summary line stays this run's. And `--lane` needs `--base`: the host's copy of the
+# A build host never gets the owner's `.env`, and no link to it. The kit
+# writes a key-free one into the host's tree instead (`gate_plan.py --print
+# lane-env`: non-secret model names and levels with constant placeholders),
+# so the stations whose runner reads one (`--print env-stations`) run there
+# like any other -- in their keyless class `none` only: a station argv with a
+# `--with <class>` is RED on a lane before its runner starts. `display-lab`
+# needs `node` on the host; without one it is RED `no-node (lane)`. And the
+# kit pushes the `github-main` ref along, which `export-audit` diffs against.
+# Since GH #942 a lane leaves nothing to the owner's machine: that machine
+# runs live and lab colonies, and one of them died at load 15 while strands
+# built beside it (2026-10-02). The old mechanism stays for a station listed
+# in `gate_plan.py --print lane-local` (empty today): reported here as
+# `SKIP <reason> (lane)`, run there by the kit, which hands the lane's
+# receipt over as `MECLAW_GATE_LANE_RECEIPT` -- its stations go into that
+# run's receipt (all but the ones it performs itself), and a RED or ASK among
+# them is the receipt's verdict.
+#
+# The other way round: while the lanes are armed (`strand.sh token init
+# --lanes ...`), a run OFF a lane with a cargo station is refused with exit 3
+# and `lanes active: use scripts/strand.sh test|gate --host <lane>`; only
+# `MECLAW_LANE_LOCAL_OK=<reason>` overrides, and the receipt names the reason
+# as the NOTE row `lane-local-ok`.
+#
+# And `--lane` needs `--base`: the host's copy of the
 # repository has no reliable `master`, so the kit computes the merge base
 # where it does and hands it over.
 #
-# Exit 0 = green. 1 = a station is RED. 2 = the runner refused to start. 4 =
-# ASK: a question for the owner is open and nothing is red. 3 is the strand
-# kit's token queue and never comes from here.
+# Exit 0 = green. 1 = a station is RED. 2 = the runner refused to start. 3 =
+# lanes are armed and this run would build here. 4 =
+# ASK: a question for the owner is open and nothing is red. The strand kit's
+# token queue uses 3 as well.
 
 set -uo pipefail
 
@@ -442,7 +456,8 @@ link_main_env() {
     [ -L "$root/.env" ] && [ -e "$root/.env" ] && echo "gate: env = $main_env (linked)"
     return 0
 }
-# A build host gets no `.env` and no link to one (see A RUN ON A BUILD HOST).
+# A build host gets no link to the owner's `.env`; the kit writes the key-free
+# lane env there instead (see A RUN ON A BUILD HOST).
 [ "$lane" = 1 ] || link_main_env
 
 # Everything this run writes is namespaced by the tree it runs in -- see
@@ -647,6 +662,36 @@ if [ "$plan_only" = 1 ]; then
     done
     echo "tests=$has_tests"
     exit 0
+fi
+
+# --- the lanes (see A RUN ON A BUILD HOST) ------------------------------------
+# While a wave builds on the lanes (`strand.sh token init --lanes ...`), this
+# machine builds nothing: it runs the owner's live and lab colonies, and a lab
+# colony died at load 15 while strands built beside it (2026-10-02, GH #942).
+# A run with a cargo station -- `--only clippy` is one -- is refused here,
+# before any station and before the receipt, with exit 3 like a missing cargo
+# token. The cheap stations, `--plan-only`, the CI runner (`$CI`, like the
+# tier -- not the mode `ci`, which run locally is local cargo all the same;
+# Review L Minor 1) and every run ON a lane are not touched. The one way out
+# names its reason, and the receipt carries it:
+# `MECLAW_LANE_LOCAL_OK=<reason>` (the orchestrator, on the coordinator's word).
+lanes_active() {
+    local lock tokens
+    lock="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
+    tokens="${MECLAW_STRAND_TOKENS:-${lock%.lock}.tokens}"
+    [ -f "$tokens" ] || return 1
+    python3 -c 'import json, sys
+sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("lanes") else 1)' "$tokens" 2>/dev/null
+}
+lane_local_ok=""
+if [ -z "${CI:-}" ] && [ "$lane" = 0 ] && [ "$has_cargo" = 1 ] && lanes_active; then
+    if [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
+        lane_local_ok="$MECLAW_LANE_LOCAL_OK"
+    else
+        echo "gate: lanes active: use scripts/strand.sh test|gate --host <lane>" \
+             "(this plan has a cargo station; MECLAW_LANE_LOCAL_OK=<reason> overrides)" >&2
+        exit 3
+    fi
 fi
 
 # The mode is part of a station's environment: the display drift lock compares its
@@ -1280,6 +1325,15 @@ master_moved_note() {
     return 0
 }
 master_moved_note
+[ -n "$lane_local_ok" ] \
+    && report lane-local-ok "local cargo while lanes are armed: $lane_local_ok" 0 NOTE "" "$lane_local_ok"
+
+# On a lane, `display-lab` needs `node` there (GH #942): asked once, here.
+# `MECLAW_GATE_NODE` names the binary -- a test hook, `node` otherwise.
+lane_node=1
+if [ "$lane" = 1 ] && ! command -v "${MECLAW_GATE_NODE:-node}" >/dev/null 2>&1; then
+    lane_node=0
+fi
 
 for i in ${st_names[@]+"${!st_names[@]}"}; do
     name="${st_names[$i]}"; scope="${st_scopes[$i]}"; cargo="${st_cargo[$i]}"
@@ -1303,6 +1357,24 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
         why=$(printf '%s\n' "$lane_local" | awk -F'\t' -v n="$name" '$1 == n {print $2; exit}')
         if [ -n "$why" ]; then
             report "$name" "$scope" 0 SKIP "" "$why (lane)"
+            continue
+        fi
+        # No `node` on the host: RED, never a quiet skip and never a run on
+        # the owner's machine instead (GH #942).
+        if [ "$name" = display-lab ] && [ "$lane_node" = 0 ]; then
+            report "$name" "$scope" 0 RED "" \
+                "no-node (lane): install node on the build host, the runline tests call it"
+            continue
+        fi
+        # A paid suite class on a lane: the lane's `.env` carries no key, by
+        # contract (`gate_plan.py --print lane-env`), so a `--with llm|embed`
+        # there is refused before its runner starts -- never a network call.
+        paid=$(printf '%s\n' "${st_cmds[$i]}" \
+            | grep -oE -- "--with(=| +)'?[A-Za-z0-9_-]+" \
+            | sed -E "s/^--with(=| +)'?//" | grep -vx none | head -1 || true)
+        if [ -n "$paid" ]; then
+            report "$name" "$scope" 0 RED "" \
+                "--with $paid on a lane: a lane runs the keyless class none only"
             continue
         fi
     fi

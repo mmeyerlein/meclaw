@@ -85,7 +85,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of assistant@3.4.2"
+          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of assistant@3.5.0"
         }
       ],
       "emits": [
@@ -125,7 +125,7 @@
         },
         {
           "route": "write",
-          "because": "an assistant's batched conversation write, on its way past this member to whatever archive the parent wired. It is NOT this level's memory lane: the member's memory is written per turn on `sidecar` (`extraction` until 1.7.0) and read on `in_recall`, both of which stop here. Derived from the emits list of assistant@2.0.0 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
+          "because": "an assistant's batched conversation write, on its way past this member to whatever archive the parent wired. It is NOT this level's memory lane: the member's memory is written per turn on `sidecar` (`extraction` until 1.7.0) and read on `in_recall`, both of which stop here. Derived from the emits list of assistant@2.0.0 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary. The edge down onto `in_close_pass` restores the budget (`restore_ttl`, a Door of GH #929): the close pass enters the hive that owns it, and since GH #940 a round change sends its close from inside a turn, so it arrives having spent the curator's chain already -- one group behind the curator's door measured 50 decisions against 48. Nothing routes back to this edge without a new close"
         },
         {
           "route": "turn_write",
@@ -184,7 +184,7 @@
         },
         {
           "route": "stats",
-          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of assistant@3.4.2"
+          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of assistant@3.5.0"
         }
       ]
     },
@@ -633,7 +633,8 @@
               "session_id": "has(context.session_id) ? context.session_id : ''",
               "audience_set": "has(context.audience_set) ? context.audience_set : ''",
               "channel": "has(context.channel) ? context.channel : ''"
-            }
+            },
+            "restore_ttl": true
           }
         },
         {
@@ -952,6 +953,34 @@
             },
             "set_context": {
               "tool_answerer": "'files'"
+            }
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./graph-space",
+          "condition": "has(hop.route) && hop.route == 'source_changed'",
+          "modifier": {
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./graph-space",
+          "to": "./file-space",
+          "condition": "has(hop.route) && hop.route == 'pull'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_read'"
+            }
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./graph-space",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.op_id) && hop.op_id.startsWith('gs:')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_pulled'"
             }
           }
         },

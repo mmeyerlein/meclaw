@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.3.2",
+            v, "2.4.0",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -417,12 +417,16 @@ fn the_versions_moved_with_the_declarations() {
              `assistant@3.4.0`; 2.3.1 only pins `affinity@3.7.0` and \
              `memory-hive@3.7.0` and derives `./assistants` from `assistant@3.4.1`, \
              the third digit; 2.3.2 only derives `./assistants` from `assistant@3.4.2` \
-             (GH #941), the third digit"
+             (GH #941), the third digit; GH #945 makes it 2.4.0, the second digit: \
+             `./graph-space` joins as a sixth holder, fed by the file space's \
+             `source_changed`, and the apps rim stays as it was; it pins \
+             `file-space@1.2.0`, `affinity@3.8.0` and `memory-hive@3.7.1` and derives \
+             `./assistants` from `assistant@3.5.0`"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.4.2",
+            v, "3.5.0",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -457,7 +461,10 @@ fn the_versions_moved_with_the_declarations() {
              names, `stats` leaves it, and it pins `talky@6.3.0` and `cogny@5.5.0`; \
              GH #929 rides along: the door of `in_turn` restores the TTL; 3.4.1 only \
              pins `talky@6.4.0` and `cogny@5.6.0`, the third digit; 3.4.2 only pins \
-             `talky@6.4.1` and `cogny@5.6.1` (GH #941), the third digit"
+             `talky@6.4.1` and `cogny@5.6.1` (GH #941), the third digit; GH #944 makes \
+             it 3.5.0, the second digit: `./talky` and `./talky-chat` carry the read \
+             tools `file_outline` and `file_links`, and it pins `talky@6.4.2` and \
+             `cogny@5.6.2`"
         );
     }
 }

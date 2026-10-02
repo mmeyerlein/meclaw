@@ -22,6 +22,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -2214,8 +2215,8 @@ class TestLane(GateShTestCase):
     a live colony's watchdog on the owner's machine cost a factor of two there
     for nothing (tests 459 s at full width against 788 s, measured
     2026-10-01). The disk that fills is the target directory (a tmpfs), not
-    `/`, and the host has no `.env` -- the stations that read one are skipped
-    and run on the owner's machine afterwards.
+    `/`, and the host never gets the owner's `.env` -- it gets a key-free one
+    and runs every station itself (GH #942).
     """
 
     PLAN_ENV = (
@@ -2359,34 +2360,71 @@ class TestLane(GateShTestCase):
         self.assertIn("only 5G free on /", res.stderr)
         self.assertNotIn("wiped", res.stdout + res.stderr)
 
-    def test_env_stations_are_skipped_on_a_lane(self):
-        res = run_gate(self.repo, "strand", "--lane", "--base", "master~1",
-                       plan=self.plan_file(self.PLAN_ENV), dry=False)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        rows = {r["name"]: r for r in gate_lines(res.stdout)}
-        self.assertEqual("GREEN", rows["ok"]["verdict"])
-        for name in ("scenarios:memory", "guide-selftest"):
-            with self.subTest(station=name):
-                self.assertEqual("SKIP", rows[name]["verdict"])
-                self.assertEqual("no-env (lane)", rows[name]["reason"])
+    # --- GH #942: a lane runs every station; nothing is left for the owner's
+    # machine (it runs no cargo while a wave builds on the lanes).
 
-    # OR-S3-96: no `node` and no `github-main` ref on a build host either.
-    PLAN_LANE_LOCAL = (
+    PLAN_LANE_ALL = (
         "ok\tscope-ok\t0\ttrue\t\n"
+        "scenarios:memory\t3 cases\t0\ttrue\t\n"
+        "scenarios:builder\t2 cases\t0\ttrue\t\n"
+        "guide-selftest\tunittest\t0\ttrue\t\n"
         "display-lab\tunittest\t0\ttrue\t\n"
         "export-audit\tR1-R17 dry\t0\ttrue\t\n"
     )
 
-    def test_node_and_ref_stations_are_skipped_on_a_lane(self):
+    def test_lane_local_is_empty(self):
         res = run_gate(self.repo, "integration", "--lane", "--base", "master~1",
-                       plan=self.plan_file(self.PLAN_LANE_LOCAL), dry=False)
+                       plan=self.plan_file(self.PLAN_LANE_ALL), dry=False,
+                       extra_env={"MECLAW_GATE_NODE": "sh"})
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        for name in ("scenarios:memory", "scenarios:builder", "guide-selftest",
+                     "display-lab", "export-audit"):
+            with self.subTest(station=name):
+                self.assertEqual("GREEN", rows[name]["verdict"])
+        self.assertNotIn("(lane)", "".join(r.get("reason") or "" for r in rows.values()))
+
+    def test_display_lab_without_node_is_red_on_a_lane(self):
+        res = run_gate(self.repo, "strand", "--lane", "--base", "master~1",
+                       plan=self.plan_file(self.PLAN_LANE_ALL), dry=False,
+                       extra_env={"MECLAW_GATE_NODE": "no-such-node-binary"})
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["display-lab"]["verdict"])
+        self.assertTrue(rows["display-lab"]["reason"].startswith("no-node (lane)"),
+                        rows["display-lab"])
         self.assertEqual("GREEN", rows["ok"]["verdict"])
-        self.assertEqual("SKIP", rows["display-lab"]["verdict"])
-        self.assertEqual("no-node (lane)", rows["display-lab"]["reason"])
-        self.assertEqual("SKIP", rows["export-audit"]["verdict"])
-        self.assertEqual("no-ref (lane)", rows["export-audit"]["reason"])
+
+    def test_display_lab_needs_no_node_without_lane(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN_LANE_ALL),
+                       dry=False, extra_env={"MECLAW_GATE_NODE": "no-such-node-binary"})
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["display-lab"]["verdict"])
+
+    # A paid suite class on a lane: the runner would read a provider key the
+    # lane's `.env` never has -- and must never get. RED with the reason, and
+    # the suite's runner never starts.
+    def test_scenarios_refuse_paid_classes_on_a_lane(self):
+        marker = pathlib.Path(self._tmp.name) / "started"
+        plan = ("ok\tscope-ok\t0\ttrue\t\n"
+                "scenarios:memory\t3 cases\t0\ttouch %s --with llm\t\n"
+                "scenarios:builder\t2 cases\t0\ttouch %s --with=embed\t\n"
+                "guide-selftest\tunittest\t0\ttrue --with none\t\n") % (marker, marker)
+        res = run_gate(self.repo, "strand", "--lane", "--base", "master~1",
+                       plan=self.plan_file(plan), dry=False)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["scenarios:memory"]["verdict"])
+        self.assertIn("--with llm", rows["scenarios:memory"]["reason"])
+        self.assertEqual("RED", rows["scenarios:builder"]["verdict"])
+        self.assertIn("--with embed", rows["scenarios:builder"]["reason"])
+        self.assertEqual("GREEN", rows["guide-selftest"]["verdict"])
+        self.assertFalse(marker.exists())
+
+    def test_paid_classes_run_without_lane(self):
+        plan = "scenarios:memory\t3 cases\t0\ttrue --with llm\t\n"
+        res = run_gate(self.repo, "strand", plan=self.plan_file(plan), dry=False)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
 
     def lane_head(self):
         """The head a lane receipt must carry to be taken: this run's."""
@@ -2496,6 +2534,114 @@ class TestLane(GateShTestCase):
         res = run_gate(self.repo, "--help")
         self.assertIn("--lane", res.stdout)
 
+
+
+# The export audit lives in the private tree only; a public clone has no file
+# to test, and the case says so instead of failing.
+MAKE_EXPORT = pathlib.Path(__file__).resolve().parents[2] / "plans" / "export-fixtures" / "make_export.py"
+
+
+@unittest.skipUnless(MAKE_EXPORT.is_file(), "the export audit is not part of this tree")
+class TestMakeExportLaneReceipt(unittest.TestCase):
+    """GH #942: R9 (`cargo check --workspace --all-targets`) from a lane.
+
+    The owner's machine builds nothing while a wave runs on the lanes, and R9
+    is a cold build of the whole public tree. A full (not `--only`-narrowed)
+    `release` run of the same rev on a lane, GREEN, with a green `clippy`
+    station and a green full `export-audit` (scope R1-R17, R9 inside it) has
+    answered the same question; anything else is no answer.
+    """
+
+    REV = "a" * 40
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("make_export_r9", MAKE_EXPORT)
+        cls.me = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.me)
+
+    def receipt(self, **over):
+        doc = {"mode": "release", "rev": self.REV, "dirty": False, "verdict": "GREEN",
+               "plan": ["fmt", "clippy", "export-audit"],
+               "stations": [{"name": "fmt", "verdict": "GREEN"},
+                            {"name": "clippy", "verdict": "GREEN"},
+                            {"name": "export-audit", "scope": "R1-R17", "verdict": "GREEN"}]}
+        doc.update(over)
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        self.addCleanup(os.unlink, tmp.name)
+        json.dump(doc, tmp)
+        tmp.close()
+        return tmp.name
+
+    def r9(self, path):
+        report = []
+        self.me.receipt_r9_from_lane(path, self.REV, report)
+        return report
+
+    def assert_red(self, path, why):
+        with self.assertRaises(self.me.Failure) as ctx:
+            self.r9(path)
+        self.assertIn("R9", str(ctx.exception))
+        self.assertIn(why, str(ctx.exception))
+
+    def test_make_export_r9_accepts_a_lane_release_receipt(self):
+        report = self.r9(self.receipt())
+        self.assertEqual(1, len(report))
+        self.assertIn("R9", report[0])
+        self.assertIn("OK", report[0])
+
+    def test_another_rev_is_red(self):
+        self.assert_red(self.receipt(rev="b" * 40), "rev")
+
+    def test_a_red_run_is_red(self):
+        self.assert_red(self.receipt(verdict="RED"), "verdict")
+
+    def test_a_run_without_clippy_is_red(self):
+        self.assert_red(self.receipt(stations=[{"name": "fmt", "verdict": "GREEN"}]), "clippy")
+
+    def test_a_red_clippy_is_red(self):
+        self.assert_red(self.receipt(stations=[{"name": "clippy", "verdict": "RED"}]), "clippy")
+
+    def test_another_mode_is_red(self):
+        self.assert_red(self.receipt(mode="integration"), "mode")
+
+    def test_a_dirty_run_is_red(self):
+        self.assert_red(self.receipt(dirty=True), "dirty")
+
+    def test_an_unreadable_receipt_is_red(self):
+        self.assert_red("/nonexistent/lane-receipt.json", "unreadable")
+
+    # A `release --only clippy` run of the same rev is mode release, GREEN and
+    # has a green clippy -- and never built the PUBLIC tree. The proof R9 asks
+    # for is the full `export-audit` (scope R1-R17, R9 inside it, on the lane).
+    def test_a_narrowed_release_run_is_red(self):
+        self.assert_red(self.receipt(stations=[{"name": "clippy", "verdict": "GREEN"}]),
+                        "narrowed")
+
+    def test_a_run_without_plan_is_red(self):
+        self.assert_red(self.receipt(plan=[]), "plan")
+
+    def test_a_run_without_export_audit_is_red(self):
+        self.assert_red(self.receipt(plan=["fmt", "clippy"], stations=[
+            {"name": "fmt", "verdict": "GREEN"}, {"name": "clippy", "verdict": "GREEN"}]),
+            "export-audit")
+
+    def test_a_dry_export_audit_is_red(self):
+        self.assert_red(self.receipt(stations=[
+            {"name": "fmt", "verdict": "GREEN"}, {"name": "clippy", "verdict": "GREEN"},
+            {"name": "export-audit", "scope": "R1-R17 dry", "verdict": "GREEN"}]),
+            "export-audit")
+
+    def test_a_red_export_audit_is_red(self):
+        self.assert_red(self.receipt(stations=[
+            {"name": "fmt", "verdict": "GREEN"}, {"name": "clippy", "verdict": "GREEN"},
+            {"name": "export-audit", "scope": "R1-R17", "verdict": "RED"}]),
+            "export-audit")
+
+    def test_the_flag_is_offered(self):
+        res = subprocess.run([sys.executable, str(MAKE_EXPORT), "--help"],
+                             capture_output=True, text=True)
+        self.assertIn("--lane-receipt", res.stdout)
 
 if __name__ == "__main__":
     unittest.main()

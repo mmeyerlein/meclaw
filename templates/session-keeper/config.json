@@ -36,7 +36,7 @@
         },
         {
           "route": "close",
-          "because": "a finished session carrying hop.session_id, hop.channel and hop.audience_set -- the id, the room and the round it was spoken to"
+          "because": "a finished session carrying hop.session_id, hop.channel and hop.audience_set -- the id, the room and the round it was spoken to. Two senders, one shape: the night sweep, and since GH #940 (ADR-0002 E8) a turn whose round differs from the open generation of its channel -- that generation is sealed and handed over under the round it was OPENED in, and the turn runs on in a new generation of its own round. A close of the second kind leaves the turn's chain, so the parent's close edge is a door (restore_ttl); its context is stripped of the turn's round and participants on the way out, like the night's, which never had them"
         },
         {
           "route": "reject",
@@ -97,7 +97,8 @@
               "channel": "hop.channel",
               "keeper_session": "hop.session_id",
               "keeper_body": "hop.keeper_body",
-              "turn_id": "hop.turn_id"
+              "turn_id": "hop.turn_id",
+              "keeper_audience": "hop.audience_set"
             }
           }
         },
@@ -161,6 +162,31 @@
               "port_table",
               "ses_phase",
               "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./stamp",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'close'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin",
+              "asker",
+              "audience_now",
+              "audience_set",
+              "chat_id",
+              "counterpart",
+              "counterpart_name",
+              "turn_id",
+              "user_id"
             ]
           }
         },

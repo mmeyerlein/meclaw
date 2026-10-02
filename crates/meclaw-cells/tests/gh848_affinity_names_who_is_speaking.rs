@@ -13,17 +13,22 @@
 //! phase per run, with the store's answers handed back the way the hive's internal
 //! `./store -> ./brief` edge hands them back:
 //!
-//! 1. a known entity -> `who.known true`, `name` = its `display_name`, `ref` = the
-//!    first 8 hex characters of `sha256(identity)`;
+//! 1. a known entity whose name the round was released -> `who.known true`,
+//!    `name` = its `display_name`, `ref` = the first 8 hex characters of
+//!    `sha256(identity)`;
 //! 2. an unknown subject `peer:colA/org1/jonas/-` -> `who.known false`, the same
-//!    function for `ref`, `name` = the last non-empty segment (`jonas`);
+//!    function for `ref`, and NO `name`: nothing was released, so nothing names
+//!    it -- not the last segment, not an edge-stamped `counterpart_name`
+//!    (PP-S3-10, the coordinator's ruling: `who.name` follows the disclosure;
+//!    `gh946_who_names_only_what_the_disclosure_releases.rs` pins the rule);
 //! 3. two requests from two channels (and with another prefix on the subject) ->
 //!    the same `ref`: a pure function of the identity, org-wide without any
 //!    coordination between affinity instances;
 //! 4. another identity in the own store with the same 8-character reference ->
 //!    12 characters, for both of them;
 //! 5. `audience_not_subset` -> a refusal WITH `who`, and without any slot content:
-//!    `who` carries exactly four keys, and nothing of the record rides along;
+//!    `who` carries exactly three keys -- no `name`, the refusal comes before the
+//!    cut (PP-S3-10) -- and nothing of the record rides along;
 //!    `unknown_subject` (a release, no active row) names the subject the same way;
 //!    but a subject OUTSIDE the round gets a refusal WITHOUT `who` -- whether the
 //!    record knows it or not, so the refusal is word for word the one it was before
@@ -253,7 +258,7 @@ fn a_known_entity_is_named_by_its_display_name() {
 }
 
 #[test]
-fn an_unknown_subject_gets_the_same_function_and_its_last_segment() {
+fn an_unknown_subject_gets_the_same_function_and_no_name() {
     let store = Store {
         entities: vec![],
         disclosure: vec![],
@@ -268,11 +273,14 @@ fn an_unknown_subject_gets_the_same_function_and_its_last_segment() {
         &store,
     );
     assert_reads_only(&all);
+    // Because of PP-S3-10 (the coordinator's ruling: `who.name` follows the
+    // disclosure): the last segment was a name nobody released. A contract
+    // change of GH #848, not a test patch -- the reference stays, the name goes.
     assert_eq!(
         ans["who"],
-        json!({"ref": &sha_hex("colA/org1/jonas/-")[..8], "name": "jonas",
+        json!({"ref": &sha_hex("colA/org1/jonas/-")[..8],
                "identity": "colA/org1/jonas/-", "known": false}),
-        "a stranger has a reference before affinity ever stored them: {ans}"
+        "a stranger has a reference before affinity ever stored them, and no name: {ans}"
     );
     assert!(
         ans.get("system").is_none(),
@@ -282,7 +290,11 @@ fn an_unknown_subject_gets_the_same_function_and_its_last_segment() {
 }
 
 #[test]
-fn a_stamped_counterpart_name_wins_over_the_segment_and_is_capped() {
+fn a_stamped_counterpart_name_never_names_the_subject() {
+    // Because of PP-S3-10 (the coordinator's ruling: `who.name` follows the
+    // disclosure): the edge-stamped `counterpart_name` is no longer read at all.
+    // A contract change of GH #848, not a test patch -- it used to win over the
+    // last segment, capped at 64; now it stands nowhere in the answer.
     let store = Store {
         entities: vec![],
         disclosure: vec![],
@@ -297,11 +309,15 @@ fn a_stamped_counterpart_name_wins_over_the_segment_and_is_capped() {
         ),
         &store,
     );
-    assert_eq!(
-        ans["who"]["name"],
-        json!("J".repeat(64)),
-        "capped at 64: {ans}"
+    assert!(
+        ans["who"].is_object(),
+        "the subject is still named by ref: {ans}"
     );
+    assert!(
+        ans["who"].get("name").is_none(),
+        "a stamped name is no released name: {ans}"
+    );
+    assert!(!ans.to_string().contains("JJJJ"), "{ans}");
 }
 
 #[test]
@@ -443,12 +459,16 @@ fn a_refusal_for_the_round_names_the_subject_and_nothing_else() {
     let who = ans["who"].as_object().expect("a who block on the refusal");
     let mut keys: Vec<&str> = who.keys().map(String::as_str).collect();
     keys.sort_unstable();
+    // Because of PP-S3-10 (the coordinator's ruling: `who.name` follows the
+    // disclosure): `audience_not_subset` comes before the cut, so nothing was
+    // released to this round and the record's `display_name` no longer rides.
+    // A contract change of GH #848, not a test patch.
     assert_eq!(
         keys,
-        ["identity", "known", "name", "ref"],
-        "four keys, no slot: {ans}"
+        ["identity", "known", "ref"],
+        "three keys, no name, no slot: {ans}"
     );
-    assert_eq!(ans["who"]["name"], json!("Jonas Berg"));
+    assert!(!ans.to_string().contains("Jonas Berg"), "{ans}");
     assert!(
         ans.get("system").is_none(),
         "no slot content on a refusal: {ans}"
@@ -573,15 +593,20 @@ fn an_unknown_subject_refusal_names_the_subject_in_the_round() {
     );
     assert_reads_only(&all);
     assert_eq!(audit_reason(&all), "unknown_subject");
+    // Because of PP-S3-10 (the coordinator's ruling: `who.name` follows the
+    // disclosure): `unknown_subject` is a refusal before the cut, so it names
+    // the subject by reference only. A contract change of GH #848, not a test
+    // patch -- the last segment no longer stands in as a name.
     assert_eq!(
         ans["who"],
-        json!({"ref": &sha_hex("colA/org1/jonas/-")[..8], "name": "jonas",
+        json!({"ref": &sha_hex("colA/org1/jonas/-")[..8],
                "identity": "colA/org1/jonas/-", "known": false}),
         "{ans}"
     );
     assert!(ans.get("system").is_none(), "{ans}");
     assert_eq!(ans["messages"][0]["text"], DENIED);
-    // Known under another prefix, in the round: the record's name.
+    // Known under another prefix, in the round: `known`, but no name -- the
+    // record's `display_name` would ride past a disclosure never cut (PP-S3-10).
     let alias = Store {
         entities: vec![entity("member:colA/org1/jonas/-", "Jonas Berg")],
         disclosure: shared_to_everyone(),
@@ -597,7 +622,8 @@ fn an_unknown_subject_refusal_names_the_subject_in_the_round() {
     );
     assert_eq!(audit_reason(&all), "unknown_subject");
     assert_eq!(ans["who"]["known"], json!(true), "{ans}");
-    assert_eq!(ans["who"]["name"], json!("Jonas Berg"), "{ans}");
+    assert!(ans["who"].get("name").is_none(), "{ans}");
+    assert!(!ans.to_string().contains("Jonas Berg"), "{ans}");
 }
 
 #[test]

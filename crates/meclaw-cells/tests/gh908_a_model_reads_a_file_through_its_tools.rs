@@ -1,12 +1,12 @@
 //! GH #908 -- a model reads a file through its tools, and only the core writes.
 //!
 //! B1 built the file space as lanes (`in_read`, `in_write`, `in_ws`); #908 puts
-//! it on the models' menus. The space grew `./schemas` (the menu, 28 `file_*`
+//! it on the models' menus. The space grew `./schemas` (the menu, 30 `file_*`
 //! declarations) and `./tools` (a tool call in, a request under `caller`
 //! 'tools' out, the one answer back as a `tool_result` under the call id); the
 //! member grew a `./file-space` node and four edges to its assistants; every surface
 //! of the assistant level carries a `file_*` call up with `context.tool_caller`
-//! naming it; and the two voices declare the ten READ tools while the core
+//! naming it; and the two voices declare the twelve READ tools while the core
 //! declares `*`. `./tools` refuses a write or workspace op from any surface
 //! but the core (`read_only`).
 //!
@@ -17,7 +17,7 @@
 //! `message_log`, the answers that leave the space.
 //!
 //! 1. **A voice reads** (`a_talky_reads_a_seeded_file_through_its_tools`). The
-//!    first request of a talky turn offers the ten read tools and none of the
+//!    first request of a talky turn offers the twelve read tools and none of the
 //!    eighteen write and workspace tools; the stub calls `file_summary` and
 //!    `file_read` on the address of a file seeded beforehand, and the NEXT
 //!    request carries both results under their call ids, each naming the
@@ -41,7 +41,7 @@
 //!
 //! THE BOOT FORM. Runs 1 and 2 boot the root as the member reduced to what this
 //! road touches: the shipped assistant level as a node named `assistants`, and
-//! the member's own `./file-space` node beside it (the `file-space@1.1.1` ref,
+//! the member's own `./file-space` node beside it (the `file-space@1.2.0` ref,
 //! resolved). The node is named `assistants` so the member's four `./file-space`
 //! edges can be read off `templates/member/config.json` and drawn VERBATIM --
 //! nothing in them is retyped or re-pointed. What this leaves out is the
@@ -127,9 +127,9 @@ const NEW: &str = "south";
 const SEED_ID: &str = "seed-908";
 const HISTORY_ID: &str = "history-908";
 
-/// The ten tools a voice declares (`templates/assistant/talky` and
+/// The twelve tools a voice declares (`templates/assistant/talky` and
 /// `talky-chat`, `collector/assemble.tools`), in the plan's words (L § 5).
-const READ_TOOLS: [&str; 10] = [
+const READ_TOOLS: [&str; 12] = [
     "file_info",
     "file_read",
     "file_search",
@@ -140,6 +140,8 @@ const READ_TOOLS: [&str; 10] = [
     "file_diff",
     "file_list",
     "file_find",
+    "file_outline",
+    "file_links",
 ];
 
 // run 1: the talky reads
@@ -202,7 +204,7 @@ fn write_json(p: &std::path::Path, v: &Value) {
 /// of `gh889_a_turn_runs_collector_curator_brain.rs`): a ref marker is replaced
 /// by the referenced template's tree and its `override_params` are applied to
 /// the cells they name, which is what the mutation door does to a staged tree.
-/// That is how the voices arrive with the ten read tools on their collectors.
+/// That is how the voices arrive with the twelve read tools on their collectors.
 fn copy_resolved(src: &std::path::Path, dst: &std::path::Path, depth: usize) {
     assert!(
         depth < 8,
@@ -489,6 +491,9 @@ fn member_file_edges() -> Vec<Value> {
         .unwrap_or_default()
         .into_iter()
         .filter(|e| e["from"] == json!("./file-space") || e["to"] == json!("./file-space"))
+        // The graph space's index road (GH #945: `source_changed`, `pull` and
+        // the `gs:` answer) is not the tools' road; its lock is gh945's.
+        .filter(|e| e["from"] != json!("./graph-space") && e["to"] != json!("./graph-space"))
         // The document intake of GH #907 (`./firewall -> ./file-space` on
         // `pass` with a file, `./file-space -> ./assistants` on `turn`) is the
         // turn's road, not the tools'; its lock is gh907's seam lock.
@@ -1058,8 +1063,8 @@ fn every_file_tool() -> BTreeSet<String> {
     }
     assert_eq!(
         names.len(),
-        28,
-        "the space declares 28 file tools (10 read, 11 write, 7 workspace): {names:?}"
+        30,
+        "the space declares 30 file tools (12 read, 11 write, 7 workspace): {names:?}"
     );
     names
 }
@@ -1142,7 +1147,7 @@ async fn a_talky_reads_a_seeded_file_through_its_tools() {
     let reqs = voice.recorded_requests().await;
     h.shutdown().await;
 
-    // 1. The menu: the ten read tools, no write or workspace tool.
+    // 1. The menu: the twelve read tools, no write or workspace tool.
     assert_eq!(
         reqs.len(),
         2,

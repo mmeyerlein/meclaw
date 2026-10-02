@@ -266,7 +266,8 @@
               "session_id": "hop.session_id",
               "channel": "hop.channel",
               "audience_set": "hop.audience_set"
-            }
+            },
+            "restore_ttl": true
           }
         },
         {

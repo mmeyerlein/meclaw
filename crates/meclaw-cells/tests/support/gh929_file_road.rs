@@ -577,7 +577,9 @@ fn env_names(dir: &std::path::Path, out: &mut BTreeSet<String>) {
 fn build_tree(root: &std::path::Path, base: &str) {
     write_json(&root.join("main/config.json"), &main_config());
     copy_template(&repo("templates/member"), &root.join("main/person"));
-    for holder in ["access", "affinity", "memory-hive"] {
+    // `graph-space` joined the member with GH #945: its index hears the
+    // space's `source_changed`, never this road's turn.
+    for holder in ["access", "affinity", "memory-hive", "graph-space"] {
         write_json(
             &root.join(format!("main/person/{holder}/config.json")),
             &double(INERT, "Inert double for a holder this road never reaches."),

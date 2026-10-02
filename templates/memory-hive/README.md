@@ -1,4 +1,4 @@
-# `memory-hive@3.7.0`
+# `memory-hive@3.7.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -923,7 +923,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.7.0` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.7.1` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1330,7 +1330,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.3.2",
+{"add_nodes": [{"name": "alex", "template": "member@2.4.0",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

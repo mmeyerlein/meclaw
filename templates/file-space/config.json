@@ -7,7 +7,7 @@
     "use_when": "One per knowledge space whose files have to be read by line, versioned and changed by several writers.",
     "not_in_scope": "No rights (a later wave); the disk projection lives in the child hive `./projection`, never in a cell of the space; no tool for `raw`, `ws_tree` or a projection op. The address of a file is its id, never the store it lives in.",
     "contract_in": "Lanes on `hop.route`: in_read, in_write, in_ws (the projection operations `ws_materialize`, `ws_exec`, `ws_adopt`, `ws_export_git`, `ws_import_git`, `ws_push`, `ws_pull` go to the child hive `./projection`, every other one to `./ws`), in_model (a model package for `./summarizer`, unless `hop.subscriber` names another cell); in_schemas and in_tool, the tool menu and a tool call (`./schemas`, `./tools`); in_ingest (a turn carrying a document as a blob reference in `attachments`, GH #907).",
-    "contract_out": "Routes on `hop.route`, leaving through the hive path: answer, model_refused (a refused `in_model` push), derived (`{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller`); tool_schemas and tool_result, their answers; turn (the turn of an `in_ingest` without its `attachments`, the file's address line after the caption)."
+    "contract_out": "Routes on `hop.route`, leaving through the hive path: answer, model_refused (a refused `in_model` push), derived (`{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller`); source_changed (the node source contract, GH #944: `{source, version, path, fmt, parser, mark, nodes, links, tomb: false}` once per head move of a file, `{source, path, tomb: true}` once per removed file; always leaves, whatever the `caller`); tool_schemas and tool_result, their answers; turn (the turn of an `in_ingest` without its `attachments`, the file's address line after the caption)."
   },
   "params": {
     "ports": [],
@@ -54,6 +54,10 @@
         {
           "route": "derived",
           "because": "`{file, version, ok, oneline}` once per `in_derive` with `notify` '1', after the rows are written or the job stopped; `version` is the first 12 hex digits. Leaves the hive only with an empty `caller`"
+        },
+        {
+          "route": "source_changed",
+          "because": "the node source contract (GH #944): once per head move of a file (birth, write, workspace commit) `{source: 'fh-<12hex>', version: '<v12>', path, fmt, parser, mark, nodes, links, tomb: false}` after its node rows are written; once per removed file `{source, path, tomb: true}` after its node rows are gone. No event for a version that is no longer head when it is derived. The head carries no `caller`: it leaves the hive whoever wrote"
         },
         {
           "route": "tool_schemas",
@@ -326,6 +330,45 @@
           "from": "./derive",
           "to": ".",
           "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'derived') && (!has(hop.caller) || hop.caller == '')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_job",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./derive",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'source_changed'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_job",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./write",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'source_changed'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_job",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./ws",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'source_changed'",
           "modifier": {
             "delete_context": [
               "cur_origin",

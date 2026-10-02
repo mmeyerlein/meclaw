@@ -79,6 +79,37 @@
         "dim": "int",
         "model": "text"
       },
+      "nodes": {
+        "file": "text",
+        "version": "text",
+        "anchor": "text",
+        "kind": "text",
+        "parent": "text",
+        "unit": "text",
+        "from_pos": "int",
+        "to_pos": "int",
+        "oneline": "text",
+        "parser": "text"
+      },
+      "links": {
+        "file": "text",
+        "version": "text",
+        "from_anchor": "text",
+        "kind": "text",
+        "target_name": "text",
+        "pos": "int",
+        "alias": "text"
+      },
+      "node_runs": {
+        "file": "text",
+        "version": "text",
+        "fmt": "text",
+        "parser": "text",
+        "mark": "text",
+        "nodes": "int",
+        "links": "int",
+        "fvec": "text"
+      },
       "ws": {
         "ws": "text",
         "name": "text",
@@ -112,6 +143,26 @@
         "phase": "text",
         "body": "text",
         "at": "text"
+      }
+    },
+    "indexes": {
+      "nodes_by_file": {
+        "table": "nodes",
+        "on": [
+          "file"
+        ]
+      },
+      "links_by_file": {
+        "table": "links",
+        "on": [
+          "file"
+        ]
+      },
+      "node_runs_by_file": {
+        "table": "node_runs",
+        "on": [
+          "file"
+        ]
       }
     },
     "write_surface": "internal",
@@ -168,7 +219,7 @@
     ]
   },
   "description": {
-    "purpose": "The one store of a file space. A row belongs to the file its `file` column names: `files` (one row per file: path, head, lock, tomb), `blocks` (content-addressed pieces, one row per file and hash -- the same hash in two files is two rows), `versions` (the ordered block list of one version), `line` (the main line, append-only), `snaps`, `derived` (text of non-text files), `summaries`, `embeddings`, `ws`, `ws_files`, `commits` and `pending` (working values of a cell between two store phases). Every select on a table with `file` names the file in its `where`; only `files` is read across files (path lookup, `list`, `find`).",
+    "purpose": "The one store of a file space. A row belongs to the file its `file` column names: `files` (one row per file: path, head, lock, tomb), `blocks` (content-addressed pieces, one row per file and hash -- the same hash in two files is two rows), `versions` (the ordered block list of one version), `line` (the main line, append-only), `snaps`, `derived` (text of non-text files), `summaries`, `embeddings`, `nodes`, `links` and `node_runs` (the items, outgoing edges and extraction run of a file's head only, GH #944), `ws`, `ws_files`, `commits` and `pending` (working values of a cell between two store phases). Every select on a table with `file` names the file in its `where`; only `files` (path lookup, `list`, `find`) and `node_runs` (the file vectors `near` compares) are read across files.",
     "use_when": "Inside a file space only; the hive's cells are its only writers (`write_surface` internal).",
     "not_in_scope": "No policy of its own: every rule of the space lives in the cell that writes.",
     "emits_meaning": "One answer per message, a bundle answer for more than one operation.",

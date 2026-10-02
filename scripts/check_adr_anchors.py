@@ -116,6 +116,7 @@ EXTERNAL_ANCHORS: dict[str, tuple[tuple[str, ...], str, str]] = {
         (
             "test:the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing",
             "test:the_edge_pinned_audience_set_is_a_round_in_both_directions",
+            "test:a_round_change_ends_the_generation",
         ),
         "cf838e3e506ef5b175b7f7f119ff016cd5acdf56b1544c1f2a9d57216532d862",
         "the spec owner's edit landed as bc270f4d (Nachtrag 2026-08-20, E7 "

@@ -15,7 +15,7 @@
       {
         "from": "./telegram",
         "to": ".",
-        "condition": "!has(hop.error_code)",
+        "condition": "!has(hop.error_code) && has(hop.chat_id) && (string(hop.chat_id) == '4711' || string(hop.chat_id).startsWith('4711:'))",
         "modifier": {
           "set_hop": {
             "route": "'turn'"

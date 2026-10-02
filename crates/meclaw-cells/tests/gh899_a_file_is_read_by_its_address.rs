@@ -110,11 +110,37 @@ fn the_space_is_sealed_its_store_cold_and_an_unknown_op_never_reaches_it() {
         "an unknown op wakes no store: {:?}",
         s.store_ops
     );
-    let got = s.read("read", &format!("{A}#intro"), json!({}));
-    assert_eq!(got["error"]["code"], "anchor_unsupported");
+    // Only `read` takes an anchor (GH #944); any other op refuses one before
+    // a store is asked.
+    let got = s.read("info", &format!("{A}#intro"), json!({}));
+    assert_eq!(
+        got["error"]["code"], "anchor_unsupported",
+        "an anchor on a whole-file op is refused at the door"
+    );
     let got = s.read("read", "not an address", json!({}));
     assert_eq!(got["error"]["code"], "bad_address");
     assert!(s.store_ops.is_empty());
+
+    // `read` of `#<anchor>` reads the node (GH #944): `#intro` is no anchor
+    // of the file -- its section is `sec:intro` -- so the answer names it as
+    // a candidate; the anchor itself reads the section's lines.
+    s.seed_text(A, "/notes/n.md", &["# Intro\n\nhello\n"], &[]);
+    let got = s.read("read", &format!("{A}#intro"), json!({}));
+    assert_eq!(
+        got["error"]["code"], "unknown_anchor",
+        "an anchor the file does not have is unknown, not unsupported: {got}"
+    );
+    assert_eq!(
+        got["error"]["candidates"],
+        json!(["sec:intro"]),
+        "the anchors of the same name are the candidates"
+    );
+    let got = s.read("read", &format!("{A}#sec:intro"), json!({}));
+    assert_eq!(
+        lines(&got),
+        formatted(&["# Intro", "", "hello"], 1),
+        "a node reads as its lines, in the form of a range read: {got}"
+    );
     clean(&s);
 }
 

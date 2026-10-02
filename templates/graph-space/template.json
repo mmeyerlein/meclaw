@@ -1,0 +1,24 @@
+{
+  "name": "graph-space",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The graph of one knowledge space ([#945](https://github.com/mmeyerlein/meclaw/issues/945)): every node a source of the space holds (a file's functions, classes, sections; address `<source>#<anchor>`) and every edge between them, resolved once and kept current, so that a question across files -- who calls this, what depends on that file, how does this document reach that function -- is answered from one store and wakes no file. A source announces each head move on `source_changed`; the hive pulls the new version with a constant number of requests (`outline`, `links`, `near`), writes, then resolves: python imports and calls, rust `use`, markdown links. An edge whose target disappeared turns `broken` with the time it broke and is counted in every answer that touches it; a neighbour by meaning is an `inferred` edge, never an extracted one.",
+    "use_when": "Beside a file space, one per knowledge space: draw `source_changed` (restoring the TTL -- it is a door) and the space's answers to `pull` into it, and ask on `in_graph`.",
+    "not_in_scope": "No model, no embedding request, no network; no content of a source; no tree-sitter (the extractors are the source's); no event to a consumer when an edge breaks (a librarian takes that); no graph across knowledge spaces.",
+    "examples": [
+      "PORTS - every endpoint is the HIVE path (`params.ports` is empty and therefore sealed). Entry on `hop.route`: source_changed, in_pulled, in_graph. Exit: pull, answer.",
+      "QUESTION - body `{op: 'callers', args: {addr: 'fh-0123456789ab#def:f', limit: 20}}` on `in_graph` with hop `op`, `op_id` answers `{ok, op, op_id, addr, items: [{addr}], next, broken}`; `next` non-empty means another page under `args.cursor`.",
+      "WIRING - in a member: `./file-space -> ./graph-space` on `source_changed` with `restore_ttl` (a door: an index job in a graph space), `./graph-space -> ./file-space` on `pull` restamped to `in_read`, and `./file-space -> ./graph-space` on `answer` with `hop.op_id.startsWith('gs:')` restamped to `in_pulled`."
+    ]
+  },
+  "tags": [
+    "graph-space",
+    "graph",
+    "nodes",
+    "edges",
+    "knowledge-space",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

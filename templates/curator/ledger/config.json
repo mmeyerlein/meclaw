@@ -83,6 +83,15 @@
         "audience_set": "text"
       }
     },
+    "indexes": {
+      "state_key": {
+        "table": "state",
+        "on": [
+          "key"
+        ],
+        "unique": true
+      }
+    },
     "write_surface": "internal",
     "query_timeout_ms": 5000
   },

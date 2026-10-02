@@ -818,7 +818,7 @@ fn build_tree(root: &std::path::Path, up: &Upstream) {
     write(root, "main/config.json", &main_config());
     copy_template(&repo("templates/member"), &root.join("main/person"));
 
-    for holder in ["access", "affinity", "memory-hive"] {
+    for holder in ["access", "affinity", "memory-hive", "graph-space"] {
         write(
             root,
             &format!("main/person/{holder}/config.json"),

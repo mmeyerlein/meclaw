@@ -198,10 +198,14 @@ USAGE
     gate_plan.py --mode {strand,integration,release,ci}
                  (--files-from FILE | --files PATH...) [--repo DIR]
                  [--format {json,tsv}]
-    gate_plan.py --print scenario|ignored|persona-sources|env-stations|lane-local
+    gate_plan.py --print scenario|ignored|persona-sources|env-stations|lane-local|lane-env
                  [--repo DIR]
 
 `--files-from -` reads paths from stdin, one per line.
+
+On a build host (`gate.sh --lane`, GH #942) every station runs, the env
+stations against the secret-free `.env` of `--print lane-env`; `--print
+lane-local`, what a lane leaves to the owner's machine, is empty.
 
 JSON:  {"mode", "classes": [...], "crates": [...], "stations": [...]}
        A station carries one `cmd` (argv list) or several `cmds`; a command
@@ -298,22 +302,59 @@ def scenario_for(repo=None):
 
 # The stations whose runner reads `<repo>/.env` (the scenario runners copy
 # keys out of it into every colony they boot; the guide harness runs the
-# scenario engine). A build host never gets a `.env` -- it stays on the
-# owner's machine -- so `scripts/gate.sh --lane` reports these as
-# `SKIP no-env (lane)` and `scripts/strand.sh gate --host` runs them locally
-# afterwards (GH #934). Published with `--print env-stations`.
+# scenario engine). A build host never gets the owner's `.env` -- it gets the
+# secret-free one below (GH #942). Published with `--print env-stations`.
 ENV_STATIONS = ("scenarios:memory", "scenarios:builder", "guide-selftest")
 
-# Everything a lane runs HERE afterwards, with the reason it cannot run there
-# (OR-S3-96): the stations above (no `.env`), `display-lab` (its runline tests
-# call `node`, and a build host has none) and `export-audit` (it diffs against
-# the `github-main` ref, which only the owner's clone carries). One list, one
-# mechanism: `scripts/gate.sh --lane` reports each as `SKIP <reason> (lane)`,
-# and `scripts/strand.sh gate --host` runs exactly those here, handing the
-# lane's receipt over so the audit grades the whole run. Published with
+# What a lane leaves to the owner's machine: NOTHING (GH #942). It used to
+# list the stations above (no `.env` on a host), `display-lab` (no `node`)
+# and `export-audit` (no `github-main` ref), and `strand.sh gate --host` ran
+# them here after the remote run -- the scenario suites on this machine's
+# binary, the release audit with a cargo build of its own. The owner's
+# machine runs live and lab colonies, and a lab colony died at load 15 while
+# strands built beside it (2026-10-02). So a lane now runs every station:
+# the env stations get the `.env` below, `display-lab` finds `node` on the
+# host (or is RED there), the kit pushes `github-main` along. The mechanism
+# stays -- `gate.sh --lane` reports a listed station as `SKIP <reason>
+# (lane)` and the kit runs it here -- with an empty list. Published with
 # `--print lane-local` (`<name>\t<reason>` per line).
-LANE_LOCAL = {name: "no-env" for name in ENV_STATIONS}
-LANE_LOCAL.update({"display-lab": "no-node", "export-audit": "no-ref"})
+LANE_LOCAL = {}
+
+# The `.env` of a lane: the names the suites read out of `.env`, each with a
+# constant placeholder, and not one secret VALUE -- a build host is another
+# machine, and the suites run only their keyless class `none` there
+# (`gate.sh --lane` refuses a `--with`). Measured which names the three env
+# stations really read (GH #942, L-0): `run_scenarios.py` copies the model
+# names, the embedding model and dimension, the reasoning levels below and the
+# provider key; `run_builder_scenarios.py` resolves `${MODEL_BUILDER}` and
+# `${OPENROUTER_API_KEY}` in its cases (and declares every other bare name of
+# the library empty on its own); the guide self-test reads no `.env` at all.
+# The provider key NAME stands here because a colony with an `llm` cell
+# resolves it at boot, in class `none` too: without it a lane ended
+# `scenarios:memory` with 38 of 46 cases on `EnvVarMissing` (GH #942). Its
+# value is the constant `lane-stub`, never a credential: a keyless case never
+# calls a provider (its embedder points at a dead loopback port, its judge
+# switch is off), and a paid class never runs on a lane. This table is the
+# contract -- a suite that needs another name adds it HERE with a constant,
+# and no value ever comes from a file: `--print lane-env` prints the
+# constants. Reasoning `low` and dimension 8: harmless values a config parser
+# accepts, the same on every host.
+LANE_ENV = {
+    "MODEL_EXTRACTOR": "lane-stub",
+    "MODEL_DIALECTIC": "lane-stub",
+    "MODEL_DREAMER": "lane-stub",
+    "MODEL_JUDGE": "lane-stub",
+    "MODEL_CLOSER": "lane-stub",
+    "MODEL_BUILDER": "lane-stub",
+    "MEMORY_EMBED_MODEL": "lane-stub",
+    "MEMORY_EMBED_DIM": "8",
+    "MEMORY_REASONING_EXTRACT": "low",
+    "MEMORY_REASONING_DIALECTIC": "low",
+    "MEMORY_REASONING_DREAM": "low",
+    "MEMORY_REASONING_JUDGE": "low",
+    "MEMORY_REASONING_CLOSE": "low",
+    "OPENROUTER_API_KEY": "lane-stub",
+}
 
 # Run artefacts of the two suites. They are committed, they change on every
 # run, and they never justify a station -- so they carry no diff class at all.
@@ -1662,7 +1703,7 @@ def main(argv=None):
                     help="tree the test sources are read from (default: this repo)")
     ap.add_argument("--format", choices=("json", "tsv"), default="tsv")
     ap.add_argument("--print", dest="what", choices=("scenario", "ignored", "persona-sources",
-                                                    "env-stations", "lane-local"),
+                                                    "env-stations", "lane-local", "lane-env"),
                     help="print a constant and exit (`ignored`, `persona-sources`: "
                          "one path per line; `persona-sources` reads `--repo`)")
     args = ap.parse_args(argv)
@@ -1681,6 +1722,12 @@ def main(argv=None):
     if args.what == "lane-local":
         for name, why in LANE_LOCAL.items():
             print("%s\t%s" % (name, why))
+        return 0
+
+    if args.what == "lane-env":
+        # `KEY=value` per line: the `.env` the kit writes into a lane's tree.
+        for name, value in LANE_ENV.items():
+            print("%s=%s" % (name, value))
         return 0
 
     if args.what == "ignored":

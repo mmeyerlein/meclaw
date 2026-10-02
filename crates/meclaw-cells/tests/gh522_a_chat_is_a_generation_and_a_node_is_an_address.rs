@@ -87,7 +87,7 @@ fn grow(params: Value) -> Vec<Value> {
 fn channel_declaration() -> Value {
     grow(json!({"scope": MEMBER, "level": "channel", "name": NODE,
                 "template": "telegram-connector@2.1.0", "assistant": "egon",
-                "ctx": {"member_person": "marcus"}}))[0]
+                "bind_chat": CHAT_A, "ctx": {"member_person": "marcus"}}))[0]
         .clone()
 }
 
@@ -98,11 +98,19 @@ fn edges(decl: &Value) -> Vec<Value> {
         .clone()
 }
 
-/// The edge that raises a turn: `./<node> -> .` on `!has(hop.error_code)`.
+/// The edge that raises a turn: `./<node> -> .` on a condition that starts
+/// with `!has(hop.error_code)` — since GH #940 it goes on to name the bound
+/// chat.
 fn ingress(decl: &Value) -> Value {
     edges(decl)
         .into_iter()
-        .find(|e| e["condition"] == json!("!has(hop.error_code)"))
+        .find(|e| {
+            e["from"] == json!(format!("./{NODE}"))
+                && e["to"] == json!(".")
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.starts_with("!has(hop.error_code)"))
+        })
         .expect("the ingress edge")
 }
 
@@ -242,6 +250,8 @@ fn a_screen_and_an_app_carry_the_same_word_in_both() {
 /// keeper could not tell the two conversations apart at all.
 #[test]
 fn two_chats_of_one_connector_open_two_generations() {
+    // Since GH #940 a bound channel takes ONE chat; a Slack channel binding also
+    // takes its threads, which is where two chats of one node still meet.
     let ingress = ingress(&channel_declaration());
     let a = traverse(&ingress, &inbound(CHAT_A));
     let b = traverse(&ingress, &inbound(CHAT_B));
@@ -358,7 +368,7 @@ fn the_answer_reaches_the_connector_the_turn_came_from() {
     // A SECOND channel in the same container, and its way back must stay shut.
     let other = grow(json!({"scope": MEMBER, "level": "channel", "name": "slack",
                             "template": "telegram-connector@2.1.0", "assistant": "egon",
-                            "ctx": {"member_person": "marcus"}}))[0]
+                            "bind_chat": CHAT_B, "ctx": {"member_person": "marcus"}}))[0]
         .clone();
     let others_way_back = edges(&other)
         .into_iter()

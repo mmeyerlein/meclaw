@@ -554,7 +554,13 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
     // `access` joined them with member@1.5.0 (GH #560): a REF, and this tree
     // has no registry to resolve one, so it is doubled like the holders this
     // round never reaches.
-    for holder in ["access", "affinity", "memory-hive", "file-space"] {
+    for holder in [
+        "access",
+        "affinity",
+        "memory-hive",
+        "file-space",
+        "graph-space",
+    ] {
         write(
             root,
             &format!("main/person/{holder}/config.json"),

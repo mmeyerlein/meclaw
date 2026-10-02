@@ -1,4 +1,4 @@
-# `file-space@1.1.1`
+# `file-space@1.2.0`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -11,7 +11,7 @@ The files of one knowledge space, each a logical file hive under one address, ov
 | `…@<hex prefix>` | a version: 4 to 64 hex digits, resolved within the file; several matches → `version_ambiguous` with `candidates` |
 | `…@ws:<name>` | the file as an open workspace sees it (hop `ws` does the same) |
 | `…@snap:<name>` | a named snapshot of the file |
-| `…#…` | reserved for anchors → `anchor_unsupported` |
+| `…#<anchor>` | a node of the file (see [Nodes and links](#nodes-and-links)); `read` reads its span, every other op answers `anchor_unsupported` |
 
 A version is the sha256 of the raw bytes; every answer names it by its first 12 hex digits. **No answer field carries the store, the space or the hive path**: moving a file's rows into another store changes no address. The curator's block kind `ref` stays reserved (see [`curator`](../curator/README.md), `blocks.kind`), its body `{"type":"ref","ref":"fh-…@<v12>","text":"<one line>"}`; a pin into a curator goes through `in_pin` with `pins[]`, each `{text, source, until?}`. Nothing in 1.0.0 writes a `ref` or a pin.
 
@@ -34,6 +34,7 @@ A version is the sha256 of the raw bytes; every answer names it by its first 12 
 | `answer` | exactly one per request; hop `op`, `op_id`, `caller` unchanged |
 | `model_refused` | a refused `in_model` push (the curator's pattern) |
 | `derived` | `{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller` |
+| `source_changed` | the node source contract ([Nodes and links](#nodes-and-links)): once per head move and once per removed file, whatever the `caller`; the head carries no `caller` |
 | `tool_schemas` | `{schemas[], unknown[], sidecar[]}` for `in_schemas`, the shape of `memory-hive` |
 | `tool_result` | one turn under the call's id for `in_tool`: the answer as JSON text without `op_id` and `caller`; `hop.error_code` on a refusal |
 | `turn` | the turn of an `in_ingest`, once, without `attachments`: one text turn after the caption, `[file fh-<id>@<v12> "<name>", <n> pages: <oneline>]` (the page count only for a PDF, counted from its `derived` parts), or `[file "<name>" could not be stored: <code>]`; caption and hop keys unchanged; the turn leaves on what its last try left of the TTL (`./ingest -> ./extract` and `./ingest -> ./write` restore it once per try), and the door of the hive that owns the turn restores it again (GH #929) |
@@ -76,12 +77,35 @@ A line reads as `<n>:<h4>|<text>`, `h4` the first 4 hex digits of the sha256 of 
 | `derived` | `file`, `version`, `kind`, `part`, `body` | the text of a non-text file (`kind` `text`, `part` = page from 1) |
 | `summaries` | `file`, `version`, `level`, `text`, `model`, `at` | `level` `oneline`/`short`; the newest per level counts |
 | `embeddings` | `file`, `version`, `section`, `from_line`, `to_line`, `blob`, `dim`, `model` | the `memory-hive` form |
+| `nodes` | `file`, `version`, `anchor`, `kind`, `parent`, `unit`, `from_pos`, `to_pos`, `oneline`, `parser` | the items of the head only (`version` full); replaced in one bundle per head move, dropped with the tomb |
+| `links` | `file`, `version`, `from_anchor`, `kind`, `target_name`, `pos` | the outgoing edges of the head only, as written in it |
+| `node_runs` | `file`, `version`, `fmt`, `parser`, `mark`, `nodes`, `links`, `fvec` | one row per head: how it was extracted, and `fvec`, the bitwise majority of its section bits (base64) that `near` compares |
 | `ws` | `ws`, `name`, `root`, `base_seq`, `state`, `opened_at`, `closed_at`, `commit` | `state` `open`/`committed`/`discarded`; `root` a path prefix |
 | `ws_files` | `ws`, `file`, `base`, `working`, `state`, `at` | written on first touch (copy-on-write); `state` `touched`/`conflict`/`created`/`removed` |
 | `commits` | `commit`, `ws`, `state`, `plan`, `note`, `at`, `deadline` | `plan` JSON `[{file, from, to, kind?}]` (`from` '' = born in the workspace, `to` '' = removed); `state` `prepared`/`committed`/`aborted` |
 | `pending` | `op_id`, `cell`, `phase`, `body`, `at` | a cell's working values between two store phases, key (`op_id`, `cell`); `./derive` also keeps one row per file (`op_id` `done:<file>`, `phase` = the last derived version) so an older version arriving late writes nothing |
 
-Every query on a table with `file` names `file` in its `where`, bar two reads: `files` across files (path lookup, `list`, `find`) and `ws_files` by `ws` (a workspace's touched files); every select carries a `limit`.
+Every query on a table with `file` names `file` in its `where`, bar three reads: `files` across files (path lookup, `list`, `find`), `ws_files` by `ws` (a workspace's touched files) and `node_runs` across files (`near`); every select carries a `limit`.
+
+## Nodes and links
+
+Every head of the main line is cut into **nodes** (its items) and **links** (what it names outside itself) by a pure extractor chain in `./derive`; `./read` runs the same extractors for an older version or a workspace's view. Nodes never depend on a model: a failed summary or embedding still leaves them written.
+
+**Anchors** (`fh-<12 hex>[@<v12>]#<anchor>`): segments `<kind>:<name>` joined by `/`, never a line number; `%`, `#`, `@` and whitespace in a name are percent-encoded.
+
+| Format | Anchors | Links |
+|---|---|---|
+| python (`.py`; `ast`, else `scan`) | `class:<N>`, `def:<N>` (also `async`), nested `class:A/def:b` | `ast` only: `import` (`a.b`, `a.b:c`, `.x:y`; `as` kept as `alias`), `call` of a name or an imported module alias (`<module>:f`); no `obj.meth()` |
+| rust (`.rs`; `scan`) | `fn:`, `struct:`, `enum:`, `trait:`, `mod:` (nested `mod:a/fn:x`), `macro:`, `impl:<Type>`, `impl:<Type>+<Trait>`, methods `impl:<Type>/fn:<m>` (generics and paths cut) | `use` → `import` (`a::{b, c}` two, `a::*` kept) |
+| markdown (`.md`, `.markdown`) | `sec:<slug>` flat (GitHub slug, repeats `-1`, `-2`) | `link` (relative, resolved to an absolute space path, `#frag` kept), `url`; nothing from code |
+| json, toml | `key:<RFC 6901 pointer>` down to `key_depth`, an array only as its key's node | – |
+| pdf (`derived` pages) | `page:<n>` | – |
+
+A repeated anchor in one file takes `~2`, `~3` in source order. `unit` is `line` or `page`, `from`/`to` 1-based inclusive.
+
+**Marks** (`node_runs.mark`, `mark` of `outline` and of the event; `""` when clean): `no_extractor` (no format known), `unparsable` (every extractor of the chain refused: no nodes, no links), `too_large` (text over `extract_max_bytes`: no nodes), `truncated` (more than `nodes_max` nodes or `links_max` links: the first ones kept). A mark never touches the write.
+
+**Node source contract** (route `source_changed`, for every later node source too): after each head move of a file (birth, write, workspace commit, one event per file) `{source: "fh-<12 hex>", version: "<v12>", path, fmt, parser, mark, nodes, links, tomb: false}`, emitted after its rows are written and only while that version is still the head; after a removal (`remove`, or a commit that removes) `{source, path, tomb: true}` -- no `version`: a grave has no head -- once the tomb won, its rows dropped in the bundle after it (a store bundle is no transaction: a lost tomb must not take a living head's rows). A link is `{kind, from_anchor, target_name, pos, alias?}`: `alias` only where the source binds a name of its own (python `import m as a`, `from m import f as a`), the key missing otherwise; two names for one target are two links. A source answers `outline` and `links` page by page over `{source, version?, cursor?, limit?}` -- here the `in_read` body `{op, file: <source>, args}` with an empty `caller`. Source ids carry a prefix of their kind: `fh-` a file; `ob-` is reserved.
 
 ## Ops
 
@@ -97,6 +121,9 @@ Every query on a table with `file` names `file` in its `where`, bar two reads: `
 | `in_read` | `list` | `prefix` (`/`), `depth` (1) | `prefix`, `depth`, `entries[{path, file, bytes, lines}` or `{path, dir, files}]`, `more?` |
 | `in_read` | `find` | `glob`, `limit` (100, ≤ 500) | `glob`, `files[{file, path}]`, `more?` |
 | `in_read` | `raw` | `version?` | `version`, `mime`, `bytes`, `b64` |
+| `in_read` | `outline` | `version?`, `cursor?`, `limit` (200, ≤ `nodes_max`) | `version`, `parser`, `mark?`, `nodes[{anchor, kind, parent, unit, from, to, oneline, parser}]`, `next` (`""` at the end) |
+| `in_read` | `links` | `version?`, `cursor?`, `limit` (500, ≤ `links_max`) | `version`, `links[{kind, from_anchor, target_name, pos}]`, `next` |
+| `in_read` | `near` | `k` (5, ≤ 10) | `near[{file, path, score}]`: the living files closest by `node_runs.fvec` (Hamming, ties by path), without the file itself; `[]` for a file without `fvec`; no model, no embedding call |
 | `in_read` | `search` `semantic` | `pattern`, `limit` | served by `./derive`: `version`, `mode`, `hits[{section, from_line, to_line, score, preview}]` over this file and version only (`preview` ≤ 3 lines in read form) |
 | `in_read` | `ask` | `question` | served by `./derive`: `version`, `answer`, `sources[{from_line, to_line}]`; the model sees the summary and the best `ask_sections` sections, never the whole file |
 | `in_write` | `create`, `overwrite`, `patch` | `path`, `text`\|`b64`\|`attachment`, `mime?`, `derived?`, `notify?` \| `text`\|`b64`\|`attachment`, `derived?`, `notify?` \| `diff` | write answer; `attachment` = index into `body.attachments` (`true` = 0), exactly one content source (`bad_request` else), an entry's `error.code` is the answer's; an attachment is not checked by `./guard`, a moved base is `base_moved` (no merge), the answer has no `diff`, and its bytes and pages are staged as blocks, never parked; `./tools` never passes `attachments` on (a blob id reads any blob of the colony, so only `ingest` and `extract` may set one); a `create` that brings `derived` pages makes the version binary, whatever its source, because the pages are its text (a pure-ASCII PDF is UTF-8) |
@@ -112,7 +139,7 @@ Every query on a table with `file` names `file` in its `where`, bar two reads: `
 
 | Tools | Op, lane | Who |
 |---|---|---|
-| `file_info`, `file_read`, `file_search`, `file_summary`, `file_ask`, `file_history`, `file_show`, `file_diff`, `file_list`, `file_find` | `<op>` on `in_read` (`ask`, `search` `semantic` → `./derive`) | every surface |
+| `file_info`, `file_read`, `file_search`, `file_summary`, `file_ask`, `file_history`, `file_show`, `file_diff`, `file_list`, `file_find`, `file_outline`, `file_links` | `<op>` on `in_read` (`ask`, `search` `semantic` → `./derive`) | every surface |
 | `file_create`, `file_replace`, `file_replace_regex`, `file_replace_lines`, `file_insert`, `file_delete`, `file_overwrite`, `file_patch`, `file_snapshot`, `file_revert`, `file_remove` | `<op>` on `in_write` | `context.tool_caller` 'cogny' only |
 | `file_ws_open`, `file_ws_status`, `file_ws_diff`, `file_ws_patch`, `file_ws_merge`, `file_ws_commit`, `file_ws_discard` | `ws_<x>` on `in_ws` | `context.tool_caller` 'cogny' only |
 
@@ -123,7 +150,7 @@ Argument `file` goes into the body, `ws` onto the hop (a workspace name), `mode`
 | Code | When |
 |---|---|
 | `bad_request` / `unknown_op` / `bad_path` | no `op_id`, a malformed argument, a bad workspace name / an op the lane does not serve / a path a file cannot take |
-| `bad_address` / `anchor_unsupported` | not `fh-<12 hex>` or `/path`, or a malformed suffix / an address with `#…` |
+| `bad_address` / `anchor_unsupported` / `unknown_anchor` | not `fh-<12 hex>` or `/path`, or a malformed suffix / an address with `#…` on any op but `read` / `read` of an anchor the version has no node for (`candidates`: ≤ 5 anchors with the same last name) |
 | `not_found` / `tombstoned` | no such file, or none at that state / the head of a removed file (its versions stay readable) |
 | `version_unknown` / `version_ambiguous` | no / several versions of the file start with the prefix (`candidates`) |
 | `snap_unknown` / `ws_unknown` / `ws_closed` | no snapshot / no open workspace of that name (`read`) / a write into a committed or discarded workspace |
@@ -156,6 +183,8 @@ Argument `file` goes into the body, `ws` onto the hop (a workspace name), `mode`
 | `write` | `max_bytes` | 25 MiB | set by its cell |
 | `guard` | `max_check_bytes` | 1 MiB | the largest text the syntax hook parses; a larger one answers `none` with `note` `too_large_to_check` |
 | `derive` | `summary_on_commit`, `embed`, `ask_sections`, `section_lines` | "1", "1", 4, 60 | a summary on every main-line head move (birth always gets one); embeddings per section; sections one `ask` hands the model; lines per window where a file has no headings |
+| `derive`, `read` | `nodes_max`, `links_max`, `extract_max_bytes`, `key_depth` | 2000, 5000, 2 MiB, 3 | the most nodes / links one version keeps (`truncated` above), the largest text extracted (`too_large` above), the depth of `key:` nodes |
+| `read` | `near_scan_max` | 5000 | the most files one `near` compares |
 | `extract` | `extract_cmd`, `extract_max_pages`, `extract_timeout_ms` | `pdftotext`, 500, 30000 | the program that turns a PDF into pages (a name found in `/usr/bin:/bin`, the only `PATH` it runs with, or an absolute path), the most pages one `create` carries as `derived`, the time one extraction may take |
 | `embed` | `endpoint`, `model`, `dim` | the `memory-hive` embedding settings (`MEMORY_EMBED_*`) | one embedding model, one dimension and one binary form per member |
 | `summarizer` | `model` | `${MODEL_FILE_SPACE}`, no default -- growth is refused without it (`env_var_missing`), as for the `MODEL_*` of `memory-hive` | the model that writes summaries and answers `ask`; the llm-registry may move it through `in_model` |

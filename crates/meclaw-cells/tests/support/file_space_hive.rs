@@ -683,9 +683,10 @@ impl Space {
 
     /// R-FH-1 Auflage 2 measured at the store: every select, update and
     /// delete on a table with `file` names `file` in its `where`, and every
-    /// select carries a `limit`. Two reads are exempt: `files` (path lookup,
-    /// `list`, `find`) and `ws_files` by `ws` (the files a workspace touched,
-    /// OR-FH-68) -- an update or delete on `ws_files` still names its file.
+    /// select carries a `limit`. Three reads are exempt: `files` (path lookup,
+    /// `list`, `find`), `ws_files` by `ws` (the files a workspace touched,
+    /// OR-FH-68) and `node_runs` (the file vectors `near` compares, GH #944)
+    /// -- an update or delete on any of them still names its file.
     /// The breaches, as text.
     pub fn unscoped(&self) -> Vec<String> {
         let with_file = self.file_tables();
@@ -697,11 +698,15 @@ impl Space {
                 out.push(format!("{sender}: select without limit: {a}"));
             }
             let read = matches!(op, "select" | "search" | "similar");
-            // Auflage 2 exempts two READS only (review S I-2): `files` for the
-            // path lookup, `list` and `find`, and `ws_files` by `ws`. An update
-            // or delete on either still names its file.
+            // Auflage 2 exempts three READS only (review S I-2): `files` for the
+            // path lookup, `list` and `find`, `ws_files` by `ws`, and
+            // `node_runs` for `near` (GH #944: one row per head, the file
+            // vector only). An update or delete on any of them still names
+            // its file.
             let exempt = read
-                && (table == "files" || (table == "ws_files" && a["where"].get("ws").is_some()));
+                && (table == "files"
+                    || table == "node_runs"
+                    || (table == "ws_files" && a["where"].get("ws").is_some()));
             if (read || matches!(op, "update" | "delete"))
                 && !exempt
                 && with_file.iter().any(|t| t == table)

@@ -1,0 +1,198 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "sources": {
+        "source": "text",
+        "path": "text",
+        "lang": "text",
+        "module": "text",
+        "version": "text",
+        "announced": "text",
+        "indexed_at": "text",
+        "tomb": "text"
+      },
+      "nodes": {
+        "addr": "text",
+        "source": "text",
+        "anchor": "text",
+        "kind": "text",
+        "name": "text",
+        "oneline": "text",
+        "parser": "text"
+      },
+      "edges": {
+        "from_addr": "text",
+        "from_source": "text",
+        "kind": "text",
+        "lang": "text",
+        "target_name": "text",
+        "to_module": "text",
+        "to_member": "text",
+        "to_addr": "text",
+        "to_source": "text",
+        "state": "text",
+        "class": "text",
+        "score": "text",
+        "since": "text"
+      },
+      "names": {
+        "name": "text",
+        "addr": "text",
+        "source": "text",
+        "kind": "text"
+      },
+      "pulls": {
+        "source": "text",
+        "version": "text",
+        "part": "text",
+        "ok": "text",
+        "body": "text",
+        "at": "text"
+      }
+    },
+    "indexes": {
+      "sources_source": {
+        "table": "sources",
+        "on": [
+          "source"
+        ],
+        "unique": true
+      },
+      "pulls_part": {
+        "table": "pulls",
+        "on": [
+          "source",
+          "version",
+          "part"
+        ],
+        "unique": true
+      },
+      "nodes_source": {
+        "table": "nodes",
+        "on": [
+          "source"
+        ],
+        "unique": false
+      },
+      "nodes_name": {
+        "table": "nodes",
+        "on": [
+          "name"
+        ],
+        "unique": false
+      },
+      "names_name": {
+        "table": "names",
+        "on": [
+          "name"
+        ],
+        "unique": false
+      },
+      "names_source": {
+        "table": "names",
+        "on": [
+          "source"
+        ],
+        "unique": false
+      },
+      "edges_from": {
+        "table": "edges",
+        "on": [
+          "from_source"
+        ],
+        "unique": false
+      },
+      "edges_to_addr": {
+        "table": "edges",
+        "on": [
+          "to_addr"
+        ],
+        "unique": false
+      },
+      "edges_to_source": {
+        "table": "edges",
+        "on": [
+          "to_source"
+        ],
+        "unique": false
+      },
+      "edges_to_module": {
+        "table": "edges",
+        "on": [
+          "to_module",
+          "state"
+        ],
+        "unique": false
+      },
+      "edges_state": {
+        "table": "edges",
+        "on": [
+          "state"
+        ],
+        "unique": false
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The one store of a graph space: `sources` (one row per source: path, module, the announced and the indexed version, `tomb`), `nodes` (one per anchor of an indexed source, address `<source>#<anchor>`), `edges` (from a node or a source to a target: `state` resolved | unresolved | broken | external, `class` extracted | inferred, `since` when it broke), `names` (a module or a qualified name -> an address) and `pulls` (the answers of one announcement while the set of three is incomplete).",
+    "use_when": "Inside a graph space only; `./index` is its only writer, `./query` reads (`write_surface` internal).",
+    "not_in_scope": "No content of a source, no history: the graph holds the head of every source.",
+    "emits_meaning": "One answer per message, a bundle answer for more than one operation.",
+    "consumes_meaning": "One or more `tool_call` turns whose text is the JSON args of one store operation."
+  }
+}

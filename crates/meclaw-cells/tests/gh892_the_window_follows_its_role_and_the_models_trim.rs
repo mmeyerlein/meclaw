@@ -644,10 +644,11 @@ async fn gh892_the_window_follows_its_role_and_the_models_trim() {
         "the window section reached the curator as a `release` mark",
     )
     .await;
-    // ... and the window at the next rebuild: after the cache went cold.
+    // ... and the window at the next rebuild: after the cache went cold. The
+    // plan is the round's (`window_plan:<round key>`, GH #943).
     until_row(
         &ledger,
-        "SELECT value FROM state WHERE key = 'window_plan'",
+        "SELECT value FROM state WHERE key LIKE 'window_plan:%'",
         &first_id,
         "a cold cache rebuilt the window with the release in its plan",
     )

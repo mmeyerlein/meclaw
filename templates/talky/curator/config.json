@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@1.4.1"
+    "template": "curator@1.5.0"
   },
   "override_params": {
     "intake": {

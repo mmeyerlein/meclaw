@@ -102,7 +102,8 @@ fn run_classify(args: Value) -> Value {
 fn wish(person: Option<&str>) -> Value {
     let mut params = json!({
         "scope": MEMBER_DIR, "level": "channel", "name": "telegram",
-        "template": "telegram-connector@2.1.0", "assistant": AGENT});
+        "template": "telegram-connector@2.1.0", "assistant": AGENT,
+        "bind_chat": "4711"});
     if let Some(p) = person {
         params["ctx"] = json!({"member_person": p});
     }
@@ -117,13 +118,21 @@ fn declaration(params: Value) -> Value {
         .clone()
 }
 
-/// The one edge that raises a turn: `./telegram -> .` on `!has(hop.error_code)`.
+/// The one edge that raises a turn: `./telegram -> .` on a condition that
+/// starts with `!has(hop.error_code)` — since GH #940 it goes on to name the
+/// bound chat.
 fn ingress(decl: &Value) -> Value {
     decl["diff"]["add_edges"]
         .as_array()
         .expect("add_edges")
         .iter()
-        .find(|e| e["condition"] == json!("!has(hop.error_code)"))
+        .find(|e| {
+            e["from"] == json!("./telegram")
+                && e["to"] == json!(".")
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.starts_with("!has(hop.error_code)"))
+        })
         .expect("the ingress edge")
         .clone()
 }

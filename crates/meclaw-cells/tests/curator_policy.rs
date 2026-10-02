@@ -369,9 +369,13 @@ fn talky_keeps_today_raw_yesterday_summarised_older_dropped() {
         call.body
     );
     assert_eq!(
-        h.rows("SELECT path FROM slots WHERE path = 'history.summary'")
-            .len(),
-        1
+        h.rows(&format!(
+            "SELECT path FROM slots WHERE path = '{}'",
+            summary_slot(ROUND_E)
+        ))
+        .len(),
+        1,
+        "one summary slot for the round (GH #943)"
     );
 }
 
@@ -1584,6 +1588,23 @@ fn put_state(h: &mut Hive, key: &str, value: &str) {
     .unwrap();
 }
 
+/// The key of the state row `key` of the round `aud` (GH #943): a JSON
+/// text, or `Value::Null` for a round that declares none.
+fn key_in(key: &str, aud: &Value) -> String {
+    format!("{key}:{}", round_key(aud.as_str().unwrap_or("")))
+}
+
+/// The plan a finish bundle writes (`f-plan`): an update's `set` or, since
+/// GH #943 put the round's plan row whole, an insert's `row`.
+fn plan_written(ops: &Map<String, Value>) -> Value {
+    let op = &ops["f-plan"];
+    let text = op["set"]["value"]
+        .as_str()
+        .or_else(|| op["row"]["value"].as_str())
+        .unwrap_or_else(|| panic!("a finish writes the plan: {ops:?}"));
+    meclaw_core::serde_json::from_str(text).unwrap()
+}
+
 /// One round on `in_curate` under the audience `aud` -- a JSON text, or
 /// `Value::Null` for a round that declares none; returns the call.
 fn curate_in(h: &mut Hive, session: &str, turn: &str, aud: Value, ask: &str) -> Msg {
@@ -1711,16 +1732,23 @@ fn pinned(h: &mut Hive, text: &str, aud: Option<&str>) {
     .unwrap();
 }
 
-/// A leaf of the system part the curator owns (`history.summary`,
-/// `history.handover`), as a slot and its block; returns the block's hash.
+/// A leaf of the system part the curator owns (`history.handover`), as a
+/// slot and its block; returns the block's hash.
 fn leaf(h: &mut Hive, path: &str, text: &str) -> String {
+    leaf_at(h, path, path, text)
+}
+
+/// A leaf whose `slots` row is `row` and whose element names `path`: the
+/// summary leaf of a round is `history.summary` in the system tree and
+/// `history.summary:<round key>` in `slots` (GH #943).
+fn leaf_at(h: &mut Hive, row: &str, path: &str, text: &str) -> String {
     let stamp = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.6fZ")
         .to_string();
     let hash = held(h, &json!({"path": path, "text": text}), "system", &stamp);
     h.db.execute(
         "INSERT INTO slots (path, hash, owner, at) VALUES (?1, ?2, 'curator', ?3)",
-        rusqlite::params![path, hash, stamp],
+        rusqlite::params![row, hash, stamp],
     )
     .unwrap();
     hash
@@ -1733,12 +1761,17 @@ fn bound(aud: Option<&str>, hash: &str) -> String {
     canonical(&json!({"audience": aud, "hash": hash}))
 }
 
-/// The summary leaf and its `summaries` row under the audience `aud`, and
-/// the state `summary_audience` that binds `aud` to the leaf's hash, as the
-/// `sum` bundle writes them (review R2-I-4).
-fn summary_of(h: &mut Hive, text: &str, aud: Option<&str>) {
-    let hash = leaf(h, "history.summary", text);
-    put_state(h, "summary_audience", &bound(aud, &hash));
+/// The summary leaf of the round `round` and its `summaries` row under the
+/// audience `aud`, and the state `summary_audience:<round key>` that binds
+/// `aud` to the leaf's hash, as the `sum` bundle of a rebuild of `round`
+/// writes them (review R2-I-4; one summary slot per round since GH #943).
+fn summary_of(h: &mut Hive, round: &str, text: &str, aud: Option<&str>) {
+    let hash = leaf_at(h, &summary_slot(round), "history.summary", text);
+    put_state(
+        h,
+        &key_in("summary_audience", &json!(round)),
+        &bound(aud, &hash),
+    );
     h.db.execute(
         "INSERT INTO summaries (id, covers_to_seq, hash, sources, model, at, audience_set) \
          VALUES ('sum-1', 0, ?1, '[]', 'summary-model', ?2, ?3)",
@@ -1829,7 +1862,9 @@ fn a_round_without_an_audience_sees_only_what_no_round_declared_and_is_marked_on
     // Everything other hives hold, open to every round: still nothing for a
     // round that declares none (OR-BD.A.2).
     pinned(&mut h, "a pin for everybody", Some(r#"["*"]"#));
-    summary_of(&mut h, "a summary for everybody", Some(r#"["*"]"#));
+    // The summary sits in the round-less round's own slot (GH #943): even
+    // there it reaches no round that declares none.
+    summary_of(&mut h, "[]", "a summary for everybody", Some(r#"["*"]"#));
     let ho = leaf(&mut h, "history.handover", "a handover for everybody");
     put_state(&mut h, "handover_audience", &bound(Some(r#"["*"]"#), &ho));
     let call = curate_in(&mut h, "s1", "t1", Value::Null, "no round");
@@ -1940,7 +1975,9 @@ fn a_summary_the_round_may_not_see_is_no_leaf_and_is_taken_back() {
         return;
     }
     let mut h = Hive::new();
-    summary_of(&mut h, "what e and b said", Some(EB));
+    // {e,b}'s summary in {e,b}'s slot (GH #943): {e,a} reads a slot of its
+    // own, and none of another round's.
+    summary_of(&mut h, EB, "what e and b said", Some(EB));
     let ea = round_of(&["member:e", "member:a"]);
     let call = curate_in(&mut h, "s2", "t1", ea.clone(), "q1");
     assert_eq!(
@@ -2043,13 +2080,17 @@ fn the_summary_leaf_shows_only_under_the_audience_bound_to_its_hash() {
     };
     let summary = |call: &Msg| call.body["system"]["history"].clone();
 
+    // Both cases stand in the slot of {e,b}: since GH #943 a round's summary
+    // slot and its binding are its own, so the overlap of two bundles is one
+    // of two rebuilds of the same round; {e,a} reads no leaf of {e,b}'s slot.
+    let eb_key = key_in("summary_audience", &eb());
     // The slot leg of {e,b}'s bundle failed: row and binding are {e,b}'s,
     // the slot still holds {e,a}'s leaf.
     let mut h = Hive::new();
-    summary_of(&mut h, "what e and a said", Some(EA));
+    summary_of(&mut h, EB, "what e and a said", Some(EA));
     summary_row(&mut h, "sum-2", 10, "what e and b said", EB);
     let eb_leaf = leaf_of(&mut h, "what e and b said");
-    put_state(&mut h, "summary_audience", &bound(Some(EB), &eb_leaf));
+    put_state(&mut h, &eb_key, &bound(Some(EB), &eb_leaf));
     for (turn, round) in [("t1", eb()), ("t2", ea())] {
         let call = curate_in(&mut h, "s2", turn, round, "q");
         assert_eq!(
@@ -2063,11 +2104,11 @@ fn the_summary_leaf_shows_only_under_the_audience_bound_to_its_hash() {
     // The row and binding legs failed: the slot holds {e,b}'s leaf, the
     // newest row and the binding are still {e,a}'s.
     let mut h = Hive::new();
-    summary_of(&mut h, "what e and a said", Some(EA));
+    summary_of(&mut h, EB, "what e and a said", Some(EA));
     let eb_leaf = leaf_of(&mut h, "what e and b said");
     h.db.execute(
-        "UPDATE slots SET hash = ?1 WHERE path = 'history.summary'",
-        [&eb_leaf],
+        "UPDATE slots SET hash = ?1 WHERE path = ?2",
+        [&eb_leaf, &summary_slot(EB)],
     )
     .unwrap();
     for (turn, round) in [("t1", ea()), ("t2", eb())] {
@@ -2081,7 +2122,7 @@ fn the_summary_leaf_shows_only_under_the_audience_bound_to_its_hash() {
     }
 
     // The whole bundle: the leaf reaches its own round, and only it.
-    put_state(&mut h, "summary_audience", &bound(Some(EB), &eb_leaf));
+    put_state(&mut h, &eb_key, &bound(Some(EB), &eb_leaf));
     let call = curate_in(&mut h, "s2", "t3", eb(), "q");
     assert_eq!(
         call.body["system"]["history"]["summary"]["text"],
@@ -2124,12 +2165,8 @@ fn a_summary_answer_of_another_claim_is_dropped() {
     );
     let payload = json!({"text": "what e and a said", "finish": "stop",
                          "model": "summary-model", "error_code": ""});
-    let legs = [(
-        "s-read",
-        json!([{"key": "rebuild_running", "value": note.to_string()},
-               {"key": "actions_pending", "value": "[]"},
-               {"key": "pending:summary", "value": payload.to_string()}]),
-    )];
+    // The bundle reads the rows of the round the step runs under (GH #943).
+    let legs = s_read(&ea, &note, &payload);
     for reason in ["another-claim", "cache", ""] {
         let (out, err) = policy_step_as("sum", &ea, json!({"keep_recent": 1}), &legs, reason);
         let ops = ops_of(&out[0]);
@@ -2145,6 +2182,7 @@ fn a_summary_answer_of_another_claim_is_dropped() {
         assert!(err.contains("another claim"), "{err}");
     }
     let token = note["token"].as_str().unwrap_or_default();
+    let legs = s_read(&eb, &note, &payload);
     let (out, err) = policy_step_as("sum", &eb, json!({"keep_recent": 1}), &legs, token);
     let ops = ops_of(&out[0]);
     assert_eq!(
@@ -2301,8 +2339,13 @@ fn a_rebuild_without_a_round_asks_the_summarizer_nothing() {
         "the cover moves all the same: {plan}"
     );
     assert_eq!(plan["summary"], "", "{plan}");
-    assert_eq!(h.state("rebuild_running"), "", "and the rebuild is over");
-    let actions = h.state("actions_pending");
+    // The rows of a round-less round are those of `[]` (GH #943).
+    assert_eq!(
+        h.state_in("rebuild_running", "[]"),
+        "",
+        "and the rebuild is over"
+    );
+    let actions = h.state_in("actions_pending", "[]");
     assert!(
         actions.contains("rebuild:cache") && !actions.contains("rebuild_failed"),
         "{actions}"
@@ -2373,7 +2416,11 @@ fn a_rebuild_with_a_round_summarises_what_the_round_may_see() {
         json!(EA),
         "{{e,a,b}} + {{e,a}}: the summary reaches {{e,a}} and nobody wider"
     );
-    assert_eq!(h.state("rebuild_running"), "", "and the rebuild is over");
+    assert_eq!(
+        h.state_in("rebuild_running", EA),
+        "",
+        "and the rebuild is over"
+    );
 }
 
 // ---- the rebuild under a round, one phase at a time -----------------------
@@ -2461,6 +2508,19 @@ fn ops_of(msg: &Value) -> Map<String, Value> {
         .collect()
 }
 
+/// The `s-read` leg of a `sum` step under the round `aud` (GH #943): the
+/// running claim `note`, no actions pending, and the summarizer's `payload`
+/// -- the rows of that round. `window_plans` is not there: the round's
+/// first rebuild registers it.
+fn s_read(aud: &Value, note: &Value, payload: &Value) -> [(&'static str, Value); 1] {
+    [(
+        "s-read",
+        json!([{"key": key_in("rebuild_running", aud), "value": note.to_string()},
+               {"key": key_in("actions_pending", aud), "value": "[]"},
+               {"key": key_in("pending:summary", aud), "value": payload.to_string()}]),
+    )]
+}
+
 /// The older rounds of a rebuild under {e,a} -- under {e,a,b}, `*`, {e,a},
 /// {e,b}, and one from before the rule -- and the newest round, which stays
 /// raw (`keep_recent` 1).
@@ -2522,8 +2582,8 @@ fn rb_data_on(
     let legs = [
         (
             "n-me",
-            json!([{"key": "rebuild_running", "value": claim.to_string()},
-                   {"key": "actions_pending", "value": "[]"}]),
+            json!([{"key": key_in("rebuild_running", aud), "value": claim.to_string()},
+                   {"key": key_in("actions_pending", aud), "value": "[]"}]),
         ),
         ("n-wall", Value::Array(wall)),
         ("n-topic", json!([])),
@@ -2546,8 +2606,9 @@ fn rb_data_on(
 /// its `win-hashes` bundle brings back -- `ledger` names `plan`, `wall` (the
 /// rows after its cover), `keep` (the rows it holds below it), `slots`,
 /// `pins`, `sum_audience` (the summary leaf's audience, bound as the `sum`
-/// bundle binds it to the hash `slots` holds at `history.summary` -- state
-/// `summary_audience`, review R2-I-4), `sent` (the state
+/// bundle binds it to the hash `slots` holds at the round's summary slot
+/// `history.summary:<round key>` -- state `summary_audience:<round key>`,
+/// review R2-I-4, GH #943), `sent` (the state
 /// `system_hash_sent`), `blocks`, and -- when a test sets them -- the
 /// `session_slots` the call was parked with and `handover_audience`. Returns
 /// the message that leaves for the model and the ledger ops that go with it.
@@ -2566,7 +2627,7 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
         .as_array()
         .into_iter()
         .flatten()
-        .find(|r| r["path"] == "history.summary")
+        .find(|r| r["path"] == summary_slot(aud.as_str().unwrap_or("")))
         .and_then(|r| r["hash"].as_str().map(str::to_string))
         .unwrap_or_default();
     let summary_audience = match ledger["sum_audience"].as_str() {
@@ -2577,10 +2638,10 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
         {"key": "pending:c1", "value": slim.to_string()},
         {"key": "handover_for", "value": session},
         {"key": "system_hash_sent", "value": ledger["sent"].as_str().unwrap_or("{}")},
-        {"key": "actions_pending", "value": "[]"},
+        {"key": key_in("actions_pending", aud), "value": "[]"},
         {"key": "handover_audience",
          "value": ledger["handover_audience"].as_str().unwrap_or("")},
-        {"key": "summary_audience", "value": summary_audience}
+        {"key": key_in("summary_audience", aud), "value": summary_audience}
     ]);
     let legs = [
         ("w-state", state),
@@ -2660,12 +2721,7 @@ fn a_summary_is_made_of_what_the_round_may_see_and_carries_their_meet() {
     // its mark and its row -- not the round of the rebuild.
     let payload = json!({"text": "Three rounds, briefly.", "finish": "stop",
                          "model": "summary-model", "error_code": ""});
-    let legs = [(
-        "s-read",
-        json!([{"key": "rebuild_running", "value": note.to_string()},
-               {"key": "actions_pending", "value": "[]"},
-               {"key": "pending:summary", "value": payload.to_string()}]),
-    )];
+    let legs = s_read(&ea, &note, &payload);
     // Under the claim it was asked for: the token rides as the reason.
     let (out, err) = policy_step_as("sum", &ea, json!({"keep_recent": 1}), &legs, "t");
     let ops = ops_of(&out[0]);
@@ -2677,12 +2733,14 @@ fn a_summary_is_made_of_what_the_round_may_see_and_carries_their_meet() {
     // And the leaf's audience bound to the leaf's hash, put whole beside the
     // slot (review R2-I-4): the window reads it there, not off the newest
     // `summaries` row a failed leg of this bundle may leave behind.
+    // The binding is the round's own (GH #943).
+    let aud_key = key_in("summary_audience", &ea);
     assert_eq!(
         ops["s-unaud"],
-        json!({"operation": "delete", "table": "state", "where": {"key": "summary_audience"}}),
+        json!({"operation": "delete", "table": "state", "where": {"key": aud_key}}),
         "{ops:?}"
     );
-    assert_eq!(ops["s-aud"]["row"]["key"], "summary_audience", "{ops:?}");
+    assert_eq!(ops["s-aud"]["row"]["key"], json!(aud_key), "{ops:?}");
     assert_eq!(
         ops["s-aud"]["row"]["value"],
         json!(bound(
@@ -2699,8 +2757,7 @@ fn a_summary_is_made_of_what_the_round_may_see_and_carries_their_meet() {
     // The window of the next call: the pinned row stays raw below the cover,
     // and only a round it was present for sees it -- {e,a} does not, {e,b}
     // does (the counter-check).
-    let plan: Value =
-        meclaw_core::serde_json::from_str(ops["f-plan"]["set"]["value"].as_str().unwrap()).unwrap();
+    let plan = plan_written(&ops);
     let cover = plan["cover"].as_i64().unwrap();
     let keep: Vec<i64> = plan["keep"]
         .as_array()
@@ -2833,7 +2890,8 @@ fn overlapping_calls_of_two_rounds_each_leave_only_their_own_gated_leaves() {
     let ledger = |sent: &str| {
         json!({
             "plan": {"v": 1, "cover": 0, "keep": [], "at": stamp(10)},
-            "slots": [{"path": "history.summary", "hash": hash_of(&summary), "owner": "curator"}],
+            "slots": [{"path": summary_slot(EA), "hash": hash_of(&summary),
+                       "owner": "curator"}],
             "sum_audience": EA,
             "pins": [
                 {"hash": hash_of(&pin_a), "source": "orga", "until": "", "at": stamp(30),
@@ -3184,12 +3242,7 @@ fn the_summary_head_names_the_newest_row_the_round_may_see() {
     let sum_step = |note: &Value| {
         let payload = json!({"text": "Briefly.", "finish": "stop",
                              "model": "summary-model", "error_code": ""});
-        let legs = [(
-            "s-read",
-            json!([{"key": "rebuild_running", "value": note.to_string()},
-                   {"key": "actions_pending", "value": "[]"},
-                   {"key": "pending:summary", "value": payload.to_string()}]),
-        )];
+        let legs = s_read(&ea, note, &payload);
         let token = note["token"].as_str().unwrap_or_default();
         let (out, err) = policy_step_as("sum", &ea, json!({"keep_recent": 1}), &legs, token);
         let ops = ops_of(&out[0]);
@@ -3247,10 +3300,7 @@ fn the_summary_head_names_the_newest_row_the_round_may_see() {
         json!([]),
     );
     assert!(note.is_none(), "{err}");
-    let plan: Value = meclaw_core::serde_json::from_str(
-        ops_of(&out[0])["f-plan"]["set"]["value"].as_str().unwrap(),
-    )
-    .unwrap();
+    let plan = plan_written(&ops_of(&out[0]));
     assert_eq!(plan["summary"], "sum-0", "{plan}");
     assert_eq!(plan["sum_shown"], json!(7), "{plan}");
 }
@@ -3319,8 +3369,7 @@ fn a_rebuild_whose_round_may_see_nothing_gives_the_summary_up() {
     );
     assert!(note.is_none(), "{out:?}");
     let ops = ops_of(&out[0]);
-    let plan: Value =
-        meclaw_core::serde_json::from_str(ops["f-plan"]["set"]["value"].as_str().unwrap()).unwrap();
+    let plan = plan_written(&ops);
     assert_eq!(plan["summary"], "", "{ops:?}");
     assert!(err.contains("the summary is given up"), "{err}");
     assert!(!out.iter().any(|m| m["header"]["route"] == "summarize"));

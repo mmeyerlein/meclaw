@@ -4,6 +4,7 @@
 #
 #     scripts/strand.sh new <name> --issue <nr> [options]
 #     scripts/strand.sh gate [<mode>] [--host <lane>] [gate.sh options]
+#     scripts/strand.sh test '<nextest filterset>' [--host <lane>] [nextest args]
 #     scripts/strand.sh report [--strand <name>]
 #     scripts/strand.sh close [--strand <name>] [--do]
 #     scripts/strand.sh token take|release|who|check|init|off|lane [options]
@@ -109,12 +110,31 @@
 # station logs come back into the wave's archive -- or the run is not green;
 # the summary, the red stations and the exit code (1/2/4) are the runner's,
 # after one first line `strand: lane <name> (<host>) rev <sha> overlay
-# <hash>`. Without a held token, `--host` wants MECLAW_STRAND_TOKEN_SKIP. The stations that read `.env` are SKIP on the host and run here
-# afterwards, with a second summary line; the kit is RED when either is. So do
-# the ones that need `node` or the `github-main` ref (`gate_plan.py --print
-# lane-local`); the lane's receipt goes along, so the export audit grades the
-# whole run. A
-# host that does not answer is exit 2 with `strand: lane <name> unreachable`,
+# <hash>`. Without a held token, `--host` wants MECLAW_STRAND_TOKEN_SKIP.
+#
+# A LANE RUNS EVERY STATION (GH #942). While the lanes are armed this machine
+# builds nothing -- it runs the owner's live and lab colonies, and a lab
+# colony died at load 15 while strands built beside it (2026-10-02) -- so
+# `scripts/test-tier.sh` and a local `gate.sh` with a cargo station refuse
+# with exit 3 (`MECLAW_LANE_LOCAL_OK=<reason>` is the one way out). The host
+# gets what the stations there need: a secret-free `.env` written in its tree
+# (`gate_plan.py --print lane-env`), the `github-main` and `master` refs, and
+# `node` is the host's own. Nothing is left to run here afterwards
+# (`gate_plan.py --print lane-local` is empty); the code that ran such a
+# station here, with a second summary line and the lane's receipt handed
+# over, stays for a station that is ever listed there again.
+#
+#     test '<filterset>' [--host <lane>]   one nextest filterset on the lane
+#
+# The same transport as a gate (push, overlay, the same refusals), then
+# `scripts/test-tier.sh filter '<filterset>'` in the host's tree. The whole
+# log comes back to `receipts/<strand>/test-<run>/test.log` -- `latest`, the
+# gate's pointer, is not moved -- and the last line is
+# `TEST [<filterset>] <passed>/<total> <secs>s GREEN|RED`; the exit is the
+# remote one (3 = no lane held, 2 = a wrong call or an unreachable host).
+# It blocks like a gate: start it in the background and wait.
+#
+# A host that does not answer is exit 2 with `strand: lane <name> unreachable`,
 # no `latest` and the token still held: whether to take another lane or gate
 # locally is the orchestrator's call, never a silent fallback.
 #
@@ -123,9 +143,10 @@
 # comment. It is never in the repository -- it names machines -- and it holds
 # no password. Build hosts are normally switched off; switching one on or off
 # is a step of the orchestrator's, outside this kit, and `lanes status` is
-# the one lane verb that reads: per lane reachable or not, free space of its
-# tmpfs, strand refs in its bare repository. The host's `/srv/target` is a
-# tmpfs, so the first gate after a boot builds cold and pushes the history.
+# the one lane verb that reads: per lane reachable or not, the file system
+# type and free space of its `/srv/target`, strand refs in its bare
+# repository. On a tmpfs the first gate after a boot builds cold and pushes
+# the history; on a disk the target stays warm (GH #942).
 #
 # THE HEADER BLOCK is the point of all of it. Every report starts with a YAML
 # block (strang, branch, issues, basis, gate, commits) and
@@ -512,11 +533,12 @@ gate_on_host() {
     fi
     cmd_token check --pid 0 >/dev/null 2>&1 || true
 
-    # The stations the host could not run (no `.env`, no `node`, no
-    # `github-main` there: `SKIP <reason> (lane)`, `gate_plan.py --print
-    # lane-local`) run here, with the same base, and add their own summary
-    # line (GH #934, OR-S3-96). They get the lane's receipt, so the export
-    # audit among them grades the whole run.
+    # The stations a host could not run (`SKIP <reason> (lane)`, `gate_plan.py
+    # --print lane-local`) would run here, with the same base, and add their
+    # own summary line (GH #934, OR-S3-96), with the lane's receipt handed
+    # over. Since GH #942 that list is empty -- a lane gets a secret-free `.env`,
+    # the export ref and has `node` -- so nothing runs here after a lane; the
+    # mechanism stays for a station that is ever listed again.
     envs=$(sed -n 's/^GATE \([^ ]*\) \[.*\] [0-9]*s SKIP no-[a-z]* (lane)$/\1/p' "$runlog" \
         | paste -sd, -)
     if [ -n "$envs" ]; then
@@ -684,6 +706,100 @@ cmd_gate() {
     sed -n '/^gate: ASK/,$p' "$runlog"
     # The exit goes on unchanged: 4 is the open question, and it must stay
     # apart from 3 (no cargo token) and from 1 (a station is RED).
+    return "$rc"
+}
+
+# --- a single test on a lane (GH #942) ------------------------------------------
+
+cmd_test() {
+    local expr="" host="" strand_in="" wave_in="" extra=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help) usage; return 0 ;;
+            --host)   need_value "$1" "$#"; host="$2"; shift 2 ;;
+            --strand) need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
+            --wave)   need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
+            --)       shift; extra+=("$@"); break ;;
+            *)        if [ -z "$expr" ]; then expr="$1"; else extra+=("$1"); fi; shift ;;
+        esac
+    done
+    [ -n "$expr" ] || die "test: expected a nextest filterset, e.g. 'binary(~gh123)'"
+
+    local root plans wdir name archive_root target sync gate errf out prc sha digest
+    root=$(main_root) || exit 2
+    plans="$root/plans"
+    wdir=$(wave_dir "$plans" "$wave_in") || exit 2
+    name="$strand_in"
+    [ -n "$name" ] || name=$(strand_of_branch) \
+        || die "cannot tell the strand from the branch -- pass --strand"
+    archive_root="$plans/$wdir/receipts/$name"
+
+    # The lane: `--host`, or the one this strand holds -- and a test binds to a
+    # held token like a gate on a host (review M3 of GH #934).
+    [ -n "$host" ] || host=$(cmd_token lane 2>/dev/null) || host=""
+    if [ -z "$host" ]; then
+        echo "strand: test runs on a lane -- take one ('scripts/strand.sh token take')" \
+            "or pass --host <lane> with MECLAW_STRAND_TOKEN_SKIP=<reason>" >&2
+        return 3
+    fi
+    if [ -z "${MECLAW_STRAND_TOKEN_SKIP:-}" ] \
+        && { [ ! -f "$(token_file)" ] || [ "$(strand_of_branch 2>/dev/null)" = "" ]; }; then
+        echo "strand: a test on a build host binds to a held token -- arm the lanes and" \
+            "take one, or name the reason in MECLAW_STRAND_TOKEN_SKIP" >&2
+        return 3
+    fi
+    cmd_token check --pid "$$" --lane "$host" || return $?
+
+    target=$(lane_target "$host")
+    [ -n "$target" ] || die "no lane $host in the host file $(lanes_file)"
+    gate="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/gate.sh"
+    sync="$(dirname -- "$gate")/lane_sync.sh"
+    [ -x "$sync" ] || sync="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lane_sync.sh"
+    [ -x "$sync" ] || die "no lane transport at $sync"
+
+    # The transport of a gate, with its refusals (a tracked secret, a host
+    # tree that is not this one: exit 5 there, 2 here).
+    errf=$(mktemp) || die "no temp file"
+    out=$("$sync" push "$target" "$name" 2>"$errf")
+    prc=$?
+    if [ "$prc" = 5 ]; then
+        echo "strand: lane $host refused -- the host would not test this tree:" >&2
+        sed 's/^/  /' "$errf" >&2; rm -f "$errf"
+        return 2
+    elif [ "$prc" != 0 ]; then
+        echo "strand: lane $host unreachable" >&2
+        sed 's/^/  /' "$errf" >&2; rm -f "$errf"
+        return 2
+    fi
+    rm -f "$errf"
+    read -r sha digest <<<"$out"
+
+    # Its own directory, NOT a gate run: `test-` keeps it out of `latest` and
+    # out of the run-id glob `report` falls back on.
+    local run_dir log t0 rc secs passed total verdict
+    run_dir="$archive_root/test-$(date -u +%Y%m%dT%H%M%SZ)-${sha:0:8}"
+    while [ -e "$run_dir" ]; do run_dir="$run_dir-2"; done
+    mkdir -p "$run_dir" || die "cannot create $run_dir"
+    log="$run_dir/test.log"
+    printf 'strand: lane %s (%s) rev %s overlay %s\n' "$host" "${target#*@}" "${sha:0:8}" "${digest:-?}"
+
+    t0=$(date +%s)
+    "$sync" test "$target" "$name" "$expr" ${extra[@]+"${extra[@]}"} >"$log" 2>&1
+    rc=$?
+    secs=$(( $(date +%s) - t0 ))
+    cmd_token check --pid 0 >/dev/null 2>&1 || true
+    if [ "$rc" = 255 ] && ! grep -qE 'tests? run:' "$log"; then
+        echo "strand: lane $host unreachable (lost during the test, log: $log)" >&2
+        return 2
+    fi
+    # nextest's summary: `N tests run: P passed, ...` -- the last one counts.
+    total=$(grep -oE '[0-9]+ tests? run: [0-9]+ passed' "$log" | tail -1 | sed -E 's/^([0-9]+).*/\1/')
+    passed=$(grep -oE '[0-9]+ tests? run: [0-9]+ passed' "$log" | tail -1 | sed -E 's/.*run: ([0-9]+) passed/\1/')
+    verdict=GREEN
+    [ "$rc" = 0 ] || verdict=RED
+    [ "$rc" = 0 ] || tail -20 "$log"
+    printf 'TEST [%s] %s/%s %ss %s\n' "$expr" "${passed:-0}" "${total:-0}" "$secs" "$verdict" \
+        | tee -a "$log"
     return "$rc"
 }
 
@@ -1427,9 +1543,10 @@ PY
 # --- lanes ------------------------------------------------------------------
 
 # `lanes status`: one line per lane of the host file -- reachable or not, the
-# free space of the host's tmpfs, and how many strand refs its bare repository
-# holds. The only lane verb that reads; switching a host on or off stays a
-# step of the orchestrator's (THE LANES).
+# file system type (`tmpfs` or a disk) and free space of the host's target
+# root, and how many strand refs its bare repository holds. The only lane verb
+# that reads; switching a host on or off stays a step of the orchestrator's
+# (THE LANES).
 cmd_lanes() {
     [ "${1:-}" = status ] || die "lanes: expected status"
     local file sync name target rest
@@ -1457,9 +1574,10 @@ sub="$1"; shift
 case "$sub" in
     new)    cmd_new "$@" ;;
     gate)   cmd_gate "$@" ;;
+    test)   cmd_test "$@" ;;
     report) cmd_report "$@" ;;
     close)  cmd_close "$@" ;;
     token)  cmd_token "$@" ;;
     lanes)  cmd_lanes "$@" ;;
-    *) die "unknown subcommand: $sub (expected new|gate|report|close|token|lanes)" ;;
+    *) die "unknown subcommand: $sub (expected new|gate|test|report|close|token|lanes)" ;;
 esac

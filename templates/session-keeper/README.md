@@ -1,4 +1,4 @@
-# `session-keeper@2.2.2`
+# `session-keeper@2.3.0`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -66,7 +66,13 @@ The same edge is also where `context.audience_set` belongs -- the round the conv
 is spoken in, as a JSON list in affinity vocabulary (`["member:alex","agent:scribe"]`).
 It is a **constant of the generation**: a change of the participant set ends the
 generation and a new one takes over (ADR-0002 E8), so the turn that OPENS a generation is
-the only place it can be recorded, and the keeper records it on the row right there. A
+the only place it can be recorded, and the keeper records it on the row right there. Since
+GH #940 the stamp also ENFORCES it: a turn whose round (compared as a sorted list) differs from
+an open generation of its channel seals that generation -- its `close` carries the round it was
+opened in -- and opens a new one, so a generation is "per channel and round". A turn without a
+round seals nothing and runs in the round-less generation of the channel. The price is one
+close pass per sealed generation: a channel whose round flips often makes many short
+generations, by design (E8). A
 door that declares nothing leaves the column empty; nothing here derives a round from the
 `session_id` prefix, and nothing defaults it to `["*"]`.
 
@@ -84,7 +90,7 @@ that names it is refused (see above).
 | route | written by | to | notes |
 |---|---|---|---|
 | `turn` | `stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. `hop.turn_id` travels ON beside it, untouched: the id is the CHANNEL's (display-hive § 8.2), the session id is this keeper's, and the turn carries both from `session-keeper@2.2.1`. Before it the stamp built this header from scratch and copied only the body into it, so the id died here. |
-| `close` | `close` | the consumer of a finished session | one request per generation; promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below). |
+| `close` | `close`, `stamp` | the consumer of a finished session | one request per generation -- from the night, or from `stamp` when a turn of another round ends it (GH #940; the turn's chain, so the consumer's edge restores the budget); promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below). |
 | `export_done` | `porter` | whoever asked for the export | this keeper's own store wrote the whole ledger into `<fence>/<dir>/seed/` and says where: `hop.seed_dir` (relative to `params.transfer.base_path`), `hop.export_hive`, `hop.export_of`, `hop.rows_written` ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). |
 | `dump` | `porter` | whoever fed the import | the receipt of one applied import part (`hop.rows_written`, `hop.export_part` of `hop.export_of`, `hop.export_final == "1"` on the last). Since #555 that is all this lane carries. **Drain it with a PLAIN `hop.route == 'dump'` test** -- an edge that also tests a second hop key reads as no drain under the `required_drains` probe and the mutation is refused. |
 | `reject` | `stamp`, `close`, `porter` | wherever a broken keeper is read | the session store did not answer a step of this keeper ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). `hop.reject_reason` is `store_refused`, `hop.store_error` carries the store's own `error_code` (a free string -- the store's code list is open) and `hop.store_operation` the refused op. **Drain it.** Every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session -- and used to **open a second generation** for one that had one -- and an unanswered nightly sweep looks like a night with no idle channel. The body names the **step**, because they do not leave the same thing standing: at `touch` and `open` the stamped turn has already left in the same emission, and the `open` case is the sharp one -- the turn travels with a session id whose row was never written, so the next turn opens yet another generation. Since 2.1.0 a **third producer** takes the same lane: `porter` refuses a transfer it will not carry out and names the case in the same `hop.reject_reason` (`export_write_failed`, `import_format`, `import_unknown_table`, `import_schema_drift`, `missing_audience`, `import_probe_failed`, `import_write_failed`). One drain takes all of them; the reason code tells them apart. |
@@ -218,10 +224,13 @@ next one.
 The ingress pass, once per turn:
 
 ```
-in_turn  -> select sessions (channel, closed 0, limit 1)   phase look
-look     -> a row?  update last_seen                       phase touch
-         -> no row? insert a new generation                phase open
+in_turn  -> select sessions (channel, closed 0)            phase look
+look     -> a row of ANOTHER round (both set)? update closed=1 where closed=0   phase seal
+         -> a row of this round?  update last_seen          phase touch
+         -> none of this round? insert a new generation     phase open
          -> AND the turn onward on route 'turn' with hop.session_id
+seal     -> rows_affected 1: ROUTE close with the sealed row's round
+         -> rows_affected 0: nothing (someone else sealed it)
 ```
 
 The night pass, once per firing:

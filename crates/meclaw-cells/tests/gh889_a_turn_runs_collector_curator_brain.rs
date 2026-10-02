@@ -1346,7 +1346,7 @@ fn the_talky_curator_renders_the_nothing_form_its_splitter_cuts() {
     assert!(!form.is_empty(), "talky's splitter speaks a sidecar");
     let curator = read_json(&repo("templates/talky/curator/config.json"));
     assert_eq!(
-        curator["cell"]["template"], "curator@1.4.1",
+        curator["cell"]["template"], "curator@1.5.0",
         "the ref this road boots: {curator}"
     );
     assert_eq!(

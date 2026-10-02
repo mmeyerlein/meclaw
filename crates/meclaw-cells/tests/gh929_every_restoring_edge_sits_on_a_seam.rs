@@ -11,9 +11,9 @@
 //!
 //! - **door** -- a unit of work enters the hive that owns it: `in_turn` of an
 //!   assistant generation, a consult between the two brains of a generation,
-//!   a file job inside a file space. Every crossing costs a new turn, model
-//!   call or job, so no routing circle returns to the door without one; the
-//!   condition names the lane.
+//!   a file job inside a file space, an index job in a graph space. Every
+//!   crossing costs a new turn, model call or job, so no routing circle
+//!   returns to the door without one; the condition names the lane.
 //! - **curator entry** -- `./collector -> ./curator` on `curate`, bounded by
 //!   the round's iteration counter in the condition.
 //! - **round** -- the loopback of a shape whose round is made of routing
@@ -77,6 +77,7 @@ const TALKY: &str = "talky/config.json";
 const COGNY: &str = "cogny/config.json";
 const BUILDER: &str = "builder/config.json";
 const FILE_SPACE: &str = "file-space/config.json";
+const MEMBER: &str = "member/config.json";
 
 /// The seam table of the shipped templates.
 const SEAMS: &[Row] = &[
@@ -145,6 +146,31 @@ const SEAMS: &[Row] = &[
         Seam::CuratorEntry,
     ),
     row(TALKY, "./curator", "./brain", "brain", None, Seam::Round),
+    // A close job enters the curator (GH #940, ADR-0002 E8): since a turn of
+    // another round seals its channel's generation, a `close` can leave the
+    // turn's own chain mid-turn -- the night's leaves a fresh root. The edge
+    // is shared, so the night's close loses nothing; nothing routes back to
+    // the session keeper's `close` without a new turn or a new night.
+    row(
+        TALKY,
+        "./session-keeper",
+        "./curator",
+        "close",
+        None,
+        Seam::Door,
+    ),
+    // The close pass enters the memory hive that owns it (GH #940): a close
+    // a round change sends mid-turn reaches the member having spent the
+    // curator's chain, and one group measured 50 decisions against 48 behind
+    // the curator's door alone. Nothing routes back without a new close.
+    row(
+        MEMBER,
+        "./assistants",
+        "./memory-hive",
+        "write",
+        None,
+        Seam::Door,
+    ),
     row(
         COGNY,
         "./collector",
@@ -175,6 +201,19 @@ const SEAMS: &[Row] = &[
         "./ingest",
         "./write",
         "in_write",
+        None,
+        Seam::Door,
+    ),
+    // An index job in a graph space (GH #945): each `source_changed` is one
+    // head move of one source, and the graph space answers it with a constant
+    // number of pulls and two store bundles -- nothing in it returns to the
+    // door without a new head move. A workspace commit of many files is one
+    // door per file, never one chain.
+    row(
+        MEMBER,
+        "./file-space",
+        "./graph-space",
+        "source_changed",
         None,
         Seam::Door,
     ),

@@ -234,6 +234,13 @@ impl Hive {
         let schema: BTreeMap<String, BTreeMap<String, String>> =
             sj::from_value(cells["ledger"]["params"]["schema"].clone()).expect("schema");
         meclaw_cells::store::ddl::apply_schema_ddl(&db, &schema).expect("ddl");
+        // GH #915/#943: the named indexes right after the schema and before the
+        // seed, in the store's own order (`store::factory`: schema -> indexes
+        // -> seed). The unique index on `state.key` is what turns the insert of
+        // a round's first row into a compare-and-set.
+        let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
+            .expect("the ledger params parse");
+        meclaw_cells::store::ddl::apply_index_ddl(&db, &ledger.indexes).expect("index ddl");
         meclaw_cells::store::seed::load_seed_if_present(
             &db,
             &repo("templates/curator/ledger"),
@@ -512,10 +519,59 @@ impl Hive {
             .unwrap_or_default()
     }
 
-    /// The current plan of the window (`state.window_plan`), `{}` before the
-    /// first rebuild.
+    /// The state row `key` of the round `round` (GH #943): the policy keeps
+    /// a round's rows under `<key>:<round_key(round)>`.
+    pub fn state_in(&self, key: &str, round: &str) -> String {
+        self.state(&format!("{key}:{}", round_key(round)))
+    }
+
+    /// The plan of the window of the round `round` (`state.window_plan:<rk>`,
+    /// GH #943), `{}` before the round's first rebuild.
+    pub fn plan_in(&self, round: &str) -> Value {
+        sj::from_str(&self.state_in("window_plan", round)).unwrap_or_else(|_| json!({}))
+    }
+
+    /// The plan after the LAST rebuild, of whichever round it ran in: the
+    /// plan of the round with the newest entry in the registry
+    /// `state.window_plans` (`{rk: last_used_ms}`, GH #943; ties go to the
+    /// smaller key), `{}` before the first rebuild. A test that runs one
+    /// round keeps the meaning it had when the hive held one plan; a test
+    /// that runs several names the round with [`Hive::plan_in`].
     pub fn plan(&self) -> Value {
-        sj::from_str(&self.state("window_plan")).unwrap_or_else(|_| json!({}))
+        let reg: Map<String, Value> = sj::from_str(&self.state("window_plans")).unwrap_or_default();
+        let newest = reg
+            .iter()
+            .filter_map(|(rk, t)| t.as_f64().map(|t| (rk, t)))
+            .fold(None::<(&String, f64)>, |best, (rk, t)| match best {
+                Some((_, b)) if b >= t => best,
+                _ => Some((rk, t)),
+            });
+        match newest {
+            Some((rk, _)) => sj::from_str(&self.state(&format!("window_plan:{rk}")))
+                .unwrap_or_else(|_| json!({})),
+            None => json!({}),
+        }
+    }
+
+    /// The newest `add` the clock received for the round `round` (GH #943:
+    /// one order per round). Matched by the round key of the round the order
+    /// carries in `emit_headers.audience_set` (canonical, `""` for a call
+    /// without a round, which keys like `[]`) -- the key the schedule id is
+    /// made of, without recomputing the policy's uuid5.
+    pub fn clock_order_for(&self, round: &str) -> Option<Msg> {
+        let want = round_key(round);
+        self.clock
+            .iter()
+            .rev()
+            .find(|m| {
+                m.body.get("op") == Some(&json!("add"))
+                    && m.body
+                        .get("emit_headers")
+                        .and_then(|h| h.get("audience_set"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|a| round_key(a) == want)
+            })
+            .cloned()
     }
 
     pub fn routed(&self, route: &str) -> Vec<Msg> {
@@ -692,6 +748,54 @@ pub fn sha256_hex(s: &str) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// A round in its canonical form, as the policy's `audience_of` writes it: a
+/// JSON array of strings, sorted, without duplicates or empty strings, no
+/// whitespace, non-ASCII escaped as `\uXXXX` (python's `json.dumps`
+/// default). `None` when the text declares no round (empty, not JSON, not an
+/// array). Elements that are not strings are written as JSON text (python
+/// would take `str(x)`; no test sends one).
+pub fn round_canon(round: &str) -> Option<String> {
+    let v: Value = sj::from_str(round.trim()).ok()?;
+    let mut items: Vec<String> = v
+        .as_array()?
+        .iter()
+        .map(|x| match x {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    items.sort();
+    items.dedup();
+    let text = sj::to_string(&items).expect("serialise");
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut buf = [0u16; 2];
+            for unit in c.encode_utf16(&mut buf) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The key a round's state rows and its summary slot carry (GH #943): the
+/// first 12 hex digits of the sha256 of the canonical round; a round that
+/// declares nothing has the key of `[]`.
+pub fn round_key(round: &str) -> String {
+    let canon = round_canon(round).unwrap_or_else(|| "[]".to_string());
+    sha256_hex(&canon)[..12].to_string()
+}
+
+/// The `slots` row of the summary leaf of the round `round` (GH #943): the
+/// leaf is `history.summary` in the system tree, its row is per round.
+pub fn summary_slot(round: &str) -> String {
+    format!("history.summary:{}", round_key(round))
 }
 
 /// The short id of an element: the first 12 hex digits of its block hash.

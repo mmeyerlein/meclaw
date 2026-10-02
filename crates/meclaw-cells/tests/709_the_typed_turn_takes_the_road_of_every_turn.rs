@@ -235,6 +235,7 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, channel: &std::p
         "affinity",
         "memory-hive",
         "file-space",
+        "graph-space",
         "assistants",
         "apps",
     ] {

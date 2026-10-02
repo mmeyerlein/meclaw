@@ -496,7 +496,7 @@ fn a_store_refusal_leaves_on_the_reject_lane() {
         &script,
         &json!({"header": {"context": {"store_origin": "affect", "mem_phase": "affect-read",
                                        "audience_now": ROUND_EA,
-                                       "affect_req": "{}"},
+                                       "affect_req": r#"{"tag": "req-7"}"#},
                            "hop": {"operation": "select", "error_code": "query_timeout"}},
                 "messages": [{"origin": "tool", "type": "tool_result", "text": "timeout"}]}),
     );
@@ -504,6 +504,7 @@ fn a_store_refusal_leaves_on_the_reject_lane() {
     assert_eq!(out[0]["header"]["route"], "reject");
     assert_eq!(out[0]["header"]["reject_reason"], "store_refused");
     assert_eq!(out[0]["header"]["store_error"], "query_timeout");
+    assert_eq!(out[0]["header"]["affect_tag"], "req-7", "PP-S3-11: {out:?}");
 }
 
 #[test]

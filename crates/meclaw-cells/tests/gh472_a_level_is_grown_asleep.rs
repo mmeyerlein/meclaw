@@ -121,10 +121,11 @@ fn level_params(level: &str) -> Value {
         "assistant" => json!({"scope": member, "level": "assistant", "name": "scribe",
                               "template": "a-template@1.0.0"}),
         // GH #517 -- a channel renders nothing at all without the person its
-        // round is spoken with; it asks instead.
+        // round is spoken with; it asks instead. GH #940 -- nor without the
+        // chat it is bound to.
         "channel" => json!({"scope": member, "level": "channel", "name": "telegram",
                             "assistant": "scribe", "template": "a-template@1.0.0",
-                            "ctx": {"member_person": "alex"}}),
+                            "bind_chat": "4711", "ctx": {"member_person": "alex"}}),
         "screen" => json!({"scope": member, "level": "screen", "name": "display-desk",
                            "template": "a-template@1.0.0"}),
         "app" => json!({"scope": member, "level": "app", "name": "colony-view",
@@ -232,7 +233,7 @@ fn an_unknown_birth_state_is_refused_by_name_and_no_manifest_comes_back() {
     let early = run_classify(json!({
         "recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "org", "name": "acme",
-                   "template": "org@2.1.2", "birth": "dormant"}}));
+                   "template": "org@2.1.3", "birth": "dormant"}}));
     assert_eq!(
         early["header"]["route"],
         json!("error"),

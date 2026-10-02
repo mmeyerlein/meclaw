@@ -204,9 +204,18 @@ fn an_inbound_turn_asks_which_generation_the_channel_is_in() {
     let op = op_of(&out[0]);
     assert_eq!(op["operation"], "select");
     assert_eq!(op["table"], "sessions");
-    assert_eq!(op["where"]["channel"], "tg:42", "sessions are per channel");
+    // Sessions are per channel and round: the lookup reads the channel, the
+    // round decides among its open generations once the rows are back.
+    assert_eq!(
+        op["where"]["channel"], "tg:42",
+        "sessions are per channel and round"
+    );
     assert_eq!(op["where"]["closed"], 0, "only an OPEN generation counts");
-    assert_eq!(op["limit"], 1);
+    // because GH #940 / ADR-0002 E8: EVERY open generation of the channel is
+    // read (newest first, bounded), not the newest one alone.
+    assert_eq!(op["limit"], 16);
+    assert_eq!(op["order_by"][0]["col"], "opened_at");
+    assert_eq!(op["order_by"][0]["dir"], "desc");
     // The turn itself rides through the lookup on the hop, because a store
     // reply carries the row and not the conversation that asked for it.
     let kept: serde_json::Value = serde_json::from_str(
@@ -581,26 +590,196 @@ fn a_generation_opened_without_a_round_records_an_empty_one() {
     );
 }
 
-/// Provenance is never rewritten (ADR-0002 E12). A turn arriving into a RUNNING
-/// generation restarts the idle clock and touches nothing else -- the round is
-/// a property of the generation, and a generation whose round changed would
-/// have ended.
-#[test]
-fn a_running_generation_never_has_its_round_rewritten() {
-    let mut doc = look_reply(
-        serde_json::json!([session_row("tg:42-0001", "0001", "0002")]),
-        turn_body("still here"),
+/// The round is a constant of its generation (ADR-0002 E8), and since GH #940
+/// the keeper enforces it: a turn whose round differs from the open generation
+/// of its channel SEALS that generation -- under the round it was opened in --
+/// and runs on in a new generation of its own round. Provenance is still never
+/// rewritten (ADR-0002 E12): a running generation's row keeps the round of the
+/// turn that opened it, and a turn of another round ends it instead of
+/// renaming it.
+///
+/// Asked of a running colony with a real store, one channel, turn by turn:
+///
+/// * round A twice (two spellings of one set) is ONE generation;
+/// * a turn without a round in between seals nothing and runs in the
+///   round-less generation of the channel;
+/// * round B ends A's generation, round A again ends B's: three rounded
+///   generations, each with exactly one round, each sealed one carrying its
+///   OLD round in its `close`;
+/// * two turns of a new round at the same time: the seal is a guarded update,
+///   exactly one of them wins it, and exactly one `close` leaves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_round_change_ends_the_generation() {
+    const CH: &str = "tg:42";
+    const ROUND_A: &str = r#"["member:alex","agent:scribe"]"#;
+    const ROUND_A_RESPELLED: &str = r#"["agent:scribe", "member:alex"]"#;
+    const ROUND_B: &str = r#"["member:robin","agent:scribe"]"#;
+
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, None);
+    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+
+    // Round A, twice: one generation, whatever the spelling of the set.
+    let a1 = say_in(&h, &mut sink_rx, CH, "the first turn of round a", ROUND_A).await;
+    let a2 = say_in(&h, &mut sink_rx, CH, "the second", ROUND_A_RESPELLED).await;
+    assert!(a1.starts_with("tg:42-"), "{a1}");
+    assert_eq!(a1, a2, "the same round twice is one generation");
+
+    // A turn without a round is no evidence that the round changed: it runs in
+    // the round-less generation of the channel and seals nothing.
+    let none = say_in(&h, &mut sink_rx, CH, "a door that declares no round", "").await;
+    assert_ne!(
+        none, a1,
+        "a round-less turn never joins a generation of a round"
     );
-    doc["header"]["context"]["audience_set"] = serde_json::json!(r#"["member:mallory"]"#);
-    let out = stamp(doc);
-    let op = op_of(&route(&out, "kstore"));
-    assert_eq!(op["operation"], "update");
+    // The seal would have left in the same emission as the open of `none`, so
+    // once that row stands, a seal would be logged too.
+    until_generation(&td, &none).await;
     assert_eq!(
-        op["set"].as_object().map(|o| o.len()),
-        Some(1),
-        "the touch writes the idle clock and nothing else: {op}"
+        seal_traffic(&td).asked,
+        0,
+        "a turn without a round sealed a generation"
     );
-    assert!(op["set"]["last_seen"].is_string(), "{op}");
+    assert!(
+        generations(&td).iter().all(|g| g.closed == 0),
+        "a turn without a round closed a generation: {:?}",
+        generations(&td)
+    );
+
+    // Round B ends the generation of round A, under round A.
+    let b1 = say_in(&h, &mut sink_rx, CH, "round b speaks", ROUND_B).await;
+    assert!(
+        b1 != a1 && b1 != none,
+        "round b opens its own generation: {b1}"
+    );
+    let closed = recv_bounded(&mut park_rx)
+        .await
+        .expect("a turn of round b ends the generation of round a");
+    assert_eq!(text_of(&closed), format!("closed:{a1}|{CH}"));
+    assert_eq!(
+        round_of_close(&closed),
+        ROUND_A,
+        "the close carries the round its generation was OPENED in, never the round \
+         of the turn that ended it"
+    );
+    assert_close_carries_no_turn(&closed, ROUND_A);
+
+    // Round A again: a NEW generation (the sealed one stays sealed), and the
+    // generation of round B is over.
+    let a3 = say_in(&h, &mut sink_rx, CH, "round a is back", ROUND_A).await;
+    assert!(
+        a3 != a1 && a3 != b1 && a3 != none,
+        "a round that comes back opens a new generation: {a3}"
+    );
+    let closed = recv_bounded(&mut park_rx)
+        .await
+        .expect("a turn of round a ends the generation of round b");
+    assert_eq!(text_of(&closed), format!("closed:{b1}|{CH}"));
+    assert_eq!(round_of_close(&closed), ROUND_B);
+    assert_close_carries_no_turn(&closed, ROUND_B);
+
+    // Two turns of round B at the same time. Whichever looked first, the
+    // generation of round A is flipped by exactly one guarded update, and only
+    // the seal that flipped it hands it over.
+    let before = seal_traffic(&td);
+    h.send(turn_in(CH, "round b, once", ROUND_B)).await;
+    h.send(turn_in(CH, "round b, twice", ROUND_B)).await;
+    let mut raced = Vec::new();
+    for _ in 0..2 {
+        let got = recv_bounded(&mut sink_rx)
+            .await
+            .expect("both turns of the race are stamped");
+        raced.push(text_of(&got));
+    }
+    let after = await_seals_answered(&td, before.asked).await;
+    assert_eq!(
+        after.won - before.won,
+        1,
+        "exactly one seal of the race flipped the generation of round a: \
+         before {before:?}, after {after:?}"
+    );
+    let closed = recv_bounded(&mut park_rx)
+        .await
+        .expect("the race ends the generation of round a");
+    assert_eq!(text_of(&closed), format!("closed:{a3}|{CH}"));
+    assert_eq!(round_of_close(&closed), ROUND_A);
+    assert_close_carries_no_turn(&closed, ROUND_A);
+
+    // The store: every generation with exactly one round, the rounded ones
+    // sealed, the round-less one never sealed by a turn that had a round.
+    for sid in &raced {
+        assert!(
+            ![&a1, &b1, &a3, &none].contains(&sid),
+            "a turn of the race ran in an older generation: {sid}"
+        );
+        until_generation(&td, sid).await;
+    }
+    let rows = generations(&td);
+    let row = |sid: &str| {
+        rows.iter()
+            .find(|g| g.session_id == sid)
+            .unwrap_or_else(|| panic!("no row for {sid}: {rows:?}"))
+            .clone()
+    };
+    for (sid, round, closed) in [
+        (&a1, ROUND_A, 1),
+        (&b1, ROUND_B, 1),
+        (&a3, ROUND_A, 1),
+        (&none, "", 0),
+    ] {
+        let g = row(sid);
+        assert_eq!(
+            (g.audience_set.as_str(), g.closed),
+            (round, closed),
+            "generation {sid}: {rows:?}"
+        );
+    }
+    for sid in &raced {
+        let g = row(sid);
+        assert_eq!(
+            (g.audience_set.as_str(), g.closed),
+            (ROUND_B, 0),
+            "the race runs in round b: {rows:?}"
+        );
+    }
+
+    h.shutdown().await;
+}
+
+/// The seal a round change sends is the night's guarded update (GH #940): only
+/// the turn whose seal flipped `closed` hands the generation over, and it hands
+/// it over under the round it was opened in, never under the round of the turn
+/// that ended it -- which is in context and must not leave on this message.
+#[test]
+fn only_the_turn_that_won_the_seal_hands_the_generation_over() {
+    let old_round = r#"["member:alex","agent:scribe"]"#;
+    let seal_reply = |rows_affected: i64| {
+        let mut doc = reply_doc(
+            "keeper-stamp",
+            "seal",
+            "update",
+            rows_affected,
+            serde_json::json!("ok"),
+        );
+        doc["header"]["context"]["keeper_session"] = serde_json::json!("tg:42-0001");
+        doc["header"]["context"]["keeper_audience"] = serde_json::json!(old_round);
+        doc["header"]["context"]["audience_set"] = serde_json::json!(r#"["member:robin"]"#);
+        doc
+    };
+    assert!(
+        stamp(seal_reply(0)).is_empty(),
+        "rows_affected 0: a parallel turn sealed first, and its close is the one"
+    );
+    let out = stamp(seal_reply(1));
+    assert_eq!(out.len(), 1, "exactly ONE close request per generation");
+    assert_eq!(out[0]["header"]["route"], "close");
+    assert_eq!(out[0]["header"]["session_id"], "tg:42-0001");
+    assert_eq!(out[0]["header"]["channel"], "tg:42");
+    assert_eq!(
+        out[0]["header"]["audience_set"], old_round,
+        "the close carries the round the generation was opened in"
+    );
+    assert_eq!(out[0]["messages"], serde_json::json!([]));
 }
 
 /// The sweep reads the round of every generation it seals, and carries it down
@@ -697,6 +876,60 @@ fn the_hive_carries_the_round_of_a_seal_down_its_own_chain() {
     assert_eq!(
         edge["modifier"]["set_context"]["keeper_audience"], "hop.audience_set",
         "the seal's round travels with its own chain: {edge}"
+    );
+}
+
+/// OR-BC.R.6, pinned at the config: the close a round change sends leaves the
+/// stamp in the context of the turn that ended the generation. Its edge out of
+/// the hive therefore drops everything the keeper's other exits drop PLUS the
+/// round and the participants of that turn -- otherwise a parent that does not
+/// overwrite `context.audience_set` from the hop would hand the old
+/// generation's close to the curator under the NEW round, with the new chat and
+/// user beside it.
+#[test]
+fn the_close_a_round_change_sends_leaves_the_triggering_turn_behind() {
+    let hive = config_of("config.json");
+    let edges = hive["params"]["graph"]["edges"].as_array().expect("edges");
+    let dropped = |from: &str, route: &str| -> std::collections::BTreeSet<String> {
+        let edge = edges
+            .iter()
+            .find(|e| {
+                e["from"] == from
+                    && e["to"] == "."
+                    && e["condition"]
+                        .as_str()
+                        .is_some_and(|c| c.contains(&format!("hop.route == '{route}'")))
+            })
+            .unwrap_or_else(|| panic!("{from} -> . on {route}"));
+        edge["modifier"]["delete_context"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{from} -> . on {route} deletes nothing: {edge}"))
+            .iter()
+            .map(|k| k.as_str().expect("key").to_string())
+            .collect()
+    };
+    let keeper = dropped("./stamp", "turn");
+    let close = dropped("./stamp", "close");
+    for key in keeper.iter().map(String::as_str).chain([
+        "asker",
+        "audience_now",
+        "audience_set",
+        "chat_id",
+        "counterpart",
+        "counterpart_name",
+        "turn_id",
+        "user_id",
+    ]) {
+        assert!(
+            close.contains(key),
+            "the close out of the stamp keeps `{key}` of the triggering turn: {close:?}"
+        );
+    }
+    // The night's close never had a turn in context; its list stays the
+    // keeper's own, and the stamp's close is a superset of it.
+    assert!(
+        dropped("./close", "close").is_subset(&close),
+        "the stamp's close drops less than the night's"
     );
 }
 
@@ -893,17 +1126,31 @@ sys.stdout.write(json.dumps({"header": {"route": "report"},
 "#;
 
 /// The stand-in for the close lane downstream -- the curator's `in_close` since
-/// GH #889, the collector's before.
+/// GH #889, the collector's before. Its second message is the round the close
+/// names on its hop (GH #940: a round change seals under the round of the
+/// generation); the parent lifts it into `close_round`, never into
+/// `context.audience_set`, so whatever `audience_set` arrives here is what the
+/// keeper let through. Its third message is every key of the TRIGGERING turn
+/// still in context (OR-BC.R.6): a close that a round change sends mid-turn
+/// must not leave with the new round, the chat, the user, the counterpart or
+/// the turn id of the turn that ended the generation.
 const CLOSED: &str = r#"
 import sys, json
 doc = json.load(sys.stdin)
 d = doc["body"]
 envelope = doc["envelope"]
 ctx = (envelope.get("header") or {}).get("context") or {}
+TURN_KEYS = ["asker", "audience_now", "audience_set", "chat_id", "counterpart",
+             "counterpart_name", "turn_id", "user_id"]
 sys.stdout.write(json.dumps({"header": {"route": "closed"},
                              "messages": [{"origin": "assistant", "type": "text",
                                            "text": "closed:" + str(ctx.get("session_id", "")) +
-                                                   "|" + str(ctx.get("channel", ""))}]}))
+                                                   "|" + str(ctx.get("channel", ""))},
+                                          {"origin": "assistant", "type": "text",
+                                           "text": str(ctx.get("close_round", ""))},
+                                          {"origin": "assistant", "type": "text",
+                                           "text": json.dumps({k: ctx[k] for k in TURN_KEYS if k in ctx},
+                                                              sort_keys=True)}]}))
 "#;
 
 /// The port wiring a parent draws around the keeper: one ingress lane in, the
@@ -929,7 +1176,8 @@ fn main_config() -> Value {
         {"from": "./session-keeper", "to": "./closed",
          "condition": "hop.route == 'close'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
-                                      "channel": "hop.channel"}}},
+                                      "channel": "hop.channel",
+                                      "close_round": "has(hop.audience_set) ? hop.audience_set : ''"}}},
         {"from": "./closed", "to": "/park"}
     ]}}})
 }
@@ -1070,6 +1318,189 @@ async fn say(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, ch: &str, text:
         .await
         .unwrap_or_else(|| panic!("no report for turn {text:?}"));
     text_of(&got)
+}
+
+/// A turn spoken in a round. The round is declared at the door the turn
+/// enters by, so it rides in context beside the channel; `""` is a door that
+/// declares none.
+fn turn_in(channel: &str, text: &str, round: &str) -> Message {
+    let mut ctx = serde_json::Map::new();
+    ctx.insert("channel".into(), json!(channel));
+    if !round.is_empty() {
+        ctx.insert("audience_set".into(), json!(round));
+    }
+    // What a channel door stamps beside the round (OR-BC.R.6): the close a
+    // round change sends must leave all of it behind.
+    ctx.insert("chat_id".into(), json!(42));
+    ctx.insert("user_id".into(), json!("u-7"));
+    ctx.insert("counterpart".into(), json!("member:robin"));
+    ctx.insert("turn_id".into(), json!(format!("turn-{text}")));
+    MessageBuilder::new(Path::new("/probe"))
+        .body(Body::Inline(
+            json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
+        ))
+        .context(ctx)
+        .ttl(64)
+        .build()
+}
+
+/// One turn of a round in, the session id it was stamped with out.
+async fn say_in(
+    h: &ColonyHandle,
+    rx: &mut mpsc::Receiver<Message>,
+    ch: &str,
+    text: &str,
+    round: &str,
+) -> String {
+    h.send(turn_in(ch, text, round)).await;
+    let got = recv_bounded(rx)
+        .await
+        .unwrap_or_else(|| panic!("no report for turn {text:?}"));
+    text_of(&got)
+}
+
+/// The keys of the triggering turn that reached the close receiver, as a JSON
+/// object (OR-BC.R.6).
+fn turn_keys_at_close(m: &Message) -> serde_json::Map<String, Value> {
+    match &m.body {
+        Body::Inline(v) => serde_json::from_str(v["messages"][2]["text"].as_str().unwrap_or("{}"))
+            .expect("the stand-in prints a JSON object"),
+        Body::Blob(_) => panic!("inline expected"),
+    }
+}
+
+/// A close a round change sent carries nothing of the turn that ended the
+/// generation (OR-BC.R.6): no `audience_set` of the NEW round (absent, or the
+/// generation's own old round), no chat, user, counterpart or turn id. The
+/// parent here draws no `audience_set` promotion, so this is the keeper's own
+/// `delete_context` on `./stamp -> .` speaking.
+fn assert_close_carries_no_turn(m: &Message, old_round: &str) {
+    let mut keys = turn_keys_at_close(m);
+    if let Some(r) = keys.remove("audience_set") {
+        assert_eq!(
+            r.as_str(),
+            Some(old_round),
+            "the close of a generation carried the round of the turn that ended it"
+        );
+    }
+    assert!(
+        keys.is_empty(),
+        "the close of a round change carried the triggering turn's context: {keys:?}"
+    );
+}
+
+/// The round a `close` named, as the stand-in downstream received it.
+fn round_of_close(m: &Message) -> String {
+    match &m.body {
+        Body::Inline(v) => v["messages"][1]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        Body::Blob(_) => panic!("inline expected"),
+    }
+}
+
+/// The `seal` traffic of the stamp so far, read off the colony's own log: the
+/// guarded updates it asked of its store, the answers that came back, and how
+/// many of those flipped a generation (`rows_affected >= 1`).
+#[derive(Clone, Copy, Debug, Default)]
+struct SealTraffic {
+    asked: usize,
+    answered: usize,
+    won: usize,
+}
+
+fn seal_traffic(td: &tempfile::TempDir) -> SealTraffic {
+    let conn = rusqlite::Connection::open(td.path().join("colony.db")).expect("colony.db");
+    let mut st = conn
+        .prepare("SELECT to_path, headers FROM message_log WHERE to_path IN (?1, ?2)")
+        .expect("message_log");
+    let logged: Vec<(String, String)> = st
+        .query_map(["/session-keeper/sessions", "/session-keeper/stamp"], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .expect("query")
+        .filter_map(Result::ok)
+        .collect();
+    let mut t = SealTraffic::default();
+    for (to, headers) in logged {
+        let h: Value = serde_json::from_str(&headers).unwrap_or(Value::Null);
+        if h["context"]["ses_phase"] != "seal" {
+            continue;
+        }
+        if to == "/session-keeper/sessions" {
+            t.asked += 1;
+        } else if h["hop"]["operation"] == "update" {
+            t.answered += 1;
+            if h["hop"]["rows_affected"].as_i64().unwrap_or(0) >= 1 {
+                t.won += 1;
+            }
+        }
+    }
+    t
+}
+
+/// Until more seals than `asked_before` were asked and every one of them was
+/// answered: from then on the stamp has every answer that can send a `close`.
+async fn await_seals_answered(td: &tempfile::TempDir, asked_before: usize) -> SealTraffic {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let t = seal_traffic(td);
+        if t.asked > asked_before && t.answered == t.asked {
+            return t;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the seals were not all answered within 30s: {t:?} (asked before: {asked_before})"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// One row of the keeper's own store.
+#[derive(Clone, Debug)]
+struct Generation {
+    session_id: String,
+    audience_set: String,
+    closed: i64,
+}
+
+fn generations(td: &tempfile::TempDir) -> Vec<Generation> {
+    let db = td.path().join("main/session-keeper/sessions/cell.db");
+    if !db.is_file() {
+        return Vec::new();
+    }
+    let conn = rusqlite::Connection::open(db).expect("sessions cell.db");
+    let Ok(mut st) = conn.prepare(
+        "SELECT session_id, COALESCE(audience_set, ''), closed FROM sessions ORDER BY opened_at",
+    ) else {
+        return Vec::new();
+    };
+    let rows: Vec<Generation> = st
+        .query_map([], |r| {
+            Ok(Generation {
+                session_id: r.get(0)?,
+                audience_set: r.get(1)?,
+                closed: r.get(2)?,
+            })
+        })
+        .expect("query")
+        .filter_map(Result::ok)
+        .collect();
+    rows
+}
+
+/// Until the keeper's store holds the generation `sid`.
+async fn until_generation(td: &tempfile::TempDir, sid: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !generations(td).iter().any(|g| g.session_id == sid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "generation {sid} was not written within 30s: {:?}",
+            generations(td)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 fn delivered_to(td: &tempfile::TempDir, path: &str) -> i64 {

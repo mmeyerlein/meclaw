@@ -30,8 +30,9 @@
 //! (d) the `who` body slot (GH #848) of the SERVED brief follows the same rule as
 //!     every refusal: it rides only when the subject is in the round. A subject
 //!     outside the round is served without `who`, so the record's `display_name`
-//!     stands nowhere in the body; a subject in the round is named by it, as
-//!     `templates/affinity/README.md` § Who is speaking says.
+//!     stands nowhere in the body; a subject in the round is named by the name
+//!     this round was released, by the same rule as the head (PP-S3-10, pinned
+//!     in `gh946_who_names_only_what_the_disclosure_releases.rs`).
 
 #[path = "support/assemble_cell.rs"]
 mod assemble_cell;
@@ -326,6 +327,11 @@ fn a_served_brief_on_a_subject_in_the_round_names_it_in_who_as_gh848() {
     let mut released = vec!["aieos.identity.names.first"];
     released.extend_from_slice(PERSON);
     let ans = brief(json!(["identity", "peer"]), &released);
-    assert_eq!(ans["who"]["name"], "Jonas Berg", "{ans}");
+    // Because of PP-S3-10 (the coordinator's ruling: `who.name` follows the
+    // disclosure): a round released the first name only reads the first name in
+    // `who` too, as in every head. A contract change of GH #848, not a test
+    // patch -- the record's `display_name` no longer rides past the disclosure.
+    assert_eq!(ans["who"]["name"], "Jonas", "{ans}");
+    assert!(!ans["who"].to_string().contains("Berg"), "{ans}");
     assert_eq!(ans["who"]["known"], true, "{ans}");
 }

@@ -194,16 +194,18 @@ fn the_level_carries_four_refs_and_three_containers() {
             "channels".to_string(),
             "file-space".to_string(),
             "firewall".to_string(),
+            "graph-space".to_string(),
             "memory-hive".to_string(),
         ],
-        "the member owns exactly five holders — the memory, the record, the screen and, \
+        "the member owns exactly six holders — the memory, the record, the screen and, \
          since 1.5.0, the `access` that holds this person's own provider credentials \
          (GH #560) and, since B2 (GH #908), the `file-space` that keeps this person's \
+         files, and since GH #945 the `graph-space` that keeps the graph of those \
          files — and THREE containers — `assistants`, and since 1.3.0 `channels` \
          (GH #454) and `apps` (GH #459). It owns NO cell of its own any more: since \
          1.6.0 each holder's store writes its own seed set through the `transfer` slot \
          (GH #555), so the one `code` cell that used to file somebody else's export is \
-         gone with the lane it drained. A SIXTH holder is something the siblings did not \
+         gone with the lane it drained. A SEVENTH holder is something the siblings did not \
          have to share; a missing one is something an assistant would have to hold \
          itself. `apps` is a container and not a holder for the same reason `channels` \
          is not: what stands in it is instantiated per person, and an app writes VIEWS \
@@ -238,7 +240,13 @@ fn the_level_carries_four_refs_and_three_containers() {
 
     // The instance name equals the template name — the standing naming rule.
     // A ref whose directory is called something else is drift, not intention.
-    for name in ["affinity", "file-space", "firewall", "memory-hive"] {
+    for name in [
+        "affinity",
+        "file-space",
+        "firewall",
+        "graph-space",
+        "memory-hive",
+    ] {
         let cfg = config_at(&member.join(name));
         let cell = cfg.get("cell").expect("cell block");
         assert_eq!(

@@ -1439,17 +1439,36 @@ exec %s "$@"
 
 PLAN_HOST = "ok\tscope-ok\t0\ttrue\t\nbuild\tworkspace\t1\ttrue\t\n"
 PLAN_HOST_RED = "ok\tscope-ok\t0\ttrue\t\nbad\tscope-bad\t0\tfalse\t\n"
-# `scenarios:memory` reads `.env`: skipped on the lane, run here afterwards.
+# GH #942: the stations that read `.env`, need `node` or the `github-main`
+# ref run ON the lane like every other -- the lane gets a secret-free `.env`,
+# the ref is pushed along -- and nothing runs here afterwards.
 PLAN_HOST_ENV = ("ok\tscope-ok\t0\ttrue\t\n"
                  "scenarios:memory\t1 case\t0\t%s\t\n")
-# OR-S3-96: no `node` and no `github-main` ref on a host either -- and the
-# audit, run here, reads the receipt and must find the lane's `ok` in it.
+# The audit reads the receipt and must find the lane's `ok` in it, and the
+# ref must be there: `git rev-parse github-main` in the host's tree.
 PLAN_HOST_LOCAL = ("ok\tscope-ok\t0\ttrue\t\n"
                    "display-lab\tunittest\t0\ttrue\t\n"
-                   "export-audit\tR1-R17 dry\t0\tpython3 -c \"import json,sys; "
+                   "export-audit\tR1-R17 dry\t0\tpython3 -c \"import json,subprocess,sys; "
                    "d=json.load(open(sys.argv[1])); "
                    "v={s['name']: s['verdict'] for s in d['stations']}; "
+                   "subprocess.run(['git', 'rev-parse', '--verify', 'github-main'], check=True); "
                    "sys.exit(0 if v.get('ok') == 'GREEN' else 1)\" {receipt}\t\n")
+
+# A fake `cargo` for `strand.sh test` on a fake host: it prints the summary
+# line nextest prints and exits with FAKE_CARGO_RC.
+FAKE_CARGO = """#!/usr/bin/env bash
+printf 'cargo %s\\n' "$*" >>"$FAKE_CARGO_LOG"
+echo "        PASS [   0.010s] meclaw-cells::gh1_x a_case"
+echo "     Summary [   0.420s] ${FAKE_CARGO_TOTAL:-3} tests run: ${FAKE_CARGO_PASSED:-3} passed, 0 skipped"
+exit "${FAKE_CARGO_RC:-0}"
+"""
+
+# A fake `df` for `lanes status`: the file system type a build host's target
+# directory sits on (tmpfs before the disk was put in, ext4 after).
+FAKE_DF = """#!/usr/bin/env bash
+echo "Type Avail"
+echo "${FAKE_DF_FSTYPE:-tmpfs} 373G"
+"""
 
 
 @unittest.skipUnless(shutil.which("rsync"), "the lane overlay needs rsync")
@@ -1551,11 +1570,17 @@ class TestGateHost(TokenTestCase):
         self.assertEqual("changed, not committed\n", (wt / "README.md").read_text())
         self.assertEqual("untracked\n", (wt / "notes" / "new.txt").read_text())
         self.assertFalse((wt / "gone.txt").exists())
-        for never in (".env", ".env.local", "vault.env", "notes/vault-pass.txt",
+        for never in (".env.local", "vault.env", "notes/vault-pass.txt",
                       "ignored.txt"):
             with self.subTest(path=never):
                 self.assertFalse((wt / never).exists())
         self.assertNotIn("NEVER=sent", self.ssh_log.read_text())
+        # The `.env` there is the secret-free lane env, never this tree's (GH #942).
+        lane_env = subprocess.run([sys.executable, str(self.tree / "scripts" / "gate_plan.py"),
+                                   "--print", "lane-env"], capture_output=True, text=True,
+                                  check=True).stdout
+        self.assertEqual(lane_env, (wt / ".env").read_text())
+        self.assertNotIn("NEVER", (wt / ".env").read_text())
 
     def test_a_second_run_takes_the_new_state(self):
         self.host_gate(PLAN_HOST, "--host", "north")
@@ -1601,35 +1626,151 @@ class TestGateHost(TokenTestCase):
         self.assertRegex(res.stdout, r"(?m)^GATE bad \[scope-bad\] \d+s RED")
         self.assertRegex(res.stdout, r"(?m)^GATE-SUMMARY .* RED$")
 
-    def test_env_stations_run_here_with_a_second_summary(self):
-        res = self.host_gate(PLAN_HOST_ENV % "true", "--host", "north")
+    def test_env_stations_run_on_the_lane_with_one_summary(self):
+        res = self.host_gate(PLAN_HOST_ENV % "test -f .env", "--host", "north")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         sums = [l for l in res.stdout.splitlines() if l.startswith("GATE-SUMMARY ")]
-        self.assertEqual(2, len(sums), res.stdout)
-        self.assertTrue(all(l.endswith(" GREEN") for l in sums), sums)
+        self.assertEqual(1, len(sums), res.stdout)
+        self.assertTrue(sums[0].endswith(" GREEN"), sums)
         latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
-        self.assertIn("SKIP no-env (lane)", (latest / "run.log").read_text())
-        self.assertRegex((latest / "run-local.log").read_text(),
+        self.assertRegex((latest / "run.log").read_text(),
                          r"(?m)^GATE scenarios:memory \[1 case\] \d+s GREEN")
+        self.assertFalse((latest / "run-local.log").exists())
 
-    def test_node_and_ref_stations_run_here_and_the_audit_sees_the_lane(self):
-        res = self.host_gate(PLAN_HOST_LOCAL, "--host", "north")
+    def test_node_and_ref_stations_run_on_the_lane(self):
+        _git(self.repo, "branch", "github-main", "master")
+        res = self.host_gate(PLAN_HOST_LOCAL, "--host", "north",
+                             env={"MECLAW_GATE_NODE": "sh"})
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
         remote = (latest / "run.log").read_text()
-        self.assertRegex(remote, r"(?m)^GATE display-lab \[unittest\] 0s SKIP no-node \(lane\)$")
-        self.assertRegex(remote, r"(?m)^GATE export-audit \[R1-R17 dry\] 0s SKIP no-ref \(lane\)$")
-        local = (latest / "run-local.log").read_text()
-        self.assertRegex(local, r"(?m)^GATE display-lab \[unittest\] \d+s GREEN")
-        self.assertRegex(local, r"(?m)^GATE export-audit \[R1-R17 dry\] \d+s GREEN")
-        self.assertNotRegex(local, r"(?m)^GATE ok ")
+        self.assertRegex(remote, r"(?m)^GATE display-lab \[unittest\] \d+s GREEN")
+        self.assertRegex(remote, r"(?m)^GATE export-audit \[R1-R17 dry\] \d+s GREEN")
+        self.assertFalse((latest / "run-local.log").exists())
 
-    def test_a_red_env_station_here_makes_the_gate_red(self):
+    def test_a_red_env_station_on_the_lane_makes_the_gate_red(self):
         res = self.host_gate(PLAN_HOST_ENV % "false", "--host", "north")
         self.assertEqual(1, res.returncode, res.stdout + res.stderr)
         self.assertRegex(res.stdout, r"(?m)^GATE scenarios:memory \[1 case\] \d+s RED")
         latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
         self.assertIn(" RED", (latest / "summary.txt").read_text())
+
+    def test_gate_on_host_pushes_the_export_ref(self):
+        _git(self.repo, "branch", "github-main", "master")
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        bare = self.remote / "meclaw.git"
+        there = subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "github-main"],
+                               capture_output=True, text=True).stdout.strip()
+        here = _git(self.repo, "rev-parse", "github-main").stdout.strip()
+        self.assertEqual(here, there)
+        # ... and the host's worktree sees it, like the audit will.
+        seen = subprocess.run(["git", "-C", str(self.wt()), "rev-parse", "github-main"],
+                              capture_output=True, text=True).stdout.strip()
+        self.assertEqual(here, seen)
+
+    def test_without_the_export_ref_the_push_still_goes(self):
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    # OR-BC.L.4: the export audit on the host calls `git ls-remote origin main`,
+    # so the bare repository gets this tree's `origin` -- but only a plain
+    # https URL. A URL with credentials would put a token on the host, an ssh
+    # URL would need a key the host does not have (Review L, Important 2).
+    def origin_on_host(self, url):
+        _git(self.repo, "remote", "add", "origin", url)
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        got = subprocess.run(["git", "--git-dir", str(self.remote / "meclaw.git"),
+                              "config", "--get", "remote.origin.url"],
+                             capture_output=True, text=True).stdout.strip()
+        return got
+
+    def test_an_origin_with_credentials_is_not_set_on_the_host(self):
+        self.assertEqual("", self.origin_on_host("https://user:tok3n@git.example.invalid/x.git"))
+        self.assertNotIn("tok3n", self.ssh_log.read_text())
+
+    def test_an_ssh_origin_is_not_set_on_the_host(self):
+        self.assertEqual("", self.origin_on_host("git@git.example.invalid:x/y.git"))
+        self.assertNotIn("git.example.invalid", self.ssh_log.read_text())
+
+    def test_a_plain_https_origin_is_set_on_the_host(self):
+        url = "https://git.example.invalid/x/y.git"
+        self.assertEqual(url, self.origin_on_host(url))
+
+    def test_gate_on_host_pushes_master_too(self):
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        there = subprocess.run(["git", "--git-dir", str(self.remote / "meclaw.git"),
+                                "rev-parse", "refs/heads/master"],
+                               capture_output=True, text=True).stdout.strip()
+        self.assertEqual(_git(self.repo, "rev-parse", "master").stdout.strip(), there)
+
+    # --- `strand.sh test` (GH #942): a single test on the held lane.
+
+    def fake_cargo(self):
+        (self.bin / "cargo").write_text(FAKE_CARGO)
+        (self.bin / "cargo").chmod(0o755)
+        home = pathlib.Path(self._tmp.name) / "home"
+        home.mkdir(exist_ok=True)
+        self.cargo_log = pathlib.Path(self._tmp.name) / "cargo.log"
+        return {"HOME": str(home), "FAKE_CARGO_LOG": str(self.cargo_log)}
+
+    def strand_test(self, *args, skip=None, env=None):
+        extra = {"PATH": "%s:%s" % (self.bin, os.environ["PATH"]),
+                 "MECLAW_LANE_ROOT": str(self.remote),
+                 "FAKE_SSH_LOG": str(self.ssh_log)}
+        if skip:
+            extra["MECLAW_STRAND_TOKEN_SKIP"] = skip
+        extra.update(env or {})
+        return run_strand(self.repo, "test", *args, cwd=self.tree, extra_env=extra)
+
+    def test_strand_test_runs_the_filter_on_the_held_lane(self):
+        env = self.fake_cargo()
+        self.arm("--lanes", "north,south")
+        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
+        res = self.strand_test("binary(~gh1_x)", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        # Push and overlay: the host's tree is this tree.
+        self.assertEqual("changed, not committed\n", (self.wt() / "README.md").read_text())
+        # The filter ran THERE, through the tier script.
+        self.assertIn("-E binary(~gh1_x)", self.cargo_log.read_text())
+        self.assertRegex(self.ssh_log.read_text(), r"scripts/test-tier\.sh filter")
+        # The full log lies here, and the last line is the verdict.
+        logs = sorted((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").glob("test-*/test.log"))
+        self.assertEqual(1, len(logs))
+        self.assertIn("3 tests run: 3 passed", logs[0].read_text())
+        last = res.stdout.strip().splitlines()[-1]
+        self.assertRegex(last, r"^TEST \[binary\(~gh1_x\)\] 3/3 \d+s GREEN$")
+        # A test run is no gate run: `latest` is not moved.
+        self.assertFalse((self.receipts() / "latest").exists())
+
+    def test_strand_test_passes_the_remote_exit_through(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_RC": "100", "FAKE_CARGO_PASSED": "2"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1],
+                         r"^TEST \[binary\(~gh1_x\)\] 2/3 \d+s RED$")
+
+    def test_strand_test_without_a_token_is_exit_three(self):
+        env = self.fake_cargo()
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", env=env)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("", self.ssh_log.read_text())
+        self.arm("--lanes", "north,south")
+        res = self.strand_test("binary(~gh1_x)", env=env)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("", self.ssh_log.read_text())
+
+    def test_strand_test_without_a_filter_is_exit_two(self):
+        res = self.strand_test(skip="lane-test")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+
+    def test_strand_test_on_an_unreachable_lane_is_exit_two(self):
+        res = self.strand_test("binary(~gh1_x)", "--host", "ghost", skip="lane-test")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand: lane ghost unreachable", res.stderr)
 
     def test_without_host_and_lane_the_gate_stays_local(self):
         res = self.host_gate(PLAN_HOST)
@@ -1679,9 +1820,11 @@ class TestGateHost(TokenTestCase):
         self.assertEqual("untracked\n", (wt / "examples/vault-pilot/c.txt").read_text())
         self.assertEqual("KEY=\nOTHER=\n", (wt / ".env.example").read_text())
         self.assertFalse((wt / "templates/vault/a.json").exists())
-        for never in (".env", ".env.local", "vault.env", "notes/vault-pass.txt"):
+        for never in (".env.local", "vault.env", "notes/vault-pass.txt"):
             with self.subTest(path=never):
                 self.assertFalse((wt / never).exists())
+        # The `.env` there is the lane's own, secret-free (GH #942).
+        self.assertNotIn("NEVER", (wt / ".env").read_text())
 
     def assert_refused(self, res, path):
         self.assertEqual(2, res.returncode, res.stdout + res.stderr)
@@ -1769,8 +1912,26 @@ class TestLanesStatus(TokenTestCase):
         self.assertEqual(0, res.returncode, res.stderr)
         lines = res.stdout.splitlines()
         self.assertEqual(3, len(lines), res.stdout)
-        self.assertRegex(lines[0], r"^north\s+reachable\s+free \d+G\s+bare none$")
+        self.assertRegex(lines[0], r"^north\s+reachable\s+fs \S+\s+free \d+G\s+bare none$")
         self.assertRegex(lines[2], r"^ghost\s+unreachable$")
+
+    def test_lanes_status_names_the_target_filesystem(self):
+        tmp = pathlib.Path(self._tmp.name)
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        b = tmp / "bin"; b.mkdir()
+        (b / "ssh").write_text(FAKE_SSH); (b / "ssh").chmod(0o755)
+        (b / "df").write_text(FAKE_DF); (b / "df").chmod(0o755)
+        (tmp / "remote").mkdir()
+        for fstype in ("tmpfs", "ext4"):
+            with self.subTest(fs=fstype):
+                res = run_strand(self.repo, "lanes", "status", extra_env={
+                    "PATH": "%s:%s" % (b, os.environ["PATH"]),
+                    "MECLAW_LANE_ROOT": str(tmp / "remote"),
+                    "FAKE_SSH_LOG": str(tmp / "ssh.log"),
+                    "FAKE_DF_FSTYPE": fstype})
+                self.assertEqual(0, res.returncode, res.stderr)
+                self.assertRegex(res.stdout.splitlines()[0],
+                                 r"^north\s+reachable\s+fs %s\s+free 373G\s+bare none$" % fstype)
 
 
 class TestTokenGuards(TokenTestCase):
@@ -1812,6 +1973,75 @@ class TestTokenGuards(TokenTestCase):
                 self.assertEqual(0, res.returncode, res.stdout + res.stderr)
                 self.assertIn("tier-dry:", res.stdout)
                 self.assertNotIn(REFUSED, res.stderr)
+
+    # --- GH #942: while the lanes are armed, the owner's machine runs no cargo.
+    # A lab colony died at load 15 on 2026-10-02 while strands built there.
+
+    LANES_REFUSED = "lanes active: use scripts/strand.sh test|gate --host <lane>"
+    PLAN_CARGO = "ok\tscope-ok\t0\ttrue\t\nclippy\tworkspace\t1\ttrue\t\n"
+
+    def run_gate_sh(self, *args, plan=PLAN_CARGO, env=None):
+        extra = {"MECLAW_GATE_PLAN": str(self.plan_file(plan, name="cargo-plan.tsv")),
+                 "MECLAW_GATE_DRY": "1"}
+        extra.update(env or {})
+        return subprocess.run([str(self.tree / "scripts" / "gate.sh")] + list(args),
+                              cwd=str(self.tree), env=kit_env(self.repo, extra),
+                              capture_output=True, text=True, timeout=120)
+
+    def test_lanes_mode_refuses_local_cargo(self):
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        self.arm("--lanes", "north,south")
+        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
+        # The tier, every form, and a gate with a cargo station: exit 3.
+        res = run_tier(self.repo, self.tree)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(self.LANES_REFUSED, res.stderr)
+        self.assertNotIn("tier-dry:", res.stdout)
+        res = self.run_gate_sh("strand")
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(self.LANES_REFUSED, res.stderr)
+        self.assertNotIn("GATE-SUMMARY", res.stdout)
+        # `--only clippy` is cargo, too.
+        res = self.run_gate_sh("strand", "--only", "clippy")
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        # A plan builds nothing, a scripts-only plan runs no cargo, and a run
+        # on a lane is the lane's business.
+        self.assertEqual(0, self.run_gate_sh("strand", "--plan-only").returncode)
+        res = self.run_gate_sh("strand", plan=PLAN_GREEN)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        res = self.run_gate_sh("strand", "--only", "ok")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        res = self.run_gate_sh("strand", "--lane", "--base", "master")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        # The way out names its reason, and the receipt carries it.
+        res = self.run_gate_sh("strand", env={"MECLAW_LANE_LOCAL_OK": "owner said so"})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^GATE lane-local-ok \[.*\] 0s NOTE owner said so$")
+        res = run_tier(self.repo, self.tree, {"MECLAW_LANE_LOCAL_OK": "owner said so"})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("tier-dry:", res.stdout)
+
+    # Review L Minor 1: the exception is the CI runner (`$CI`), like the tier,
+    # not the mode `ci` -- a local `gate.sh ci` with a cargo station is local
+    # cargo all the same.
+    def test_a_local_ci_mode_gate_is_refused_but_ci_runs(self):
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        self.arm("--lanes", "north,south")
+        self.take(None, cwd=self.tree)
+        res = self.run_gate_sh("ci", env={"CI": ""})
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(self.LANES_REFUSED, res.stderr)
+        res = self.run_gate_sh("strand", env={"CI": "true"})
+        self.assertNotIn(self.LANES_REFUSED, res.stderr)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    def test_a_cargo_token_without_lanes_keeps_local_cargo(self):
+        self.arm("--max", "1")
+        self.take(None, cwd=self.tree)
+        res = run_tier(self.repo, self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        res = self.run_gate_sh("strand")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
 
     def test_a_broken_token_file_is_exit_2_at_the_gate_and_the_tier(self):
         """A broken file is a call to look at it, not a missing token: the

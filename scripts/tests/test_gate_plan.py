@@ -1820,9 +1820,9 @@ class ScenarioFilterFollowsTheTree(unittest.TestCase):
 class EnvStationsAreMarked(unittest.TestCase):
     """GH #934: the stations whose runner reads `<repo>/.env`.
 
-    A build host gets no `.env` (it never leaves the owner's machine), so
-    `gate.sh --lane` skips these and the kit runs them locally afterwards. The
-    mark lives here, beside the stations, and nowhere else.
+    A build host never gets the owner's `.env`; it gets a secret-free one
+    (`--print lane-env`, GH #942) and runs these stations there like any other.
+    The mark lives here, beside the stations, and nowhere else.
     """
 
     def test_the_marked_stations(self):
@@ -1855,33 +1855,54 @@ class EnvStationsAreMarked(unittest.TestCase):
         out = gp.to_json(["scripts/strand.sh"], "strand", None)
         self.assertFalse([r["name"] for r in out["stations"] if r.get("env")])
 
-    # --- OR-S3-96: what else a lane lacks. A build host has no `node` and no
-    # `github-main` ref either, so those stations run here as well -- the same
-    # list, one reason per station.
+    # --- GH #942: a lane runs EVERY station. The owner's machine runs no cargo
+    # while a wave builds on the lanes (a lab colony died at load 15 on
+    # 2026-10-02), so nothing is left over to run here after a lane: the env
+    # stations get a secret-free `.env` there, `display-lab` finds `node` there
+    # and `export-audit` gets the `github-main` ref pushed along.
 
-    def test_the_lane_local_stations_and_their_reasons(self):
-        self.assertEqual(dict(gp.LANE_LOCAL), {
-            "scenarios:memory": "no-env", "scenarios:builder": "no-env",
-            "guide-selftest": "no-env", "display-lab": "no-node",
-            "export-audit": "no-ref"})
-
-    def test_every_env_station_is_lane_local_with_no_env(self):
-        for name in gp.ENV_STATIONS:
-            with self.subTest(station=name):
-                self.assertEqual("no-env", gp.LANE_LOCAL[name])
-
-    def test_every_lane_local_station_is_a_station(self):
-        for name in gp.LANE_LOCAL:
-            with self.subTest(station=name):
-                self.assertIn(name, gp.STATION_ORDER)
-
-    def test_print_lane_local(self):
+    def test_lane_local_is_empty(self):
+        self.assertEqual({}, dict(gp.LANE_LOCAL))
         r = subprocess.run([sys.executable, str(SCRIPTS / "gate_plan.py"),
                             "--print", "lane-local"],
                            capture_output=True, text=True, check=True)
-        self.assertEqual([l.split("\t") for l in r.stdout.splitlines()],
-                         [[n, why] for n, why in gp.LANE_LOCAL.items()])
+        self.assertEqual("", r.stdout)
 
+    def test_lane_env_carries_no_secret_value(self):
+        """`--print lane-env`: the allowlist with its constants, read from no file.
+
+        The generator runs in a tree whose `.env` is unreadable: a generator that
+        opened it would crash, and one that copied a value would show it. A
+        provider key NAME may stand in the table -- a colony with an `llm` cell
+        resolves it at boot, even in the keyless class (GH #942) -- but only with
+        the constant non-secret placeholder `lane-stub`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / ".env"
+            env_file.write_text("OPENROUTER_API_KEY=never\nMODEL_EXTRACTOR=never\n")
+            env_file.chmod(0)
+            r = subprocess.run([sys.executable, str(SCRIPTS / "gate_plan.py"),
+                                "--print", "lane-env", "--repo", tmp],
+                               cwd=tmp, capture_output=True, text=True)
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertNotIn("never", r.stdout)
+        pairs = [l.split("=", 1) for l in r.stdout.splitlines()]
+        self.assertTrue(pairs)
+        self.assertEqual(dict(pairs), dict(gp.LANE_ENV))
+        for name, value in pairs:
+            with self.subTest(name=name):
+                self.assertIn(value, ("lane-stub", "low", "8"))
+                if re.search(r"KEY|TOKEN|SECRET|PASS", name):
+                    self.assertEqual("lane-stub", value)
+
+    def test_lane_env_covers_what_the_suites_read(self):
+        """The allowlist IS the contract: every name the scenario runners copy
+        out of `.env` and a boot resolves (L-0, GH #942), and not one name more."""
+        self.assertEqual(set(gp.LANE_ENV), {
+            "MODEL_EXTRACTOR", "MODEL_DIALECTIC", "MODEL_DREAMER", "MODEL_JUDGE",
+            "MODEL_CLOSER", "MEMORY_EMBED_MODEL", "MEMORY_EMBED_DIM",
+            "MEMORY_REASONING_EXTRACT", "MEMORY_REASONING_DIALECTIC",
+            "MEMORY_REASONING_DREAM", "MEMORY_REASONING_JUDGE",
+            "MEMORY_REASONING_CLOSE", "MODEL_BUILDER", "OPENROUTER_API_KEY"})
 
 if __name__ == "__main__":
     unittest.main()

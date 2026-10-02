@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.2.2"
+            "template": "meclaw-os@2.2.3"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.1.2"
+            "template": "org@2.1.3"
           }
         ],
         "add_edges": [
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.3.2"
+            "template": "member@2.4.0"
           }
         ],
         "add_edges": [
@@ -249,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@3.4.2",
+            "template": "assistant@3.5.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -507,7 +507,7 @@
           {
             "from": "./telegram",
             "to": ".",
-            "condition": "!has(hop.error_code)",
+            "condition": "!has(hop.error_code) && has(hop.chat_id) && (string(hop.chat_id) == '4711' || string(hop.chat_id).startsWith('4711:'))",
             "modifier": {
               "set_hop": {
                 "route": "'turn'"

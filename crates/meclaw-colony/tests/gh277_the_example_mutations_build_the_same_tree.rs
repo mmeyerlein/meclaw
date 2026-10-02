@@ -794,7 +794,11 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// exit), and `talky@6` and `cogny@5` two each of their own (`. -> ./curator`
 /// on `in_stats`, `./curator -> .` on `stats`). Two talkies and one cogny:
 /// 3 x 4 + 2 x 2 + 1 x 2. MEASURED.
-const EDGES: usize = 401;
+///
+/// Moved 401 -> 403 with GH #940: every `session-keeper` carries one edge
+/// more (`./stamp -> .` on `close`, the round change hands its generation
+/// over), and each of the two talkies holds one keeper. MEASURED.
+const EDGES: usize = 403;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

@@ -37,9 +37,9 @@
 //!    shape of a rebuild -- cover, kept rows, sizes, releases, shrunk results,
 //!    stubs -- follows from the rows and marks of the round the rebuild is
 //!    made in alone; the marks of another round stay ahead of that round's
-//!    cursor, never lost, and never shape this round's window. One plan per
-//!    hive stays: where a rebuild that ANOTHER round caused cuts the window
-//!    is a residual channel (a plan per round is a later item),
+//!    cursor, never lost, and never shape this round's window. Since GH #943
+//!    every round has a plan of its own (`window_plan:<round key>`), so a
+//!    rebuild that ANOTHER round caused no longer cuts this round's window,
 //! 6. the turn index (`turn_write`: `hop.turn_id`, `hop.turn_index`), which
 //!    also has the per-round form and runs 0, 1, 2 in both tracks.
 //!
@@ -769,7 +769,12 @@ fn rebuild_in_ea(h: &mut Hive) {
     while !h.summ.is_empty() {
         h.answer("cw932 summary: the parcel, the lease, the market.", "stop");
     }
-    assert_ne!(h.plan(), json!({}), "the rebuild finished: {:?}", h.stderr);
+    assert_ne!(
+        h.plan_in(ROUND_EA),
+        json!({}),
+        "the rebuild finished: {:?}",
+        h.stderr
+    );
 }
 
 /// The shape of the stored plan in terms of the rows {e,a} sees: `cover`
@@ -779,7 +784,7 @@ fn rebuild_in_ea(h: &mut Hive) {
 /// of each kept row); `released`, `shrunk` and `stubs` are block ids and
 /// tool names and are taken as they are.
 fn plan_shape(h: &Hive) -> Value {
-    let plan = h.plan();
+    let plan = h.plan_in(ROUND_EA);
     let visible = format!("audience_set IN ('{CANON_EA}', '{SHARED}', '[\"*\"]')");
     let cover = plan["cover"].as_i64().unwrap_or(0);
     let below = h.rows(&format!(
@@ -849,9 +854,8 @@ fn the_window_shape_of_a_round_is_the_same_with_and_without_another_rounds_rows_
 /// them: the cursor of {e,a} moves (`marks_to_by`), the floor `marks_to`
 /// and the cursor of {e,b} stay below both marks, so the next rebuild in
 /// {e,b} still reads them (OR-S3.K.13). What {e,a} sees released
-/// (`released`) does not carry them. Read off the plan; the harness's single
-/// plan cannot be rebuilt in {e,b} without moving the cover past the shared
-/// rows first.
+/// (`released`) does not carry them. Read off the plan of {e,a}; since
+/// GH #943 {e,b} keeps a plan of its own, which this rebuild does not write.
 #[test]
 fn another_rounds_marks_survive_a_rebuild_under_this_one() {
     if !shipped() {
@@ -859,7 +863,7 @@ fn another_rounds_marks_survive_a_rebuild_under_this_one() {
     }
     let mut b = rebuild_track(true);
     rebuild_in_ea(&mut b);
-    let plan = b.plan();
+    let plan = b.plan_in(ROUND_EA);
     let (x, y) = shared_ids();
     assert_eq!(plan["round"], CANON_EA, "the round of the rebuild: {plan}");
     let eb_seqs: Vec<i64> = b

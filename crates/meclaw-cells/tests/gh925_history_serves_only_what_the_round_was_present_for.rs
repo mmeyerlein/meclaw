@@ -956,6 +956,33 @@ fn sweep() -> Message {
         .build()
 }
 
+/// Until `words` stand on the wall under a session of `channel` -- the tap
+/// writes an answer behind its delivery, so an answer at the port is not yet
+/// a row of the ledger.
+async fn until_on_wall(db: &std::path::Path, channel: &str, words: &str) {
+    let prefix = format!("{channel}-");
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let on_wall = query(
+            db,
+            "SELECT w.session_id, b.body FROM wall w LEFT JOIN blocks b ON b.hash = w.hash",
+        )
+        .into_iter()
+        .any(|r| {
+            r[0].as_deref().is_some_and(|sid| sid.starts_with(&prefix))
+                && r[1].as_deref().is_some_and(|b| b.contains(words))
+        });
+        if on_wall {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "`{words}` did not reach the wall within {DEADLINE:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════ the locks
 
 /// Cases 1-4 and the row from before the rule: five sessions of one talky,
@@ -1630,18 +1657,19 @@ async fn a_pin_reaches_only_the_rounds_its_audience_holds() {
 }
 
 /// Case 8: a closed session hands the memory only what its round was present
-/// for. One channel, one generation: turn one in {e,a} opens it, and the
-/// session keeper records {e,a} as the generation's round -- the close round
-/// the curator's `./writer` gates by. Turn two in {e,b} and turn three without
-/// a round join the open generation (the stamp records a round only when it
-/// opens one), so the session's wall holds rows of {e,a}, of {e,b} and without
-/// an audience; the ledger is read to show the three are there. Turns one and
-/// two each run a tool round, so the batch's `rounds` -- the raw rows -- are
-/// gated where there is something to gate: turn one's are in it, turn two's
-/// not (review R2-I-5; without them the check over `rounds` ran over nothing).
-/// A forced sweep closes the session, and the `write` batch that leaves the
-/// talky -- at the park, where the rim drains it -- carries turn one and
-/// nothing else.
+/// for. One channel: turn one in {e,a} opens a generation, and the session
+/// keeper records {e,a} as its round -- the close round the curator's
+/// `./writer` gates by. Since GH #940 (ADR-0002 E8) a round change ENDS the
+/// generation: turn two in {e,b} seals the {e,a} generation and runs in one of
+/// its own, turn three without a round runs in the round-less one, so the
+/// channel's wall holds rows of {e,a}, of {e,b} and without an audience, each
+/// under its own session; the ledger is read to show the three are there.
+/// Turns one and two each run a tool round, so the batch's `rounds` -- the raw
+/// rows -- are gated where there is something to gate: turn one's are in it,
+/// turn two's not (review R2-I-5; without them the check over `rounds` ran over
+/// nothing). The {e,a} generation's `write` batch -- sent when turn two sealed
+/// it, the forced sweep closes the other two -- leaves the talky at the park,
+/// where the rim drains it, and carries turn one and nothing else.
 /// Turn three's rows stand for the rows from before the rule: the session id
 /// is minted when turn one opens the generation, so a row sown before the
 /// boot could not name it without sowing the generation row too, and that
@@ -1683,11 +1711,15 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
     ] {
         h.send(talky_turn(CLOSE_CHANNEL, round, says)).await;
         answer_saying(&mut ports.talky, &root, reply, CLOSE_CHANNEL).await;
+        // because GH #940 / ADR-0002 E8: the NEXT turn's round change seals this
+        // generation mid-turn, and its close reads the wall at that moment --
+        // so this turn's answer has to stand on it first (the tap writes it
+        // behind the delivery).
+        until_on_wall(&ledger_db(&root, "talky"), CLOSE_CHANNEL, reply).await;
     }
 
-    // The ledger first, polled until turn three's answer stands on the wall
-    // (the tap writes it behind the delivery): the close reads a wall that
-    // holds all three turns.
+    // The ledger first, read once turn three's answer stands on the wall (the
+    // loop above waited for it): it holds all three turns.
     let db = ledger_db(&root, "talky");
     let prefix = format!("{CLOSE_CHANNEL}-");
     let deadline = Instant::now() + DEADLINE;
@@ -1715,6 +1747,34 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
 
+    // because GH #940 / ADR-0002 E8: a round change ends the generation, so
+    // the three turns are three generations of the channel, each of ONE round
+    // -- {e,a}, {e,b} and none (`[]`, PP-BD-12).
+    let (ea, eb) = (canonical(ROUND_EA), canonical(ROUND_EB));
+    let mut rounds_of: BTreeMap<String, BTreeSet<Option<String>>> = BTreeMap::new();
+    for r in &wall {
+        if let Some(sid) = r[0].clone() {
+            rounds_of.entry(sid).or_default().insert(r[3].clone());
+        }
+    }
+    assert_eq!(
+        rounds_of.len(),
+        3,
+        "the three turns are three generations of the channel: {wall:#?}"
+    );
+    for (sid, rounds) in &rounds_of {
+        assert_eq!(
+            rounds.len(),
+            1,
+            "generation {sid} holds rows of more than one round: {wall:#?}"
+        );
+    }
+    let session = rounds_of
+        .iter()
+        .find(|(_, rounds)| rounds.contains(&Some(ea.clone())))
+        .map(|(sid, _)| sid.clone())
+        .unwrap_or_else(|| panic!("no generation of {{e,a}} on the wall: {wall:#?}"));
+
     h.send(sweep()).await;
     let deadline = Instant::now() + DEADLINE;
     let mut parked = Vec::new();
@@ -1723,7 +1783,10 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
         match tokio::time::timeout(left, ports.park.recv()).await {
             Ok(Some(m)) => {
                 let route = m.headers.hop.get("route").and_then(Value::as_str);
-                if route == Some("write") {
+                // because GH #940 / ADR-0002 E8: three generations close, one
+                // `write` batch each; the {e,a} one is the batch under test.
+                let of = m.headers.hop.get("session_id").and_then(Value::as_str);
+                if route == Some("write") && of == Some(session.as_str()) {
                     break m;
                 }
                 parked.push(route.unwrap_or_default().to_string());
@@ -1746,17 +1809,8 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
          Dead letters: {dead:#?}"
     );
 
-    // The session, as the ledger holds it: ONE generation of the channel, and
-    // in it every turn's words under the round they were said in -- {e,a},
-    // {e,b} and none.
-    let sessions: BTreeSet<String> = wall.iter().filter_map(|r| r[0].clone()).collect();
-    assert_eq!(
-        sessions.len(),
-        1,
-        "the three turns are one generation of the channel: {wall:#?}"
-    );
-    let session = sessions.into_iter().next().unwrap_or_default();
-    let (ea, eb) = (canonical(ROUND_EA), canonical(ROUND_EB));
+    // The channel, as the ledger holds it: every turn's words under the round
+    // they were said in -- {e,a}, {e,b} and none.
     for (words, want) in [
         (CLOSE_ONE_SAYS, Some(ea.as_str())),
         (CLOSE_ONE_REPLY, Some(ea.as_str())),
@@ -1785,7 +1839,7 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
     assert_eq!(
         audiences,
         BTreeSet::from([Some(ea.clone()), Some(eb.clone()), Some("[]".to_string())]),
-        "the session holds rows of {{e,a}}, of {{e,b}} and of no round (`[]`, \
+        "the channel's wall holds rows of {{e,a}}, of {{e,b}} and of no round (`[]`, \
          PP-BD-12): {wall:#?}"
     );
     // What the close round may hand on, counted off the ledger the way the

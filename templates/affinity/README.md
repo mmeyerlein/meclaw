@@ -1,4 +1,4 @@
-# `affinity@3.7.0`
+# `affinity@3.8.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -562,13 +562,16 @@ store -- both twins see the collision the same way -- and it only ever grows: a 
 top-level body slot beside `messages` and `system`:
 
 ```json
-{"who": {"ref": "3a47fe3e", "name": "Jonas", "identity": "colA/org1/jonas/-", "known": false}}
+{"who": {"ref": "3a47fe3e", "name": "Jonas", "identity": "colA/org1/jonas/-", "known": true}}
 ```
 
 `known` is whether an active entity of this record has the subject as its `entity_id` (or the
-same identity under another prefix); `name` is that entity's `display_name`, else the name an
-edge stamped as `context.counterpart_name`, else the last segment of the identity that is not
-`-`, capped at 64 characters. `who` rides the served brief AND every refusal after the lane
+same identity under another prefix); `name` is the name THIS round was released -- the same
+rule and the same cut view as the slot head (#939): the entity's `display_name` when every word
+of it is a released name part, else the released parts, capped at 64 characters -- and the key
+is **absent** when the disclosure releases no name part (a refusal before the disclosure is
+read releases none). Never the full `display_name` past the disclosure rows, never the
+edge-stamped `context.counterpart_name` in its place. `who` rides the served brief AND every refusal after the lane
 read it -- `audience_not_subset`, `not_disclosed`, `unknown_subject` -- whose subject is **in the
 round**: the declared set plus the asker, compared identity to identity. The identity of
 somebody in the room is what the channel already shows, so naming it discloses nothing, and a
@@ -581,7 +584,7 @@ the push lane, whose body stays `system.*` and nothing else. The price is one re
 columns of `entities` per tool-lane brief, ordered by `entity_id` and bounded at 5 000 rows.
 Beyond that bound the check sees the first rows only: a collision further on is missed (the
 reference stays 8 characters), and a subject whose row lies further on reads as `known: false`
-with the stamped name or its segment -- a less precise name, never another participant's.
+-- a less precise answer, never another participant's.
 
 **What reads it.** The collector turns `who` into the session's legend and into the
 `speaker_ref`/`speaker` of a peer turn, and the llm cell frames such a turn as
@@ -660,7 +663,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.7.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.8.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -974,7 +977,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.7.0`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.8.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

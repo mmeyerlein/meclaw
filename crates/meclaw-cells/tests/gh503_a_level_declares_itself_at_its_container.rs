@@ -102,8 +102,9 @@ fn levels() -> Vec<(&'static str, &'static str, &'static str, Value)> {
             "channel",
             MEMBER,
             "channels",
-            // GH #517 -- the person the channel's round names, from the wish
-            json!({"name": "telegram", "assistant": "scribe",
+            // GH #517 -- the person the channel's round names, from the wish;
+            // GH #940 -- and the chat the channel is bound to
+            json!({"name": "telegram", "assistant": "scribe", "bind_chat": "4711",
                    "ctx": {"member_person": "alex"}}),
         ),
         (

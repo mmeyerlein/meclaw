@@ -4,7 +4,7 @@
 //! the whole space in one process for the calls (the shipped edges evaluated by
 //! the colony's CEL, the store behind its own dispatcher).
 //!
-//! 1. **One list, one op per name.** `FILE_OFFER` holds 28 tools, every name is
+//! 1. **One list, one op per name.** `FILE_OFFER` holds 30 tools, every name is
 //!    `file_<op>` of an op the space's own cells serve (`./read` `OPS`,
 //!    `./write` `WRITE_OPS`, `./ws` `OPS`), the lane follows from the name, and
 //!    `raw`, `ws_tree` and the projection ops are on no menu (OR-FJ-G4).
@@ -51,7 +51,7 @@ fn space() -> Space {
     )
 }
 
-const READS: [&str; 10] = [
+const READS: [&str; 12] = [
     "file_info",
     "file_read",
     "file_search",
@@ -62,6 +62,8 @@ const READS: [&str; 10] = [
     "file_diff",
     "file_list",
     "file_find",
+    "file_outline",
+    "file_links",
 ];
 
 #[test]
@@ -84,7 +86,7 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
         .into_iter()
         .collect();
     let rows = map.as_array().unwrap();
-    assert_eq!(rows.len(), 28, "28 file tools: {map}");
+    assert_eq!(rows.len(), 30, "30 file tools: {map}");
     let mut seen = BTreeSet::new();
     let (mut r, mut w, mut s) = (Vec::new(), 0, 0);
     for row in rows {
@@ -117,7 +119,7 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
             assert_ne!(op, banned, "{banned} is on no menu (OR-FJ-G4)");
         }
     }
-    assert_eq!(r, READS.to_vec(), "the ten reads, in menu order");
+    assert_eq!(r, READS.to_vec(), "the twelve reads, in menu order");
     assert_eq!((w, s), (11, 7), "eleven writes, seven workspace ops");
     // `ask` is the one read `./read` does not serve: `./derive` does (B1 E).
     assert!(!read_ops.contains("ask"));

@@ -1,4 +1,4 @@
-# `assistant@3.4.2`
+# `assistant@3.5.0`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and eighty-two edges.
@@ -129,7 +129,7 @@ level, and each talky's four edges are rendered by the same rule rather than typ
 | `in_import` | `. -> ./<t>`, `hop.import_hive.startsWith('<t>/')` | a part is addressed with the keeper's path under the generation, and the talky named by its first segment takes it; `./talky`, the default rim, also takes a part with no address, because a bare route is what the mutation door's lane probe sends |
 | `export_done`, `dump` | `./<t> -> .`, plain, with the level's exit scrub | a drain that tests a second key reads as no drain under the `required_drains` probe |
 
-That became possible in `session-keeper@2.2.2`: until then every keeper filed its document
+That became possible in `session-keeper@2.3.0`: until then every keeper filed its document
 under the constant `session-keeper` and the member imported on `hop.import_hive ==
 'session-keeper'`, so two keepers of one generation would have claimed one directory on the
 way out and been indistinguishable on the way in — which is why 2.7.0 drew these four lanes
@@ -246,7 +246,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.4.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.4.2` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out -- three since [#895](https://github.com/mmeyerlein/meclaw/issues/895), when the recipe drew the typed surface's road too |
 | `brief` | the brief of a turn about its counterpart, for the member's `affinity`: raised by a surface's collector when its `brief_slots` is set and the turn carries `context.counterpart`, leaving on a v-lane with `context.brief_surface` stamped. The member stamps the asker. Since 2.9.0 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `error` | a normalised failure from anything inside this generation — the surface or the reasoning core. A **channel's** failure is no longer among them: since #454 the connector stands in the member's `channels` container and its failures leave beside this lane, one level up |
@@ -735,7 +735,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.4.2",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.5.0",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

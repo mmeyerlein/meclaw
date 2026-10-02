@@ -967,7 +967,8 @@ async fn the_first_request_of_a_new_session_is_the_plans_window() {
     until_count(&td, "SELECT COUNT(*) FROM summaries", 1).await;
     until_count(
         &td,
-        "SELECT COUNT(*) FROM state WHERE key = 'window_plan' AND value LIKE '%\"keep\":[1%'",
+        // The plan is the round's (`window_plan:<round key>`, GH #943).
+        "SELECT COUNT(*) FROM state WHERE key LIKE 'window_plan:%' AND value LIKE '%\"keep\":[1%'",
         1,
     )
     .await;
@@ -1043,7 +1044,7 @@ async fn the_leaf_stands_the_session_and_falls_at_the_first_rebuild() {
     // condense, asks no model and still takes the leaf down.
     until_count(
         &td,
-        "SELECT COUNT(*) FROM state WHERE key = 'window_plan' AND value != ''",
+        "SELECT COUNT(*) FROM state WHERE key LIKE 'window_plan:%' AND value != ''",
         1,
     )
     .await;
