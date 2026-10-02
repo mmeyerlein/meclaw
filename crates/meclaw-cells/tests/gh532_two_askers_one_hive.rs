@@ -363,7 +363,19 @@ fn the_members_recall_doors_leave_the_session_alone() {
                 })
         })
         .collect();
-    assert_eq!(doors.len(), 2, "two recall doors, as GH #411 found them");
+    // Two recall doors as GH #411 found them, and a third since GH #951: the
+    // subject question from `./objects` (`facts` -> `in_query`). A pin, not a
+    // floor. The third door stamps `recall_caller = 'objects'` and empty recall
+    // keys, but it neither re-stamps nor drops the session either, so the loop
+    // below holds for it as is.
+    let mut from: Vec<&str> = doors.iter().map(|d| d.from.as_str()).collect();
+    from.sort_unstable();
+    assert_eq!(
+        from,
+        [".", "./assistants", "./objects"],
+        "three recall doors: from ./assistants and . as GH #411 found them, from \
+         ./objects since GH #951"
+    );
     for d in doors {
         let m = d.modifier.as_ref().expect("guarded above");
         assert!(

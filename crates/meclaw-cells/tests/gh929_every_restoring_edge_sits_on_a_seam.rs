@@ -11,9 +11,10 @@
 //!
 //! - **door** -- a unit of work enters the hive that owns it: `in_turn` of an
 //!   assistant generation, a consult between the two brains of a generation,
-//!   a file job inside a file space, an index job in a graph space. Every
-//!   crossing costs a new turn, model call or job, so no routing circle
-//!   returns to the door without one; the condition names the lane.
+//!   a file job inside a file space, an index job in a graph space or in a
+//!   librarian. Every crossing costs a new turn, model call or job, so no
+//!   routing circle returns to the door without one; the condition names the
+//!   lane.
 //! - **curator entry** -- `./collector -> ./curator` on `curate`, bounded by
 //!   the round's iteration counter in the condition.
 //! - **round** -- the loopback of a shape whose round is made of routing
@@ -204,6 +205,29 @@ const SEAMS: &[Row] = &[
         None,
         Seam::Door,
     ),
+    // A directory sync in a file space (GH #947, review I-1): each `in_dirs`
+    // is one sync of one file -- after a derive job, a move or a remove --
+    // and the sync's own reads, claims and rounds are bounded by its script
+    // (`SYNC_READS`, `SYNC_TRIES`, `agg_retries`); nothing in it sends
+    // `in_dirs` again. The derive road before it (a workspace commit with its
+    // embedding and summary) left the sync no budget for a lost round.
+    row(
+        FILE_SPACE,
+        "./write",
+        "./derive",
+        "in_dirs",
+        None,
+        Seam::Door,
+    ),
+    row(FILE_SPACE, "./ws", "./derive", "in_dirs", None, Seam::Door),
+    row(
+        FILE_SPACE,
+        "./derive",
+        "./derive",
+        "in_dirs",
+        None,
+        Seam::Door,
+    ),
     // An index job in a graph space (GH #945): each `source_changed` is one
     // head move of one source, and the graph space answers it with a constant
     // number of pulls and two store bundles -- nothing in it returns to the
@@ -212,6 +236,46 @@ const SEAMS: &[Row] = &[
     row(
         MEMBER,
         "./file-space",
+        "./graph-space",
+        "source_changed",
+        None,
+        Seam::Door,
+    ),
+    // An index job in a librarian (GH #950): the same head move of one source,
+    // answered with one store bundle and at most two pulls (`info`,
+    // `outline`) whose answers write and pull nothing further -- nothing in it
+    // returns to the door without a new head move. One door per file, as in
+    // the graph space.
+    row(
+        MEMBER,
+        "./file-space",
+        "./librarian",
+        "source_changed",
+        None,
+        Seam::Door,
+    ),
+    // The description of that head (GH #950, OR-BC-68): the space emits
+    // `source_described` once its model has summarised the head, a job of its
+    // own after a model call; the librarian writes it with one store bundle
+    // and sends nothing on -- nothing returns to the door without a new
+    // summary.
+    row(
+        MEMBER,
+        "./file-space",
+        "./librarian",
+        "source_described",
+        None,
+        Seam::Door,
+    ),
+    // A recognition becomes a node (GH #951): an object's index job in a
+    // graph space. Each `source_changed` out of `./objects` is one version
+    // change of one active row, and the chain that carries it started at a
+    // turn (a `thing_seen`, a tool write, a facts answer) -- the same seam as
+    // the file space's door above, and nothing in the graph space returns to
+    // it without a new version.
+    row(
+        MEMBER,
+        "./objects",
         "./graph-space",
         "source_changed",
         None,

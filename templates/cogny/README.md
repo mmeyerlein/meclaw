@@ -1,4 +1,4 @@
-# `cogny@5.6.2`
+# `cogny@5.7.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.5.0"},
+{"cell": {"type": "ref", "template": "curator@1.6.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.6.2` above it in its provenance chain.
+`cogny@5.7.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -525,7 +525,7 @@ nothing ever answers.
 
 ## The internal wiring, edge by edge
 
-Forty-two edges in this hive's `params.graph`, plus the five the sealed collector brings
+Forty-six edges in this hive's `params.graph`, plus the five the sealed collector brings
 with it and those the sealed curator brings
 ([`../curator/README.md`](../curator/README.md)) -- those are their own door and store
 edges and are neither drawn nor wireable from here. Every edge below names `collector` and
@@ -675,7 +675,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.6.2", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.7.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

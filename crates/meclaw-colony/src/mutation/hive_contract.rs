@@ -86,6 +86,9 @@
 //! written. So the check BUILDS the hop the lane describes and runs it through
 //! [`crate::edge_table::apply_edges`], the same function that routes the real
 //! message. There is no second opinion to disagree with the first.
+//! The one addition (GH #949, [`door_names_lane`]): a door that REQUIRES the
+//! lane and only narrows it further counts as well, since a probe that carries
+//! `hop.route` alone can never satisfy the narrowing.
 //!
 //! One thing the router alone cannot answer, though (GH #176): an exit that
 //! does not CARRY the lane but CREATES it. A hive's failure exit recognises
@@ -219,11 +222,105 @@ fn hive_path_is_wired(c: &HiveContract, edges: &EdgeTable) -> bool {
 
 /// True iff a message arriving at the hive path on `route` reaches a cell
 /// inside the hive — the hive has a door for that lane.
+///
+/// Two readings, and either one is a door. The router's: the probe of the lane
+/// is run through [`crate::edge_table::apply_edges`] and lands inside. And the
+/// door's own word ([`door_names_lane`]): an edge out of `.` into the hive whose
+/// condition REQUIRES the lane and only narrows it further. The second one
+/// exists because a probe carries `hop.route` and nothing else, so a door that
+/// also picks its target by another field of the message (`hop.organ` naming
+/// one of three brains, GH #949) never fires on it, although every message on
+/// that lane that names a target this hive holds walks straight through it.
 fn door_exists(c: &HiveContract, route: &str, edges: &EdgeTable) -> bool {
     let hive = Path::new(&c.hive_path);
     crate::edge_table::apply_edges(edges, &hive, &HiveContract::probe(route))
         .iter()
         .any(|d| c.is_interior(d.target.as_str()))
+        || edges
+            .edges_from(&hive)
+            .iter()
+            .any(|e| c.is_interior(e.to.as_str()) && door_names_lane(e, route))
+}
+
+/// True iff this edge's condition REQUIRES `hop.route == '<route>'` and adds
+/// nothing but further requirements: the equality is one of the top-level
+/// `&&` terms of the source.
+///
+/// GH #949, the same reasoning as [`door_states_lane`] (GH #176) on the way
+/// in: the rest of the condition is deliberately NOT evaluated. Whether a
+/// given message satisfies it is a statement about that message; whether the
+/// door belongs to the lane is a statement about the door, and only that one
+/// is checkable here. A lane whose door only narrows (`hop.organ` picks one of
+/// three brains, a read that names none takes no edge at all) is a lane the
+/// hive has, and refusing it would push the template into guessing a target.
+///
+/// Read strictly, so it can only ever add a door that names the lane outright:
+/// - a top-level `||` anywhere → the equality is not required, `false`;
+/// - the equality inside parentheses, negated or compared to another lane →
+///   not a top-level term of this route, `false`;
+/// - quotes are respected, so `&&` inside a string literal splits nothing.
+fn door_names_lane(edge: &crate::edge_table::Edge, route: &str) -> bool {
+    let Some(cond) = edge.condition.as_ref() else {
+        return false;
+    };
+    let Some(terms) = top_level_conjuncts(&cond.source) else {
+        return false;
+    };
+    let wanted = [
+        format!("hop.route=='{route}'"),
+        format!("hop.route==\"{route}\""),
+    ];
+    terms.iter().any(|t| {
+        let t: String = t.chars().filter(|ch| !ch.is_whitespace()).collect();
+        wanted.contains(&t)
+    })
+}
+
+/// The top-level `&&` terms of a CEL source, or `None` when it has a top-level
+/// `||` or `?` (then no term is required) or its brackets or quotes do not balance.
+fn top_level_conjuncts(src: &str) -> Option<Vec<&str>> {
+    let bytes = src.as_bytes();
+    let (mut depth, mut quote, mut start, mut i) = (0i32, None::<u8>, 0usize, 0usize);
+    let mut terms = Vec::new();
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+        } else {
+            match b {
+                b'\'' | b'\x22' => quote = Some(b),
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                // `a ? b : c && d` is `a ? b : (c && d)` (review m-R1).
+                b'?' if depth == 0 => return None,
+                b'&' | b'|' if depth == 0 && bytes.get(i + 1) == Some(&b) => {
+                    if b == b'|' {
+                        return None;
+                    }
+                    terms.push(&src[start..i]);
+                    start = i + 2;
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+            if depth < 0 {
+                return None;
+            }
+        }
+        i += 1;
+    }
+    if depth != 0 || quote.is_some() {
+        return None;
+    }
+    terms.push(&src[start..]);
+    Some(terms)
 }
 
 /// True iff this edge's own modifier PRODUCES `route` on the message it takes.
@@ -1311,6 +1408,70 @@ mod tests {
         t.insert(edge("/mem/glue", "/mem", None));
         let err = check_lane_doors(&drain_contract(), &t).expect_err("no door for in_batch");
         assert!(format!("{err:?}").contains("in_batch"), "{err:?}");
+    }
+
+    /// GH #949 — a door that requires the lane and narrows it further is a
+    /// door: three edges out of `.`, each on `in_read` AND one `hop.organ`, the
+    /// shape the assistant's read door has. A route probe fires none of them.
+    #[test]
+    fn a_door_that_requires_the_lane_and_narrows_it_is_a_door() {
+        let mut t = EdgeTable::new();
+        for organ in ["talky", "cogny"] {
+            t.insert(edge(
+                "/mem",
+                &format!("/mem/{organ}"),
+                Some(
+                    format!(
+                        "has(hop.route) && hop.route == 'in_batch' && has(hop.organ) && \
+                         hop.organ == '{organ}'"
+                    )
+                    .as_str(),
+                ),
+            ));
+        }
+        t.insert(edge("/mem/talky", "/mem", None));
+        assert!(check_lane_doors(&drain_contract(), &t).is_ok());
+    }
+
+    /// GH #949 — the strict half: only an edge that REQUIRES the lane counts.
+    /// An alternative, a negation, another lane, or a target outside the hive
+    /// leaves the lane without a door, exactly as before.
+    #[test]
+    fn a_door_that_only_may_carry_the_lane_is_no_door() {
+        for (to, cond) in [
+            (
+                "/mem/glue",
+                "has(hop.organ) && hop.route == 'in_batch' || hop.route == 'in_x'",
+            ),
+            (
+                "/mem/glue",
+                "!(hop.route == 'in_batch') && has(hop.organ) && hop.organ == 'x'",
+            ),
+            (
+                "/mem/glue",
+                "hop.route == 'in_other' && has(hop.organ) && hop.organ == 'x'",
+            ),
+            (
+                "/mem/glue",
+                "has(hop.organ) && hop.organ == \"a && hop.route == 'in_batch'\"",
+            ),
+            (
+                "/elsewhere",
+                "hop.route == 'in_batch' && has(hop.organ) && hop.organ == 'x'",
+            ),
+            (
+                "/mem/glue",
+                "has(hop.x) ? hop.x : has(hop.organ) && hop.route == 'in_batch' && true",
+            ),
+        ] {
+            let mut t = EdgeTable::new();
+            t.insert(edge("/mem", to, Some(cond)));
+            t.insert(edge("/mem/glue", "/mem", None));
+            let Err(err) = check_lane_doors(&drain_contract(), &t) else {
+                panic!("no door for in_batch in {cond:?} -> {to}");
+            };
+            assert!(format!("{err:?}").contains("in_batch"), "{err:?}");
+        }
     }
 
     /// GH #559 / #562 — a lane that names connect points owes no rim door.

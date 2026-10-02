@@ -271,11 +271,16 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     // seventy-six -- the `in_pin` door into each keeper and the core, and the
     // core's own `sidecar` exit. GH #926: eighty-two -- the `in_stats` door into
     // each keeper and the core, and the `stats` answer out of each of the three.
+    // GH #949: ninety-one -- the `in_candidate` and the `in_read` door into each
+    // keeper and the core, and the `thing_seen` exit out of each of the three.
+    // GH #950: ninety-four -- the `lib_` tools leave each keeper and the core on
+    // `tool`, to the member's librarian. GH #951: ninety-seven -- the `object_`
+    // tools leave each keeper and the core on `tool`, to the member's objects.
     assert_eq!(
         hp.graph.edges.len(),
-        82,
-        "forty-nine edges and thirty-three twins. The number is asserted so that an \
-         edge added on one side and forgotten on the other is loud"
+        97,
+        "ninety-seven edges, thirty-eight around each keeper. The number is asserted so \
+         that an edge added on one side and forgotten on the other is loud"
     );
 }
 
@@ -307,15 +312,18 @@ fn every_connect_point_names_both_rims() {
         named,
         vec![
             "brief",
+            "candidate_ack",
             "in_briefing",
             "in_bundle",
             "in_pack",
             "pack_ack",
+            "read",
             "recall",
             "schemas",
             "tool"
         ],
-        "the eight lanes that dock on a brain rim -- `brief` and `in_briefing` since GH #834"
+        "the ten lanes that dock on a brain rim -- `brief` and `in_briefing` since GH #834, \
+         `candidate_ack` and `read` since GH #949"
     );
 }
 

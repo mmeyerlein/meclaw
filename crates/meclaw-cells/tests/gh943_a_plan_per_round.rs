@@ -52,6 +52,14 @@
 //!    rebuilt round loses its plan, an idle round loses its plan, and the
 //!    round that lost it is answered from its own rows exactly as a ledger
 //!    that never held another round.
+//! 5. GH #949 (the findings of review W on GH #943): everything a dropped
+//!    round owns falls with its plan -- `summary_audience:<rk>` and the slot
+//!    `history.summary:<rk>` too (M-1) -- and the round that comes back sees
+//!    its own summary on its first call (the leaf laid again); a strike of
+//!    its old clock order is stale; nothing falls beside a registry put that
+//!    lost (M-3); a handover leaf bound to no audience falls at the next
+//!    rebuild of any round (M-4); the ledger seed holds no bare key of a
+//!    round (M-7).
 //!
 //! The hive runs in one process (`support/curator_hive.rs`): the shipped
 //! `script_inline` programs under python3, the shipped edges under the
@@ -1283,4 +1291,429 @@ fn gh943_round_plans_are_bounded() {
             "the window of round 0 shows a word of round {i}: {seen}"
         );
     }
+}
+
+// ═══════════════════════════════════════════ 5. what a round owns (GH #949)
+
+/// A ledger bounded to three plans that summarises: the window of 1.0.0 (no
+/// role) keeping one round raw, so a rebuild of a round with two turns
+/// condenses the older one.
+fn bounded_summarising() -> Hive {
+    Hive::with(&[
+        ("policy", "keep_recent", json!(1)),
+        ("policy", "max_round_plans", json!(3)),
+    ])
+}
+
+/// A turn of `round` with a cold cache, the strike of the round's own order
+/// and every summary answered alike: a rebuild through the clock (the
+/// pattern of `gh943_two_rounds_rebuild_side_by_side`). Returns the call.
+fn struck_in(h: &mut Hive, round: &str, turn: &str, says: &str, reply: &str) -> Msg {
+    let call = turn_in(h, round, turn, says, reply, cold());
+    let order = h
+        .clock_order_for(round)
+        .unwrap_or_else(|| panic!("the call in {round} ordered no strike: {:?}", h.clock));
+    h.fire(&order);
+    while !h.summ.is_empty() {
+        h.answer(SUMMARY_WORDS, "stop");
+    }
+    assert_ne!(
+        h.plan_in(round),
+        json!({}),
+        "the strike in {round} rebuilt nothing: {:?}",
+        h.stderr
+    );
+    call
+}
+
+/// The `state` rows of the round key `rk`, `[key, value]`, sorted.
+fn rows_of_round(h: &Hive, rk: &str) -> Vec<Vec<Value>> {
+    h.rows(&format!(
+        "SELECT key, value FROM state WHERE key LIKE '%:{rk}' ORDER BY key"
+    ))
+}
+
+/// Everything a dropped round owns falls with its plan (review W M-1 of
+/// GH #943). Round 0 makes a summary -- its slot `history.summary:<rk>` and
+/// its binding `summary_audience:<rk>` -- and three rounds rebuilt after it
+/// push it out of a registry bounded to three. Until GH #949 only six state
+/// rows fell and the binding and the slot stayed, a pair per round for good.
+/// Red before the fix: `the dropped round kept state rows` (the binding) and
+/// `the dropped round kept its summary slot`.
+///
+/// The round's clock order struck already (disarmed, `completed` at the
+/// timer), so no `remove` is sent for it -- the timer would refuse one; the
+/// armed case is `gh949_a_dropped_rounds_armed_order_falls_with_it`. A strike
+/// of the old order finds no `last_call` and is stale. And the round that
+/// comes back is answered from its own rows -- cut at its newest summary,
+/// that summary's leaf laid again from the `summaries` row before the call
+/// leaves, never forgotten.
+#[test]
+fn gh949_what_a_dropped_round_owns_falls_with_its_plan() {
+    if !shipped() {
+        return;
+    }
+    let mut h = bounded_summarising();
+    let r0 = ROUNDS[0];
+    let rk0 = round_key(r0);
+    let slot_rows = |h: &Hive| -> usize {
+        h.rows(&format!(
+            "SELECT hash FROM slots WHERE path = '{}'",
+            summary_slot(r0)
+        ))
+        .len()
+    };
+    turn_in(
+        &mut h,
+        r0,
+        "t-949-0a",
+        "cw949 zero one: the parcel left the depot.",
+        "cw949 zero one reply: noted.",
+        json!({}),
+    );
+    struck_in(
+        &mut h,
+        r0,
+        "t-949-0b",
+        "cw949 zero two: the lease is signed.",
+        "cw949 zero two reply: noted.",
+    );
+    assert_eq!(
+        slot_rows(&h),
+        1,
+        "round 0 made no summary slot: {:?}",
+        h.stderr
+    );
+    assert_eq!(
+        state_rows(&h, &format!("summary_audience:{rk0}")),
+        1,
+        "round 0 bound no summary leaf"
+    );
+    let stale = h.clock_order_for(r0).expect("the order of round 0");
+    for (i, round) in ROUNDS.iter().enumerate().skip(1) {
+        struck_in(
+            &mut h,
+            round,
+            &format!("t-949-{i}"),
+            &format!("cw949 round {i}: the question of this round."),
+            &format!("cw949 round {i} reply: the answer of this round."),
+        );
+    }
+    assert!(
+        !registry(&h).contains_key(&rk0),
+        "round 0 is still registered past max_round_plans: {:?}",
+        registry(&h)
+    );
+    assert_eq!(
+        rows_of_round(&h, &rk0),
+        Vec::<Vec<Value>>::new(),
+        "the dropped round kept state rows"
+    );
+    assert_eq!(slot_rows(&h), 0, "the dropped round kept its summary slot");
+    assert!(
+        !h.clock
+            .iter()
+            .any(|m| m.body.get("op") == Some(&json!("remove"))),
+        "a struck order was removed: {:?}",
+        h.clock
+    );
+
+    // The old order of the dropped round strikes: stale, nothing written.
+    let asked = h.summ.len();
+    h.fire(&stale);
+    assert_eq!(
+        h.summ.len(),
+        asked,
+        "a strike of the dropped round's order asked for a summary"
+    );
+    assert_eq!(
+        h.plan_in(r0),
+        json!({}),
+        "a strike of the dropped round's order rebuilt it: {:?}",
+        h.stderr
+    );
+    assert_eq!(
+        rows_of_round(&h, &rk0),
+        Vec::<Vec<Value>>::new(),
+        "a stale strike wrote state of the dropped round"
+    );
+
+    // The round comes back: its first call shows its own summary.
+    let back = curate_in(&mut h, r0, PROBE_TURN, PROBE_SAYS);
+    let leaf = back.body["system"]["history"]["summary"]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        leaf.ends_with(SUMMARY_WORDS),
+        "the round that lost its plan forgot its summary: {:?} {:?}",
+        back.body.get("system"),
+        h.stderr
+    );
+    assert!(
+        !texts(&back).join("\n").contains("cw949 zero one"),
+        "the window of the round that came back is not cut at its summary: {:?}",
+        texts(&back)
+    );
+    assert_eq!(
+        slot_rows(&h),
+        1,
+        "the leaf laid again is not the round's slot"
+    );
+    let bound: Value = sj::from_str(&h.state(&format!("summary_audience:{rk0}")))
+        .expect("the leaf laid again is bound");
+    assert_eq!(
+        bound["audience"], r0,
+        "the leaf laid again is bound to another audience: {bound}"
+    );
+}
+
+/// Nothing a dropped round owns falls beside a registry put that lost (review
+/// W M-3 of GH #943). The registry row refuses every write here (a trigger
+/// that ignores it: the CAS of `f-reg` affects no row, as when another
+/// round's rebuild put it first), so the rebuild of round 3 retries three
+/// times and leaves the registry as it is -- round 0 is still in it. Until
+/// GH #949 the deletes of round 0 rode in the same bundle as each `f-reg`
+/// and ran whatever it did. Red before the fix: `a lost registry put dropped
+/// the rows of round 0`.
+#[test]
+fn gh949_a_lost_registry_put_drops_nothing() {
+    if !shipped() {
+        return;
+    }
+    let mut h = bounded();
+    for (i, round) in ROUNDS.iter().enumerate().take(3) {
+        let (turn, says, reply) = round_turn(i);
+        rebuild_in(&mut h, round, &turn, &says, &reply);
+    }
+    let rk0 = round_key(ROUNDS[0]);
+    let before = rows_of_round(&h, &rk0);
+    assert!(
+        before
+            .iter()
+            .any(|r| r[0] == json!(format!("window_plan:{rk0}"))),
+        "round 0 has no plan to lose: {before:?}"
+    );
+    let reg = h.state("window_plans");
+    h.db.execute_batch(
+        "CREATE TRIGGER gh949_lose_update BEFORE UPDATE ON state \
+           WHEN OLD.key = 'window_plans' BEGIN SELECT RAISE(IGNORE); END; \
+         CREATE TRIGGER gh949_lose_insert BEFORE INSERT ON state \
+           WHEN NEW.key = 'window_plans' BEGIN SELECT RAISE(IGNORE); END;",
+    )
+    .expect("the triggers");
+    let (turn, says, reply) = round_turn(3);
+    rebuild_in(&mut h, ROUNDS[3], &turn, &says, &reply);
+    assert_eq!(
+        h.state("window_plans"),
+        reg,
+        "the registry was put after all"
+    );
+    assert!(
+        h.stderr.iter().any(|e| e.contains("window_plans not put")),
+        "the rebuild of round 3 did not give the registry up: {:?}",
+        h.stderr
+    );
+    assert_eq!(
+        rows_of_round(&h, &rk0),
+        before,
+        "a lost registry put dropped the rows of round 0"
+    );
+}
+
+/// A handover leaf bound to no audience (`null`: `./handover` met an
+/// undeclared round, or a source from before the rule) reaches no round and
+/// so belongs to none -- until GH #949 it never fell (review W M-4 of
+/// GH #943: `unleaf` matched the round of the rebuild only). It falls at the
+/// next rebuild of any round, by its hash: another leaf at the same path
+/// stays. Red before the fix: `the leaf bound to no audience stands`.
+#[test]
+fn gh949_a_handover_leaf_bound_to_nobody_falls_at_any_rebuild() {
+    if !shipped() {
+        return;
+    }
+    let mut h = small_talky(&[]);
+    let (t, says, reply) = EA_TURNS[0];
+    turn_in(&mut h, ROUND_EA, t, says, reply, json!({}));
+    let mut hashes = Vec::new();
+    for text in ["cw949 handover of nobody.", "cw949 a leaf laid since."] {
+        let leaf = json!({"path": "history.handover", "text": text});
+        let hash = sha256_hex(&canonical(&leaf));
+        h.db.execute(
+            "INSERT INTO blocks (hash, kind, chars, body, first_seen) \
+             VALUES (?1, 'system', 25, ?2, 'x')",
+            rusqlite::params![hash, canonical(&leaf)],
+        )
+        .expect("the leaf's block");
+        h.db.execute(
+            "INSERT INTO slots (path, hash, owner, at) VALUES ('history.handover', ?1, 'curator', 'x')",
+            [&hash],
+        )
+        .expect("the leaf's slot");
+        hashes.push(hash);
+    }
+    let bound = canonical(&json!({"audience": null, "hash": hashes[0]}));
+    h.db.execute("DELETE FROM state WHERE key = 'handover_audience'", [])
+        .expect("no binding");
+    h.db.execute(
+        "INSERT INTO state (key, value) VALUES ('handover_audience', ?1)",
+        [&bound],
+    )
+    .expect("the binding");
+    rebuild_in(
+        &mut h,
+        ROUND_EA,
+        "t-949-ho",
+        "cw949 ea: please sum up what we settled.",
+        "cw949 ea reply: the parcel.",
+    );
+    let left: Vec<String> = h
+        .rows("SELECT hash FROM slots WHERE path = 'history.handover'")
+        .iter()
+        .map(|r| r[0].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        !left.contains(&hashes[0]),
+        "the leaf bound to no audience stands: {:?}",
+        h.stderr
+    );
+    assert_eq!(
+        left,
+        vec![hashes[1].clone()],
+        "the rebuild took down a leaf its claim did not name"
+    );
+}
+
+/// The ledger seed holds no bare key of a round (review W M-7 of GH #943):
+/// since GH #943 every one of them is a row per round, `<key>:<rk>`, put or
+/// inserted under the unique `state(key)` when the round first needs it, and
+/// the bare rows were read by nobody. The two pointers a leg only UPDATES
+/// stay (`f-sent`, `t-cw`). A ledger born from the seed runs a round to its
+/// rebuild, and no cell writes a bare key. Red before the fix: `the seed
+/// carries the bare key`.
+#[test]
+fn gh949_the_ledger_seed_holds_no_bare_round_key() {
+    if !shipped() {
+        return;
+    }
+    const BARE: [&str; 7] = [
+        "window_plan",
+        "rebuild_running",
+        "last_call",
+        "armed_call",
+        "actions_pending",
+        "pending:summary",
+        "summary_audience",
+    ];
+    let seed = std::fs::read_to_string(repo("templates/curator/ledger/seed/state.jsonl"))
+        .expect("the state seed");
+    let keys: Vec<String> = seed
+        .lines()
+        .filter_map(|l| sj::from_str::<Value>(l).ok())
+        .filter_map(|v| v["key"].as_str().map(str::to_string))
+        .collect();
+    for bare in BARE {
+        assert!(
+            !keys.iter().any(|k| k == bare),
+            "the seed carries the bare key `{bare}`: {keys:?}"
+        );
+    }
+    for kept in ["system_hash_sent", "context_window"] {
+        assert!(
+            keys.iter().any(|k| k == kept),
+            "the seed lost `{kept}`, which a leg only updates: {keys:?}"
+        );
+    }
+    let mut h = small_talky(&[]);
+    let (t, says, reply) = EA_TURNS[0];
+    turn_in(&mut h, ROUND_EA, t, says, reply, json!({}));
+    rebuild_in(
+        &mut h,
+        ROUND_EA,
+        "t-949-seed",
+        "cw949 seed: please sum up what we settled.",
+        "cw949 seed reply: the parcel.",
+    );
+    for bare in BARE {
+        assert_eq!(
+            state_rows(&h, bare),
+            0,
+            "a cell wrote the bare key `{bare}`"
+        );
+    }
+    assert_ne!(
+        h.state("system_hash_sent"),
+        "{}",
+        "the update of the seeded `system_hash_sent` did not land"
+    );
+}
+
+/// The clock order of a dropped round falls with its plan when it is still
+/// ARMED (ledger § 2a line 6 of GH #949, review M-1): round 0 rebuilds, then
+/// calls again with a cold cache -- an order armed, not struck -- and three
+/// rounds rebuilt after it push it out of a registry bounded to three. The
+/// timer is told `remove` for exactly the round's id, once; no other order
+/// falls. The timer marks the row and keeps it (it deletes none).
+///
+/// Red before the fix: no `remove` reached the clock -- the armed order of a
+/// round nobody holds a plan for stayed active.
+#[test]
+fn gh949_a_dropped_rounds_armed_order_falls_with_it() {
+    if !shipped() {
+        return;
+    }
+    let mut h = bounded_summarising();
+    let r0 = ROUNDS[0];
+    let rk0 = round_key(r0);
+    struck_in(
+        &mut h,
+        r0,
+        "t-949-a0",
+        "cw949 zero one: the parcel left the depot.",
+        "cw949 zero one reply: noted.",
+    );
+    turn_in(
+        &mut h,
+        r0,
+        "t-949-a1",
+        "cw949 zero two: the lease is signed.",
+        "cw949 zero two reply: noted.",
+        cold(),
+    );
+    let armed = h.clock_order_for(r0).expect("round 0 armed an order");
+    assert_ne!(
+        h.state(&format!("armed_call:{rk0}")),
+        "",
+        "round 0 holds no armed order before it is dropped"
+    );
+    for (i, round) in ROUNDS.iter().enumerate().skip(1) {
+        struck_in(
+            &mut h,
+            round,
+            &format!("t-949-a{}", i + 1),
+            &format!("cw949 round {i}: the question of this round."),
+            &format!("cw949 round {i} reply: the answer of this round."),
+        );
+    }
+    assert!(
+        !registry(&h).contains_key(&rk0),
+        "round 0 is still registered past max_round_plans: {:?}",
+        registry(&h)
+    );
+    let removed: Vec<&Value> = h
+        .clock
+        .iter()
+        .filter(|m| m.body.get("op") == Some(&json!("remove")))
+        .map(|m| &m.body["schedule_id"])
+        .collect();
+    assert_eq!(
+        removed,
+        [&armed.body["schedule_id"]],
+        "the armed order of the dropped round, and only it, falls: {:?}",
+        h.clock
+    );
+    assert_eq!(
+        rows_of_round(&h, &rk0),
+        Vec::<Vec<Value>>::new(),
+        "the dropped round kept state rows"
+    );
 }

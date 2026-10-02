@@ -622,7 +622,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.5.0");
+    assert_eq!(t["version"], "1.6.0");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -636,7 +636,8 @@ fn curator_template_shape() {
     };
     // GH #892 added the sections, the pin door and the menu question, and
     // the two routes that answer them; GH #926 the stats question and its
-    // answer.
+    // answer; GH #949 the candidate door, the ledger read for an app and the
+    // three routes that answer them.
     assert_eq!(
         lanes("accepts"),
         [
@@ -653,7 +654,9 @@ fn curator_template_shape() {
             "in_recall_ask",
             "in_gap_bundle",
             "in_renewed",
-            "in_stats"
+            "in_stats",
+            "in_candidate",
+            "in_read"
         ]
     );
     assert_eq!(
@@ -668,7 +671,10 @@ fn curator_template_shape() {
             "tool_schemas",
             "tool_result",
             "recall",
-            "stats"
+            "stats",
+            "candidate_ack",
+            "thing_seen",
+            "read"
         ]
     );
     let types: Vec<(&str, &str)> = vec![
@@ -683,6 +689,7 @@ fn curator_template_shape() {
         ("push", "code"),
         ("handover", "code"),
         ("stats", "code"),
+        ("reader", "code"),
     ];
     for (cell, ty) in &types {
         let cfg = cell_config(cell);
@@ -708,9 +715,12 @@ fn curator_template_shape() {
         "state": ["key", "value"],
         "marks": ["seq", "session_id", "turn_id", "kind", "value", "at", "audience_set"],
         "pins": ["hash", "source", "until", "at", "audience_set"],
+        "candidates": ["source", "cand_id", "hash", "triggers", "until", "once", "used_at",
+                       "last_seq", "priority", "audience_set", "at"],
     });
-    // GH #892: `marks` and `pins` joined the seven of 1.0.0.
-    assert_eq!(schema.as_object().unwrap().len(), 9, "nine tables");
+    // GH #892: `marks` and `pins` joined the seven of 1.0.0; GH #949
+    // `candidates`.
+    assert_eq!(schema.as_object().unwrap().len(), 10, "ten tables");
     // The llm cell stamps `cost` as a fraction; the store knows `int`, `text`
     // and `json`, and only `json` says what the column holds (review M4).
     assert_eq!(schema["calls"]["cost"], "json", "calls.cost");
@@ -731,18 +741,27 @@ fn curator_template_shape() {
         have.sort();
         assert_eq!(have, want, "columns of {table}");
     }
-    // The pointers `state` is born with.
+    // The pointers `state` is born with. Since GH #943 the round-scoped
+    // pointers are `<key>:<round_key>` rows the policy inserts on first use,
+    // so the seed carries only the two an update leg needs (GH #949, C1
+    // finding W M-7) and never a bare pre-#943 key.
     let seed = std::fs::read_to_string(repo("templates/curator/ledger/seed/state.jsonl")).unwrap();
-    for key in [
-        "last_call",
-        "armed_call",
-        "system_hash_sent",
-        "rebuild_running",
-        "actions_pending",
-    ] {
+    for key in ["system_hash_sent", "context_window"] {
         assert!(
             seed.contains(&format!("\"key\": \"{key}\"")),
             "state seed lacks {key}"
+        );
+    }
+    for key in [
+        "last_call",
+        "armed_call",
+        "rebuild_running",
+        "actions_pending",
+        "window_plan",
+    ] {
+        assert!(
+            !seed.contains(&format!("\"key\": \"{key}\"")),
+            "state seed still carries the bare {key}"
         );
     }
     // OR-KX-G8 / G11: the summarizer declares every hop key the llm cell

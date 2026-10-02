@@ -41,10 +41,27 @@ use super::MutationError;
 use meclaw_core::JsonValue;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// The late-binding pass: environment tokens only, over a whole cell config
+/// (boot, `bootstrap.rs`) or a bare `params` object.
+///
+/// GH #949 (review I-3): the CEL slots of `params.graph.edges` -- the edges a
+/// hive's config draws, filled by a template, an `add_nodes` override or a
+/// `swap_nodes`/`replace_nodes` lift -- are judged before anything binds,
+/// exactly as the mutation door judges `add_edges` (`walk_edges`): a value a
+/// CEL string cannot hold, or a bare token's value that is not a plain number
+/// ([`env_fits`]), is refused as `env_value_unsafe`, and the boot fails like
+/// `env_var_missing`.
+/// Those edges reach this pass with their tokens intact (`params` are the
+/// disk-facing slot, [`walk_instance_only`]), so this is the one place their
+/// values meet their slots at read time.
 pub fn substitute_env_only(
     diff: &JsonValue,
     env: &HashMap<String, String>,
 ) -> Result<JsonValue, MutationError> {
+    if let Some(params) = diff.get("params") {
+        check_graph_edges(params, env, "params")?;
+    }
+    check_graph_edges(diff, env, "")?;
     fn walk(v: &JsonValue, env: &HashMap<String, String>) -> Result<JsonValue, MutationError> {
         match v {
             JsonValue::String(s) => Ok(JsonValue::String(replace_env(s, env)?)),
@@ -432,11 +449,39 @@ fn replace_full(
     ctx: &HashMap<String, String>,
     cache: &mut HashMap<String, String>,
 ) -> Result<String, MutationError> {
+    replace_bound(s, env, ctx, cache, None)
+}
+
+/// [`replace_full`], and with `cel_slot` set the string is CEL source: an
+/// environment value that a CEL string literal cannot hold
+/// ([`cel_string_safe`]) is refused as [`MutationError::EnvValueUnsafe`]
+/// instead of bound (GH #949). `cel_slot` names the slot for the refusal.
+fn replace_bound(
+    s: &str,
+    env: &HashMap<String, String>,
+    ctx: &HashMap<String, String>,
+    cache: &mut HashMap<String, String>,
+    cel_slot: Option<&str>,
+) -> Result<String, MutationError> {
+    // GH #949 (review I-3): where each token stands -- inside a string literal
+    // or not -- decides what its value may be (`env_fits`).
+    // The table is read off the CEL SOURCE `s`, never off the slot name: built
+    // from `cel_slot` it had no token at all, every lookup was `None`, and
+    // `hop.n == ${N}` bound `N` = `s3cr3t || true` (measured red in the strand's
+    // single-test run, `an_unquoted_env_token_binds_a_number_and_nothing_else`).
+    let quoting = if cel_slot.is_some() {
+        token_quoting(s)
+    } else {
+        Vec::new()
+    };
+    let nth = std::cell::Cell::new(0usize);
     // `expand` takes `impl Fn`; the uuid7 cache needs interior mutability so the
     // closure can mint-and-store a UUID per label. RefCell is single-threaded
     // (one cell task), no lock contention — CONTRIBUTING.md concurrency model holds.
     let cache = std::cell::RefCell::new(cache);
     expand(s, |inner| {
+        let k = nth.get();
+        nth.set(k + 1);
         if let Some(key) = inner.strip_prefix("ctx.") {
             resolve_ctx_token(key, ctx)
         } else if let Some(label) = inner.strip_prefix("uuid7:") {
@@ -447,9 +492,239 @@ fn replace_full(
                 .clone();
             Ok(val)
         } else {
-            resolve_env_token(inner, env)
+            let value = resolve_env_token(inner, env)?;
+            match cel_slot {
+                Some(slot) => {
+                    env_fits(inner, &value, quoting.get(k).copied(), slot).map(|()| value)
+                }
+                None => Ok(value),
+            }
         }
     })
+}
+
+/// GH #949 — whether `value` can stand inside a CEL string literal without
+/// ending it: no single or double quote, no backslash (it would escape the closing
+/// quote or start an escape of its own), no control character (Unicode `Cc`:
+/// C0 U+0000–U+001F, DEL U+007F, C1 U+0080–U+009F — a raw line break ends a
+/// quoted CEL string) and neither U+2028 nor U+2029. The same set the builder
+/// recipe refuses in a literal binding (`_binding` / `_control`), so a value
+/// is judged alike whether the wish spells it or the `.env` holds it.
+///
+/// Both quotes, although the recipe quotes a binding as `'<value>'` (and the
+/// shipped `audience_set` modifier carries `"` inside `'…'` as plain text): the
+/// door serves every author, does not parse which literal surrounds a token,
+/// and CEL spells a string with either quote. No id a connector stamps carries
+/// a `"`, so refusing it costs nothing that binds today.
+fn cel_string_safe(value: &str) -> bool {
+    !value
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\'' | '"' | '\\' | '\u{2028}' | '\u{2029}'))
+}
+
+/// The refusal of an environment value in a CEL slot: the variable and the
+/// slot, NEVER the value. A value bound from `.env` may be a secret, and the
+/// refusal travels into the mutation log, the EDA reply and the builder's
+/// receipt (`details`).
+fn env_value_unsafe(inner: &str, slot: &str) -> MutationError {
+    let name = env_name(inner);
+    MutationError::EnvValueUnsafe(format!(
+        "the value bound for ${{{name}}} in {slot} carries a quote, a backslash or a control \
+         character, which a CEL string cannot hold: it would break the expression or extend it \
+         past the one value it names (the value is not shown)"
+    ))
+}
+
+/// The variable an env token names -- its name, never its value.
+fn env_name(inner: &str) -> String {
+    match parse_env_token(inner) {
+        EnvToken::Plain(name) | EnvToken::DefaultIfUnsetOrEmpty { name, .. } => name,
+        // `resolve_env_token` refuses this form before a value exists. The
+        // token's own text is a name either way, never a value.
+        EnvToken::Unsupported(form) => form,
+    }
+}
+
+/// Where an env token stands in CEL source ([`token_quoting`]).
+#[derive(Clone, Copy, Debug)]
+enum Quoting {
+    /// Inside a plain `'…'` or `"…"` string literal.
+    Inside,
+    /// Outside every literal: the value is CEL source.
+    Outside,
+    /// After a raw (`r'…'`) or triple-quoted (`'''…'''`) literal, which this
+    /// scanner does not lex (GH #949, review I-R2): refused whatever it holds.
+    Unlexed,
+}
+
+/// GH #949 (review I-3) — for every regular `${…}` token of `s`, in the order
+/// [`expand`] hands them to its resolver, whether it stands INSIDE a CEL string
+/// literal (`'…'` or `"…"`, backslash escapes honoured). Same token grammar as
+/// [`expand`]: an escaped `$${…}` is no token, and a `${` the scanner cannot
+/// close ends the scan (`expand` names it).
+fn token_quoting(s: &str) -> Vec<Quoting> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut quote: Option<u8> = None;
+    let mut unlexed = false;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'$' && b.get(i + 1) == Some(&b'$') && b.get(i + 2) == Some(&b'{') {
+            let Some(end) = s[i + 3..].find('}') else {
+                break;
+            };
+            i += 3 + end + 1;
+            continue;
+        }
+        if c == b'$' && b.get(i + 1) == Some(&b'{') {
+            let Some(end) = s[i + 2..].find('}') else {
+                break;
+            };
+            out.push(match (unlexed, quote) {
+                (true, _) => Quoting::Unlexed,
+                (false, Some(_)) => Quoting::Inside,
+                (false, None) => Quoting::Outside,
+            });
+            i += 2 + end + 1;
+            continue;
+        }
+        match quote {
+            Some(_) if c == b'\\' => i += 1,
+            Some(q) if c == q => quote = None,
+            None if c == b'\'' || c == b'"' => {
+                // GH #949 (review I-R2): in `r'\'` the backslash is text, in
+                // `'''it's'''` the inner quote is; read as plain literals both
+                // put a later `${N}` "inside" and `N` = `1 || true` bound.
+                let triple = b.get(i + 1) == Some(&c) && b.get(i + 2) == Some(&c);
+                unlexed |= triple || (i > 0 && matches!(b[i - 1], b'r' | b'R'));
+                quote = Some(c);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// GH #949 — may the environment value of `inner` stand at its place in the
+/// CEL slot `slot`? Inside a string literal it must not end the literal
+/// ([`cel_string_safe`]). OUTSIDE one (review I-3) it is CEL source, not a
+/// value: `hop.n == ${N}` with `N` = `1 || true` parses and is always true,
+/// and carries nothing `cel_string_safe` would catch -- so there it must be a
+/// plain number ([`cel_number_safe`]), the one shape a bare token is written
+/// for (`templates/retry`: `int(context.attempt) < ${RETRY_MAX:-3}`).
+/// `quoted` is `None` only for a token past an unclosed `${`, which `expand`
+/// refuses anyway.
+fn env_fits(
+    inner: &str,
+    value: &str,
+    quoted: Option<Quoting>,
+    slot: &str,
+) -> Result<(), MutationError> {
+    use Quoting::{Outside, Unlexed};
+    match quoted {
+        Some(Unlexed) => Err(MutationError::EnvValueUnsafe(format!(
+            "${{{}}} in {slot} stands after a raw (r'...') or triple-quoted ('''...''') CEL \
+             string, whose quoting this door does not read, so it cannot tell a value from CEL \
+             source there -- put the token before that literal or write the literal plainly \
+             (the value is not shown)",
+            env_name(inner)
+        ))),
+        Some(Outside) if !cel_number_safe(value) => Err(MutationError::EnvValueUnsafe(format!(
+            "${{{}}} in {slot} stands outside a CEL string literal, so the value bound there is \
+             CEL source, and it is not a plain number: it would extend the expression past the \
+             one value it names -- quote the token, or bind a number (the value is not shown)",
+            env_name(inner)
+        ))),
+        Some(Outside) => Ok(()),
+        _ if !cel_string_safe(value) => Err(env_value_unsafe(inner, slot)),
+        _ => Ok(()),
+    }
+}
+
+/// A CEL number literal and nothing else: an optional `-`, ASCII digits, and
+/// at most one `.` between digits.
+fn cel_number_safe(value: &str) -> bool {
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    let mut parts = digits.split('.');
+    let whole = parts.next().unwrap_or("");
+    let fraction = parts.next();
+    parts.next().is_none()
+        && !whole.is_empty()
+        && whole.bytes().all(|b| b.is_ascii_digit())
+        && fraction.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The CEL slots of one edge spec (`config::EdgeSpec`): `condition` and every
+/// string value of `modifier.set_context` / `modifier.set_hop`, each with the
+/// name a refusal gives it.
+fn edge_cel_slots(edge: &JsonValue) -> Vec<(String, &str)> {
+    let mut out = Vec::new();
+    if let Some(c) = edge.get("condition").and_then(JsonValue::as_str) {
+        out.push(("condition".to_string(), c));
+    }
+    if let Some(m) = edge.get("modifier").and_then(JsonValue::as_object) {
+        for mk in ["set_context", "set_hop"] {
+            if let Some(exprs) = m.get(mk).and_then(JsonValue::as_object) {
+                for (key, expr) in exprs {
+                    if let Some(src) = expr.as_str() {
+                        out.push((format!("modifier.{mk}.{key}"), src));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// GH #949 (review I-3) — judge the CEL slots of `params.graph.edges` against
+/// `env` without binding anything: a value that does not fit where its token
+/// stands ([`env_fits`]) is `env_value_unsafe` (slot `<at>.graph.edges[i].
+/// <slot>`). A variable that is missing or a form that is unsupported is NOT
+/// judged here -- the binding pass names it (`env_var_missing`,
+/// `unsupported_substitution`), at the door or at boot, as before. Used by both
+/// paths: the mutation door over a node's `override_params` / `with.params`
+/// (whose tokens stay tokens on disk) and the boot pass over a whole config.
+fn check_graph_edges(
+    params: &JsonValue,
+    env: &HashMap<String, String>,
+    at: &str,
+) -> Result<(), MutationError> {
+    let Some(edges) = params
+        .get("graph")
+        .and_then(|g| g.get("edges"))
+        .and_then(JsonValue::as_array)
+    else {
+        return Ok(());
+    };
+    let at = if at.is_empty() {
+        String::new()
+    } else {
+        format!("{at}.")
+    };
+    for (i, edge) in edges.iter().enumerate() {
+        for (slot, src) in edge_cel_slots(edge) {
+            let slot = format!("{at}graph.edges[{i}].{slot}");
+            let quoting = token_quoting(src);
+            let nth = std::cell::Cell::new(0usize);
+            expand(src, |inner| {
+                let k = nth.get();
+                nth.set(k + 1);
+                if inner.starts_with("ctx.") || inner.starts_with("uuid7:") {
+                    return Ok(String::new());
+                }
+                match resolve_env_token(inner, env) {
+                    Ok(value) => {
+                        env_fits(inner, &value, quoting.get(k).copied(), &slot)?;
+                        Ok(String::new())
+                    }
+                    Err(_) => Ok(String::new()),
+                }
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the INSTANCE class only -- `${ctx.<key>}` and `${uuid7:<label>}`.
@@ -549,6 +824,11 @@ fn replace_instance_only(
 ///
 /// The `${uuid7:<label>}` cache is shared across BOTH passes: one label yields
 /// one UUID per mutation, wherever in the diff it appears.
+///
+/// `add_edges[]` takes the full pass, and in its CEL slots (`condition`, every
+/// value of `modifier.set_context` and `modifier.set_hop`) an environment value
+/// that a CEL string cannot hold is refused with `env_value_unsafe` and the
+/// whole mutation with it (GH #949, see `walk_edges`).
 pub fn substitute_mutation_diff(
     diff: &JsonValue,
     env: &HashMap<String, String>,
@@ -563,6 +843,14 @@ pub fn substitute_mutation_diff(
     for (key, val) in top {
         let substituted = match (key.as_str(), val.as_array()) {
             ("add_nodes", Some(entries)) => {
+                // GH #949 (review I-3): the edges a node's params draw are
+                // judged like `add_edges`, though their tokens stay on disk.
+                for (i, entry) in entries.iter().enumerate() {
+                    if let Some(params) = entry.get("override_params") {
+                        let at = format!("add_nodes[{i}].override_params");
+                        check_graph_edges(params, env, &at)?;
+                    }
+                }
                 walk_entries(entries, env, ctx, &mut cache, &["override_params"], &[])?
             }
             // GH #611: `files` carries the template's own bytes, not a value of
@@ -570,12 +858,19 @@ pub fn substitute_mutation_diff(
             ("add_templates", Some(entries)) => {
                 walk_entries(entries, env, ctx, &mut cache, &[], &["files"])?
             }
-            ("swap_nodes", Some(entries)) => walk_with_params(entries, env, ctx, &mut cache)?,
+            ("swap_nodes", Some(entries)) => {
+                walk_with_params("swap_nodes", entries, env, ctx, &mut cache)?
+            }
             // GH #796: a lift's `with.params` reach `config.json` through the
             // very same `override_params` contract (`stage_replace.rs` ->
             // `override_entry`), so the slot is the swap's slot and the arm is
             // the swap's arm. Without it the key fell through `_ => walk_full`.
-            ("replace_nodes", Some(entries)) => walk_with_params(entries, env, ctx, &mut cache)?,
+            ("replace_nodes", Some(entries)) => {
+                walk_with_params("replace_nodes", entries, env, ctx, &mut cache)?
+            }
+            // GH #949: an edge's CEL slots take the full pass WITH the guard
+            // -- an environment value must not close a string literal there.
+            ("add_edges", Some(entries)) => walk_edges(entries, env, ctx, &mut cache)?,
             _ => walk_full(val, env, ctx, &mut cache)?,
         };
         out.insert(key.clone(), substituted);
@@ -631,14 +926,20 @@ fn walk_entries(
 /// verbatim to `patch_and_substitute_config`, which merges them into the
 /// instance's `config.json`. GH #796 measured what a second, missing arm
 /// costs -- a lift resolved the token and wrote the value out.
+///
+/// GH #949 (review I-3): the edges `with.params` draw (`graph.edges`) are judged
+/// like `add_edges` ([`check_graph_edges`]) before anything is staged; their
+/// tokens stay tokens on disk and bind at read time, where the boot pass judges
+/// them again.
 fn walk_with_params(
+    op: &str,
     entries: &[JsonValue],
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     cache: &mut HashMap<String, String>,
 ) -> Result<JsonValue, MutationError> {
     let mut out = Vec::with_capacity(entries.len());
-    for entry in entries {
+    for (i, entry) in entries.iter().enumerate() {
         let Some(obj) = entry.as_object() else {
             out.push(walk_full(entry, env, ctx, cache)?);
             continue;
@@ -650,6 +951,7 @@ fn walk_with_params(
                     let mut new_with = meclaw_core::serde_json::Map::new();
                     for (wk, wv) in with_obj {
                         let ws = if wk == "params" {
+                            check_graph_edges(wv, env, &format!("{op}[{i}].with.params"))?;
                             walk_instance_only(wv, ctx, cache)?
                         } else {
                             walk_full(wv, env, ctx, cache)?
@@ -665,6 +967,93 @@ fn walk_with_params(
         out.push(JsonValue::Object(new_obj));
     }
     Ok(JsonValue::Array(out))
+}
+
+/// GH #949 — `add_edges[]`: the full pass, and in the three CEL slots of an
+/// entry (`condition`, every value of `modifier.set_context` and of
+/// `modifier.set_hop`) an environment value that a CEL string cannot hold is
+/// refused ([`MutationError::EnvValueUnsafe`]) instead of bound.
+///
+/// Why here: the builder recipe renders a channel binding as
+/// `string(hop.chat_id) == '${NAME}'` and only ever sees the token; the colony
+/// reads its `.env` into a map and binds the value in this pass. A value like
+/// `1' || true || '1` closes the string and PARSES, so the CEL check at
+/// validation sees a well-formed condition that takes every chat (and, in the
+/// speaker modifier, names every sender the member). This is the one place the
+/// value and the slot meet.
+///
+/// Everything else in an entry (`from`, `to`, `lane`, `delete_context`,
+/// `delete_hop`) is a name and not CEL, and takes the plain full pass. So does
+/// all of `remove_edges[]`: its `match` names a standing edge by identity and
+/// draws nothing, so an edge bound before this guard stays removable.
+fn walk_edges(
+    entries: &[JsonValue],
+    env: &HashMap<String, String>,
+    ctx: &HashMap<String, String>,
+    cache: &mut HashMap<String, String>,
+) -> Result<JsonValue, MutationError> {
+    let mut out = Vec::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        let Some(obj) = entry.as_object() else {
+            out.push(walk_full(entry, env, ctx, cache)?);
+            continue;
+        };
+        let mut new_obj = meclaw_core::serde_json::Map::new();
+        for (k, v) in obj {
+            let sub = match (k.as_str(), v) {
+                ("condition", JsonValue::String(s)) => {
+                    let slot = format!("add_edges[{i}].condition");
+                    JsonValue::String(replace_bound(s, env, ctx, cache, Some(slot.as_str()))?)
+                }
+                ("modifier", JsonValue::Object(m)) => walk_modifier(m, i, env, ctx, cache)?,
+                _ => walk_full(v, env, ctx, cache)?,
+            };
+            new_obj.insert(k.clone(), sub);
+        }
+        out.push(JsonValue::Object(new_obj));
+    }
+    Ok(JsonValue::Array(out))
+}
+
+/// The modifier of `add_edges[i]`: `set_context` and `set_hop` map a key to a
+/// CEL expression (`config::ModifierSpec`), so each string value is a CEL slot;
+/// the rest of the modifier (`delete_*` lists of key names, `restore_ttl`)
+/// takes the plain full pass.
+fn walk_modifier(
+    modifier: &meclaw_core::serde_json::Map<String, JsonValue>,
+    i: usize,
+    env: &HashMap<String, String>,
+    ctx: &HashMap<String, String>,
+    cache: &mut HashMap<String, String>,
+) -> Result<JsonValue, MutationError> {
+    let mut out = meclaw_core::serde_json::Map::new();
+    for (mk, mv) in modifier {
+        let sub = match (mk.as_str(), mv) {
+            ("set_context" | "set_hop", JsonValue::Object(exprs)) => {
+                let mut bound = meclaw_core::serde_json::Map::new();
+                for (key, expr) in exprs {
+                    let value = match expr {
+                        JsonValue::String(s) => {
+                            let slot = format!("add_edges[{i}].modifier.{mk}.{key}");
+                            JsonValue::String(replace_bound(
+                                s,
+                                env,
+                                ctx,
+                                cache,
+                                Some(slot.as_str()),
+                            )?)
+                        }
+                        _ => walk_full(expr, env, ctx, cache)?,
+                    };
+                    bound.insert(key.clone(), value);
+                }
+                JsonValue::Object(bound)
+            }
+            _ => walk_full(mv, env, ctx, cache)?,
+        };
+        out.insert(mk.clone(), sub);
+    }
+    Ok(JsonValue::Object(out))
 }
 
 #[cfg(test)]
@@ -1323,6 +1712,441 @@ mod tests {
             replace_env("über-${V}-😀-$${X}", &env).unwrap(),
             "über-wert-😀-${X}"
         );
+    }
+
+    // --- GH #949: an environment value never reopens a CEL string ---
+
+    /// One value per class a CEL string literal cannot hold. Each carries the
+    /// marker `s3cr3t`, so a test can tell that the value never reaches the
+    /// refusal, and the class sits in the interior: the door does not trim.
+    const UNSAFE: [(&str, &str); 16] = [
+        ("the reopened string", "s3cr3t' || true || '1"),
+        ("a single quote", "s3cr3t'1"),
+        ("a double quote", "s3cr3t\"1"),
+        ("a backslash", "s3cr3t\\1"),
+        ("a line feed", "s3cr3t\n1"),
+        ("a carriage return", "s3cr3t\r1"),
+        ("a tab", "s3cr3t\t1"),
+        ("NUL", "s3cr3t\u{0}1"),
+        ("ESC", "s3cr3t\u{1b}1"),
+        ("the last C0 control", "s3cr3t\u{1f}1"),
+        ("DEL", "s3cr3t\u{7f}1"),
+        ("the first C1 control", "s3cr3t\u{80}1"),
+        ("NEL", "s3cr3t\u{85}1"),
+        ("the last C1 control", "s3cr3t\u{9f}1"),
+        ("the line separator", "s3cr3t\u{2028}1"),
+        ("the paragraph separator", "s3cr3t\u{2029}1"),
+    ];
+
+    /// The three CEL slots of an `add_edges` entry, as the refusal names them
+    /// after `add_edges[<i>].`.
+    const CEL_SLOTS: [&str; 3] = [
+        "condition",
+        "modifier.set_context.speaker",
+        "modifier.set_hop.route",
+    ];
+
+    fn env_of(name: &str, value: &str) -> HashMap<String, String> {
+        HashMap::from([(name.to_string(), value.to_string())])
+    }
+
+    /// One channel ingress edge with `${CHAT}` quoted the way the builder
+    /// recipe quotes a binding, in exactly ONE of its three CEL slots, so a
+    /// refusal can only have come from that slot.
+    fn edge_with_token_in(slot: &str) -> JsonValue {
+        let quoted = "string(hop.chat_id) == '${CHAT}'";
+        let mut edge = json!({
+            "from": "./telegram", "to": ".",
+            "condition": "!has(hop.error_code)",
+            "modifier": {"set_context": {"speaker": "''"}, "set_hop": {"route": "'turn'"}}
+        });
+        match slot {
+            "condition" => edge["condition"] = json!(quoted),
+            "modifier.set_context.speaker" => {
+                edge["modifier"]["set_context"]["speaker"] =
+                    json!(format!("{quoted} ? 'member:alex' : ''"));
+            }
+            "modifier.set_hop.route" => {
+                edge["modifier"]["set_hop"]["route"] =
+                    json!(format!("{quoted} ? 'turn' : 'stray'"));
+            }
+            other => panic!("no such slot: {other}"),
+        }
+        json!({"add_edges": [edge]})
+    }
+
+    /// Red before GH #949: the pass bound every one of these values and
+    /// answered `Ok` — `1' || true || '1` came out as a condition that parses
+    /// and takes every chat. Now each is refused under its own code, naming
+    /// the variable and the slot and never the value.
+    #[test]
+    fn an_env_value_a_cel_string_cannot_hold_is_refused_in_every_cel_slot() {
+        for slot in CEL_SLOTS {
+            for (what, value) in UNSAFE {
+                let err = match substitute_mutation_diff(
+                    &edge_with_token_in(slot),
+                    &env_of("CHAT", value),
+                    &HashMap::new(),
+                ) {
+                    Ok(out) => panic!("{slot}: {what} was bound into CEL: {out}"),
+                    Err(e) => e,
+                };
+                assert_eq!(err.error_code(), "env_value_unsafe", "{slot}: {what}");
+                let said = err.message();
+                assert!(
+                    said.contains("${CHAT}") && said.contains(&format!("add_edges[0].{slot}")),
+                    "{slot}: {what}: the refusal names the variable and the slot: {said}"
+                );
+                assert!(
+                    !said.contains("s3cr3t") && !format!("{err:?}").contains("s3cr3t"),
+                    "{slot}: {what}: the refusal carries the value"
+                );
+            }
+        }
+    }
+
+    /// The ids the connectors stamp bind exactly as before, in every slot: a
+    /// Telegram chat (negative for a group), a Slack channel and a thread of it,
+    /// a non-ASCII letter, a space.
+    #[test]
+    fn a_plain_id_from_the_environment_binds_in_every_cel_slot() {
+        for slot in CEL_SLOTS {
+            for value in ["111", "-1001234", "C1", "C1:1700.1", "chat-ä", "a b"] {
+                let out = substitute_mutation_diff(
+                    &edge_with_token_in(slot),
+                    &env_of("CHAT", value),
+                    &HashMap::new(),
+                )
+                .unwrap_or_else(|e| panic!("{slot}: {value:?} was refused: {e:?}"));
+                let pointer = format!("/add_edges/0/{}", slot.replace('.', "/"));
+                let bound = out
+                    .pointer(&pointer)
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default();
+                assert!(
+                    bound.contains(&format!("string(hop.chat_id) == '{value}'")),
+                    "{slot}: {bound}"
+                );
+            }
+        }
+    }
+
+    /// The guard is the CEL slots' and nobody else's. The same value is still
+    /// substituted, or kept a token, everywhere else: a secret in a node's
+    /// params may carry any character (it stays `${CHAT}` on disk and binds at
+    /// read time), an endpoint or a `delete_*` list is a name, a seed row is
+    /// data, and a `remove_edges` pattern names a standing edge by identity —
+    /// an edge bound before GH #949 stays removable.
+    #[test]
+    fn the_same_value_outside_a_cel_slot_is_untouched() {
+        let value = "s3cr3t' || true || '1\\\"";
+        let diff = json!({
+            "add_nodes": [{"name": "n", "template": "t@1.0.0",
+                           "override_params": {"api_key": "${CHAT}"}}],
+            "swap_nodes": [{"match": {"name": "a"},
+                            "with": {"template": "t@1.0.0", "params": {"api_key": "${CHAT}"}}}],
+            "replace_nodes": [{"match": {"name": "b"},
+                               "with": {"template": "t@1.0.0", "params": {"api_key": "${CHAT}"}}}],
+            "add_edges": [{"from": "${CHAT}", "to": "./b",
+                           "modifier": {"delete_context": ["${CHAT}"], "delete_hop": ["${CHAT}"]}}],
+            "remove_edges": [{"match": {"from": "./a", "to": "./b",
+                                        "condition": "hop.chat_id == '${CHAT}'"}}],
+            "seed_rows": [{"path": "/s", "rows": [{"v": "${CHAT}"}]}]
+        });
+        let out = substitute_mutation_diff(&diff, &env_of("CHAT", value), &HashMap::new())
+            .unwrap_or_else(|e| panic!("a value outside a CEL slot was refused: {e:?}"));
+        assert_eq!(out["add_nodes"][0]["override_params"]["api_key"], "${CHAT}");
+        assert_eq!(out["swap_nodes"][0]["with"]["params"]["api_key"], "${CHAT}");
+        assert_eq!(
+            out["replace_nodes"][0]["with"]["params"]["api_key"],
+            "${CHAT}"
+        );
+        assert_eq!(out["add_edges"][0]["from"], value);
+        assert_eq!(out["add_edges"][0]["modifier"]["delete_context"][0], value);
+        assert_eq!(out["add_edges"][0]["modifier"]["delete_hop"][0], value);
+        assert_eq!(
+            out["remove_edges"][0]["match"]["condition"],
+            format!("hop.chat_id == '{value}'")
+        );
+        assert_eq!(out["seed_rows"][0]["rows"][0]["v"], value);
+    }
+
+    /// A POSIX default is the same binding: the default that stands in for an
+    /// unset variable binds like a value, and a set value is judged although a
+    /// harmless default stands beside it — under the variable's name.
+    #[test]
+    fn a_defaulted_token_is_judged_by_what_it_binds() {
+        let diff = json!({"add_edges": [{"from": "a", "to": "b",
+                                         "condition": "hop.chat_id == '${CHAT:-111}'"}]});
+        let out = substitute_mutation_diff(&diff, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(out["add_edges"][0]["condition"], "hop.chat_id == '111'");
+        let err = substitute_mutation_diff(
+            &diff,
+            &env_of("CHAT", "s3cr3t' || true || '1"),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err.error_code(), "env_value_unsafe");
+        assert!(err.message().contains("${CHAT}"), "{err:?}");
+    }
+
+    /// An escaped token binds nothing, so there is nothing to judge: `$${CHAT}`
+    /// stays the literal text `${CHAT}` in a condition, whatever the variable
+    /// holds.
+    #[test]
+    fn an_escaped_token_in_a_condition_binds_nothing() {
+        let diff = json!({"add_edges": [{"from": "a", "to": "b",
+                                         "condition": "hop.x == '$${CHAT}'"}]});
+        let out =
+            substitute_mutation_diff(&diff, &env_of("CHAT", "s3cr3t'"), &HashMap::new()).unwrap();
+        assert_eq!(out["add_edges"][0]["condition"], "hop.x == '${CHAT}'");
+    }
+
+    // --- GH #949, review I-3: unquoted tokens, and the edges params draw ---
+
+    /// Red before the fix: `1 || true` carries no quote, no backslash and no
+    /// control character, so `cel_string_safe` passed it, and `hop.n == ${N}`
+    /// bound to a condition that is always true. A token outside a string
+    /// literal is CEL source: in every CEL slot it binds a plain number (the
+    /// shape `templates/retry` writes, `< ${RETRY_MAX:-3}`) and nothing else;
+    /// inside `'…'` or `"…"` it binds what a string can hold; an escaped token
+    /// and the instance class are not judged.
+    #[test]
+    fn an_unquoted_env_token_binds_a_number_and_nothing_else() {
+        for value in ["7", "-3", "2.5", "0"] {
+            let out = substitute_mutation_diff(
+                &json!({"add_edges": [{"from": "a", "to": "b", "condition": "hop.n < ${N}"}]}),
+                &env_of("N", value),
+                &HashMap::new(),
+            )
+            .unwrap_or_else(|e| panic!("{value}: {e:?}"));
+            assert_eq!(out["add_edges"][0]["condition"], format!("hop.n < {value}"));
+        }
+        for (slot, edge) in [
+            (
+                "condition",
+                json!({"from": "a", "to": "b", "condition": "hop.n == ${N}"}),
+            ),
+            (
+                "modifier.set_context.k",
+                json!({"from": "a", "to": "b", "modifier": {"set_context": {"k": "${N}"}}}),
+            ),
+            (
+                "modifier.set_hop.route",
+                json!({"from": "a", "to": "b",
+                       "modifier": {"set_hop": {"route": "hop.x == 'q' ? ${N} : 'r'"}}}),
+            ),
+        ] {
+            for value in ["s3cr3t || true", "s3cr3t", "1 || true", "1.", "-", ""] {
+                let err = substitute_mutation_diff(
+                    &json!({"add_edges": [edge.clone()]}),
+                    &env_of("N", value),
+                    &HashMap::new(),
+                )
+                .expect_err(slot);
+                assert_eq!(err.error_code(), "env_value_unsafe", "{slot}");
+                let said = err.message();
+                assert!(
+                    said.contains("${N}") && said.contains(&format!("add_edges[0].{slot}")),
+                    "{slot}: {said}"
+                );
+                assert!(!said.contains("s3cr3t"), "{slot}: the value leaked");
+            }
+        }
+        for (condition, bound) in [
+            ("hop.n == '${N}'", "hop.n == '7'"),
+            ("hop.n == \"${N}\"", "hop.n == \"7\""),
+            ("'[\"member:${N}\"]'", "'[\"member:7\"]'"),
+            (
+                "hop.s == 'it\\'s' && hop.n == '${N}'",
+                "hop.s == 'it\\'s' && hop.n == '7'",
+            ),
+            ("hop.n == $${N}", "hop.n == ${N}"),
+            ("hop.n == ${ctx.n}", "hop.n == 7"),
+            ("int(context.attempt) < ${N:-3}", "int(context.attempt) < 7"),
+            ("hop.n == ${N}", "hop.n == 7"),
+            (
+                "hop.n == -${N} || hop.n == ${N}.0",
+                "hop.n == -7 || hop.n == 7.0",
+            ),
+        ] {
+            let out = substitute_mutation_diff(
+                &json!({"add_edges": [{"from": "a", "to": "b", "condition": condition}]}),
+                &env_of("N", "7"),
+                &env_of("n", "7"),
+            )
+            .unwrap_or_else(|e| panic!("{condition}: {e:?}"));
+            assert_eq!(out["add_edges"][0]["condition"], bound, "{condition}");
+        }
+        // A quote that closes before the token leaves it outside again.
+        let err = substitute_mutation_diff(
+            &json!({"add_edges": [{"from": "a", "to": "b",
+                                   "condition": "hop.s == 'x' && hop.n == ${N}"}]}),
+            &env_of("N", "1 || true"),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err.error_code(), "env_value_unsafe");
+    }
+
+    /// GH #949 (review I-R2) -- CEL also spells a raw string (`r'…'`, where a
+    /// backslash is text) and a triple-quoted one (`'''…'''`, where a single
+    /// quote is text), and `token_quoting` lexes neither. Red before the fix:
+    /// after `r'\'` or `'''it's'''` the scanner held `${N}` for quoted, only
+    /// `cel_string_safe` judged it, and `1 || true` bound into an always-true
+    /// condition. A token after such a literal is refused whatever it holds; a
+    /// token before one is judged as before.
+    #[test]
+    fn a_token_after_a_raw_or_triple_quoted_literal_is_refused() {
+        for condition in [
+            "hop.p == r'\\' && hop.n == ${N}",
+            "hop.p == R\"\\\" && hop.n == ${N}",
+            "hop.s == '''it's''' && hop.n == ${N}",
+            "hop.s == \"\"\"a\"b\"\"\" && hop.n == ${N}",
+        ] {
+            for value in ["1 || true", "s3cr3t", "7"] {
+                let err = substitute_mutation_diff(
+                    &json!({"add_edges": [{"from": "a", "to": "b", "condition": condition}]}),
+                    &env_of("N", value),
+                    &HashMap::new(),
+                )
+                .expect_err(condition);
+                assert_eq!(err.error_code(), "env_value_unsafe", "{condition}");
+                assert!(!err.message().contains("s3cr3t"), "the value leaked");
+            }
+        }
+        let out = substitute_mutation_diff(
+            &json!({"add_edges": [{"from": "a", "to": "b",
+                                   "condition": "hop.n == ${N} && hop.p == r'\\'"}]}),
+            &env_of("N", "7"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            out["add_edges"][0]["condition"],
+            "hop.n == 7 && hop.p == r'\\'"
+        );
+    }
+
+    /// One hive config whose own edge carries `cond` as its condition, under
+    /// `params.graph.edges[1]` (the first edge is harmless).
+    fn graph_params(cond: &str) -> JsonValue {
+        json!({"graph": {"edges": [
+            {"from": ".", "to": "./a", "condition": "has(hop.route)"},
+            {"from": ".", "to": "./b", "condition": cond,
+             "modifier": {"set_context": {"seen": "'yes'"}}}
+        ]}, "api_key": "${CHAT}"})
+    }
+
+    /// Red before the fix: a node's params bound `${CHAT}` into the edges they
+    /// draw unjudged -- `add_nodes` / `swap_nodes` / `replace_nodes` kept the
+    /// token for disk and the boot pass bound it. Now the door judges those CEL
+    /// slots against the environment before anything is staged, names the
+    /// operation, the entry and the slot, and still writes the token (never
+    /// the value) to disk; a variable that is not set is the binding pass's to
+    /// name, not this check's.
+    #[test]
+    fn the_edges_a_nodes_params_draw_are_judged_at_the_door() {
+        let quoted = graph_params("string(hop.chat_id) == '${CHAT}'");
+        let unquoted = graph_params("hop.chat_id == ${CHAT}");
+        let diff_of = |params: &JsonValue, op: &str| match op {
+            "add_nodes" => json!({"add_nodes": [{"name": "n", "template": "t@1.0.0",
+                                                  "override_params": params}]}),
+            _ => json!({op: [{"match": {"name": "a"},
+                               "with": {"template": "t@1.0.0", "params": params}}]}),
+        };
+        for (op, at) in [
+            ("add_nodes", "add_nodes[0].override_params"),
+            ("swap_nodes", "swap_nodes[0].with.params"),
+            ("replace_nodes", "replace_nodes[0].with.params"),
+        ] {
+            let slot = format!("{at}.graph.edges[1].condition");
+            for (what, params, value) in [
+                ("a reopened string", &quoted, "s3cr3t' || true || '1"),
+                ("an unquoted token", &unquoted, "111 || true"),
+            ] {
+                let err = substitute_mutation_diff(
+                    &diff_of(params, op),
+                    &env_of("CHAT", value),
+                    &HashMap::new(),
+                )
+                .expect_err(what);
+                assert_eq!(err.error_code(), "env_value_unsafe", "{op}: {what}");
+                assert!(
+                    err.message().contains("${CHAT}") && err.message().contains(&slot),
+                    "{op}: {what}: {}",
+                    err.message()
+                );
+                assert!(!err.message().contains("s3cr3t"), "{op}: the value leaked");
+            }
+            let out = substitute_mutation_diff(
+                &diff_of(&quoted, op),
+                &env_of("CHAT", "111"),
+                &HashMap::new(),
+            )
+            .unwrap_or_else(|e| panic!("{op}: a plain id was refused: {e:?}"));
+            assert!(
+                out.to_string().contains("'${CHAT}'") && !out.to_string().contains("'111'"),
+                "{op}: the token stays a token on disk: {out}"
+            );
+            substitute_mutation_diff(&diff_of(&quoted, op), &HashMap::new(), &HashMap::new())
+                .unwrap_or_else(|e| panic!("{op}: an unset variable is not this check's: {e:?}"));
+        }
+    }
+
+    /// Red before the fix: the boot pass bound `${CHAT}` into a config's own
+    /// edges unjudged. It judges them now as the door does -- over a whole
+    /// config (`params.graph.edges`) and over a bare `params` object
+    /// (`graph.edges`) -- and binds a plain id exactly as before; the same
+    /// value outside the edges (a key) binds whatever it holds, and a missing
+    /// variable is still `env_var_missing`.
+    #[test]
+    fn the_boot_pass_judges_the_edges_a_config_draws() {
+        let quoted = graph_params("string(hop.chat_id) == '${CHAT}'");
+        for (input, slot) in [
+            (
+                json!({"name": "n", "params": quoted.clone()}),
+                "params.graph.edges[1].condition",
+            ),
+            (quoted.clone(), "graph.edges[1].condition"),
+        ] {
+            let err =
+                substitute_env_only(&input, &env_of("CHAT", "s3cr3t' || true || '1")).unwrap_err();
+            assert_eq!(err.error_code(), "env_value_unsafe", "{slot}");
+            assert!(
+                err.message().contains("${CHAT}") && err.message().contains(slot),
+                "{err:?}"
+            );
+            assert!(!err.message().contains("s3cr3t"), "the value leaked");
+
+            let out = substitute_env_only(&input, &env_of("CHAT", "111")).unwrap();
+            assert!(
+                out.to_string().contains("string(hop.chat_id) == '111'"),
+                "{out}"
+            );
+
+            let err = substitute_env_only(&input, &HashMap::new()).unwrap_err();
+            assert_eq!(err.error_code(), "env_var_missing", "{slot}");
+        }
+        let unquoted = json!({"params": graph_params("int(hop.n) < ${CHAT}")});
+        let err = substitute_env_only(&unquoted, &env_of("CHAT", "3 || true")).unwrap_err();
+        assert_eq!(err.error_code(), "env_value_unsafe");
+        assert!(
+            err.message().contains("params.graph.edges[1].condition"),
+            "{err:?}"
+        );
+        let out = substitute_env_only(&unquoted, &env_of("CHAT", "3")).unwrap();
+        assert_eq!(
+            out["params"]["graph"]["edges"][1]["condition"],
+            "int(hop.n) < 3"
+        );
+        // Outside the edges a value may hold anything: a secret is not CEL.
+        let out = substitute_env_only(
+            &json!({"params": {"api_key": "${CHAT}", "graph": {"edges": []}}}),
+            &env_of("CHAT", "s3cr3t' \\ \""),
+        )
+        .unwrap();
+        assert_eq!(out["params"]["api_key"], "s3cr3t' \\ \"");
     }
 }
 

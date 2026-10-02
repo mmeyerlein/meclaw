@@ -1,0 +1,25 @@
+{
+  "name": "objects",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The objects of one member ([#951](https://github.com/mmeyerlein/meclaw/issues/951)): a thing its conversations keep naming -- a bike, a project, a recurring appointment -- becomes a row with a type, its aliases and six slots (what, where, who, when, why, how), learned in the round of the turn that first named it and visible only to rounds that round covers. A sighting counts once per turn; a candidate becomes active after `promote_after` turns or at once when the owner confirms it. An active row is announced to the graph space as a node source, its brief (type, main name, filled slots, the latest facts) is pushed to the curator as a candidate in the row's round, and its aliases go to memory, so a fact about the thing is filed under the object's id.",
+    "use_when": "One per member, beside its assistants, memory hive and graph space: draw the assistants' `thing_seen` into it, its `candidate` back to the assistants as `in_candidate`, `alias`/`facts` to the memory hive (`in_alias`, `in_query`) and the answers back (`alias_ack`, `in_facts`), `source_changed` to the graph space (restoring the TTL -- it is a door) and the graph space's `pull` in as `in_read`, and the `object_*` tool calls in on `in_tool`.",
+    "not_in_scope": "No model, no network, no clock (pushes follow events only); no content of a fact (memory keeps facts); no delete of a row (append-only, `supersedes`); no widening of a round; no product wording -- types, thresholds and the owner are params.",
+    "examples": [
+      "PORTS - every endpoint is the HIVE path (`params.ports` is empty and therefore sealed). Entry on `hop.route`: thing_seen, in_tool, in_schemas, in_read, alias_ack, in_facts. Exit: source_changed, answer, tool_result, tool_schemas, candidate, alias, facts.",
+      "SIGHTING - body `{items: [{name: 'Blue Bike'}], turn_id: 't1', session_id: 's1'}` on `thing_seen` with `context.audience_set` '[\"agent:a\",\"member:p\"]' starts a candidate row `ob-<12 hex>` in that round; the same name in three turns makes it active.",
+      "TOOL - `object_set {id: 'ob-0123456789ab', slot: 'why', value: 'for the commute'}` is written only for the owner (`context.speaker` a `member:` reference in the round); anybody else gets `owner_only`, and a round the row does not cover gets `not_found`, the same answer as an id that never existed.",
+      "WIRING - in a member: `./objects -> ./assistants` on `candidate` restamped to `in_candidate` with `context.audience_set` from `hop.audience_set`; `./objects -> ./memory-hive` on `facts` restamped to `in_query` with `context.audience_now` from `hop.audience_now` and `context.recall_caller` 'objects' and nothing else; `./graph-space -> ./objects` on `pull` when `hop.source.startsWith('ob-')`, restamped to `in_read`."
+    ]
+  },
+  "tags": [
+    "objects",
+    "things",
+    "memory",
+    "graph-space",
+    "node-source",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

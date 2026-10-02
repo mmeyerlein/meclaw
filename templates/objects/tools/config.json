@@ -1,0 +1,192 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "types": [
+      "thing"
+    ],
+    "slot_max": 400,
+    "owner": "",
+    "scan_max": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "import sys, json, re, hashlib\n\n# THE OBJECT TOOLS OF A MODEL (GH #951): one `tool_call` in on `in_tool`, one\n# `tool_result` out under the call's id -- the shape of the file space's tool\n# adapter (GH #908). Reads are served here from the store (`object_find`,\n# `object_brief` through `./brief`); a change (`object_set`, `object_confirm`)\n# is checked here and written by `./gate`, the one writer, whose answer comes\n# back on `answer` under `caller` 'tools'.\n#\n# THE ROUND DECIDES WHAT EXISTS. The question round is `context.audience_now`\n# (the member's tool edge stamps it from `context.audience_set`), else\n# `context.audience_set`; without one every call is `missing_audience`. A row\n# whose round does not cover the question round answers exactly like a row that\n# was never written: `not_found`, byte for byte -- never a hint of existence.\n#\n# THE OWNER, AND ONLY THE OWNER, says why and decides the state. The owner of a\n# turn is `context.speaker` (stamped by the bound 1:1 channel with proof of the\n# sender, `member:<person>`) when it is a `member:` reference, stands in the\n# round of the turn, and equals the param `owner` when that is set. A missing\n# speaker (an unbound channel, a peer, a timer) is no owner: `why`, `state`\n# and `object_confirm` answer `owner_only`, fail-closed. `context.user_id` and\n# plain membership in the round are no substitute.\nME = \"tools\"\n\n\ndef _int(key, default):\n    v = P.get(key, default) if isinstance(P, dict) else default\n    try:\n        return int(float(v))\n    except Exception:\n        return default\n\n\ndef _types(v):\n    if isinstance(v, str):\n        try:\n            v = json.loads(v)\n        except Exception:\n            v = [v]\n    out = [str(x).strip() for x in (v if isinstance(v, list) else []) if str(x).strip()]\n    return out or [\"thing\"]\n\n\ndoc = json.load(sys.stdin)\nP = doc.get(\"params\") or {}\nTYPES = _types(P.get(\"types\"))\nSLOT_MAX = max(1, _int(\"slot_max\", 400))\nOWNER = str(P.get(\"owner\") or \"\").strip()\nSCAN = max(100, _int(\"scan_max\", 5000))\n\nSLOTS = (\"what\", \"where\", \"who\", \"when\", \"why\", \"how\")\nFIELDS = SLOTS + (\"alias\", \"type\", \"state\", \"doc\", \"related\")\nOWNER_FIELDS = (\"why\", \"state\")\nID_RE = re.compile(r\"^ob-[0-9a-f]{12}$\")\nCOLS = [\"id\", \"rev\", \"type\", \"aliases\", \"state\", \"origin\", \"valid_since\", \"audience_set\",\n        \"slots\", \"refs\", \"seen\", \"turns\", \"supersedes\", \"recorded_at\"]\nFIND_MAX = 20\nFIND_IDS = 100\nNOT_FOUND = \"no such object\"\n\n# --8<-- object-offer\n# THE OBJECT TOOLS, one list, one entry per tool (GH #951). It stands WORD FOR\n# WORD in `./schemas` (which hands it to a model's menu) and in `./tools`\n# (which checks every call against it), because a code cell has no library it\n# could share: `gh951_a_thing_becomes_a_row.rs` holds the two copies to one\n# value. The name IS the mapping: `object_<op>`.\nOID = {\"type\": \"string\",\n       \"description\": \"the object: its address `ob-<12 hex>`, as `object_find` names it\"}\n\n\ndef _obj(props, required):\n    return {\"type\": \"object\", \"properties\": props, \"required\": required,\n            \"additionalProperties\": False}\n\n\nOBJECT_OFFER = [\n    {\"name\": \"object_find\",\n     \"description\": \"Find the objects of this conversation (address `ob-<12 hex>`) whose name \"\n                    \"or alias contains `q` or whose type is `q`, each with its type, main name \"\n                    \"and state.\",\n     \"parameters\": _obj({\"q\": {\"type\": \"string\",\n                               \"description\": \"a name, a part of a name, or a type\"}}, [\"q\"])},\n    {\"name\": \"object_brief\",\n     \"description\": \"The brief of one object (address `ob-<12 hex>`): its type, main name, \"\n                    \"filled slots and the latest facts about it.\",\n     \"parameters\": _obj({\"id\": OID}, [\"id\"])},\n    {\"name\": \"object_set\",\n     \"description\": \"Set one field of an object (address `ob-<12 hex>`): a slot `what`, `where`, \"\n                    \"`who` (a person reference like `member:<id>`, never a name), `when`, \"\n                    \"`why` or `how`, or `alias`, `type`, `state`, `doc` (`fh-<12 hex>#<anchor>`) \"\n                    \"or `related` (`ob-<12 hex>`), where only the owner sets `why` and `state`.\",\n     \"parameters\": _obj({\"id\": OID,\n                         \"slot\": {\"type\": \"string\", \"enum\": list(FIELDS),\n                                  \"description\": \"the field to set\"},\n                         \"value\": {\"type\": \"string\",\n                                   \"description\": \"the new value; empty clears a slot, `who`, \"\n                                                  \"`doc` or `related`\"}},\n                        [\"id\", \"slot\", \"value\"])},\n    {\"name\": \"object_confirm\",\n     \"description\": \"Confirm an object (address `ob-<12 hex>`) as real, which makes it active \"\n                    \"at once, and only the owner confirms.\",\n     \"parameters\": _obj({\"id\": OID}, [\"id\"])},\n]\n# --8<-- end object-offer\n\nTYPES_OK = {\"string\": (str,), \"integer\": (int,), \"number\": (int, float),\n            \"boolean\": (bool,), \"array\": (list,), \"object\": (dict,)}\n\n\n# --8<-- round\n# A round is `audience_set`: the JSON text of a list of strings. Canonical =\n# sorted, without duplicates, without empty or non-string entries (GH #951,\n# review of the memory seam: an empty name is nobody, and memory's\n# `audience_now` must never carry a `\"\"`); nothing left = \"[]\". Unparsable,\n# empty text, not a list or absent = NO round; \"[]\" is a round (an empty one,\n# roundless). `covers` is fail-closed: a row is visible to a question round\n# exactly when nobody of the question is missing from the row's round (\"*\" in\n# the row: everybody). A round is never widened.\ndef canon_round(v):\n    if not isinstance(v, str) or not v.strip():\n        return None\n    try:\n        xs = json.loads(v)\n    except Exception:\n        return None\n    if not isinstance(xs, list):\n        return None\n    xs = [x for x in xs if isinstance(x, str) and x.strip()]\n    return json.dumps(sorted(set(xs)), separators=(\",\", \":\"))\n\n\ndef covers(row_aud, q):\n    q = canon_round(q)\n    r = canon_round(row_aud)\n    if q is None or r is None:\n        return False\n    rs = json.loads(r)\n    if \"*\" in rs:\n        return True\n    qs = json.loads(q)\n    if not qs:\n        # A roundless question sees only roundless rows: `set() <= rs` would\n        # let it see every row of every round (#951, fail-closed).\n        return not rs\n    return set(qs) <= set(rs)\n# --8<-- end round\n\n\n# --8<-- norm-key\n# The normal form of a name or alias: the memory hive store's `normalize`\n# (crates/meclaw-cells/src/store/query/normalize.rs) in python, so that an\n# object alias and a fact subject equate the same spellings (M.1). Lower case\n# (`str.lower`, as rust `to_lowercase`), then the Latin-1 composition table of\n# that file (a combining mark after its ASCII base letter becomes the\n# precomposed letter), then trim + every run of whitespace -> one space. The\n# whitespace set is rust's `char::is_whitespace` (Unicode White_Space), NOT\n# python's `str.split()`, which also splits on U+001C..U+001F. No casefold.\n# --8<-- normalize_text (copy of memory-hive writer, GH #948/#951)\n# The memory hive's writer carries this function; this block is its copy\n# word for word (gh951_one_spelling_one_key.rs), so that an alias and a\n# fact subject meet under one key. Swap the whole block, never edit it here.\nCOMPOSE_ROWS = (\n    (\"\\u0300\", \"aeiou\", \"\\u00e0\\u00e8\\u00ec\\u00f2\\u00f9\"),\n    (\"\\u0301\", \"aeiouy\", \"\\u00e1\\u00e9\\u00ed\\u00f3\\u00fa\\u00fd\"),\n    (\"\\u0302\", \"aeiou\", \"\\u00e2\\u00ea\\u00ee\\u00f4\\u00fb\"),\n    (\"\\u0303\", \"ano\", \"\\u00e3\\u00f1\\u00f5\"),\n    (\"\\u0308\", \"aeiouy\", \"\\u00e4\\u00eb\\u00ef\\u00f6\\u00fc\\u00ff\"),\n    (\"\\u030a\", \"a\", \"\\u00e5\"),\n    (\"\\u0327\", \"c\", \"\\u00e7\"),\n)\nCOMPOSITIONS = {(base, mark): composed\n                for mark, bases, composed_forms in COMPOSE_ROWS\n                for base, composed in zip(bases, composed_forms)}\n# Rust's `char::is_whitespace` (the Unicode White_Space property), spelled out:\n# Python's `str.split()` also splits on U+001C..U+001F, which the store keeps.\nWHITE_SPACE = frozenset(\"\\t\\n\\x0b\\x0c\\r \\x85\\xa0\\u1680\\u2000\\u2001\\u2002\\u2003\"\n                        \"\\u2004\\u2005\\u2006\\u2007\\u2008\\u2009\\u200a\\u2028\\u2029\"\n                        \"\\u202f\\u205f\\u3000\")\n\n\ndef normalize_text(value):\n    \"\"\"The normal form of one string -- the twin of `meclaw_norm` (0.2.0 P4).\n\n    Same three effects in the same order as the store: case fold, Latin-1\n    composition (NFD -> NFC), whitespace collapse over the store's own\n    whitespace. An unrecognised mark leaves the two spellings DIFFERENT, which\n    is the same conservatism the Rust side ships.\n    \"\"\"\n    out = []\n    for ch in str(value or \"\").lower():\n        composed = COMPOSITIONS.get((out[-1], ch)) if out else None\n        if composed is None:\n            out.append(ch)\n        else:\n            out[-1] = composed\n    words, word = [], []\n    for ch in out:\n        if ch in WHITE_SPACE:\n            if word:\n                words.append(\"\".join(word))\n                word = []\n        else:\n            word.append(ch)\n    if word:\n        words.append(\"\".join(word))\n    return \" \".join(words)\n# --8<-- end normalize_text\n\n\ndef norm_key(s):\n    return normalize_text(s)\n# --8<-- end norm-key\n\n\ndef loads(v, default):\n    if isinstance(v, str):\n        try:\n            x = json.loads(v)\n        except Exception:\n            return default\n        return x if isinstance(x, type(default)) else default\n    return v if isinstance(v, type(default)) else default\n\n\ndef op_of(name):\n    \"\"\"The op of a tool name (`object_<op>`), or None for a name this hive\n    does not serve.\"\"\"\n    if not isinstance(name, str) or name not in [t[\"name\"] for t in OBJECT_OFFER]:\n        return None\n    return name[len(\"object_\"):]\n\n\ndef type_ok(v, t):\n    if isinstance(t, list):\n        return any(type_ok(v, x) for x in t)\n    want = TYPES_OK.get(t)\n    if want is None:\n        return True\n    if isinstance(v, bool) and t != \"boolean\":\n        return False\n    return isinstance(v, want)\n\n\ndef check(schema, v, at=\"arguments\"):\n    \"\"\"The problems of `v` against a JSON Schema of the subset `OBJECT_OFFER`\n    uses; [] when it holds (the file space's checker, GH #908).\"\"\"\n    out = []\n    t = schema.get(\"type\")\n    if t is not None and not type_ok(v, t):\n        return [\"%s must be %s\" % (at, t if isinstance(t, str) else \" or \".join(t))]\n    if \"enum\" in schema and v not in schema[\"enum\"]:\n        out.append(\"%s must be one of %s\" % (at, \", \".join(map(str, schema[\"enum\"]))))\n    if isinstance(v, dict):\n        props = schema.get(\"properties\") or {}\n        for k in schema.get(\"required\") or []:\n            if k not in v:\n                out.append(\"%s.%s is required\" % (at, k))\n        for k, x in v.items():\n            if k in props:\n                out.extend(check(props[k], x, \"%s.%s\" % (at, k)))\n            elif schema.get(\"additionalProperties\") is False:\n                out.append(\"%s.%s is not an argument of this tool\" % (at, k))\n    return out\n\n\ndef question_round(c):\n    \"\"\"`context.audience_now` when the edge stamped one, else\n    `context.audience_set`; None = no round.\"\"\"\n    now_ = c.get(\"audience_now\")\n    if isinstance(now_, str) and now_.strip():\n        return canon_round(now_)\n    return canon_round(c.get(\"audience_set\"))\n\n\ndef is_owner(c, round_, owner=None):\n    \"\"\"The speaker of the turn is its owner: a `member:` reference, standing in\n    the round of the turn, and the param `owner` when that is set. Fail-closed:\n    anything else -- no speaker, no round, `*` -- is no owner.\"\"\"\n    owner = OWNER if owner is None else owner\n    sp = c.get(\"speaker\")\n    if not isinstance(sp, str) or not sp.startswith(\"member:\") or len(sp) <= len(\"member:\"):\n        return False\n    if round_ is None or sp not in json.loads(round_):\n        return False\n    return not owner or sp == owner\n\n\ndef refusal(op, code, message):\n    return {\"ok\": False, \"op\": op or \"\", \"error\": {\"code\": code, \"message\": message}}\n\n\ndef result_text(answer):\n    keep = {k: v for k, v in answer.items()\n            if k not in (\"op_id\", \"caller\", \"messages\", \"header\")}\n    return json.dumps(keep, ensure_ascii=False, sort_keys=True)\n\n\ndef tool_result(call_id, answer):\n    head = {\"route\": \"tool_result\", \"tool_call_id\": call_id}\n    if answer.get(\"ok\") is False:\n        head[\"error_code\"] = str((answer.get(\"error\") or {}).get(\"code\") or \"\")\n    return {\"header\": head,\n            \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                          \"text\": result_text(answer)}]}\n\n\nPREFIX = ME + \":\"\n\n\ndef call_of(op_id):\n    op_id = str(op_id or \"\")\n    return op_id[len(PREFIX):] if op_id.startswith(PREFIX) else op_id\n\n\ndef store(ops, phase, carry):\n    return {\"header\": {\"route\": \"tools_store\", \"phase\": phase, \"reply_cell\": ME,\n                       \"cur_call\": json.dumps(carry, sort_keys=True, ensure_ascii=False)},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": cid,\n                          \"text\": json.dumps(a, ensure_ascii=False)} for cid, a in ops]}\n\n\ndef head_op(oid):\n    return {\"operation\": \"select\", \"table\": \"objects\", \"columns\": COLS,\n            \"where\": {\"id\": oid}, \"order_by\": [{\"col\": \"rev\", \"dir\": \"desc\"}], \"limit\": 1}\n\n\ndef translate(name, raw, call_id, c):\n    \"\"\"One tool call -> the ONE message this cell emits for it.\"\"\"\n    op = op_of(name)\n    if op is None:\n        return tool_result(call_id, refusal(\"\", \"tool_unknown\",\n                                            \"this hive has no tool %r\" % (name,)))\n    if isinstance(raw, dict):\n        args = raw\n    else:\n        try:\n            args = json.loads(raw or \"{}\")\n        except Exception:\n            args = None\n    if not isinstance(args, dict):\n        return tool_result(call_id, refusal(op, \"bad_request\",\n                                            \"the arguments are not a JSON object\"))\n    schema = [t for t in OBJECT_OFFER if t[\"name\"] == name][0][\"parameters\"]\n    bad = check(schema, args)\n    if bad:\n        return tool_result(call_id, refusal(op, \"bad_request\", \"; \".join(bad)))\n    if not call_id:\n        return tool_result(call_id, refusal(op, \"bad_request\", \"the call carries no id\"))\n    round_ = question_round(c)\n    if round_ is None:\n        return tool_result(call_id, refusal(op, \"missing_audience\",\n                                            \"the call carries no round\"))\n    if op == \"confirm\" or (op == \"set\" and args.get(\"slot\") in OWNER_FIELDS):\n        if not is_owner(c, round_):\n            return tool_result(call_id, refusal(\n                op, \"owner_only\", \"only the owner of this conversation confirms an object, \"\n                                  \"says why, or changes its state\"))\n    carry = {\"op\": op, \"call_id\": call_id, \"round\": round_}\n    if op == \"set\":\n        value = args.get(\"value\")\n        if len(value) > SLOT_MAX:\n            return tool_result(call_id, refusal(op, \"too_long\",\n                                                \"a value holds at most %d characters\" % SLOT_MAX))\n        if args.get(\"slot\") == \"type\" and value.strip() not in TYPES:\n            return tool_result(call_id, refusal(op, \"bad_type\",\n                                                \"the type is one of %s\" % \", \".join(TYPES)))\n    if op in (\"set\", \"confirm\"):\n        return {\"header\": {\"route\": \"edit\", \"op\": op, \"op_id\": PREFIX + call_id, \"caller\": ME},\n                \"op\": op, \"id\": args.get(\"id\"), \"slot\": args.get(\"slot\") or \"\",\n                \"value\": args.get(\"value\") or \"\", \"round\": round_}\n    if op == \"brief\":\n        if not ID_RE.match(args.get(\"id\") or \"\"):\n            return tool_result(call_id, refusal(op, \"not_found\", NOT_FOUND))\n        return store([(\"h\", head_op(args[\"id\"])),\n                      (\"p\", {\"operation\": \"select\", \"table\": \"pushes\",\n                             \"columns\": [\"id\", \"facts\"], \"where\": {\"id\": args[\"id\"]},\n                             \"limit\": 1})], \"brief-1\", dict(carry, id=args[\"id\"]))\n    q = str(args.get(\"q\") or \"\")\n    return store([(\"k\", {\"operation\": \"select\", \"table\": \"keys\", \"columns\": [\"key\", \"id\"],\n                         \"limit\": SCAN}),\n                  (\"t\", {\"operation\": \"select\", \"table\": \"objects\", \"columns\": [\"id\"],\n                         \"where\": {\"type\": q.strip()}, \"limit\": SCAN})],\n                 \"find-1\", dict(carry, q=norm_key(q), type=q.strip()))\n\n\ndef legs(body, h):\n    out = {}\n    for m in body.get(\"messages\") or []:\n        if not isinstance(m, dict):\n            continue\n        try:\n            payload = json.loads(m.get(\"text\") or \"null\")\n        except Exception:\n            payload = None\n        out[str(m.get(\"id\") or \"\")] = {\"payload\": payload, \"error_code\": \"\"}\n    results = body.get(\"results\")\n    if isinstance(results, list):\n        for r in results:\n            if isinstance(r, dict):\n                leg = out.setdefault(str(r.get(\"tool_call_id\") or \"\"),\n                                     {\"payload\": None, \"error_code\": \"\"})\n                leg[\"error_code\"] = str(r.get(\"error_code\") or \"\")\n    elif len(out) == 1:\n        next(iter(out.values()))[\"error_code\"] = str(h.get(\"error_code\") or \"\")\n    return out\n\n\ndef rows_of(leg):\n    p = (leg or {}).get(\"payload\")\n    return [r for r in p if isinstance(r, dict)] if isinstance(p, list) else []\n\n\ndef find_items(heads, round_, q, type_):\n    \"\"\"The answer of `object_find`, pure: the visible heads whose alias keys\n    contain `q` or whose type is `type_`, oldest first, at most FIND_MAX.\"\"\"\n    out = []\n    for r in heads:\n        if not covers(r.get(\"audience_set\"), round_):\n            continue\n        aliases = loads(r.get(\"aliases\"), [])\n        if not (any(q in norm_key(a) for a in aliases) or (type_ and r.get(\"type\") == type_)):\n            continue\n        out.append(r)\n    out.sort(key=lambda r: (str(r.get(\"valid_since\") or \"\"), str(r.get(\"id\") or \"\")))\n    return [{\"id\": r.get(\"id\"), \"type\": r.get(\"type\"),\n             \"name\": (loads(r.get(\"aliases\"), []) or [r.get(\"id\")])[0],\n             \"state\": r.get(\"state\")} for r in out[:FIND_MAX]]\n\n\ndef emit(msgs):\n    for m in msgs:\n        if isinstance(m, dict) and \"messages\" not in m:\n            m[\"messages\"] = []\n    sys.stdout.write(json.dumps(msgs, ensure_ascii=False))\n    sys.exit(0)\n\n\nd = doc.get(\"body\") or {}\nh = (doc.get(\"envelope\") or {}).get(\"header\") or {}\nhop = h.get(\"hop\") or {}\nctx = h.get(\"context\") or {}\nlane = str(hop.get(\"route\") or \"\")\nphase = str(ctx.get(\"cur_phase\") or \"\")\n\nif lane == \"in_tool\":\n    msgs = d.get(\"messages\") or []\n    call = msgs[0] if msgs and isinstance(msgs[0], dict) else {}\n    call_id = str(call.get(\"id\") or hop.get(\"tool_call_id\") or \"\")\n    emit([translate(str(hop.get(\"tool_name\") or \"\"), call.get(\"text\"), call_id, ctx)])\n\nif lane == \"answer\":\n    if str(hop.get(\"caller\") or \"\") != ME:\n        sys.stderr.write(\"objects/tools: an answer for %r -- dropped\\n\"\n                         % str(hop.get(\"caller\") or \"\"))\n        emit([])\n    emit([tool_result(call_of(hop.get(\"op_id\")), d)])\n\nif lane == \"rendered\":\n    c = d.get(\"carry\") if isinstance(d.get(\"carry\"), dict) else {}\n    emit([tool_result(str(c.get(\"call_id\") or \"\"),\n                      {\"ok\": True, \"op\": \"brief\", \"id\": c.get(\"id\"),\n                       \"text\": str(d.get(\"text\") or \"\")})])\n\nif lane:\n    sys.stderr.write(\"objects/tools: unknown lane %r -- dropped\\n\" % lane)\n    emit([])\n\nc = loads(ctx.get(\"cur_call\"), {})\nlg = legs(d, hop)\ncall_id = str(c.get(\"call_id\") or \"\")\nbad = sorted(k for k, leg in lg.items() if leg[\"error_code\"])\nif bad and phase in (\"find-1\", \"find-2\", \"brief-1\"):\n    emit([tool_result(call_id, refusal(c.get(\"op\"), \"store_error\",\n                                       \"the store refused %s\" % \", \".join(bad)))])\n\nif phase == \"find-1\":\n    ids = set()\n    for r in rows_of(lg.get(\"k\")):\n        if c.get(\"q\", \"\") in str(r.get(\"key\") or \"\"):\n            ids.add(str(r.get(\"id\") or \"\"))\n    for r in rows_of(lg.get(\"t\")):\n        ids.add(str(r.get(\"id\") or \"\"))\n    ids = sorted(i for i in ids if ID_RE.match(i))[:FIND_IDS]\n    if not ids:\n        emit([tool_result(call_id, {\"ok\": True, \"op\": \"find\", \"items\": []})])\n    emit([store([(\"h%d\" % n, head_op(i)) for n, i in enumerate(ids)], \"find-2\", c)])\n\nif phase == \"find-2\":\n    heads = [r for leg in lg.values() for r in rows_of(leg)]\n    emit([tool_result(call_id, {\"ok\": True, \"op\": \"find\",\n                                \"items\": find_items(heads, c.get(\"round\"), c.get(\"q\", \"\"),\n                                                    c.get(\"type\", \"\"))})])\n\nif phase == \"brief-1\":\n    head = (rows_of(lg.get(\"h\")) or [None])[0]\n    if head is None or not covers(head.get(\"audience_set\"), c.get(\"round\")):\n        emit([tool_result(call_id, refusal(\"brief\", \"not_found\", NOT_FOUND))])\n    facts = loads(((rows_of(lg.get(\"p\")) or [{}])[0]).get(\"facts\"), [])\n    emit([{\"header\": {\"route\": \"brief_render\", \"reply_cell\": ME},\n           \"row\": head, \"facts\": facts, \"carry\": c}])\n\nsys.stderr.write(\"objects/tools: unknown phase %r -- dropped\\n\" % phase)\nemit([])\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "types": {
+        "type": "array",
+        "secret": false,
+        "default": [
+          "thing"
+        ],
+        "description": "The object types a row may have (a product parameter, R-84); the first is the type of a sighting whose `kind` is not one of them."
+      },
+      "slot_max": {
+        "type": "number",
+        "secret": false,
+        "default": 400,
+        "description": "The most characters one `object_set` value holds; a longer one is `too_long`."
+      },
+      "owner": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The one speaker (`member:<person>`) who owns the member's objects; empty = every `member:` speaker that stands in the round of the turn."
+      },
+      "scan_max": {
+        "type": "number",
+        "secret": false,
+        "default": 5000,
+        "description": "The most rows one read of `object_find` takes."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "id": {
+          "type": "string",
+          "required": false
+        },
+        "slot": {
+          "type": "string",
+          "required": false
+        },
+        "value": {
+          "type": "string",
+          "required": false
+        },
+        "round": {
+          "type": "string",
+          "required": false
+        },
+        "row": {
+          "type": "object",
+          "required": false
+        },
+        "facts": {
+          "type": "array",
+          "required": false
+        },
+        "carry": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "tools_store",
+            "edit",
+            "brief_render",
+            "tool_result"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "reply_cell": {
+          "type": "string",
+          "required": false
+        },
+        "cur_call": {
+          "type": "string",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        },
+        "ok": {
+          "type": "boolean",
+          "required": false
+        },
+        "text": {
+          "type": "string",
+          "required": false
+        },
+        "carry": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "tool_name": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The translation between a model's tool round and this hive: an `object_<op>` call is checked against its schema, its round (`missing_audience`) and, for `why`, `state` and `object_confirm`, its owner (`owner_only`); a read is answered from the store, a change goes to `./gate`; one `tool_result` under the call id comes back. A row the round may not see answers `not_found`, exactly like a row that never existed.",
+    "use_when": "Reached on this hive's `in_tool` lane with one tool call, on `answer` from `./gate` and on `rendered` from `./brief`.",
+    "not_in_scope": "No write (`./gate`), no rendering (`./brief`), no push.",
+    "emits_meaning": "`tools_store` to `./store`, `edit` to `./gate`, `brief_render` to `./brief`, `tool_result` with `tool_call_id` (and `error_code` when `ok` is false) out of the hive.",
+    "consumes_meaning": "A tool call, the store's answers, the gate's answer and a rendered brief."
+  }
+}

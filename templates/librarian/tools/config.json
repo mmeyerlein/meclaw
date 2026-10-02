@@ -1,0 +1,98 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "script_inline": "import sys, json\n\n# The librarian's TOOL ADAPTER (GH #950): a model's `tool_call` in, a question\n# to `./query` on `in_lib` out, and the one answer back as one `tool_result`\n# under the call's id. Nothing is parked: the call id IS the question's `op_id`\n# (every answer mirrors it), so route and `op_id` find the call again without a\n# store row -- and a question whose answer never comes leaves no orphan behind.\n#\n# Three refusals are answered here and reach no other cell: a name this\n# library does not serve (`tool_unknown`), an argument that does not match the\n# tool's schema and a call without an id (`bad_request`). Every tool reads, so\n# there is no `read_only` refusal and no writer to tell apart.\nME = \"tools\"\n# --8<-- lib-offer\n# THE LIBRARY TOOLS, one list, one entry per tool (GH #950). It stands WORD FOR\n# WORD in `./schemas` (which hands it to a model's menu) and in `./tools` (which\n# checks every call against it before a question leaves), because a code cell\n# has no library it could share. The name IS the mapping: `lib_<op>` asks the\n# op `<op>` on `in_lib`; no other rule exists.\n#\n# Every description says the two things a model needs to go on: the address a\n# hit carries (`fh-<12 hex>` for a file, `fh-<12 hex>#<anchor>` for an item in\n# it), and that `file_read` with that address reads the span -- the library\n# finds, the file space reads. There is no writing tool here.\nLIMIT = {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 20,\n         \"description\": \"the most hits on one page (20 by default)\"}\nCURSOR = {\"type\": \"string\", \"description\": \"the `next` of the page before\"}\nDEPTH = {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 3}\n\n\ndef _obj(props, required):\n    return {\"type\": \"object\", \"properties\": props, \"required\": required,\n            \"additionalProperties\": False}\n\n\nLIB_OFFER = [\n    {\"name\": \"lib_find\",\n     \"description\": \"Find files of this knowledge space by words -- in their path, the names \"\n                    \"of their functions, classes or sections, their summary line and tags -- \"\n                    \"best first, each with its address `fh-<12 hex>`, path, kind, summary line \"\n                    \"and `why` it matched. `file_read` on that address (or on an item of it, \"\n                    \"`fh-<12 hex>#<anchor>` from `file_outline`) reads the span; `next` is the \"\n                    \"`cursor` of the next page.\",\n     \"parameters\": _obj({\"q\": {\"type\": \"string\", \"description\": \"the words to look for\"},\n                         \"kind\": {\"type\": \"string\", \"description\": \"only files of this kind\"},\n                         \"fmt\": {\"type\": \"string\",\n                                 \"description\": \"only files of this format: `python`, `rust`, `markdown`, `json`, `toml` or `pdf`\"},\n                         \"under\": {\"type\": \"string\",\n                                   \"description\": \"only files under this folder, like `/src`\"},\n                         \"limit\": LIMIT, \"cursor\": CURSOR}, [\"q\"])},\n    {\"name\": \"lib_symbol\",\n     \"description\": \"Find where a name is defined: a function, class, module or section, \"\n                    \"bare (`load`) or qualified (`pkg.mod:load`), each hit with its address \"\n                    \"`fh-<12 hex>#<anchor>`, the path of its file and its summary line. \"\n                    \"`file_read` with that address reads exactly that span.\",\n     \"parameters\": _obj({\"name\": {\"type\": \"string\", \"description\": \"the name to look up\"},\n                         \"limit\": LIMIT, \"cursor\": CURSOR}, [\"name\"])},\n    {\"name\": \"lib_related\",\n     \"description\": \"What is connected to an address `fh-<12 hex>` or `fh-<12 hex>#<anchor>`: \"\n                    \"its `callers`, its `dependents` (up to `depth` 3), its `deps`, or files \"\n                    \"`similar` by meaning; each hit with its address, path and summary line. \"\n                    \"`file_read` with a hit's address reads its span.\",\n     \"parameters\": _obj({\"addr\": {\"type\": \"string\",\n                                  \"description\": \"`fh-<12 hex>` or `fh-<12 hex>#<anchor>`\"},\n                         \"how\": {\"type\": \"string\",\n                                 \"enum\": [\"callers\", \"dependents\", \"deps\", \"similar\"]},\n                         \"depth\": DEPTH, \"limit\": LIMIT, \"cursor\": CURSOR},\n                        [\"addr\", \"how\"])},\n    {\"name\": \"lib_tree\",\n     \"description\": \"The folders and files under a folder `under` (`/` by default), `depth` \"\n                    \"levels deep (1 to 3), ordered by path, each file with its address \"\n                    \"`fh-<12 hex>`; `file_read` on that address (or on an item of it, \"\n                    \"`fh-<12 hex>#<anchor>` from `file_outline`) reads the span; `next` is the \"\n                    \"`cursor` of the next page.\",\n     \"parameters\": _obj({\"under\": {\"type\": \"string\", \"description\": \"a folder, `/` by default\"},\n                         \"depth\": DEPTH, \"limit\": LIMIT, \"cursor\": CURSOR}, [])},\n]\n# --8<-- end lib-offer\n\nTYPES = {\"string\": (str,), \"integer\": (int,), \"number\": (int, float),\n         \"boolean\": (bool,), \"array\": (list,), \"object\": (dict,)}\n\n\ndef op_of(name):\n    \"\"\"The op a tool name asks, or None for a name this library does not\n    serve.\"\"\"\n    if not isinstance(name, str) or not name.startswith(\"lib_\"):\n        return None\n    if name not in [t[\"name\"] for t in LIB_OFFER]:\n        return None\n    return name[len(\"lib_\"):]\n\n\ndef type_ok(v, t):\n    if isinstance(t, list):\n        return any(type_ok(v, x) for x in t)\n    want = TYPES.get(t)\n    if want is None:\n        return True\n    # A JSON `true` is no number: python counts bool as int, a schema does not.\n    if isinstance(v, bool) and t != \"boolean\":\n        return False\n    return isinstance(v, want)\n\n\ndef check(schema, v, at=\"arguments\"):\n    \"\"\"The problems of `v` against a JSON Schema of the subset `LIB_OFFER`\n    uses (type, enum, minimum, maximum, required, properties,\n    additionalProperties, items); [] when it holds. A tool argument is typed\n    HERE, before any question leaves -- `./query` checks again, for callers\n    that are no model.\"\"\"\n    out = []\n    t = schema.get(\"type\")\n    if t is not None and not type_ok(v, t):\n        return [\"%s must be %s\" % (at, t if isinstance(t, str) else \" or \".join(t))]\n    if \"enum\" in schema and v not in schema[\"enum\"]:\n        out.append(\"%s must be one of %s\" % (at, \", \".join(map(str, schema[\"enum\"]))))\n    if isinstance(v, (int, float)) and not isinstance(v, bool):\n        if \"minimum\" in schema and v < schema[\"minimum\"]:\n            out.append(\"%s must be at least %s\" % (at, schema[\"minimum\"]))\n        if \"maximum\" in schema and v > schema[\"maximum\"]:\n            out.append(\"%s must be at most %s\" % (at, schema[\"maximum\"]))\n    if isinstance(v, dict):\n        props = schema.get(\"properties\") or {}\n        for k in schema.get(\"required\") or []:\n            if k not in v:\n                out.append(\"%s.%s is required\" % (at, k))\n        for k, x in v.items():\n            if k in props:\n                out.extend(check(props[k], x, \"%s.%s\" % (at, k)))\n            elif schema.get(\"additionalProperties\") is False:\n                out.append(\"%s.%s is not an argument of this tool\" % (at, k))\n    if isinstance(v, list) and isinstance(schema.get(\"items\"), dict):\n        for i, x in enumerate(v):\n            out.extend(check(schema[\"items\"], x, \"%s[%d]\" % (at, i)))\n    return out\n\n\ndef result_text(answer):\n    \"\"\"An answer as the text a model reads: the answer's own fields, the\n    correlation (`op_id`, `caller`) and the transport (`messages`, `header`)\n    removed. Nothing is cut here: `./query` pages every list.\"\"\"\n    keep = {k: v for k, v in answer.items()\n            if k not in (\"op_id\", \"caller\", \"messages\", \"header\")}\n    return json.dumps(keep, ensure_ascii=False, sort_keys=True)\n\n\ndef refusal(op, code, message):\n    return {\"ok\": False, \"op\": op or \"\", \"error\": {\"code\": code, \"message\": message}}\n\n\ndef tool_result(call_id, answer):\n    head = {\"route\": \"tool_result\", \"tool_call_id\": call_id}\n    if answer.get(\"ok\") is False:\n        head[\"error_code\"] = str((answer.get(\"error\") or {}).get(\"code\") or \"\")\n    return {\"header\": head,\n            \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                          \"text\": result_text(answer)}]}\n\n\n# A provider's call ids are unique only within one answer (stubs and local\n# servers repeat `call_0`): the question carries the call id under this cell's\n# own prefix, and the answer finds the call id again without it.\nPREFIX = ME + \":\"\n\n\ndef call_of(op_id):\n    op_id = str(op_id or \"\")\n    return op_id[len(PREFIX):] if op_id.startswith(PREFIX) else op_id\n\n\ndef translate(name, raw, call_id):\n    \"\"\"One tool call -> the ONE message this cell emits for it: the question,\n    or a `tool_result` that refuses it without asking any cell.\"\"\"\n    op = op_of(name)\n    if op is None:\n        return tool_result(call_id, refusal(\"\", \"tool_unknown\",\n                                            \"this library has no tool %r\" % (name,)))\n    if isinstance(raw, dict):\n        args = raw\n    else:\n        try:\n            args = json.loads(raw or \"{}\")\n        except Exception:\n            args = None\n    if not isinstance(args, dict):\n        return tool_result(call_id, refusal(op, \"bad_request\",\n                                            \"the arguments are not a JSON object\"))\n    schema = [t for t in LIB_OFFER if t[\"name\"] == name][0][\"parameters\"]\n    bad = check(schema, args)\n    if bad:\n        return tool_result(call_id, refusal(op, \"bad_request\", \"; \".join(bad)))\n    if not call_id:\n        return tool_result(call_id, refusal(op, \"bad_request\", \"the call carries no id\"))\n    return {\"header\": {\"route\": \"in_lib\", \"op\": op, \"op_id\": PREFIX + call_id, \"caller\": ME},\n            \"op\": op, \"args\": args, \"messages\": []}\n\n\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nh = (doc.get(\"envelope\") or {}).get(\"header\") or {}\nhop = h.get(\"hop\") or {}\nlane = str(hop.get(\"route\") or \"\")\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\nif lane == \"in_tool\":\n    msgs = d.get(\"messages\") or []\n    call = msgs[0] if msgs and isinstance(msgs[0], dict) else {}\n    # The id comes from the TURN first and the hop second: the turn is what\n    # the round's fan-in waits on.\n    call_id = str(call.get(\"id\") or hop.get(\"tool_call_id\") or \"\")\n    name = str(hop.get(\"tool_name\") or \"\")\n    emit([translate(name, call.get(\"text\"), call_id)])\n\nif lane == \"answer\":\n    if str(hop.get(\"caller\") or \"\") != ME:\n        sys.stderr.write(\"librarian/tools: an answer for %r -- dropped\\n\"\n                         % str(hop.get(\"caller\") or \"\"))\n        emit([])\n    call_id = call_of(hop.get(\"op_id\") or d.get(\"op_id\"))\n    emit([tool_result(call_id, d)])\n\nsys.stderr.write(\"librarian/tools: unknown lane %r -- dropped\\n\" % lane)\nemit([])\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "args": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "in_lib",
+            "tool_result"
+          ],
+          "required": true
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "tool_name": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The translation between a model's tool round and this library's own lane: a `lib_<op>` call becomes the question `<op>` on `in_lib` of `./query`, under `caller` 'tools' and with the call id as `op_id`; the one answer comes back as one `tool_result` under the call id, its fields as JSON text without `op_id` and `caller`.",
+    "use_when": "Reached on this hive's `in_tool` lane with one tool call (`hop.tool_name`, the arguments as JSON text in the turn), and on `answer` from `./query` when `hop.caller` is 'tools'.",
+    "not_in_scope": "No store and nothing parked: the call id IS the question's `op_id`. No shortening of an answer (`./query` pages every list). No write tool, so no `read_only` refusal.",
+    "emits_meaning": "A question on `in_lib` (hop `op`, `op_id` = 'tools:' + the call id, `caller` 'tools'), or `tool_result` with `tool_call_id` (and `error_code` when `ok` is false). Refused without asking any cell: a name this library does not serve (`tool_unknown`), an argument that does not match the tool's schema or a call without an id (`bad_request`).",
+    "consumes_meaning": "A tool call, and the answers of `./query` to the questions this cell sent."
+  }
+}

@@ -1,4 +1,4 @@
-# `builder@1.21.0`
+# `builder@1.22.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -293,7 +293,7 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
 rewrote from scratch on every build: an organisation gets **20** transit edges, a
-member **20**, an assistant **32**, a channel **4**, a screen **3**, an app
+member **20**, an assistant **34**, a channel **4**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
@@ -440,7 +440,8 @@ on a `channel` (§ *A round is provenance*).
 | `assistant` | `channel` | the agent a turn defaults to. A CEL guard is evaluated against `hop` and `context` and cannot read a node's `params`, so the default of a channel has nowhere to live but the edge that applies it |
 | `screen` | `app` | the one screen the app writes its views onto |
 | `bind_chat` | `channel`, except the self-bound templates | the one `chat_id` whose turns carry the member's round (GH #940). The ingress edge takes that chat and no other — `string(hop.chat_id)` equal to it, or, for Slack's composite id, one of its threads — and a turn from any other chat finds no edge: no turn, no round, a dead letter, and nothing is said to the stranger. A literal or exactly `${NAME}` (bound from the colony's `.env` when the manifest is applied; a missing variable fails the mutation). A channel wish without it, or with a default `${NAME:-…}`, renders nothing and is asked as **`channel_unbound`**. `chat-channel`, `voice`, `web` and `terminal` stamp no foreign chat id and grow without it (`SELF_BOUND_CHANNELS` in `recipes`); `telegram-connector` and `slack-agent` never do |
-| `ctx` | optional, **`member_person` required for `channel`** | the declaration's own `ctx` block, mutation-wide. The recipe reads exactly one key out of it — `member_person`, the identity of the person a channel speaks with — and a channel wish without it renders nothing and asks instead, as `wish_incomplete` (§ *A round is provenance*) |
+| `bind_user` | optional, `channel` (ignored by the self-bound templates) | the sender who speaks AS the member (GH #949). `bind_chat` is the member's own one-to-one chat; `bind_user` is the sender id (`hop.user_id`, a Telegram or Slack user id) whose turns on the bound channel stamp `context.speaker = 'member:<person>'` — the spelling of the member's entry in the round. Without it the bound chat id stands in as the proof (`string(hop.user_id) == bind_chat`, true only in a one-to-one chat); without a sender proof a turn names no speaker (`speaker` is empty), so a group or a Slack channel names one only with `bind_user`. Same forms and the same refusal as `bind_chat` (`channel_unbound`, `missing: ["params.bind_user"]`); both refuse a quote, a backslash, a line break and every other control character |
+| `ctx` | optional, **`member_person` required for `channel`** (and for `install_app` with `pins`, `candidates` or `reads`) | the declaration's own `ctx` block, mutation-wide. The recipe reads exactly one key out of it — `member_person`, the identity of the person a channel speaks with — and a channel wish without it renders nothing and asks instead, as `wish_incomplete` (§ *A round is provenance*) |
 | `override_params` | optional | addressed per cell of the template (`{"cogny/brain": {"temperature": 0.2}}`) |
 | `birth` | optional | `active` or `inactive` — the door's own vocabulary, written top-level on the `add_nodes` entry. A name the door does not know is refused here as `birth_unknown`, one hop from the wish that made it, rather than at the door one hop from the manifest. The default is the door's (`active`) for every level except `channel`, which is born **asleep** |
 | `subscribe` | optional, `assistant` | draw the identity door as well — since #877 six v-lanes: one push from the member's own `./affinity` into each brain rim of the generation (`talky`, `talky-chat`, `cogny`), and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
@@ -892,7 +893,7 @@ level's own set and behind both older switches, so no index either of them rende
  "modifier": {"set_context": {"assistant": "'<name>'"}}}
 ```
 
-An assistant grown with `door: true` carries **33** edges: the level's own set and this one.
+An assistant grown with `door: true` carries **35** edges: the level's own set and this one.
 The edge takes the level's form. It is `.` → `./<name>` in the container, and
 `./assistants` → `./assistants/<name>` when `subscribe` or `credential` moved the declaration to
 the member. The absolute edge is the same either way, so the door adds no third reason for the
@@ -1062,6 +1063,19 @@ name), `template` and `screen` (the node in `./channels` the app draws on).
 tool calls or tool results, or pins, and the switch refuses the wish without it
 (`recipe_params_incomplete`, `missing: ["generation"]`).
 
+**`pins`, `candidates` and `reads` travel in the member's round, never the
+app's** (GH #949). The context an app's message carries is written by the app's
+own template, and nothing stops an edge inside it from setting `audience_set` to
+any round -- `["agent:<a>"]` alone covers every row the agent is part of. So the
+one edge each of these three lanes leaves the app by stamps
+`context.audience_set = ["agent:<generation>","member:<ctx.member_person>"]`,
+the literal a channel stamps on the member's own turns, over whatever the
+message carried; the edge belongs to the builder and runs after every edge of
+the app. An app therefore reaches at most what its member may see, and an app
+woken by its own timer (no context at all) has a round too. A wish that
+declares any of the three and names no `ctx.member_person` renders nothing and
+is asked, as `wish_incomplete`, at the switch and at the renderer.
+
 **The vocabulary is closed**, and a word outside it is refused as
 `app_declaration_invalid` with `field` and `known`: `screen.out` is drawn from
 `view` and `withdraw` (`error` always travels with them), `screen.back` is
@@ -1112,6 +1126,8 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 | `observes_tool_calls` | per surface of the generation one `tool` v-lane into `at` — the offer's own edge (same guard on the tool names, same stamp) with another target, restamped `route` (default `in_tool_call`), drawn as a tap |
 | `observes_tool_results` | as a string: two `tool_result` v-lanes into the named cell, from the generation's `./tools` and from `./memory-hive`. As an object: the same two, guarded on the tool names and restamped `route` (default `in_tool_result`), plus one off `./apps` for the other apps' results — the container as source so the install order does not matter, `context.tool_answerer` excluding the observer's own results; all three taps, and the two shared producers guarded on `context.assistant` |
 | `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |
+| `candidates` | ONE edge from the named cell straight onto the generation, `candidate` restamped `in_candidate` (GH #949, the push-candidate twin of `pins`; the body is the curator's `in_candidate` contract); the generation hands it to the curator of each of its brains. Names a cell `./<name>` inside the app, needs the generation like `pins`, and a `candidate` of an app that declares none stays unrouted |
+| `reads` | FOUR edges: from the named cell onto the generation, `read` restamped `in_read` for the one brain `hop.organ` names (`talky`, `talky-chat` or `cogny`; none or another and no edge carries it), and the answer `read` back to that cell alone, bound to `context.read_caller` (GH #949). The question edge stamps the member's round (see below), so the curator reads only rows that round may see. |
 | `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
 
 **Why the observers carry no guard, and why the channel-less exit rides with

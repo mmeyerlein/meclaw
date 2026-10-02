@@ -615,7 +615,10 @@ instead of a text comparison (`hive_contract`).
    `accepts`; an edge coming from a node strictly inside the hive LEAVES — the message crosses the
    hive path outwards — and is measured against `emits`. An edge whose `from` is the hive path
    itself leaves nothing and stays an entry.
-2. Every `accepts` lane must have a door (`{"from": "."}` inward).
+2. Every `accepts` lane must have a door (`{"from": "."}` inward). A door whose condition requires
+   the lane (`hop.route == '<lane>'` as a term of a plain `&&`) and only narrows it further counts
+   even when a probe carrying `hop.route` alone does not fire it (GH #949: the assistant hive's read
+   door picks exactly one brain by `hop.organ`).
 3. Every `emits` lane must lead back out through the hive path, either carried by a message that
    already has it or created by the out-door itself (GH #176). A door that recognises
    `hop.finish_reason` and turns it into a lane with `set_hop.route` is an exit for that lane; a
@@ -875,7 +878,7 @@ The error message to `reply_to`, if set, carries:
 `required_drain_missing` | `template_ref_cycle` | `requirement_missing` | `invalid_template_name` |
 `template_name_taken` | `template_version_immutable` | `shutdown_draining` | `seed_target_not_a_store` | `seed_table_undeclared` |
 `v_lane_no_connect_point` | `v_lane_mandatory_hop` | `v_lane_unanchored` |
-`hive_template_single_cell`.
+`hive_template_single_cell` | `env_value_unsafe`.
 
 These strings are part of the stable mutation API contract, with the same promise the dead-letter
 codes carry: new reject reasons extend the list, existing ones never change their string form. A
@@ -884,6 +887,13 @@ a future code. Notes on the substrate codes:
 
 - `ctx_key_missing`: a `${ctx.<key>}` substitution in the diff references a key missing from the
   `ctx` block of the mutation. Emitted by `resolve_ctx_token` (`mutation/substitute.rs`).
+- `env_value_unsafe`: a value from the environment (`${NAME}`) that the CEL slot of an edge cannot
+  hold: inside a string literal a quote, a backslash or a control character (C0, DEL, C1,
+  U+2028/U+2029), outside a literal anything but a number. Checked in `add_edges` (`condition`,
+  every value of `modifier.set_context`/`set_hop`) and in a node's `params.graph.edges`
+  (`add_nodes`, `swap_nodes`, `replace_nodes`); the boot checks the same slots and fails as it does
+  on `env_var_missing`. The refusal names `${NAME}` and the slot, never the value. Emitted by
+  `mutation/substitute.rs`.
 - `scope_out_of_bounds`: a top-level diff path (`add_nodes[].name`, `*_edges[].from`/`.to`,
   `match.name`) resolves outside the mutation `scope`. Checked before any filesystem or registry
   mutation; emitted by `validate_scope_containment` (`mutation/validate.rs`).
@@ -2209,7 +2219,7 @@ cell, which is why a door can stand at the hive itself.
 |---|---|---|---|
 | **Source** | fresh root: ingress without `carries_trace`, a timer strike, the answer of a `/colony/*` cell | no edge: the substrate stamps `message_default_ttl` | substrate |
 | **Peer boundary** | an ingress with `contract.ingress.carries_trace` | the budget comes from the wire and is **not** restored at the boundary, only at the door behind it | substrate |
-| **Door** | a unit of work enters the hive that owns it: `in_turn` of an assistant generation; a consult between the two brains of a generation; a file job inside a file space; an index job in a graph space (`./file-space -> ./graph-space`, `source_changed`); a close job enters the curator (`./session-keeper -> ./curator`, `close`) and the close pass enters the memory (`./assistants -> ./memory-hive`, `write`) | every crossing costs a new turn, model call or job (the script bounds the retries of a file job), and no routing circle returns to the door without one; the condition names the lane | edge, `restore_ttl` + `condition` |
+| **Door** | a unit of work enters the hive that owns it: `in_turn` of an assistant generation; a consult between the two brains of a generation; a file job inside a file space; a directory sync of one file in its `./derive` (`in_dirs` from `./write`, `./ws` and `./derive`, GH #947); an index job in a graph space (`./file-space -> ./graph-space`, `source_changed`) or in a librarian (`./file-space -> ./librarian`, `source_changed` and `source_described`); a recognition becomes a node: an object's index job in a graph space (`./objects -> ./graph-space`, `source_changed`); a close job enters the curator (`./session-keeper -> ./curator`, `close`) and the close pass enters the memory (`./assistants -> ./memory-hive`, `write`) | every crossing costs a new turn, model call or job (the script bounds the retries of a file job and the rounds of a directory sync), and no routing circle returns to the door without one; the condition names the lane | edge, `restore_ttl` + `condition` |
 | **Curator entry** | `./collector -> ./curator` (`curate`) | the round's iteration counter in the condition (`int(hop.iter) < 12`) | edge |
 | **Round** | the loopback of a shape whose round is made of routing: `./curator -> ./brain`, builder `./weave -> ./compose` (`fire`, `repair`) | an iteration counter in the condition | edge |
 

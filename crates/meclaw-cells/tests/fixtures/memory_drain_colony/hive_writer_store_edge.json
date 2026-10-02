@@ -31,5 +31,27 @@
       }
     },
     "to": "./writer"
+  },
+  {
+    "condition": "has(hop.route) && hop.route == 'alstore'",
+    "from": "./writer",
+    "modifier": {
+      "set_context": {
+        "alias_req": "hop.alias_req",
+        "mem_phase": "hop.phase",
+        "store_origin": "'alias'"
+      }
+    },
+    "to": "./store"
+  },
+  {
+    "condition": "context.store_origin == 'alias'",
+    "from": "./store",
+    "modifier": {
+      "set_context": {
+        "mem_phase": "context.mem_phase"
+      }
+    },
+    "to": "./writer"
   }
 ]

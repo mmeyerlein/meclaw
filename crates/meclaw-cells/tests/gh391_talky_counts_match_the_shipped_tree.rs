@@ -164,6 +164,10 @@ fn word(n: usize) -> &'static str {
         // GH #926: an observer's question reaches the curator on `in_stats` and
         // its answer leaves on `stats` -- fifty-two.
         (52, "fifty-two"),
+        // GH #949: a push candidate and an app's ledger read reach the curator
+        // (`in_candidate`, `in_read`), and `thing_seen`, `candidate_ack` and
+        // `read` leave it -- fifty-six.
+        (56, "fifty-six"),
     ]
     .into_iter()
     .collect();

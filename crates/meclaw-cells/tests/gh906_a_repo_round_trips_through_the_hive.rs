@@ -196,15 +196,22 @@ fn build(td: &tempfile::TempDir, base: &std::path::Path, bare: &std::path::Path)
     let main = td.path().join("main");
     copy_resolved(&repo("templates/file-space"), &main.join("files"), 0);
     // `source_changed` (GH #944) leaves the space on every head move, whoever
-    // wrote: undrained, each import would be a `no_route` dead letter.
-    let rim: Vec<Value> = ["answer", "derived", "model_refused", "source_changed"]
-        .iter()
-        .map(|lane| {
-            let to = if *lane == "answer" { "/sink" } else { "/park" };
-            json!({"from": "./files", "to": to,
+    // wrote, and `source_described` (GH #947) after every stored summary of a
+    // living head: undrained, each import would be a `no_route` dead letter.
+    let rim: Vec<Value> = [
+        "answer",
+        "derived",
+        "model_refused",
+        "source_changed",
+        "source_described",
+    ]
+    .iter()
+    .map(|lane| {
+        let to = if *lane == "answer" { "/sink" } else { "/park" };
+        json!({"from": "./files", "to": to,
                    "condition": format!("has(hop.route) && hop.route == '{lane}'")})
-        })
-        .collect();
+    })
+    .collect();
     write_json(
         &main.join("config.json"),
         &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": rim}}}),

@@ -173,3 +173,18 @@ meclaw_write_stamp() {   # <root> <target_dir> <rev> <dirty_files>
     printf '%s\n%s\n%s\n' "$root" "$rev" \
         "$(printf '%s' "$dirty_files" | paste -sd, -)" >"$target_dir/.gate-tree"
 }
+
+# Are the build lanes of a wave armed on this host? (`scripts/strand.sh token
+# init --lanes ...`, GH #942.) The token file lives beside the cargo lock --
+# `${lock%.lock}.tokens`, or `MECLAW_STRAND_TOKENS` -- and an armed one names
+# its lanes. No file, a broken one or one without lanes: not armed.
+#
+# The runner and the tier both refuse local cargo on this answer, and each
+# carried its own copy of the probe, word for word (review of GH #942, M-2) --
+# here once, like the target rule above, so the two cannot drift apart.
+meclaw_lanes_active() {   # <cargo lock path>
+    local tokens="${MECLAW_STRAND_TOKENS:-${1%.lock}.tokens}"
+    [ -f "$tokens" ] || return 1
+    python3 -c 'import json, sys
+sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("lanes") else 1)' "$tokens" 2>/dev/null
+}

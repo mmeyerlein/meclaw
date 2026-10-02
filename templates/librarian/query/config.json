@@ -1,0 +1,146 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "scan_max": 2000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "import sys, json, re, base64\n\n# THE QUESTIONS OF A LIBRARIAN (librarian, GH #950). Every question arrives on\n# `in_lib` and leaves as exactly one `answer`: hop `op`, `op_id`, `caller`\n# mirrored, body `{ok: true, op, op_id, items, next, ...}` or `{ok: false, op,\n# op_id, error: {code, message}}`. Every list is a page: `limit` 1 to 20\n# (default 20, more is cut to 20), `cursor` the offset as text, `next` the\n# cursor of the following page ('' at the end).\n#\n# `find {q, kind?, fmt?, under?}` reads the catalogue alone -- one full-text\n# search over the path words, the names, the summary line and the tags of\n# every living source -- and wakes no file. The question is cut by `terms()`\n# (WORD FOR WORD the index's), each word an own quoted prefix literal, all of\n# them required: `\"`, `*`, `:`, `-`, `AND`, `OR`, `NEAR` in a question are\n# words then, never syntax. Every hit says `why` it matched (`name`, `path`,\n# `tag`, `text`) and carries a `score`: the best field each word hit (name 4,\n# path 3, tag 2, text 1), plus the full-text rank folded into 0..1.\n#\n# `symbol {name}`, `related {addr, how}` ask the graph space, `tree {under,\n# depth}` the file space -- one `pull` each, and the answer comes back on\n# `in_pulled`. `tree` pages the file space's `entries` by path here, with the\n# offset as its cursor like `find`: the file space's `list` answers up to two\n# thousand rows at depth 3 and `./tools` cuts nothing. Nothing is parked: the question rides in its own `op_id`\n# (`lib:g:<token>`, `lib:f:t:<token>`, the token the compact JSON of the\n# question in base64url), so an answer that never comes leaves no row behind,\n# and the question is answered from what the answer carries -- symbol and\n# related once more through the catalogue, for the path and summary line of\n# every address. An error of the graph or the file space is handed on as it\n# came (`ok: false` with its `error`).\n#\n# Refusals: `invalid_input` (an argument missing or wrong), `unknown_op`,\n# `store_error`. No model, no network.\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nenvelope = doc.get(\"envelope\") or {}\nP = doc.get(\"params\") or {}\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\nctx = header.get(\"context\") or {}\n\n\ndef _int(key, default):\n    v = P.get(key, default)\n    if v is None or (isinstance(v, str) and not v.strip()):\n        return default\n    try:\n        return int(float(v))\n    except Exception:\n        return default\n\n\nSCAN = max(20, _int(\"scan_max\", 2000))\n\nME = \"query\"\nOPS = (\"find\", \"symbol\", \"related\", \"tree\")\nLIMIT_DEFAULT = 20\nLIMIT_MAX = 20\nDEPTH_MAX = 3\nNAME_MAX = 512\nHOWS = (\"callers\", \"dependents\", \"deps\", \"similar\")\nADDR_RE = re.compile(r\"^(fh|ob)-[0-9a-f]{12}(@[0-9a-f]{4,64})?(#\\S{1,512})?$\")\nFIND_COLS = [\"source\", \"path\", \"kind\", \"fmt\", \"oneline\", \"tags\", \"names\", \"pterms\", \"nterms\"]\nWEIGHTS = ((\"name\", 4), (\"path\", 3), (\"tag\", 2), (\"text\", 1))\n\n\n# ============================================================ PURE: WORDS\n\nRUN_RE = re.compile(r\"[^\\W_]+\")\n\n\ndef split_case(run):\n    \"\"\"One word run cut at its case boundaries: a lower (or a digit) before an\n    upper (`fooBar`, `utf8Decode`), and the last upper of an upper run before\n    a lower (`HTTPServer`). Digits stay with the word they follow.\"\"\"\n    out, cur = [], \"\"\n    for i, ch in enumerate(run):\n        if cur and ch.isupper():\n            prev = run[i - 1]\n            nxt = run[i + 1] if i + 1 < len(run) else \"\"\n            if not prev.isupper() or nxt.islower():\n                out.append(cur)\n                cur = \"\"\n        cur += ch\n    if cur:\n        out.append(cur)\n    return out\n\n\ndef terms(text):\n    \"\"\"The words of a text, lower case, in order, each once: every word run\n    (`[^\\\\W_]+`, unicode) and, when it falls into more than one part at its\n    case boundaries, the whole run first (`fooBar` -> foobar, foo, bar).\"\"\"\n    out, seen = [], set()\n    for run in RUN_RE.findall(str(text or \"\")):\n        parts = split_case(run)\n        toks = ([run] if len(parts) > 1 else []) + parts\n        for t in toks:\n            t = t.lower()\n            if t and t not in seen:\n                seen.add(t)\n                out.append(t)\n    return out\n\n\ndef query_terms(text):\n    \"\"\"The words a question asks for: the parts of every run only, never the\n    whole run beside them. The catalog holds both (`fooBar` -> foobar, foo,\n    bar), so `fooBar` asked as foo AND bar finds `fooBar.py` and `foo_bar.py`\n    alike; with the whole run in the AND, `foo_bar.py` (runs foo, bar) never\n    matched it (GH #950).\"\"\"\n    out, seen = [], set()\n    for run in RUN_RE.findall(str(text or \"\")):\n        for t in split_case(run):\n            t = t.lower()\n            if t and t not in seen:\n                seen.add(t)\n                out.append(t)\n    return out\n\ndef match_of(tokens):\n    \"\"\"The full-text expression of a question: every word a quoted prefix\n    literal, implicitly AND -- no word of a question is ever syntax.\"\"\"\n    return \" \".join('\"%s\"*' % t.replace('\"', '\"\"') for t in tokens)\n\n\n# ============================================================ PURE: SCORE\n\ndef hits(q, toks):\n    \"\"\"A word of the question hits a field when it is a prefix of one of the\n    field's words, or one of them (three letters or more) is a prefix of it --\n    the stemmed index finds `parsing` for `parser`, and so does `why`.\"\"\"\n    return any(f.startswith(q) or (len(f) >= 3 and q.startswith(f)) for f in toks)\n\n\ndef json_list(v):\n    try:\n        x = json.loads(v) if isinstance(v, str) else v\n    except Exception:\n        return []\n    return [str(t) for t in x] if isinstance(x, list) else []\n\n\ndef fields_of(row):\n    return {\"name\": str(row.get(\"nterms\") or \"\").split(),\n            \"path\": str(row.get(\"pterms\") or \"\").split(),\n            \"tag\": terms(\" \".join(json_list(row.get(\"tags\")))),\n            \"text\": terms(row.get(\"oneline\"))}\n\n\ndef why_score(tokens, fields, rank):\n    \"\"\"(`why`, `score`) of one hit: the fields any word hit, in the order\n    name, path, tag, text; the sum over the words of the best weight each hit,\n    plus b/(1+b) of the rank b = -bm25 (never below 0), to four places.\"\"\"\n    total, hit = 0, set()\n    for q in tokens:\n        best = 0\n        for f, w in WEIGHTS:\n            if hits(q, fields.get(f) or []):\n                hit.add(f)\n                best = max(best, w)\n        total += best\n    try:\n        b = max(0.0, -float(rank))\n    except Exception:\n        b = 0.0\n    return [f for f, _ in WEIGHTS if f in hit], round(total + b / (1.0 + b), 4)\n\n\ndef under_of(v):\n    \"\"\"`under` as a folder: '/' or a path without its trailing `/`; None when\n    it is no absolute path.\"\"\"\n    if not isinstance(v, str) or not v.startswith(\"/\"):\n        return None\n    return v.rstrip(\"/\") or \"/\"\n\n\ndef is_under(path, under):\n    return under == \"/\" or path == under or path.startswith(under + \"/\")\n\n\ndef find_items(rows, tokens, under):\n    \"\"\"Store rows -> the hits of `find`, best first: (-score, path, source).\"\"\"\n    out = []\n    for r in rows:\n        path = str(r.get(\"path\") or \"\")\n        if not is_under(path, under):\n            continue\n        why, score = why_score(tokens, fields_of(r), r.get(\"rank\"))\n        out.append({\"file\": str(r.get(\"source\") or \"\"), \"path\": path,\n                    \"kind\": str(r.get(\"kind\") or \"\"), \"fmt\": str(r.get(\"fmt\") or \"\"),\n                    \"oneline\": str(r.get(\"oneline\") or \"\"), \"score\": score, \"why\": why})\n    out.sort(key=lambda x: (-x[\"score\"], x[\"path\"], x[\"file\"]))\n    return out\n\n\ndef page(items, cursor, limit):\n    \"\"\"One page of an ordered list: (items, next). The cursor is the offset\n    of the page as text.\"\"\"\n    start = int(cursor or 0)\n    chunk = items[start:start + limit]\n    return chunk, (str(start + limit) if start + limit < len(items) else \"\")\n\n\ndef source_of(addr):\n    \"\"\"`fh-…@v#anchor` -> `fh-…`.\"\"\"\n    return str(addr or \"\").split(\"#\", 1)[0].split(\"@\", 1)[0]\n\n\ndef enrich(items, rows):\n    \"\"\"Graph items + `path` and `oneline` from the catalogue ('' for a source\n    it does not know or holds as a grave); the graph's own fields stay.\"\"\"\n    by = {str(r.get(\"source\") or \"\"): r for r in rows if not r.get(\"tomb\")}\n    out = []\n    for it in items:\n        if not isinstance(it, dict):\n            continue\n        row = by.get(source_of(it.get(\"addr\"))) or {}\n        x = dict(it)\n        x[\"path\"] = str(row.get(\"path\") or \"\")\n        x[\"oneline\"] = str(row.get(\"oneline\") or \"\")\n        out.append(x)\n    return out\n\n\ndef token_of(R):\n    raw = json.dumps(R, separators=(\",\", \":\"), sort_keys=True).encode(\"utf-8\")\n    return base64.urlsafe_b64encode(raw).decode(\"ascii\").rstrip(\"=\")\n\n\ndef question_of(token):\n    \"\"\"A token -> the question it carries, or None.\"\"\"\n    try:\n        t = str(token or \"\")\n        R = json.loads(base64.urlsafe_b64decode(t + \"=\" * (-len(t) % 4)).decode(\"utf-8\"))\n    except Exception:\n        return None\n    if not isinstance(R, dict) or R.get(\"op\") not in OPS or not R.get(\"op_id\") \\\n            or not isinstance(R.get(\"args\"), dict):\n        return None\n    return R\n\n\ndef parse_pulled(op_id):\n    \"\"\"`lib:g:<token>` / `lib:f:t:<token>` -> (kind, question), or None.\"\"\"\n    s = str(op_id or \"\")\n    for prefix, kind in ((\"lib:g:\", \"graph\"), (\"lib:f:t:\", \"tree\")):\n        if s.startswith(prefix):\n            R = question_of(s[len(prefix):])\n            return (kind, R) if R else None\n    return None\n\n\nclass Bad(Exception):\n    pass\n\n\ndef _whole(v, what, lo, hi):\n    \"\"\"An integer argument within lo..hi; a number written as text counts.\"\"\"\n    if isinstance(v, bool):\n        raise Bad(\"`%s` is a whole number\" % what)\n    try:\n        n = int(v) if not isinstance(v, float) or v.is_integer() else None\n    except Exception:\n        n = None\n    if n is None or n < lo or (hi is not None and n > hi):\n        raise Bad(\"`%s` is a whole number from %d%s\" % (what, lo, \" to %d\" % hi if hi else \"\"))\n    return n\n\n\ndef validate(op, a):\n    \"\"\"The arguments of a question, checked and normalised: (args, limit).\n    Raises Bad with the message of an `invalid_input`.\"\"\"\n    limit = LIMIT_DEFAULT\n    if a.get(\"limit\") is not None:\n        limit = min(LIMIT_MAX, _whole(a.get(\"limit\"), \"limit\", 1, None))\n    cur = a.get(\"cursor\")\n    out = {}\n    if cur is not None and cur != \"\":\n        if not isinstance(cur, (str, int)) or isinstance(cur, bool):\n            raise Bad(\"`cursor` is the `next` of the page before\")\n        out[\"cursor\"] = str(cur)\n    if op == \"find\":\n        q = a.get(\"q\")\n        if not isinstance(q, str) or not q.strip():\n            raise Bad(\"find takes `q`, the words to look for\")\n        out[\"q\"] = q\n        for k in (\"kind\", \"fmt\"):\n            if a.get(k) is not None:\n                if not isinstance(a.get(k), str):\n                    raise Bad(\"`%s` is text\" % k)\n                if a.get(k):\n                    out[k] = a.get(k)\n        if a.get(\"under\") is not None:\n            u = under_of(a.get(\"under\"))\n            if u is None:\n                raise Bad(\"`under` is a folder starting with `/`\")\n            out[\"under\"] = u\n        if \"cursor\" in out and not out[\"cursor\"].isdigit():\n            raise Bad(\"`cursor` is the `next` of the page before\")\n    elif op == \"symbol\":\n        name = a.get(\"name\")\n        if not isinstance(name, str) or not name.strip() or len(name) > NAME_MAX:\n            raise Bad(\"symbol takes `name`, at most %d characters\" % NAME_MAX)\n        out[\"name\"] = name.strip()\n    elif op == \"related\":\n        addr, how = a.get(\"addr\"), a.get(\"how\")\n        if how not in HOWS:\n            raise Bad(\"`how` is one of \" + \", \".join(HOWS))\n        if not isinstance(addr, str) or not ADDR_RE.match(addr.strip()):\n            raise Bad(\"`addr` is fh-<12 hex>[@<version>][#<anchor>]\")\n        out[\"addr\"], out[\"how\"] = addr.strip(), how\n        if how == \"dependents\" and a.get(\"depth\") is not None:\n            out[\"depth\"] = _whole(a.get(\"depth\"), \"depth\", 1, DEPTH_MAX)\n    elif op == \"tree\":\n        u = under_of(a.get(\"under\") if a.get(\"under\") is not None else \"/\")\n        if u is None:\n            raise Bad(\"`under` is a folder starting with `/`\")\n        out[\"under\"] = u\n        out[\"depth\"] = 1 if a.get(\"depth\") is None else _whole(a.get(\"depth\"), \"depth\", 1,\n                                                                 DEPTH_MAX)\n        if \"cursor\" in out and not out[\"cursor\"].isdigit():\n            raise Bad(\"`cursor` is the `next` of the page before\")\n    return out, limit\n\n\ndef pull_of(R):\n    \"\"\"The one request a graph or tree question sends: (hop, body).\"\"\"\n    a = R[\"args\"]\n    if R[\"op\"] == \"tree\":\n        return ({\"route\": \"pull\", \"op\": \"list\", \"op_id\": \"lib:f:t:\" + token_of(R)},\n                {\"op\": \"list\", \"args\": {\"prefix\": a[\"under\"], \"depth\": a[\"depth\"]}})\n    gop = \"resolve\" if R[\"op\"] == \"symbol\" else a[\"how\"]\n    args = {\"limit\": R[\"limit\"]}\n    for k in ((\"name\",) if R[\"op\"] == \"symbol\" else (\"addr\", \"depth\")):\n        if k in a:\n            args[k] = a[k]\n    if a.get(\"cursor\"):\n        args[\"cursor\"] = a[\"cursor\"]\n    return ({\"route\": \"pull\", \"op\": gop, \"op_id\": \"lib:g:\" + token_of(R)},\n            {\"op\": gop, \"args\": args})\n\n\ndef find_ops(R):\n    a = R[\"args\"]\n    where = {\"tomb\": \"\"}\n    for k in (\"kind\", \"fmt\"):\n        if a.get(k):\n            where[k] = a[k]\n    if a.get(\"under\") and a[\"under\"] != \"/\":\n        where[\"path\"] = {\"gte\": a[\"under\"]}\n    return [(\"hits\", {\"operation\": \"search\", \"table\": \"entries\",\n                      \"match\": match_of(query_terms(a[\"q\"])), \"columns\": FIND_COLS,\n                      \"where\": where, \"limit\": SCAN})]\n\n\ndef enrich_ops(sources):\n    return [(\"rows\", {\"operation\": \"select\", \"table\": \"entries\",\n                      \"columns\": [\"source\", \"path\", \"oneline\", \"kind\", \"tomb\"],\n                      \"where\": {\"source\": {\"in\": sources}}, \"limit\": max(1, len(sources))})]\n\n\n# ============================================================ PLUMBING\n\ndef emit(msgs):\n    for m in msgs:\n        if isinstance(m, dict) and not any(k in m for k in (\"messages\", \"system\", \"attachments\")):\n            m[\"messages\"] = []\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef park(reason=\"\"):\n    if reason:\n        sys.stderr.write(\"librarian/query: %s\\n\" % reason)\n    emit([])\n\n\ndef store(ops, phase, carry):\n    return {\"header\": {\"route\": \"query_store\", \"phase\": phase, \"reply_cell\": ME,\n                       \"cur_call\": json.dumps(carry, sort_keys=True)},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": cid,\n                          \"text\": json.dumps(args)} for cid, args in ops]}\n\n\ndef finish(R, body):\n    msg = {\"header\": {\"route\": \"answer\", \"op\": R[\"op\"], \"op_id\": R[\"op_id\"],\n                      \"caller\": R.get(\"caller\", \"\")},\n           \"messages\": [], \"op\": R[\"op\"], \"op_id\": R[\"op_id\"]}\n    msg.update(body)\n    emit([msg])\n\n\ndef fail(R, code, message):\n    finish(R, {\"ok\": False, \"error\": {\"code\": code, \"message\": message}})\n\n\ndef passed_on(R, ans):\n    \"\"\"An error of the graph or the file space, handed on as it came.\"\"\"\n    err = ans.get(\"error\") if isinstance(ans.get(\"error\"), dict) else {\n        \"code\": \"store_error\", \"message\": \"the answer carried no result\"}\n    finish(R, {\"ok\": False, \"error\": err})\n\n\ndef legs(body):\n    out = {}\n    for m in body.get(\"messages\") or []:\n        if not isinstance(m, dict):\n            continue\n        try:\n            payload = json.loads(m.get(\"text\") or \"null\")\n        except Exception:\n            payload = None\n        out[str(m.get(\"id\") or \"\")] = {\"payload\": payload, \"error_code\": \"\"}\n    results = body.get(\"results\")\n    if isinstance(results, list):\n        for r in results:\n            if isinstance(r, dict):\n                leg = out.setdefault(str(r.get(\"tool_call_id\") or \"\"),\n                                     {\"payload\": None, \"error_code\": \"\"})\n                leg[\"error_code\"] = str(r.get(\"error_code\") or \"\")\n    elif len(out) == 1:\n        next(iter(out.values()))[\"error_code\"] = str(hop.get(\"error_code\") or \"\")\n    return out\n\n\ndef rows(lg, cid):\n    p = (lg.get(cid) or {}).get(\"payload\")\n    return [r for r in p if isinstance(r, dict)] if isinstance(p, list) else []\n\n\ndef graph_done(R, items, nxt, rs):\n    body = {\"ok\": True, \"items\": enrich(items, rs), \"next\": nxt}\n    if R[\"op\"] == \"related\":\n        body.update({\"addr\": R[\"args\"][\"addr\"], \"how\": R[\"args\"][\"how\"]})\n    finish(R, body)\n\n\n# ============================================================ LANES\n\nlane = str(hop.get(\"route\") or \"\")\nop_ = str(hop.get(\"operation\") or \"\")\n\nif lane == \"in_lib\":\n    op = str(hop.get(\"op\") or d.get(\"op\") or \"\")\n    a = d.get(\"args\") if isinstance(d.get(\"args\"), dict) else {\n        k: v for k, v in d.items() if k not in (\"op\", \"op_id\", \"messages\", \"header\")}\n    R = {\"op\": op, \"op_id\": str(hop.get(\"op_id\") or \"\"),\n         \"caller\": str(hop.get(\"caller\") or \"\"), \"args\": a, \"limit\": LIMIT_DEFAULT}\n    if not R[\"op_id\"]:\n        fail(R, \"invalid_input\", \"a question carries hop.op_id\")\n    if op not in OPS:\n        fail(R, \"unknown_op\", \"this lane serves \" + \", \".join(OPS))\n    try:\n        R[\"args\"], R[\"limit\"] = validate(op, a)\n    except Bad as e:\n        fail(R, \"invalid_input\", str(e))\n    if op == \"find\":\n        if not query_terms(R[\"args\"][\"q\"]):\n            finish(R, {\"ok\": True, \"items\": [], \"next\": \"\"})\n        emit([store(find_ops(R), \"find\", {\"R\": R})])\n    h, b = pull_of(R)\n    b[\"header\"] = h\n    emit([b])\n\nif lane == \"in_pulled\":\n    got = parse_pulled(hop.get(\"op_id\"))\n    if not got:\n        park(\"in_pulled under a foreign or broken op_id %r -- dropped\"\n             % str(hop.get(\"op_id\") or \"\"))\n    kind, R = got\n    if d.get(\"ok\") is not True:\n        passed_on(R, d)\n    if kind == \"tree\":\n        # A page of at most 20 entries, ordered by path, like every list here\n        # (GH #950 section 3): unpaged, one `lib_tree {depth: 3}` handed up to\n        # LIST_SCAN (2000) rows of the file space into a model's turn.\n        a = R[\"args\"]\n        got = d.get(\"entries\") if isinstance(d.get(\"entries\"), list) else []\n        got = sorted((e for e in got if isinstance(e, dict)),\n                     key=lambda e: str(e.get(\"path\") or \"\"))\n        chunk, nxt = page(got, a.get(\"cursor\"),\n                          min(LIMIT_MAX, int(R.get(\"limit\") or LIMIT_DEFAULT)))\n        body = {\"ok\": True, \"under\": a[\"under\"], \"depth\": a[\"depth\"], \"entries\": chunk,\n                \"next\": nxt}\n        if d.get(\"more\"):\n            body[\"more\"] = True\n        finish(R, body)\n    items = [x for x in (d.get(\"items\") or []) if isinstance(x, dict)]\n    nxt = str(d.get(\"next\") or \"\")\n    sources = sorted({source_of(x.get(\"addr\")) for x in items} - {\"\"})\n    if not sources:\n        graph_done(R, items, nxt, [])\n    emit([store(enrich_ops(sources), \"enrich\", {\"R\": R, \"items\": items, \"next\": nxt})])\n\nif lane:\n    park(\"unknown lane %r -- dropped\" % lane)\nif not op_:\n    park(\"a message with neither a lane nor a store answer -- dropped\")\n\ntry:\n    carry = json.loads(ctx.get(\"cur_call\") or \"null\")\nexcept Exception:\n    carry = None\n# The question of a store answer under a lower-case name: the locks load\n# every upper-case assignment at the top of this program as its pure half,\n# without a message (support/graph_space_pure.rs).\nasked = carry.get(\"R\") if isinstance(carry, dict) else None\nif not isinstance(asked, dict) or not asked.get(\"op_id\"):\n    park(\"store answer without its question -- dropped\")\nlg = legs(d)\nbad = sorted(c for c, leg in lg.items() if leg[\"error_code\"])\nif bad:\n    sys.stderr.write(\"librarian/query: store refused %s\\n\" % \", \".join(bad))\n    fail(asked, \"store_error\", \"the catalogue refused a read; try again later\")\nphase = str(ctx.get(\"cur_phase\") or \"\")\nif phase == \"find\":\n    rs = rows(lg, \"hits\")\n    a = asked[\"args\"]\n    items = find_items(rs, query_terms(a[\"q\"]), a.get(\"under\") or \"/\")\n    chunk, nxt = page(items, a.get(\"cursor\"), asked[\"limit\"])\n    body = {\"ok\": True, \"items\": chunk, \"next\": nxt}\n    if len(rs) >= SCAN:\n        body[\"truncated\"] = True\n    finish(asked, body)\nif phase == \"enrich\":\n    graph_done(asked, carry.get(\"items\") or [], str(carry.get(\"next\") or \"\"), rows(lg, \"rows\"))\npark(\"unknown phase %r -- dropped\" % phase)\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "scan_max": {
+        "type": "number",
+        "secret": false,
+        "default": 2000,
+        "description": "The most rows one `find` reads before it ranks and pages; an answer that reached it says `truncated`."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "ok": {
+          "type": "boolean",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "items": {
+          "type": "array",
+          "required": false
+        },
+        "next": {
+          "type": "string",
+          "required": false
+        },
+        "error": {
+          "type": "object",
+          "required": false
+        },
+        "args": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "query_store",
+            "pull",
+            "answer"
+          ],
+          "required": true
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "reply_cell": {
+          "type": "string",
+          "required": false
+        },
+        "cur_call": {
+          "type": "string",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "args": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Answers the questions of the library -- `find` from the catalogue alone (one full-text search, ranked by the field each word hit), `symbol` and `related` through one pull to the graph space plus one catalogue read for path and summary line, `tree` through one pull to the file space -- exactly one answer each, every list a page of at most 20.",
+    "use_when": "Inside a librarian only, behind `in_lib` (from outside or from `./tools`) and the `in_pulled` answers whose `op_id` starts with `lib:g:` or `lib:f:t:`.",
+    "not_in_scope": "No write, no content of a source, no state of its own: a question in flight rides in its own `op_id`.",
+    "emits_meaning": "`query_store` to `./store` (at most once per question), `pull` out of the hive (graph and tree questions), `answer` once per question -- to `./tools` when `caller` is 'tools', out of the hive otherwise.",
+    "consumes_meaning": "A question on `in_lib`, an answer of the graph or the file space on `in_pulled`, and the store's answer to its one bundle."
+  }
+}

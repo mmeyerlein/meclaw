@@ -1,4 +1,4 @@
-# `memory-hive@3.7.1`
+# `memory-hive@3.8.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -899,6 +899,22 @@ source-episode mark back (`affect`, null = unknown or an episode the round may n
 message) and takes an optional `hop.affect_filter` (`valence_max`, `valence_min`, `arousal_min`, `min_confidence`)
 that is applied after the audience gate and drops candidates without a mark, beliefs included; the mark is never a ranking signal.
 
+## Aliases from another part of the colony ([#948](https://github.com/mmeyerlein/meclaw/issues/948))
+
+A hive that keeps rows about things names the spellings a thing is talked about under and the id it carries there:
+`in_alias {aliases: [{alias, canonical}], force?}` (1..32 entries, `canonical` an id `<prefix>-<rest>` from
+`[a-z0-9_-]`, at most 64 characters; `hop.alias_tag` is echoed). Each spelling becomes a row of `subject_aliases`,
+keyed in the store's normal form, and one `canonicalize` of the subject column follows -- so the facts said under
+that spelling, before the binding and after it, carry the id as `canonical_subject`, and none is rewritten. A
+spelling that already means another id is refused with `alias_taken` unless `force` is true; the answer `alias_ack
+{done, refused}` never names the previous id, because a target may be a subject the night derived from conversations,
+and the alias table has no audience to ask. Without `force` the write is an `insert` on the table's key, closed by a
+`select` in the same store bundle, so two requests in flight for one spelling never both bind. The nightly identity
+round still writes its own aliases unchecked (`set_alias` is an upsert). The same hive then asks `in_query` with
+`subject` (and `limit` 1..20) in the body: the newest facts of that canonical subject, not expired, not replaced,
+under the asking round (`audience_now` required; a round declared `[]` reads only what was released to `*`), answered
+as one `bundle` that names the `subject`.
+
 ## Taking a memory out, putting it into another (#243)
 
 Until 2.2.0 there was no way to get the content a hive had accumulated *out* of it, and no way
@@ -923,7 +939,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.7.1` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.8.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1330,7 +1346,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.4.0",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.0",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

@@ -113,8 +113,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// an eighth (`history`): twenty-six. GH #895 a ninth (`push`, the recall
 /// push): twenty-seven. GH #896 a tenth (`handover`): twenty-eight.
 /// MEASURED. GH #926 an eleventh (`stats`, the read-only counting lane):
-/// 1 + 4 + 23 + 1 = twenty-nine. MEASURED.
-const CELLS_AFTER_GROW: usize = 29;
+/// 1 + 4 + 23 + 1 = twenty-nine. MEASURED. GH #949 a twelfth (`reader`, an
+/// app's read of its own round): 1 + 4 + 24 + 1 = thirty. MEASURED.
+const CELLS_AFTER_GROW: usize = 30;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -134,8 +135,10 @@ const CELLS_AFTER_GROW: usize = 29;
 /// and `./ask`, which turns the core's `ask_requester` call into its question
 /// back, so the core adds seventeen -- forty-five. GH #926 gives its curator an
 /// eleventh (`stats`): eighteen, and one more in [`CELLS_AFTER_GROW`] --
-/// 29 + 18 = forty-seven. MEASURED.
-const CELLS_AFTER_COGNY: usize = 47;
+/// 29 + 18 = forty-seven. MEASURED. GH #949 gives each curator a twelfth
+/// (`reader`): nineteen, and one more in [`CELLS_AFTER_GROW`] -- 30 + 19 =
+/// forty-nine. Measured in the strand gate (50 with the probe, against 48).
+const CELLS_AFTER_COGNY: usize = 49;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -588,7 +591,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus twenty-seven instantiated ones: {after:?}"
+        "zero checked-in cells plus thirty instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.

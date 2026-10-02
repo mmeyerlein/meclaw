@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.2.3"
+            "template": "meclaw-os@2.2.4"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.1.3"
+            "template": "org@2.1.4"
           }
         ],
         "add_edges": [
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.4.0"
+            "template": "member@2.5.0"
           }
         ],
         "add_edges": [
@@ -249,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@3.5.0",
+            "template": "assistant@3.6.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -418,6 +418,11 @@
             "condition": "has(hop.route) && hop.route == 'in_renewed' && (!has(context.assistant) || context.assistant == 'scribe')"
           },
           {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_candidate' && (!has(context.assistant) || context.assistant == 'scribe')"
+          },
+          {
             "from": "./scribe",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'sidecar'"
@@ -436,6 +441,11 @@
             "from": "./scribe",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'error'"
+          },
+          {
+            "from": "./scribe",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'thing_seen'"
           },
           {
             "from": "./scribe",
@@ -518,7 +528,8 @@
                 "assistant": "has(context.assistant) && context.assistant != '' ? context.assistant : (has(hop.addressed_to) && hop.addressed_to != '' ? hop.addressed_to : 'scribe')",
                 "chat_id": "has(hop.chat_id) ? hop.chat_id : ''",
                 "user_id": "has(hop.user_id) ? hop.user_id : ''",
-                "audience_set": "'[\"agent:scribe\",\"member:alex\"]'"
+                "audience_set": "'[\"agent:scribe\",\"member:alex\"]'",
+                "speaker": "has(hop.user_id) && string(hop.user_id) == '4711' ? 'member:alex' : ''"
               }
             }
           },

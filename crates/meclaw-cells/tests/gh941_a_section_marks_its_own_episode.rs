@@ -238,6 +238,10 @@ fn install_edges() -> Vec<Value> {
                                                     "template": format!("{PROBE_APP}@1.0.0"),
                                                     "screen": "display",
                                                     "generation": GENERATION,
+                                                    // GH #949: the member's person, whose
+                                                    // round (`AUDIENCE`) the app's edges
+                                                    // stamp; `install_app` asks for it.
+                                                    "ctx": {"member_person": "owner"},
                                                     "declaration": tpl["app"].clone()}})
                                   .to_string()}],
         }),

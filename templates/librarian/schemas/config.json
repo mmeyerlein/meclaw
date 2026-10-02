@@ -1,0 +1,82 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "script_inline": "import sys, json\n\n# The MENU of this library (GH #950): asked on `in_schemas` with the names a\n# collector declares, it answers the declaration of every `lib_*` tool it\n# serves and names every other name in `unknown` -- the answer shape of the\n# file space's menu, byte for byte, so a collector merges it as one more\n# answerer (`context.tool_answerer` 'library', stamped by the member). `*` asks\n# for all four.\n# --8<-- lib-offer\n# THE LIBRARY TOOLS, one list, one entry per tool (GH #950). It stands WORD FOR\n# WORD in `./schemas` (which hands it to a model's menu) and in `./tools` (which\n# checks every call against it before a question leaves), because a code cell\n# has no library it could share. The name IS the mapping: `lib_<op>` asks the\n# op `<op>` on `in_lib`; no other rule exists.\n#\n# Every description says the two things a model needs to go on: the address a\n# hit carries (`fh-<12 hex>` for a file, `fh-<12 hex>#<anchor>` for an item in\n# it), and that `file_read` with that address reads the span -- the library\n# finds, the file space reads. There is no writing tool here.\nLIMIT = {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 20,\n         \"description\": \"the most hits on one page (20 by default)\"}\nCURSOR = {\"type\": \"string\", \"description\": \"the `next` of the page before\"}\nDEPTH = {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 3}\n\n\ndef _obj(props, required):\n    return {\"type\": \"object\", \"properties\": props, \"required\": required,\n            \"additionalProperties\": False}\n\n\nLIB_OFFER = [\n    {\"name\": \"lib_find\",\n     \"description\": \"Find files of this knowledge space by words -- in their path, the names \"\n                    \"of their functions, classes or sections, their summary line and tags -- \"\n                    \"best first, each with its address `fh-<12 hex>`, path, kind, summary line \"\n                    \"and `why` it matched. `file_read` on that address (or on an item of it, \"\n                    \"`fh-<12 hex>#<anchor>` from `file_outline`) reads the span; `next` is the \"\n                    \"`cursor` of the next page.\",\n     \"parameters\": _obj({\"q\": {\"type\": \"string\", \"description\": \"the words to look for\"},\n                         \"kind\": {\"type\": \"string\", \"description\": \"only files of this kind\"},\n                         \"fmt\": {\"type\": \"string\",\n                                 \"description\": \"only files of this format: `python`, `rust`, `markdown`, `json`, `toml` or `pdf`\"},\n                         \"under\": {\"type\": \"string\",\n                                   \"description\": \"only files under this folder, like `/src`\"},\n                         \"limit\": LIMIT, \"cursor\": CURSOR}, [\"q\"])},\n    {\"name\": \"lib_symbol\",\n     \"description\": \"Find where a name is defined: a function, class, module or section, \"\n                    \"bare (`load`) or qualified (`pkg.mod:load`), each hit with its address \"\n                    \"`fh-<12 hex>#<anchor>`, the path of its file and its summary line. \"\n                    \"`file_read` with that address reads exactly that span.\",\n     \"parameters\": _obj({\"name\": {\"type\": \"string\", \"description\": \"the name to look up\"},\n                         \"limit\": LIMIT, \"cursor\": CURSOR}, [\"name\"])},\n    {\"name\": \"lib_related\",\n     \"description\": \"What is connected to an address `fh-<12 hex>` or `fh-<12 hex>#<anchor>`: \"\n                    \"its `callers`, its `dependents` (up to `depth` 3), its `deps`, or files \"\n                    \"`similar` by meaning; each hit with its address, path and summary line. \"\n                    \"`file_read` with a hit's address reads its span.\",\n     \"parameters\": _obj({\"addr\": {\"type\": \"string\",\n                                  \"description\": \"`fh-<12 hex>` or `fh-<12 hex>#<anchor>`\"},\n                         \"how\": {\"type\": \"string\",\n                                 \"enum\": [\"callers\", \"dependents\", \"deps\", \"similar\"]},\n                         \"depth\": DEPTH, \"limit\": LIMIT, \"cursor\": CURSOR},\n                        [\"addr\", \"how\"])},\n    {\"name\": \"lib_tree\",\n     \"description\": \"The folders and files under a folder `under` (`/` by default), `depth` \"\n                    \"levels deep (1 to 3), ordered by path, each file with its address \"\n                    \"`fh-<12 hex>`; `file_read` on that address (or on an item of it, \"\n                    \"`fh-<12 hex>#<anchor>` from `file_outline`) reads the span; `next` is the \"\n                    \"`cursor` of the next page.\",\n     \"parameters\": _obj({\"under\": {\"type\": \"string\", \"description\": \"a folder, `/` by default\"},\n                         \"depth\": DEPTH, \"limit\": LIMIT, \"cursor\": CURSOR}, [])},\n]\n# --8<-- end lib-offer\n\n\ndoc = json.load(sys.stdin)\nasked = (doc.get(\"body\") or {}).get(\"tools\")\nif not isinstance(asked, list):\n    # ABSENT and EMPTY are two requests: a caller that declared nothing gets\n    # nothing, a request that lost its list is told so.\n    sys.stdout.write(json.dumps({\n        \"header\": {\"operation\": \"schemas\", \"error_code\": \"tools_missing\",\n                   \"schema_count\": 0, \"unknown_count\": 0},\n        \"schemas\": [], \"unknown\": [], \"sidecar\": [], \"messages\": []}))\n    sys.exit(0)\n\nserved = [t[\"name\"] for t in LIB_OFFER]\nnames = [str(n) for n in asked if isinstance(n, str)]\nif \"*\" in names:\n    wanted, unknown = list(served), []\nelse:\n    seen, wanted, unknown = set(), [], []\n    for n in names:\n        if n in seen:\n            continue\n        seen.add(n)\n        (wanted if n in served else unknown).append(n)\nby_name = {t[\"name\"]: t for t in LIB_OFFER}\nschemas = [{\"name\": n, \"description\": by_name[n][\"description\"],\n            \"parameters\": by_name[n][\"parameters\"]} for n in wanted]\nheader = {\"operation\": \"schemas\", \"schema_count\": len(schemas),\n          \"unknown_count\": len(unknown)}\nif unknown:\n    header[\"error_code\"] = \"tool_unknown\"\nsys.stdout.write(json.dumps({\"header\": header, \"schemas\": schemas, \"unknown\": unknown,\n                             \"sidecar\": [], \"messages\": []}))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "schemas": {
+          "type": "array",
+          "required": true
+        },
+        "unknown": {
+          "type": "array",
+          "required": true
+        },
+        "sidecar": {
+          "type": "array",
+          "required": true
+        },
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "schemas"
+          ],
+          "required": true
+        },
+        "schema_count": {
+          "type": "number",
+          "required": true
+        },
+        "unknown_count": {
+          "type": "number",
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "tool_unknown",
+            "tools_missing"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "tools": {
+          "type": "array",
+          "required": false
+        },
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The menu of this library: asked with the tool names a collector declares, it answers `{name, description, parameters}` for every `lib_*` tool it serves and names every other name in `unknown` -- the answer shape of the file space's menu, so a collector merges it as one more answerer. `*` asks for all four tools, every one of them a read.",
+    "use_when": "Reached on this hive's `in_schemas` lane, on an asking collector's menu tick. Never part of a tool round.",
+    "not_in_scope": "No write tool and no sidecar section: a library asks a model for nothing in return.",
+    "emits_meaning": "schemas[]: one declaration per asked name this library serves, in the order asked (`*` in menu order). unknown[]: the names it does not serve, verbatim; hop.error_code `tool_unknown` then, `tools_missing` when the request carried no `tools` list. sidecar[] is always empty.",
+    "consumes_meaning": "A menu question: `tools`, the names the asking collector declares."
+  }
+}

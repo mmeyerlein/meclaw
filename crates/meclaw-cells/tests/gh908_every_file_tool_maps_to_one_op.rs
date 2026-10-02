@@ -4,10 +4,12 @@
 //! the whole space in one process for the calls (the shipped edges evaluated by
 //! the colony's CEL, the store behind its own dispatcher).
 //!
-//! 1. **One list, one op per name.** `FILE_OFFER` holds 30 tools, every name is
+//! 1. **One list, one op per name.** `FILE_OFFER` holds 37 tools (30 of GH
+//!    #908, the seven directory and node tools of GH #947), every name is
 //!    `file_<op>` of an op the space's own cells serve (`./read` `OPS`,
-//!    `./write` `WRITE_OPS`, `./ws` `OPS`), the lane follows from the name, and
-//!    `raw`, `ws_tree` and the projection ops are on no menu (OR-FJ-G4).
+//!    `./write` `WRITE_OPS`, `./ws` `OPS`; `ask` and `dir_summary` `./derive`),
+//!    the lane follows from the name, and `raw`, `ws_tree` and the projection
+//!    ops are on no menu (OR-FJ-G4).
 //! 2. **Two copies, one value.** `./schemas` hands the list out and `./tools`
 //!    checks every call against it; a code cell shares no library, so the two
 //!    literals are held equal here.
@@ -51,7 +53,7 @@ fn space() -> Space {
     )
 }
 
-const READS: [&str; 12] = [
+const READS: [&str; 14] = [
     "file_info",
     "file_read",
     "file_search",
@@ -64,6 +66,8 @@ const READS: [&str; 12] = [
     "file_find",
     "file_outline",
     "file_links",
+    "file_dir_info",
+    "file_dir_summary",
 ];
 
 #[test]
@@ -86,7 +90,7 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
         .into_iter()
         .collect();
     let rows = map.as_array().unwrap();
-    assert_eq!(rows.len(), 30, "30 file tools: {map}");
+    assert_eq!(rows.len(), 37, "37 file tools: {map}");
     let mut seen = BTreeSet::new();
     let (mut r, mut w, mut s) = (Vec::new(), 0, 0);
     for row in rows {
@@ -100,7 +104,7 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
         match lane {
             "in_read" => {
                 assert!(
-                    read_ops.contains(op) || op == "ask",
+                    read_ops.contains(op) || op == "ask" || op == "dir_summary",
                     "{op} is no op of ./read"
                 );
                 r.push(name.to_string());
@@ -119,10 +123,12 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
             assert_ne!(op, banned, "{banned} is on no menu (OR-FJ-G4)");
         }
     }
-    assert_eq!(r, READS.to_vec(), "the twelve reads, in menu order");
-    assert_eq!((w, s), (11, 7), "eleven writes, seven workspace ops");
-    // `ask` is the one read `./read` does not serve: `./derive` does (B1 E).
+    assert_eq!(r, READS.to_vec(), "the fourteen reads, in menu order");
+    assert_eq!((w, s), (16, 7), "sixteen writes, seven workspace ops");
+    // `ask` (B1 E) and `dir_summary` (GH #947) are the reads `./read` does not
+    // serve: `./derive` does.
     assert!(!read_ops.contains("ask"));
+    assert!(!read_ops.contains("dir_summary"));
 }
 
 #[test]
@@ -177,9 +183,18 @@ fn every_schema_is_a_checked_json_schema_and_says_address_and_token() {
             };
             assert!(ok, "{name}.{k}: a checked type: {s}");
         }
-        let needs_base = !matches!(name, "file_create" | "file_snapshot")
-            && strings(&pure("tools", "list(WRITE_OPS)", json!(null)))
-                .contains(&name["file_".len()..].to_string());
+        // A birth, a snapshot and the directory and place ops (GH #947) move
+        // no content: they take no `base`.
+        let needs_base = !matches!(
+            name,
+            "file_create"
+                | "file_snapshot"
+                | "file_create_dir"
+                | "file_remove_dir"
+                | "file_move"
+                | "file_copy"
+        ) && strings(&pure("tools", "list(WRITE_OPS)", json!(null)))
+            .contains(&name["file_".len()..].to_string());
         assert_eq!(
             strings(&p["required"]).contains(&"base".to_string()),
             needs_base,

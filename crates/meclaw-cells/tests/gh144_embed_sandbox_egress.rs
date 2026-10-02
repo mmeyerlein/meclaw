@@ -36,6 +36,7 @@ use meclaw_testing::mock_http::{MockResponse, start_mock_server_capturing};
 use tokio::sync::mpsc;
 
 const EMBED_CONFIG: &str = "../../templates/memory-hive/embed/config.json";
+const GRAPH_INDEX_CONFIG: &str = "../../templates/graph-space/index/config.json";
 
 fn embed_config() -> Value {
     let raw = std::fs::read_to_string(EMBED_CONFIG).expect("embed config");
@@ -166,10 +167,10 @@ fn the_embed_cell_declares_the_narrowest_profile_that_can_call_out() {
 #[test]
 fn every_shipped_cell_that_speaks_the_network_declares_a_profile() {
     // The sweep of GH #144, kept as a test rather than as a paragraph in a
-    // receipt: a template cell that performs network I/O and declares no
-    // sandbox inherits `network: "deny"` at instantiation and is dead on
-    // arrival. Today the embed cell is the only one -- the assertion is that
-    // the next one does not slip in silently.
+    // receipt: a template cell that performs network I/O and does not open
+    // `network` inherits `"deny"` at instantiation and is dead on arrival.
+    // Today the two embed cells are the only ones -- the assertion is that the
+    // next one does not slip in silently.
     // Assembled from the manifest dir rather than written as one literal: the
     // walk covers whatever library the checkout carries (the public clone
     // carries the exported subset), and the export's R2b check reads path
@@ -178,8 +179,120 @@ fn every_shipped_cell_that_speaks_the_network_declares_a_profile() {
     let library = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("templates");
+    let speakers = silent_speakers(&library);
+    assert!(
+        speakers.is_empty(),
+        "these shipped cells perform network I/O without `network: \"allow\"` (or \
+         `trust: \"trusted\"`) and are cut off at instantiation (GH #144): {speakers:?}"
+    );
+}
+
+/// What a script calls to reach the network, as whole words: the stdlib and
+/// the common client libraries, raw sockets, and the two shell clients. A
+/// module that only parses (`urllib.parse`) is no call -- the sweep counted
+/// every `urllib` once, and a cell that parses URLs passed only because its
+/// sandbox block happened to be there (C1 finding, review of GH #944).
+const NETWORK_CALLS: &[&str] = &[
+    "urlopen",
+    "urllib.request",
+    "urllib3",
+    "http.client",
+    "HTTPConnection",
+    "HTTPSConnection",
+    "import requests",
+    "from requests",
+    "requests.get",
+    "requests.post",
+    "requests.put",
+    "requests.patch",
+    "requests.delete",
+    "requests.head",
+    "requests.request",
+    "requests.Session",
+    "httpx",
+    "aiohttp",
+    "import socket",
+    "socket.socket",
+    "create_connection",
+    "curl",
+    "wget",
+];
+
+/// The code of a script with its comments cut. `#` opens a comment where it
+/// opens a word (line start, or after a blank) outside a quote -- the rule
+/// Python and the shell share. Each line on its own: a quote left open (a
+/// triple quote, a shell oddity) keeps the rest of its line, so the cut can
+/// only ever keep too much, never hide a call.
+fn without_comments(script: &str) -> String {
+    let mut out = String::with_capacity(script.len());
+    for line in script.lines() {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        let mut prev: Option<char> = None;
+        let mut cut = line.len();
+        for (i, c) in line.char_indices() {
+            if let Some(q) = quote {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+            } else if c == '\'' || c == '"' {
+                quote = Some(c);
+            } else if c == '#' && matches!(prev, None | Some(' ') | Some('\t')) {
+                cut = i;
+                break;
+            }
+            prev = Some(c);
+        }
+        out.push_str(&line[..cut]);
+        out.push('\n');
+    }
+    out
+}
+
+/// Whether `code` holds `word` with no identifier character on either side.
+fn has_word(code: &str, word: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    code.match_indices(word).any(|(i, _)| {
+        !code[..i].chars().next_back().is_some_and(ident)
+            && !code[i + word.len()..].chars().next().is_some_and(ident)
+    })
+}
+
+/// The first network call the code of `script` makes, if any. Besides the
+/// words of [`NETWORK_CALLS`], a `from urllib import` line that names
+/// `request` counts: its calls then read `request.Request(…)` or
+/// `request.build_opener().open(…)` and name no listed word (the old rule
+/// caught that form through the bare `urllib`, review of the C1 finding I-2).
+fn network_call(script: &str) -> Option<&'static str> {
+    let code = without_comments(script);
+    if let Some(w) = NETWORK_CALLS.iter().copied().find(|w| has_word(&code, w)) {
+        return Some(w);
+    }
+    code.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("from urllib import"))
+        .any(|names| has_word(names, "request"))
+        .then_some("from urllib import request")
+}
+
+/// Whether a cell's sandbox block leaves egress open: `restricted` with
+/// `network: "allow"`, or `trusted` -- the escape hatch without enforcement,
+/// under which the parser forbids a `network` key at all
+/// (`sandbox/profile.rs`, `mutation/stage.rs` `default_sandbox_block`).
+fn opens_network(sandbox: &Value) -> bool {
+    sandbox["network"] == "allow" || sandbox["trust"] == "trusted"
+}
+
+/// Every shipped cell beneath `root` that calls the network but does not
+/// open it ([`opens_network`]), as `<path> (<call>)`. A sandbox block that
+/// keeps `deny` is no excuse: under it the call fails like under the injected
+/// default.
+fn silent_speakers(root: &std::path::Path) -> Vec<String> {
     let mut speakers = Vec::new();
-    for entry in walk(&library) {
+    for entry in walk(root) {
         let raw = match std::fs::read_to_string(&entry) {
             Ok(r) => r,
             Err(_) => continue,
@@ -200,30 +313,116 @@ fn every_shipped_cell_that_speaks_the_network_declares_a_profile() {
         ]
         .into_iter()
         .flatten()
-        .collect::<String>();
-        let speaks = [
-            "urllib",
-            "urlopen",
-            "requests.get",
-            "requests.post",
-            "http.client",
-            "httpx",
-            "aiohttp",
-            "socket.create_connection",
-            "curl ",
-            "wget ",
-        ]
-        .iter()
-        .any(|needle| script.contains(needle));
-        if speaks && cfg["params"].get("sandbox").is_none() {
-            speakers.push(entry.display().to_string());
+        .collect::<Vec<_>>()
+        .join("\n");
+        if let Some(call) = network_call(&script)
+            && !opens_network(&cfg["params"]["sandbox"])
+        {
+            speakers.push(format!("{} ({call})", entry.display()));
         }
     }
+    speakers.sort();
+    speakers
+}
+
+#[test]
+fn the_sweep_counts_calls_not_words() {
+    let cases: &[(&str, Option<&str>)] = &[
+        // parsing is not calling, and prose is not code
+        ("import urllib.parse\nq = urllib.parse.quote(x)\n", None),
+        ("# urlopen would be the wrong tool here\nx = 1\n", None),
+        ("x = 1  # never requests.post from here\n", None),
+        ("echo done # curl comes later\n", None),
+        ("def my_urlopen_helper():\n    return xcurl\n", None),
+        // the calls themselves
+        (
+            "from urllib.request import urlopen\nurlopen(u)\n",
+            Some("urlopen"),
+        ),
+        ("import urllib.request\n", Some("urllib.request")),
+        ("r = requests.post(u, json=b)\n", Some("requests.post")),
+        ("import socket\n", Some("import socket")),
+        (
+            "conn = http.client.HTTPSConnection(h)\n",
+            Some("http.client"),
+        ),
+        ("curl -s https://example.invalid/\n", Some("curl")),
+        // the module imported by name, its calls then read `request.…`
+        (
+            "from urllib import request\nreq = request.Request(u)\n\
+             request.build_opener().open(req)\n",
+            Some("from urllib import request"),
+        ),
+        (
+            "from urllib import parse, request as rq\n",
+            Some("from urllib import request"),
+        ),
+        ("from urllib import parse\nparse.quote(x)\n", None),
+        // a `#` inside a quote opens no comment
+        ("s = 'a # b'; urlopen(s)\n", Some("urlopen")),
+        ("u = \"x#y\" ; requests.get(u)\n", Some("requests.get")),
+    ];
+    for (script, want) in cases {
+        assert_eq!(network_call(script), *want, "{script:?}");
+    }
+}
+
+#[test]
+fn a_cell_that_only_parses_urls_needs_no_excuse() {
+    // The graph index imports `urllib.parse` and nothing that reaches out: it
+    // is no speaker, whatever its sandbox says. Before the sweep was sharpened
+    // it passed only because it carries a sandbox block (with `network:
+    // "deny"`); the rule now asks for `allow`, so the block is no excuse.
+    let cfg: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(GRAPH_INDEX_CONFIG).expect("graph index config"),
+    )
+    .expect("graph index config json");
+    let script = cfg["params"]["script_inline"].as_str().expect("script");
     assert!(
-        speakers.is_empty(),
-        "these shipped cells perform network I/O and inherit network \"deny\" at \
-         instantiation (GH #144): {speakers:?}"
+        script.contains("urllib.parse"),
+        "the case this lock is about"
     );
+    assert_eq!(network_call(script), None);
+}
+
+#[test]
+fn a_real_call_without_allow_stays_red() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cell = |name: &str, sandbox: Value| {
+        let d = dir.path().join(name);
+        std::fs::create_dir_all(&d).expect("cell dir");
+        let mut params = json!({
+            "script_inline": "# fetch it\nfrom urllib.request import urlopen\n\
+                              print(urlopen('http://127.0.0.1:9/').read())\n"
+        });
+        if !sandbox.is_null() {
+            params["sandbox"] = sandbox;
+        }
+        std::fs::write(
+            d.join("config.json"),
+            json!({"cell": {"type": "code"}, "params": params}).to_string(),
+        )
+        .expect("config");
+    };
+    cell("bare", Value::Null);
+    cell("denied", json!({"trust": "restricted", "network": "deny"}));
+    // `trusted` is the escape hatch without enforcement: nothing is cut off,
+    // and the parser forbids a `network` key under it.
+    cell("trusted", json!({"trust": "trusted"}));
+    cell(
+        "allowed",
+        json!({"trust": "restricted", "network": "allow"}),
+    );
+    let found = silent_speakers(dir.path());
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|f| f.contains("bare") && f.ends_with("(urlopen)"))
+    );
+    assert!(found.iter().any(|f| f.contains("denied")));
+    assert!(!found.iter().any(|f| f.contains("allowed")));
+    assert!(!found.iter().any(|f| f.contains("trusted")));
 }
 
 /// Every `config.json` beneath `root`.

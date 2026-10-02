@@ -1,0 +1,112 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "max_concurrency": 1,
+    "external_timeout_ms": 10000,
+    "names_max": 64,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "import sys, json, re, datetime, posixpath\n\n# THE INDEX OF A LIBRARIAN (librarian, GH #950). One librarian per knowledge\n# space: a catalogue of every source the space holds -- its path, kind,\n# format, summary line, tags and the names of its top-level items -- kept\n# current from the space's own announcements, so that `find` (cell `./query`)\n# answers \"where is the thing called X\" without waking a single file.\n#\n# A SOURCE ANNOUNCES, THE INDEX PULLS. A node source (a file space: `fh-`;\n# reserved: `ob-`) emits `source_changed` {source, version, path, fmt, parser,\n# mark, nodes, links, tomb} after every move of a head. The index writes the\n# path, the format and the announced version at once (`entries.announced`) and\n# sends exactly two requests on `pull`: ONE `info` (the kind) and ONE\n# `outline` (the top-level names). A constant number of hops per\n# announcement, whatever the size of the source. A move (same version, new\n# path) is the same announcement: the path comes ONLY from the event, because\n# events arrive in order and a late `info` of an earlier announcement would\n# carry the old path.\n# Events are written in the order they arrive because this cell runs one\n# message at a time (`params.max_concurrency` 1, as the curator's compose\n# since GH #765): with the dispatcher's default of four, two announcements of\n# one source ran side by side and the older one could be written last.\n#\n# A STALE PULL NEVER OVERWRITES. Every answer is written with `announced == v`\n# in its `where` -- a compare-and-set on the version it pulled. An answer that\n# arrives after a newer announcement matches no row and changes nothing; there\n# is no table of pulls in flight, and an answer that never comes leaves no row\n# behind (the entry keeps the path and format of its announcement).\n#\n# THE DESCRIPTION COMES LATER, ON ITS OWN EVENT. A file space announces a head\n# before its model has summarised it, so an `info` pulled on the announcement\n# carries the summary line of the version before (or none). The space emits\n# `source_described` {source, version, path, oneline, tags} once the summary\n# of a head is written, and the summary line and the tags come from there\n# only -- written with `announced == version`, so the description of a version\n# that is no longer announced changes nothing (GH #950, OR-BC-68).\n#\n# NO DELETE. A removal (`{source, path, tomb: true}`, no version) turns the row\n# into a grave (`tomb` '1', `announced` emptied so every pull still in flight\n# turns stale); `find` reads living rows only. A source that comes back is the\n# same row again.\n#\n# THE WORDS OF A ROW. `pterms` and `nterms` are the path and the names cut by\n# `terms()` -- word runs split at case boundaries (`fooBar` -> foobar foo bar,\n# `HTTPServer` -> httpserver http server) -- because the full-text index splits\n# on punctuation only and a question for `server` has to find `HTTPServer`.\n# `terms()` stands WORD FOR WORD in `./query`, which cuts a question with it.\n#\n# No model, no embedding request, no network: everything here is a pure\n# function of what the source answered.\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nenvelope = doc.get(\"envelope\") or {}\nP = doc.get(\"params\") or {}\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\nctx = header.get(\"context\") or {}\n\n\ndef _int(key, default):\n    v = P.get(key, default)\n    if v is None or (isinstance(v, str) and not v.strip()):\n        return default\n    try:\n        return int(float(v))\n    except Exception:\n        return default\n\n\nNAMES_MAX = max(1, _int(\"names_max\", 64))\n\nME = \"index\"\nFMT = \"%Y-%m-%dT%H:%M:%S.%fZ\"\nPARTS = (\"info\", \"outline\")\nOUTLINE_MAX = 2000\nONELINE_MAX = 300\nTAGS_MAX = 8\nSOURCE_RE = re.compile(r\"^(fh|ob)-[0-9a-f]{12}$\")\nVERSION_RE = re.compile(r\"^[0-9a-f]{4,64}$\")\n\n\n# ============================================================ PURE: WORDS\n\nRUN_RE = re.compile(r\"[^\\W_]+\")\n\n\ndef split_case(run):\n    \"\"\"One word run cut at its case boundaries: a lower (or a digit) before an\n    upper (`fooBar`, `utf8Decode`), and the last upper of an upper run before\n    a lower (`HTTPServer`). Digits stay with the word they follow.\"\"\"\n    out, cur = [], \"\"\n    for i, ch in enumerate(run):\n        if cur and ch.isupper():\n            prev = run[i - 1]\n            nxt = run[i + 1] if i + 1 < len(run) else \"\"\n            if not prev.isupper() or nxt.islower():\n                out.append(cur)\n                cur = \"\"\n        cur += ch\n    if cur:\n        out.append(cur)\n    return out\n\n\ndef terms(text):\n    \"\"\"The words of a text, lower case, in order, each once: every word run\n    (`[^\\\\W_]+`, unicode) and, when it falls into more than one part at its\n    case boundaries, the whole run first (`fooBar` -> foobar, foo, bar).\"\"\"\n    out, seen = [], set()\n    for run in RUN_RE.findall(str(text or \"\")):\n        parts = split_case(run)\n        toks = ([run] if len(parts) > 1 else []) + parts\n        for t in toks:\n            t = t.lower()\n            if t and t not in seen:\n                seen.add(t)\n                out.append(t)\n    return out\n\n\ndef dir_of(path):\n    \"\"\"The folder a path sits in: `/pkg/a.py` -> `/pkg`, `/a` -> `/`.\"\"\"\n    p = str(path or \"\")\n    parent = posixpath.dirname(p)\n    if parent:\n        return parent\n    return \"/\" if p.startswith(\"/\") else \"\"\n\n\n# ============================================================ PURE: NAMES\n\nPCT_RE = re.compile(r\"(?:%[0-9A-Fa-f]{2})+\")\nDUP_RE = re.compile(r\"~[0-9]+$\")\n\n\ndef pct_decode(s):\n    \"\"\"`%XX` sequences as UTF-8 (the file space percent-encodes `%`, `#`, `@`\n    and whitespace in a name). By hand, with no URL library: the egress sweep\n    (gh144) reads any URL module in a script as network I/O.\"\"\"\n    return PCT_RE.sub(lambda m: bytes.fromhex(m.group(0).replace(\"%\", \"\"))\n                      .decode(\"utf-8\", \"replace\"), str(s))\n\n\ndef anchor_names(anchor):\n    \"\"\"The names one anchor gives a reader: the part after the first `:` of\n    its last `/` segment, percent-decoded (`def:load` -> load, `sec:setup` ->\n    setup, `key:/server` -> server); `impl:T+Tr` names both `T` and `Tr`; a\n    `page:<n>` names nothing. A repeat's `~2` is no part of the name.\"\"\"\n    seg = str(anchor or \"\").rsplit(\"/\", 1)[-1]\n    if \":\" in seg:\n        kind, name = seg.split(\":\", 1)\n    else:\n        kind, name = \"\", seg\n    if kind == \"page\":\n        return []\n    name = DUP_RE.sub(\"\", name)\n    parts = name.split(\"+\") if kind == \"impl\" else [name]\n    return [n for n in (pct_decode(x).strip() for x in parts) if n]\n\n\ndef top_names(nodes, cap):\n    \"\"\"The names of an outline's top-level nodes (`parent` empty), in outline\n    order, each once, at most `cap`.\"\"\"\n    out, seen = [], set()\n    for n in nodes if isinstance(nodes, list) else []:\n        if not isinstance(n, dict) or str(n.get(\"parent\") or \"\"):\n            continue\n        for name in anchor_names(n.get(\"anchor\")):\n            if name not in seen:\n                seen.add(name)\n                out.append(name)\n                if len(out) >= cap:\n                    return out\n    return out\n\n\ndef tags_of(v):\n    \"\"\"`tags` of a `source_described` event as a JSON list: a list of strings, at most\n    eight; anything else is no tags.\"\"\"\n    if isinstance(v, list) and all(isinstance(t, str) for t in v):\n        return json.dumps([t.strip() for t in v if t.strip()][:TAGS_MAX], ensure_ascii=False)\n    return \"[]\"\n\n\n# ============================================================ PURE: OPS\n\ndef v12(v):\n    return str(v or \"\")[:12]\n\n\ndef truthy(v):\n    return v is True or (isinstance(v, (int, float)) and v != 0) or \\\n        (isinstance(v, str) and v.strip().lower() in (\"1\", \"true\", \"yes\"))\n\n\ndef now():\n    return datetime.datetime.now(datetime.timezone.utc).strftime(FMT)\n\n\ndef count(v):\n    try:\n        return max(0, int(v or 0))\n    except Exception:\n        return 0\n\n\ndef op_id_of(part, S, v):\n    return \"lib:f:i:%s:%s:%s\" % (part, S, v)\n\n\ndef parse_op_id(op_id):\n    \"\"\"`lib:f:i:<part>:<source>:<v12>` -> (part, source, version), or None.\"\"\"\n    bits = str(op_id or \"\").split(\":\")\n    if len(bits) != 6 or bits[:3] != [\"lib\", \"f\", \"i\"] or bits[3] not in PARTS \\\n            or not SOURCE_RE.match(bits[4]) or not VERSION_RE.match(bits[5]):\n        return None\n    return bits[3], bits[4], bits[5]\n\n\ndef tomb_ops(S, stamp):\n    \"\"\"A removal, in one bundle: the row turns into a grave; never a delete.\"\"\"\n    return [(\"e-tomb\", {\"operation\": \"update\", \"table\": \"entries\",\n                        \"set\": {\"tomb\": \"1\", \"announced\": \"\", \"changed_at\": stamp},\n                        \"where\": {\"source\": S}})]\n\n\ndef announce_ops(S, v, path, fmt, nodes, stamp):\n    \"\"\"An announcement, in one bundle: the row of a new source (the insert\n    meets the unique index on a known one, which is expected), then the\n    announced version, path and format of every source.\"\"\"\n    pterms = \" \".join(terms(path))\n    row = {\"source\": S, \"path\": path, \"dir\": dir_of(path), \"kind\": \"\", \"fmt\": fmt,\n           \"oneline\": \"\", \"tags\": \"[]\", \"names\": \"[]\", \"nodes\": str(nodes),\n           \"version\": \"\", \"announced\": v, \"changed_at\": stamp, \"tomb\": \"\",\n           \"pterms\": pterms, \"nterms\": \"\"}\n    return [(\"e-ins\", {\"operation\": \"insert\", \"table\": \"entries\", \"row\": row}),\n            (\"e-upd\", {\"operation\": \"update\", \"table\": \"entries\",\n                       \"set\": {\"announced\": v, \"path\": path, \"dir\": dir_of(path), \"fmt\": fmt,\n                               \"pterms\": pterms, \"nodes\": str(nodes), \"tomb\": \"\",\n                               \"changed_at\": stamp},\n                       \"where\": {\"source\": S}})]\n\n\ndef pull_requests(S, v, nodes):\n    \"\"\"The two requests of one announcement, as (hop, body). No `caller`.\"\"\"\n    file = S + \"@\" + v\n    asks = ((\"info\", {\"version\": v}),\n            (\"outline\", {\"version\": v, \"limit\": max(1, min(nodes, OUTLINE_MAX))}))\n    return [({\"route\": \"pull\", \"op\": part, \"op_id\": op_id_of(part, S, v)},\n             {\"op\": part, \"file\": file, \"source\": S, \"version\": v, \"args\": args})\n            for part, args in asks]\n\n\ndef info_ops(S, v, ans, stamp):\n    \"\"\"An `info` answer -> its one compare-and-set update: the kind only. Its\n    `oneline` is not taken -- on an announcement the summary of that version\n    is not written yet (see `described_ops`).\"\"\"\n    return [(\"e-info\", {\"operation\": \"update\", \"table\": \"entries\",\n                        \"set\": {\"kind\": str(ans.get(\"kind\") or \"\"), \"version\": v,\n                                \"changed_at\": stamp},\n                        \"where\": {\"source\": S, \"announced\": v}})]\n\n\ndef described_ops(S, v, ev, stamp):\n    \"\"\"A `source_described` event -> its one compare-and-set update: summary\n    line and tags, only while `v` is the announced version. The path of the\n    event is not taken: the path comes from `source_changed` alone.\"\"\"\n    return [(\"e-desc\", {\"operation\": \"update\", \"table\": \"entries\",\n                        \"set\": {\"oneline\": str(ev.get(\"oneline\") or \"\")[:ONELINE_MAX],\n                                \"tags\": tags_of(ev.get(\"tags\")), \"changed_at\": stamp},\n                        \"where\": {\"source\": S, \"announced\": v}})]\n\n\ndef outline_ops(S, v, ans, stamp, cap):\n    \"\"\"An `outline` answer -> its one compare-and-set update.\"\"\"\n    names = top_names(ans.get(\"nodes\"), cap)\n    return [(\"e-names\", {\"operation\": \"update\", \"table\": \"entries\",\n                         \"set\": {\"names\": json.dumps(names, ensure_ascii=False),\n                                 \"nterms\": \" \".join(terms(\" \".join(names))), \"version\": v,\n                                 \"changed_at\": stamp},\n                         \"where\": {\"source\": S, \"announced\": v}})]\n\n\n# ============================================================ PLUMBING\n\ndef emit(msgs):\n    for m in msgs:\n        if isinstance(m, dict) and not any(k in m for k in (\"messages\", \"system\", \"attachments\")):\n            m[\"messages\"] = []\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef park(reason=\"\"):\n    if reason:\n        sys.stderr.write(\"librarian/index: %s\\n\" % reason)\n    emit([])\n\n\ndef store(ops, phase, carry):\n    return {\"header\": {\"route\": \"index_store\", \"phase\": phase, \"reply_cell\": ME,\n                       \"cur_call\": json.dumps(carry, sort_keys=True)},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": cid,\n                          \"text\": json.dumps(args)} for cid, args in ops]}\n\n\ndef legs(body):\n    out = {}\n    for m in body.get(\"messages\") or []:\n        if not isinstance(m, dict):\n            continue\n        try:\n            payload = json.loads(m.get(\"text\") or \"null\")\n        except Exception:\n            payload = None\n        out[str(m.get(\"id\") or \"\")] = {\"payload\": payload, \"error_code\": \"\"}\n    results = body.get(\"results\")\n    if isinstance(results, list):\n        for r in results:\n            if isinstance(r, dict):\n                leg = out.setdefault(str(r.get(\"tool_call_id\") or \"\"),\n                                     {\"payload\": None, \"error_code\": \"\"})\n                leg[\"error_code\"] = str(r.get(\"error_code\") or \"\")\n    elif len(out) == 1:\n        next(iter(out.values()))[\"error_code\"] = str(hop.get(\"error_code\") or \"\")\n    return out\n\n\n# ============================================================ LANES\n\nlane = str(hop.get(\"route\") or \"\")\nphase = str(ctx.get(\"cur_phase\") or \"\")\nop_ = str(hop.get(\"operation\") or \"\")\n\nif lane == \"source_changed\":\n    S = str(d.get(\"source\") or \"\").strip()\n    if not SOURCE_RE.match(S):\n        park(\"source_changed without a source address -- dropped\")\n    stamp = now()\n    if truthy(d.get(\"tomb\")):\n        emit([store(tomb_ops(S, stamp), \"tomb\", {\"source\": S})])\n    version = str(d.get(\"version\") or \"\").strip().lower()\n    if not VERSION_RE.match(version):\n        park(\"source_changed without a version -- dropped\")\n    v = v12(version)\n    path = str(d.get(\"path\") or \"\")\n    nodes = count(d.get(\"nodes\"))\n    msgs = [store(announce_ops(S, v, path, str(d.get(\"fmt\") or \"\"), nodes, stamp),\n                  \"announce\", {\"source\": S, \"version\": v})]\n    for h, b in pull_requests(S, v, nodes):\n        b[\"header\"] = h\n        msgs.append(b)\n    emit(msgs)\n\nif lane == \"source_described\":\n    S = str(d.get(\"source\") or \"\").strip()\n    version = str(d.get(\"version\") or \"\").strip().lower()\n    if not SOURCE_RE.match(S) or not VERSION_RE.match(version):\n        park(\"source_described without a source address and a version -- dropped\")\n    v = v12(version)\n    emit([store(described_ops(S, v, d, now()), \"described\", {\"source\": S, \"version\": v})])\n\nif lane == \"in_pulled\":\n    got = parse_op_id(hop.get(\"op_id\"))\n    if not got:\n        park(\"in_pulled under a foreign op_id %r -- dropped\" % str(hop.get(\"op_id\") or \"\"))\n    part, S, v = got\n    if d.get(\"ok\") is not True:\n        sys.stderr.write(\"librarian/index: %s of %s@%s not readable (%s) -- left as it was\\n\"\n                         % (part, S, v, json.dumps(d.get(\"error\"))))\n        emit([])\n    stamp = now()\n    ops = info_ops(S, v, d, stamp) if part == \"info\" else outline_ops(S, v, d, stamp, NAMES_MAX)\n    emit([store(ops, part, {\"source\": S, \"version\": v})])\n\nif lane:\n    park(\"unknown lane %r -- dropped\" % lane)\nif not op_:\n    park(\"a message with neither a lane nor a store answer -- dropped\")\n\n# A store answer: every phase is one bundle and ends here. Only the insert of\n# an announcement may fail (the unique index on a known source).\nlg = legs(d)\nbad = sorted(c for c, leg in lg.items() if leg[\"error_code\"] and c != \"e-ins\")\nif bad:\n    sys.stderr.write(\"librarian/index: store refused %s in phase %s\\n\"\n                     % (\", \".join(bad), phase or \"?\"))\nemit([])\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "names_max": {
+        "type": "number",
+        "secret": false,
+        "default": 64,
+        "description": "The most top-level names one source keeps in the catalogue (`names`, `nterms`); an outline with more is cut, in outline order."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "file": {
+          "type": "string",
+          "required": false
+        },
+        "source": {
+          "type": "string",
+          "required": false
+        },
+        "version": {
+          "type": "string",
+          "required": false
+        },
+        "args": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "index_store",
+            "pull"
+          ],
+          "required": true
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "reply_cell": {
+          "type": "string",
+          "required": false
+        },
+        "cur_call": {
+          "type": "string",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Keeps the catalogue current: an announcement (`source_changed`) writes path, folder, format and the announced version in one bundle and pulls one `info` (the kind) and one `outline` of that version; a `source_described` brings the summary line and the tags; each answer is written by compare-and-set on the announced version, so a stale pull never overwrites a newer one. A `tomb` turns the row into a grave.",
+    "use_when": "Inside a librarian only, behind `source_changed`, `source_described` and the `in_pulled` answers whose `op_id` starts with `lib:f:i:`.",
+    "not_in_scope": "No question (`./query`), no model, no network, no content of a source beyond its summary line, no delete.",
+    "emits_meaning": "`index_store` to `./store` (one bundle per announcement or answer), `pull` (two per announcement) out of the hive.",
+    "consumes_meaning": "An announcement, a description, a source's answer to a pull, and the store's answers to its own bundles."
+  }
+}

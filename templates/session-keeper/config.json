@@ -185,6 +185,7 @@
               "chat_id",
               "counterpart",
               "counterpart_name",
+              "speaker",
               "turn_id",
               "user_id"
             ]

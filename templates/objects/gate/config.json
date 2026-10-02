@@ -1,0 +1,189 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "types": [
+      "thing"
+    ],
+    "promote_after": 3,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "import sys, json, re, hashlib, datetime\n\n# THE ONE WRITER OF THE OBJECTS HIVE (GH #951). A thing a conversation keeps\n# naming becomes a row: `thing_seen` (the curator's sidecar, carried by the\n# assistants) counts sightings, a tool call of a model (`object_set`,\n# `object_confirm`, forwarded by `./tools` on `edit`) changes a field. Nothing\n# else writes `objects` or `keys`.\n#\n# APPEND-ONLY. A change is a NEW row `rev + 1` whose `supersedes` names the\n# rev it replaces; no row is ever updated or deleted (the affinity gate's\n# rule). The unique index (id, rev) is the compare-and-set: two writers that\n# read the same head both insert `rev + 1`, one loses with `unique_violation`,\n# reads the head again and decides again (at most RETRIES times).\n#\n# A ROW BELONGS TO THE ROUND IT WAS LEARNED IN. `audience_set` of a row is the\n# canonical round of the turn that first saw it, and it is never widened. A\n# later sighting counts for the row only when the row's round covers the\n# sighting's round (`covers`: nobody of the new round is missing from the\n# row's); otherwise the sighting starts a candidate row of its own -- two\n# rounds never merge into one row (OR-BD-88: audience is the core risk).\n#\n# A sighting counts once per turn: the last MAX_TURNS turn ids are kept on the\n# row, and a turn id already among them changes nothing (no new rev). A\n# `candidate` becomes `active` at `promote_after` distinct turns, or at once\n# when the owner confirms it (`./tools` decides who the owner is).\n#\n# After every write whose head is `active` -- and after a retirement of an\n# active row -- `changed` hands the new row to `./push`, which announces the\n# version to the graph space and asks memory for facts.\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nenvelope = doc.get(\"envelope\") or {}\nP = doc.get(\"params\") or {}\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\nctx = header.get(\"context\") or {}\n\n\ndef _int(key, default):\n    v = P.get(key, default)\n    try:\n        return int(float(v))\n    except Exception:\n        return default\n\n\ndef _types(v):\n    if isinstance(v, str):\n        try:\n            v = json.loads(v)\n        except Exception:\n            v = [v]\n    out = [str(x).strip() for x in (v if isinstance(v, list) else []) if str(x).strip()]\n    return out or [\"thing\"]\n\n\nTYPES = _types(P.get(\"types\"))\nPROMOTE_AFTER = max(1, _int(\"promote_after\", 3))\n\nME = \"gate\"\nFMT = \"%Y-%m-%dT%H:%M:%S.%fZ\"\nSLOTS = (\"what\", \"where\", \"who\", \"when\", \"why\", \"how\")\nSTATES = (\"candidate\", \"active\", \"retired\")\nFIELDS = SLOTS + (\"alias\", \"type\", \"state\", \"doc\", \"related\")\nID_RE = re.compile(r\"^ob-[0-9a-f]{12}$\")\nDOC_RE = re.compile(r\"^fh-[0-9a-f]{12}(#\\S{1,200})?$\")\n# A name is never an address (review O I-2): memory keys an alias and a fact\n# subject in one normal form, so a name spelled like an object or file id could\n# stand for another row's id, and that row's facts would answer this row's\n# question in this row's round. Tested on the normal form, so case is no way in.\nADDR_NAME_RE = re.compile(r\"^(ob|fh)-[0-9a-f]{12}\")\n# A person is named by a reference (`member:<id>`, an affinity ref), never by\n# a name: a name in `who` would travel with every brief.\nREF_RE = re.compile(r\"^[a-z][a-z0-9_-]{0,31}:\\S{1,120}$\")\nCOLS = [\"id\", \"rev\", \"type\", \"aliases\", \"state\", \"origin\", \"valid_since\", \"audience_set\",\n        \"slots\", \"refs\", \"seen\", \"turns\", \"supersedes\", \"recorded_at\"]\nMAX_ITEMS = 8\nNAME_MAX = 80\nKIND_MAX = 32\nNOTE_MAX = 200\nMAX_TURNS = 16\nMAX_ALIASES = 16\nMAX_REFS = 32\nMAX_IDS = 64\nRETRIES = 3\nNOT_FOUND = \"no such object\"\n\n\n# ============================================================ PURE\n\ndef now():\n    return datetime.datetime.now(datetime.timezone.utc).strftime(FMT)\n\n\ndef dumps(v):\n    return json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(\",\", \":\"))\n\n\ndef loads(v, default):\n    if isinstance(v, str):\n        try:\n            x = json.loads(v)\n        except Exception:\n            return default\n        return x if isinstance(x, type(default)) else default\n    return v if isinstance(v, type(default)) else default\n\n\n# --8<-- round\n# A round is `audience_set`: the JSON text of a list of strings. Canonical =\n# sorted, without duplicates, without empty or non-string entries (GH #951,\n# review of the memory seam: an empty name is nobody, and memory's\n# `audience_now` must never carry a `\"\"`); nothing left = \"[]\". Unparsable,\n# empty text, not a list or absent = NO round; \"[]\" is a round (an empty one,\n# roundless). `covers` is fail-closed: a row is visible to a question round\n# exactly when nobody of the question is missing from the row's round (\"*\" in\n# the row: everybody). A round is never widened.\ndef canon_round(v):\n    if not isinstance(v, str) or not v.strip():\n        return None\n    try:\n        xs = json.loads(v)\n    except Exception:\n        return None\n    if not isinstance(xs, list):\n        return None\n    xs = [x for x in xs if isinstance(x, str) and x.strip()]\n    return json.dumps(sorted(set(xs)), separators=(\",\", \":\"))\n\n\ndef covers(row_aud, q):\n    q = canon_round(q)\n    r = canon_round(row_aud)\n    if q is None or r is None:\n        return False\n    rs = json.loads(r)\n    if \"*\" in rs:\n        return True\n    qs = json.loads(q)\n    if not qs:\n        # A roundless question sees only roundless rows: `set() <= rs` would\n        # let it see every row of every round (#951, fail-closed).\n        return not rs\n    return set(qs) <= set(rs)\n# --8<-- end round\n\n\n# --8<-- norm-key\n# The normal form of a name or alias: the memory hive store's `normalize`\n# (crates/meclaw-cells/src/store/query/normalize.rs) in python, so that an\n# object alias and a fact subject equate the same spellings (M.1). Lower case\n# (`str.lower`, as rust `to_lowercase`), then the Latin-1 composition table of\n# that file (a combining mark after its ASCII base letter becomes the\n# precomposed letter), then trim + every run of whitespace -> one space. The\n# whitespace set is rust's `char::is_whitespace` (Unicode White_Space), NOT\n# python's `str.split()`, which also splits on U+001C..U+001F. No casefold.\n# --8<-- normalize_text (copy of memory-hive writer, GH #948/#951)\n# The memory hive's writer carries this function; this block is its copy\n# word for word (gh951_one_spelling_one_key.rs), so that an alias and a\n# fact subject meet under one key. Swap the whole block, never edit it here.\nCOMPOSE_ROWS = (\n    (\"\\u0300\", \"aeiou\", \"\\u00e0\\u00e8\\u00ec\\u00f2\\u00f9\"),\n    (\"\\u0301\", \"aeiouy\", \"\\u00e1\\u00e9\\u00ed\\u00f3\\u00fa\\u00fd\"),\n    (\"\\u0302\", \"aeiou\", \"\\u00e2\\u00ea\\u00ee\\u00f4\\u00fb\"),\n    (\"\\u0303\", \"ano\", \"\\u00e3\\u00f1\\u00f5\"),\n    (\"\\u0308\", \"aeiouy\", \"\\u00e4\\u00eb\\u00ef\\u00f6\\u00fc\\u00ff\"),\n    (\"\\u030a\", \"a\", \"\\u00e5\"),\n    (\"\\u0327\", \"c\", \"\\u00e7\"),\n)\nCOMPOSITIONS = {(base, mark): composed\n                for mark, bases, composed_forms in COMPOSE_ROWS\n                for base, composed in zip(bases, composed_forms)}\n# Rust's `char::is_whitespace` (the Unicode White_Space property), spelled out:\n# Python's `str.split()` also splits on U+001C..U+001F, which the store keeps.\nWHITE_SPACE = frozenset(\"\\t\\n\\x0b\\x0c\\r \\x85\\xa0\\u1680\\u2000\\u2001\\u2002\\u2003\"\n                        \"\\u2004\\u2005\\u2006\\u2007\\u2008\\u2009\\u200a\\u2028\\u2029\"\n                        \"\\u202f\\u205f\\u3000\")\n\n\ndef normalize_text(value):\n    \"\"\"The normal form of one string -- the twin of `meclaw_norm` (0.2.0 P4).\n\n    Same three effects in the same order as the store: case fold, Latin-1\n    composition (NFD -> NFC), whitespace collapse over the store's own\n    whitespace. An unrecognised mark leaves the two spellings DIFFERENT, which\n    is the same conservatism the Rust side ships.\n    \"\"\"\n    out = []\n    for ch in str(value or \"\").lower():\n        composed = COMPOSITIONS.get((out[-1], ch)) if out else None\n        if composed is None:\n            out.append(ch)\n        else:\n            out[-1] = composed\n    words, word = [], []\n    for ch in out:\n        if ch in WHITE_SPACE:\n            if word:\n                words.append(\"\".join(word))\n                word = []\n        else:\n            word.append(ch)\n    if word:\n        words.append(\"\".join(word))\n    return \" \".join(words)\n# --8<-- end normalize_text\n\n\ndef norm_key(s):\n    return normalize_text(s)\n# --8<-- end norm-key\n\n\ndef new_id(key, round_):\n    \"\"\"`ob-` + the first 12 hex digits of sha256(key + newline + round): the\n    same name learned in two rounds is two objects.\"\"\"\n    return \"ob-\" + hashlib.sha256((key + \"\\n\" + round_).encode(\"utf-8\")).hexdigest()[:12]\n\n\ndef v12(oid, rev):\n    return hashlib.sha256((\"%s:%d\" % (oid, int(rev))).encode(\"utf-8\")).hexdigest()[:12]\n\n\ndef empty_slots():\n    return {\"what\": \"\", \"where\": \"\", \"who\": [], \"when\": \"\", \"why\": \"\", \"how\": \"\"}\n\n\ndef clean_items(raw):\n    \"\"\"The valid items of one `thing_seen`, one per normal form, in order: a\n    name of 1..80 characters is kept, a name in the form of an address is\n    dropped, a too long kind or note is dropped (the item stays), at most\n    MAX_ITEMS.\"\"\"\n    out, seen = [], set()\n    for it in raw if isinstance(raw, list) else []:\n        if len(out) >= MAX_ITEMS:\n            break\n        if not isinstance(it, dict):\n            continue\n        name = it.get(\"name\")\n        if not isinstance(name, str):\n            continue\n        name = \" \".join(name.split())\n        if not name or len(name) > NAME_MAX:\n            continue\n        key = norm_key(name)\n        if not key or key in seen or ADDR_NAME_RE.match(key):\n            continue\n        seen.add(key)\n        kind = it.get(\"kind\")\n        kind = kind.strip() if isinstance(kind, str) and len(kind) <= KIND_MAX else \"\"\n        note = it.get(\"note\")\n        note = \" \".join(note.split()) if isinstance(note, str) and len(note) <= NOTE_MAX else \"\"\n        out.append({\"key\": key, \"name\": name, \"kind\": kind, \"note\": note})\n    return out\n\n\ndef pick(cands):\n    \"\"\"The row a sighting counts for among the covering rows: not retired\n    first, then the oldest (`valid_since`), then the id.\"\"\"\n    if not cands:\n        return None\n    return sorted(cands, key=lambda r: (r.get(\"state\") == \"retired\",\n                                        str(r.get(\"valid_since\") or \"\"),\n                                        str(r.get(\"id\") or \"\")))[0]\n\n\ndef next_row(head, stamp):\n    \"\"\"A copy of `head` as the next rev (supersedes the head).\"\"\"\n    row = {c: head.get(c) for c in COLS}\n    row[\"rev\"] = int(head.get(\"rev\") or 0) + 1\n    row[\"supersedes\"] = int(head.get(\"rev\") or 0)\n    row[\"recorded_at\"] = stamp\n    return row\n\n\ndef decide_seen(items, keymap, heads, round_, turn, stamp, types=None, promote=None):\n    \"\"\"The writes of one `thing_seen`, pure: [(row, prev_state, item_keys)].\n    `keymap` {key: [ids]}, `heads` {id: head row}. A sighting whose turn the\n    row already holds writes nothing.\"\"\"\n    types = types or TYPES\n    promote = promote or PROMOTE_AFTER\n    by_id, order = {}, []\n    fresh = []\n    for it in items:\n        cands = [heads[i] for i in keymap.get(it[\"key\"], []) if i in heads\n                 and covers(heads[i].get(\"audience_set\"), round_)]\n        hit = pick(cands)\n        if hit is None:\n            fresh.append(it)\n            continue\n        oid = hit[\"id\"]\n        if oid not in by_id:\n            by_id[oid] = (hit, [])\n            order.append(oid)\n        by_id[oid][1].append(it[\"key\"])\n    out = []\n    for oid in order:\n        head, keys = by_id[oid]\n        turns = loads(head.get(\"turns\"), [])\n        if turn in turns:\n            continue\n        row = next_row(head, stamp)\n        row[\"turns\"] = dumps((turns + [turn])[-MAX_TURNS:])\n        row[\"seen\"] = int(head.get(\"seen\") or 0) + 1\n        if head.get(\"state\") == \"candidate\" and row[\"seen\"] >= promote:\n            row[\"state\"] = \"active\"\n        out.append((row, str(head.get(\"state\") or \"\"), keys))\n    for it in fresh:\n        slots = empty_slots()\n        if it[\"note\"]:\n            slots[\"what\"] = it[\"note\"]\n        row = {\"id\": new_id(it[\"key\"], round_), \"rev\": 1,\n               \"type\": it[\"kind\"] if it[\"kind\"] in types else types[0],\n               \"aliases\": dumps([it[\"name\"]]),\n               \"state\": \"active\" if promote <= 1 else \"candidate\",\n               \"origin\": \"thing_seen\", \"valid_since\": stamp, \"audience_set\": round_,\n               \"slots\": dumps(slots), \"refs\": dumps({\"doc\": [], \"related\": []}),\n               \"seen\": 1, \"turns\": dumps([turn]), \"supersedes\": 0, \"recorded_at\": stamp}\n        out.append((row, \"\", [it[\"key\"]]))\n    return out\n\n\ndef apply_edit(head, op, field, value, stamp, types=None):\n    \"\"\"(new row | None, error code | ''): one tool change on `head`. None\n    without an error = nothing to change (no new rev).\"\"\"\n    types = types or TYPES\n    value = value if isinstance(value, str) else \"\"\n    row = next_row(head, stamp)\n    if op == \"confirm\":\n        if head.get(\"state\") == \"active\":\n            return None, \"\"\n        row[\"state\"] = \"active\"\n        return row, \"\"\n    if op != \"set\" or field not in FIELDS:\n        return None, \"bad_request\"\n    slots = empty_slots()\n    slots.update(loads(head.get(\"slots\"), {}))\n    refs = {\"doc\": [], \"related\": []}\n    refs.update(loads(head.get(\"refs\"), {}))\n    aliases = loads(head.get(\"aliases\"), [])\n    v = value.strip()\n    if field == \"who\":\n        who = [x for x in slots.get(\"who\") or [] if isinstance(x, str)]\n        if not v:\n            who = []\n        elif not REF_RE.match(v):\n            return None, \"bad_request\"\n        elif v not in who:\n            if len(who) >= MAX_REFS:\n                return None, \"too_many\"\n            who = who + [v]\n        slots[\"who\"] = who\n    elif field in SLOTS:\n        slots[field] = \" \".join(value.split())\n    elif field == \"alias\":\n        name = \" \".join(value.split())\n        key = norm_key(name)\n        if not key or len(name) > NAME_MAX or ADDR_NAME_RE.match(key):\n            return None, \"bad_request\"\n        if any(norm_key(a) == key for a in aliases):\n            return None, \"\"\n        if len(aliases) >= MAX_ALIASES:\n            return None, \"too_many\"\n        aliases = aliases + [name]\n    elif field == \"type\":\n        if v not in types:\n            return None, \"bad_type\"\n        row[\"type\"] = v\n    elif field == \"state\":\n        if v not in STATES:\n            return None, \"bad_request\"\n        row[\"state\"] = v\n    elif field in (\"doc\", \"related\"):\n        cur = [x for x in refs.get(field) or [] if isinstance(x, str)]\n        ok = DOC_RE.match(v) if field == \"doc\" else (ID_RE.match(v) and v != head.get(\"id\"))\n        if not v:\n            cur = []\n        elif not ok:\n            return None, \"bad_request\"\n        elif v not in cur:\n            if len(cur) >= MAX_REFS:\n                return None, \"too_many\"\n            cur = cur + [v]\n        refs[field] = cur\n    row[\"slots\"] = dumps(slots)\n    row[\"refs\"] = dumps(refs)\n    row[\"aliases\"] = dumps(aliases)\n    same = all(row.get(c) == head.get(c) for c in (\"type\", \"state\")) and \\\n        loads(head.get(\"slots\"), {}) == slots and loads(head.get(\"refs\"), {}) == refs and \\\n        loads(head.get(\"aliases\"), []) == aliases\n    return (None, \"\") if same else (row, \"\")\n\n\ndef announces(row, prev_state):\n    \"\"\"Whether a written row is news for `./push`: an active head, or an\n    active row retired.\"\"\"\n    st = row.get(\"state\")\n    return st == \"active\" or (st == \"retired\" and prev_state == \"active\")\n\n\n# ============================================================ PLUMBING\n\ndef emit(msgs):\n    for m in msgs:\n        if isinstance(m, dict) and \"messages\" not in m:\n            m[\"messages\"] = []\n    sys.stdout.write(json.dumps(msgs, ensure_ascii=False))\n    sys.exit(0)\n\n\ndef park(reason=\"\"):\n    if reason:\n        sys.stderr.write(\"objects/gate: %s\\n\" % reason)\n    emit([])\n\n\ndef store(ops, phase, carry):\n    return {\"header\": {\"route\": \"gate_store\", \"phase\": phase, \"reply_cell\": ME,\n                       \"cur_call\": json.dumps(carry, sort_keys=True, ensure_ascii=False)},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": cid,\n                          \"text\": json.dumps(a, ensure_ascii=False)} for cid, a in ops]}\n\n\ndef head_op(oid):\n    return {\"operation\": \"select\", \"table\": \"objects\", \"columns\": COLS,\n            \"where\": {\"id\": oid}, \"order_by\": [{\"col\": \"rev\", \"dir\": \"desc\"}], \"limit\": 1}\n\n\ndef legs(body):\n    out = {}\n    for m in body.get(\"messages\") or []:\n        if not isinstance(m, dict):\n            continue\n        try:\n            payload = json.loads(m.get(\"text\") or \"null\")\n        except Exception:\n            payload = None\n        out[str(m.get(\"id\") or \"\")] = {\"payload\": payload, \"error_code\": \"\", \"rows\": 0}\n    results = body.get(\"results\")\n    if isinstance(results, list):\n        for r in results:\n            if isinstance(r, dict):\n                leg = out.setdefault(str(r.get(\"tool_call_id\") or \"\"),\n                                     {\"payload\": None, \"error_code\": \"\", \"rows\": 0})\n                leg[\"error_code\"] = str(r.get(\"error_code\") or \"\")\n                leg[\"rows\"] = int(r.get(\"rows_affected\") or 0)\n    elif len(out) == 1:\n        leg = next(iter(out.values()))\n        leg[\"error_code\"] = str(hop.get(\"error_code\") or \"\")\n        leg[\"rows\"] = int(hop.get(\"rows_affected\") or 0)\n    return out\n\n\ndef rows_of(leg):\n    p = (leg or {}).get(\"payload\")\n    return [r for r in p if isinstance(r, dict)] if isinstance(p, list) else []\n\n\ndef changed(row, prev_state):\n    return {\"header\": {\"route\": \"changed\"}, \"row\": row, \"prev_state\": prev_state}\n\n\ndef answer(c, fields=None, code=\"\", message=\"\"):\n    h = {\"route\": \"answer\", \"op\": str(c.get(\"op\") or \"\"), \"op_id\": str(c.get(\"op_id\") or \"\"),\n         \"caller\": str(c.get(\"caller\") or \"tools\")}\n    if code:\n        body = {\"ok\": False, \"op\": h[\"op\"], \"error\": {\"code\": code, \"message\": message}}\n    else:\n        body = {\"ok\": True, \"op\": h[\"op\"]}\n        body.update(fields or {})\n    body[\"header\"] = h\n    return body\n\n\ndef done(c, row):\n    return answer(c, {\"id\": row[\"id\"], \"state\": row[\"state\"],\n                      \"version\": v12(row[\"id\"], row[\"rev\"])})\n\n\ndef seen_keys(c):\n    keys = [it[\"key\"] for it in c[\"items\"]]\n    return store([(\"k\", {\"operation\": \"select\", \"table\": \"keys\", \"columns\": [\"key\", \"id\"],\n                         \"where\": {\"key\": {\"in\": keys}}, \"limit\": 400})], \"seen-keys\", c)\n\n\ndef seen_write(c, keymap, heads, stamp):\n    writes = decide_seen(c[\"items\"], keymap, heads, c[\"round\"], c[\"turn\"], stamp)\n    if not writes:\n        emit([])\n    ops, plan = [], []\n    for i, (row, prev, keys) in enumerate(writes):\n        ops.append((\"w%d\" % i, {\"operation\": \"insert\", \"table\": \"objects\", \"row\": row}))\n        if row[\"rev\"] == 1:\n            ops.append((\"k%d\" % i, {\"operation\": \"insert\", \"table\": \"keys\",\n                                    \"row\": {\"key\": keys[0], \"id\": row[\"id\"], \"at\": stamp}}))\n        plan.append({\"leg\": \"w%d\" % i, \"row\": row, \"prev_state\": prev, \"keys\": keys})\n    c = dict(c, plan=plan)\n    emit([store(ops, \"seen-write\", c)])\n\n\ndef edit_write(c, head, stamp):\n    row, err = apply_edit(head, c.get(\"op\"), c.get(\"slot\"), c.get(\"value\"), stamp)\n    if err:\n        emit([answer(c, code=err, message=\"the change is refused: %s\" % err)])\n    if row is None:\n        emit([done(c, head)])\n    ops = [(\"w\", {\"operation\": \"insert\", \"table\": \"objects\", \"row\": row})]\n    if c.get(\"slot\") == \"alias\":\n        ops.append((\"k\", {\"operation\": \"insert\", \"table\": \"keys\",\n                          \"row\": {\"key\": norm_key(c.get(\"value\")), \"id\": row[\"id\"], \"at\": stamp}}))\n    emit([store(ops, \"edit-write\", dict(c, row=row, prev_state=head.get(\"state\")))])\n\n\n# ============================================================ LANES\n\nlane = str(hop.get(\"route\") or \"\")\nphase = str(ctx.get(\"cur_phase\") or \"\")\n\nif lane == \"thing_seen\":\n    round_ = canon_round(ctx.get(\"audience_set\"))\n    if round_ is None:\n        park(\"thing_seen without a round (context.audience_set) -- dropped, nothing written\")\n    turn = str(d.get(\"turn_id\") or d.get(\"episode_turn_id\") or \"\").strip()\n    if not turn:\n        park(\"thing_seen without a turn_id -- dropped, nothing written\")\n    items = clean_items(d.get(\"items\"))\n    if not items:\n        park(\"thing_seen without a valid item -- dropped\")\n    emit([seen_keys({\"do\": \"seen\", \"round\": round_, \"turn\": turn[:200], \"items\": items,\n                     \"try\": 0})])\n\nif lane == \"edit\":\n    c = {\"do\": \"edit\", \"op\": str(d.get(\"op\") or hop.get(\"op\") or \"\"),\n         \"id\": str(d.get(\"id\") or \"\"), \"slot\": str(d.get(\"slot\") or \"\"),\n         \"value\": d.get(\"value\") if isinstance(d.get(\"value\"), str) else \"\",\n         \"round\": canon_round(d.get(\"round\")), \"op_id\": str(hop.get(\"op_id\") or \"\"),\n         \"caller\": str(hop.get(\"caller\") or \"tools\"), \"try\": 0}\n    if c[\"round\"] is None:\n        emit([answer(c, code=\"missing_audience\", message=\"the call carries no round\")])\n    if not ID_RE.match(c[\"id\"]):\n        emit([answer(c, code=\"not_found\", message=NOT_FOUND)])\n    emit([store([(\"h\", head_op(c[\"id\"]))], \"edit-head\", c)])\n\nif lane:\n    park(\"unknown lane %r -- dropped\" % lane)\nif not hop.get(\"operation\"):\n    park(\"a message with neither a lane nor a store answer -- dropped\")\n\nc = loads(ctx.get(\"cur_call\"), {})\nlg = legs(d)\n\nif phase == \"seen-keys\":\n    keymap = {}\n    for r in rows_of(lg.get(\"k\")):\n        ids_of = keymap.setdefault(str(r.get(\"key\") or \"\"), [])\n        if str(r.get(\"id\") or \"\") not in ids_of:\n            ids_of.append(str(r.get(\"id\") or \"\"))\n    ids = sorted({i for v in keymap.values() for i in v if ID_RE.match(i)})[:MAX_IDS]\n    c = dict(c, keymap=keymap)\n    if not ids:\n        seen_write(c, keymap, {}, now())\n    emit([store([(\"h%d\" % n, head_op(i)) for n, i in enumerate(ids)], \"seen-heads\", c)])\n\nif phase == \"seen-heads\":\n    heads = {}\n    for cid, leg in lg.items():\n        for r in rows_of(leg):\n            heads[str(r.get(\"id\"))] = r\n    seen_write(c, c.get(\"keymap\") or {}, heads, now())\n\nif phase == \"seen-write\":\n    out, lost = [], []\n    for w in c.get(\"plan\") or []:\n        leg = lg.get(w[\"leg\"]) or {}\n        code = leg.get(\"error_code\") or \"\"\n        if not code:\n            if announces(w[\"row\"], w[\"prev_state\"]):\n                out.append(changed(w[\"row\"], w[\"prev_state\"]))\n        elif code == \"unique_violation\":\n            lost.extend(w[\"keys\"])\n        else:\n            sys.stderr.write(\"objects/gate: the store refused %s (%s)\\n\" % (w[\"row\"][\"id\"], code))\n    if lost:\n        if int(c.get(\"try\") or 0) + 1 >= RETRIES:\n            sys.stderr.write(\"objects/gate: lost the write of %s %d times -- dropped\\n\"\n                             % (\", \".join(lost), RETRIES))\n        else:\n            items = [it for it in c[\"items\"] if it[\"key\"] in lost]\n            out.append(seen_keys({\"do\": \"seen\", \"round\": c[\"round\"], \"turn\": c[\"turn\"],\n                                  \"items\": items, \"try\": int(c.get(\"try\") or 0) + 1}))\n    emit(out)\n\nif phase == \"edit-head\":\n    head = (rows_of(lg.get(\"h\")) or [None])[0]\n    if head is None or not covers(head.get(\"audience_set\"), c.get(\"round\")):\n        # The same answer for a row that does not exist and a row this round\n        # may not see: no hint of existence (O.5).\n        emit([answer(c, code=\"not_found\", message=NOT_FOUND)])\n    edit_write(c, head, now())\n\nif phase == \"edit-write\":\n    leg = lg.get(\"w\") or {}\n    code = leg.get(\"error_code\") or \"\"\n    if not code:\n        row = c[\"row\"]\n        out = [done(c, row)]\n        if announces(row, c.get(\"prev_state\")):\n            out.append(changed(row, c.get(\"prev_state\")))\n        emit(out)\n    if code == \"unique_violation\" and int(c.get(\"try\") or 0) + 1 < RETRIES:\n        c = {k: v for k, v in c.items() if k not in (\"row\", \"prev_state\")}\n        c[\"try\"] = int(c.get(\"try\") or 0) + 1\n        emit([store([(\"h\", head_op(c[\"id\"]))], \"edit-head\", c)])\n    emit([answer(c, code=\"busy\" if code == \"unique_violation\" else \"store_error\",\n                 message=\"the change was not written (%s)\" % code)])\n\npark(\"unknown phase %r -- dropped\" % phase)\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "types": {
+        "type": "array",
+        "secret": false,
+        "default": [
+          "thing"
+        ],
+        "description": "The object types a row may have (a product parameter, R-84); the first is the type of a sighting whose `kind` is not one of them."
+      },
+      "promote_after": {
+        "type": "number",
+        "secret": false,
+        "default": 3,
+        "description": "How many distinct turns make a candidate row active (the owner's `object_confirm` makes it active at once)."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "ok": {
+          "type": "boolean",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "error": {
+          "type": "object",
+          "required": false
+        },
+        "id": {
+          "type": "string",
+          "required": false
+        },
+        "state": {
+          "type": "string",
+          "required": false
+        },
+        "version": {
+          "type": "string",
+          "required": false
+        },
+        "row": {
+          "type": "object",
+          "required": false
+        },
+        "prev_state": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "gate_store",
+            "answer",
+            "changed"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "reply_cell": {
+          "type": "string",
+          "required": false
+        },
+        "cur_call": {
+          "type": "string",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "items": {
+          "type": "array",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "episode_turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "id": {
+          "type": "string",
+          "required": false
+        },
+        "slot": {
+          "type": "string",
+          "required": false
+        },
+        "value": {
+          "type": "string",
+          "required": false
+        },
+        "round": {
+          "type": "string",
+          "required": false
+        },
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "op_id": {
+          "type": "string",
+          "required": false
+        },
+        "caller": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The ONE writer of the objects hive: a `thing_seen` sighting counts for the row whose alias it names and whose round covers the sighting's round (or starts a candidate row of its own), a tool change from `./tools` (`edit`) writes a field. Every change is a new row `rev + 1` with `supersedes`; nothing is updated or deleted, and the unique index (id, rev) is the compare-and-set.",
+    "use_when": "Inside an objects hive only, behind `thing_seen` and `edit`.",
+    "not_in_scope": "No owner decision (`./tools`), no brief, no push, no read for a model.",
+    "emits_meaning": "`gate_store` to `./store`, `answer` to `./tools` (under `caller` 'tools'), `changed` to `./push` with the new row when its head is active or an active row was retired.",
+    "consumes_meaning": "A sighting, a change request, and the store's answers to its own bundles."
+  }
+}

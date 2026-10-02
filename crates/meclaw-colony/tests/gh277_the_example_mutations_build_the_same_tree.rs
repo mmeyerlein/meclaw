@@ -493,7 +493,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 ///
 /// Moved 79 -> 82 with GH #926: every `curator` grew an eleventh cell,
 /// `stats`, which counts its own ledger on `in_stats` (3 x 1). MEASURED.
-const TEMPLATE_BORN_ROWS: usize = 82;
+///
+/// Moved 82 -> 85 with GH #949: every `curator` grew a twelfth cell,
+/// `reader`, which answers an app's read of its own round (3 x 1). Measured
+/// red in the strand's single-test run (85 against 82).
+const TEMPLATE_BORN_ROWS: usize = 85;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -798,7 +802,17 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// Moved 401 -> 403 with GH #940: every `session-keeper` carries one edge
 /// more (`./stamp -> .` on `close`, the round change hands its generation
 /// over), and each of the two talkies holds one keeper. MEASURED.
-const EDGES: usize = 403;
+///
+/// Moved 403 -> 430 with GH #949: every `curator` five more (the `in_read`
+/// door onto `./reader`, its two ledger roads, the `read` exit, and the
+/// `candidate_ack`/`thing_seen` exit of `./intake`; `in_candidate` widens the
+/// intake door, no new edge), `talky@6` and `cogny@5` four each of their own
+/// (the `in_candidate` and `in_read` doors onto `./curator`, the
+/// `candidate_ack`/`thing_seen` and the `read` exits; the splitter's two
+/// section edges only gained `things`). Two talkies and one cogny:
+/// 3 x 5 + 2 x 4 + 1 x 4. Measured red in the strand's single-test run (430
+/// against 403).
+const EDGES: usize = 430;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

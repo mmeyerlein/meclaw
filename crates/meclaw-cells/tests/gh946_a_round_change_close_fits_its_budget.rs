@@ -174,9 +174,6 @@ async fn answer(ports: &mut road::Ports, what: &str) -> Message {
 
 // ─────────────────────────────────────────────────────────────── reading
 
-/// The rows of `sql` over a cell's own `cell.db`, every column as text.
-/// Read-only and never created here (the `gh893` lesson: a poll that creates
-/// the file before the store woke turns a fresh birth into a resumed one).
 /// The participant set of an `audience_set` value, whatever its spelling.
 fn participants(round: &str) -> std::collections::BTreeSet<String> {
     meclaw_core::serde_json::from_str::<Vec<String>>(round)
@@ -185,6 +182,9 @@ fn participants(round: &str) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
+/// The rows of `sql` over a cell's own `cell.db`, every column as text.
+/// Read-only and never created here (the `gh893` lesson: a poll that creates
+/// the file before the store woke turns a fresh birth into a resumed one).
 fn rows(db: &std::path::Path, sql: &str) -> Vec<Vec<String>> {
     if !db.is_file() {
         return Vec::new();

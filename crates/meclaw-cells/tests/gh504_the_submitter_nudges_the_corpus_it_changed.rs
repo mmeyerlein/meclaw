@@ -442,7 +442,9 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // `builder-librarian@2.2.15`, whose corpus took the README lines of GH #941.
         // 1.21.0 takes `bind_chat` for a channel wish (GH #940) and pins its
         // librarian at `builder-librarian@2.2.16`.
-        "builder@1.21.0"
+        // 1.22.0 takes `candidates` and `reads` in `install_app` (GH #949) and pins
+        // its librarian at `builder-librarian@2.2.17`.
+        "builder@1.22.0"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

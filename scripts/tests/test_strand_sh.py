@@ -2035,6 +2035,84 @@ class TestTokenGuards(TokenTestCase):
         self.assertNotIn(self.LANES_REFUSED, res.stderr)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
 
+    # C1 finding (L Nit): `CI` still passes the lanes refusal -- a CI job runs
+    # on its own machine and has no armed token file -- but a `CI=1` typed on
+    # an armed host was silent. It says so now: a NOTE row in the receipt of
+    # the gate, a NOTE line from the tier.
+    LANES_CI_NOTE = "lanes armed on this host, cargo runs here under CI"
+
+    def test_ci_passes_the_lanes_refusal_with_a_note(self):
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        self.arm("--lanes", "north,south")
+        self.take(None, cwd=self.tree)
+        res = self.run_gate_sh("strand", env={"CI": "true"})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout,
+                         r"(?m)^GATE lanes-ci \[.*\] 0s NOTE %s$" % re.escape(self.LANES_CI_NOTE))
+        res = run_tier(self.repo, self.tree, {"CI": "true"})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("tier-dry:", res.stdout)
+        self.assertIn("=== NOTE " + self.LANES_CI_NOTE, res.stdout)
+
+    def test_ci_on_an_unarmed_host_says_nothing(self):
+        self.arm("--max", "1")
+        self.take(None, cwd=self.tree)
+        res = self.run_gate_sh("strand", env={"CI": "true"})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("lanes-ci", res.stdout)
+        res = run_tier(self.repo, self.tree, {"CI": "true"})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn(self.LANES_CI_NOTE, res.stdout)
+
+    # C1 finding (L M-2): "are the lanes armed" had two writers, one in the
+    # runner and one in the tier, word for word. One rule with two writers is
+    # not a rule (the GH #802 lesson behind `scripts/cargo-target.sh`), so the
+    # probe lives there and both scripts read it.
+    def test_the_lanes_probe_has_one_source(self):
+        lib = (REPO / "scripts" / "cargo-target.sh").read_text()
+        self.assertTrue(re.search(r"(?m)^meclaw_lanes_active\(\) \{", lib),
+                        "scripts/cargo-target.sh defines no meclaw_lanes_active()")
+        for script in (GATE_SH, TIER_SH):
+            with self.subTest(script=script.name):
+                text = script.read_text()
+                self.assertFalse(re.search(r"(?m)^\s*lanes_active\(\) \{", text),
+                                 "%s defines its own lanes_active()" % script.name)
+                self.assertFalse('.get("lanes")' in text,
+                                 "%s reads the token file itself" % script.name)
+                self.assertTrue(re.search(r"\bmeclaw_lanes_active\b", text),
+                                "%s does not ask meclaw_lanes_active" % script.name)
+
+    def test_the_lanes_probe_reads_the_token_file(self):
+        tokens = self.repo.parent / "probe.tokens"
+
+        def probe(state):
+            if state is None:
+                tokens.unlink(missing_ok=True)
+            else:
+                tokens.write_text(state)
+            env = kit_env(self.repo, {"MECLAW_STRAND_TOKENS": str(tokens)})
+            return subprocess.run(
+                ["bash", "-c", '. "$1"; meclaw_lanes_active "$2"', "probe",
+                 str(REPO / "scripts" / "cargo-target.sh"),
+                 str(self.repo.parent / "cargo.lock")],
+                env=env, capture_output=True, text=True, timeout=30).returncode
+
+        self.assertEqual(0, probe(json.dumps({"lanes": ["north", "south"]})))
+        self.assertEqual(1, probe(json.dumps({"lanes": []})))
+        self.assertEqual(1, probe(json.dumps({"max": 2, "holders": []})))
+        self.assertEqual(1, probe("{not json"))
+        self.assertEqual(1, probe("null"))
+        self.assertEqual(1, probe(None))
+        # Without `MECLAW_STRAND_TOKENS` the file sits next to the lock.
+        (self.repo.parent / "beside.tokens").write_text(json.dumps({"lanes": ["north"]}))
+        env = kit_env(self.repo)
+        env.pop("MECLAW_STRAND_TOKENS")
+        res = subprocess.run(
+            ["bash", "-c", '. "$1"; meclaw_lanes_active "$2"', "probe",
+             str(REPO / "scripts" / "cargo-target.sh"), str(self.repo.parent / "beside.lock")],
+            env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, res.returncode, res.stderr)
+
     def test_a_cargo_token_without_lanes_keeps_local_cargo(self):
         self.arm("--max", "1")
         self.take(None, cwd=self.tree)

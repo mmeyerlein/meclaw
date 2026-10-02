@@ -304,33 +304,48 @@ pub fn cell_routes(cell: &str) -> Vec<String> {
 
 /// The member's own edges between its file space and its graph space, read
 /// off the shipped member and drawn as they stand. Exactly three (GH #945).
+/// The librarian's two edges to and from the graph space (GH #950) and the
+/// objects' three (GH #951: `source_changed`, the `ob-` pull, the `gs:`
+/// answer) are their own roads and not drawn here -- but every `./graph-space`
+/// edge of the member runs to `./file-space`, `./librarian` or `./objects` and
+/// nowhere else: the graph space answers what it holds without a round filter
+/// for files (an object's nodes it filters by the object's round), so a fourth
+/// neighbour would read the space past its door (GH #945, GH #950, OR-BC-72).
 pub fn member_graph_edges() -> Vec<Value> {
     let member = read_json(&repo("templates/member/config.json"));
-    let edges: Vec<Value> = member["params"]["graph"]["edges"]
+    let all: Vec<Value> = member["params"]["graph"]["edges"]
         .as_array()
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for e in &all {
+        let other = if e["from"] == json!("./graph-space") {
+            &e["to"]
+        } else if e["to"] == json!("./graph-space") {
+            &e["from"]
+        } else {
+            continue;
+        };
+        assert!(
+            other == &json!("./file-space")
+                || other == &json!("./librarian")
+                || other == &json!("./objects"),
+            "every `./graph-space` edge runs to the file space, the librarian or the objects: {e}"
+        );
+    }
+    let edges: Vec<Value> = all
         .into_iter()
-        .filter(|e| e["from"] == json!("./graph-space") || e["to"] == json!("./graph-space"))
+        .filter(|e| {
+            let (from, to) = (&e["from"], &e["to"]);
+            (from == &json!("./graph-space") && to == &json!("./file-space"))
+                || (from == &json!("./file-space") && to == &json!("./graph-space"))
+        })
         .collect();
     assert_eq!(
         edges.len(),
         3,
-        "the member draws three `./graph-space` edges -- `source_changed` in, `pull` out, the \
-         `gs:` answer back: {edges:#?}"
+        "the member draws three edges between `./file-space` and `./graph-space` -- \
+         `source_changed` in, `pull` out, the `gs:` answer back: {edges:#?}"
     );
-    for e in &edges {
-        let other = if e["from"] == json!("./graph-space") {
-            &e["to"]
-        } else {
-            &e["from"]
-        };
-        assert_eq!(
-            other,
-            &json!("./file-space"),
-            "every `./graph-space` edge runs to the space: {e}"
-        );
-    }
     edges
 }
 

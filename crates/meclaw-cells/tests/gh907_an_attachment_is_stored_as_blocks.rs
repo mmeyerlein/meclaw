@@ -305,7 +305,8 @@ fn neither_bytes_nor_text_view_sit_in_pending() {
                 &sp,
                 &format!("SELECT COUNT(*) FROM summaries WHERE file = '{file}'")
             ),
-            2,
+            // oneline, short and, since GH #947, the head's tags
+            3,
             "{path}: summarized"
         );
 

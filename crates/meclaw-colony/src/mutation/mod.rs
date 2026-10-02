@@ -347,6 +347,18 @@ pub enum MutationError {
     /// Carries the offending token inner string. Never silently passed through.
     UnsupportedSubstitution(String),
     CtxKeyMissing(String),
+    /// GH #949: an environment value would be bound into a CEL position of an
+    /// `add_edges` entry (`condition`, `modifier.set_context.*`,
+    /// `modifier.set_hop.*`) and carries a character a CEL string literal
+    /// cannot hold: a single or double quote, a backslash, a control character
+    /// (C0, DEL, C1) or U+2028/U+2029. Such a value either breaks the
+    /// expression or closes the string and EXTENDS it — `1' || true || '1`
+    /// parses, and a channel bound to one chat takes every chat. The recipe
+    /// that renders the edge only ever sees the `${NAME}` token, so the door
+    /// that binds the value is the one place that can refuse it. Raised by the
+    /// substitution pass, before anything is staged. Carries the variable name
+    /// and the slot, NEVER the value — the value may be a secret.
+    EnvValueUnsafe(String),
     /// GH #292: an `add_nodes` names a template that declares a key
     /// (`requires.ctx` / `requires.env`) the mutation does not supply — or one
     /// of the templates it reaches through a `ref` does. Raised before staging,
@@ -515,6 +527,7 @@ impl MutationError {
             Self::EnvVarMissing(_) => "env_var_missing",
             Self::UnsupportedSubstitution(_) => "unsupported_substitution",
             Self::CtxKeyMissing(_) => "ctx_key_missing",
+            Self::EnvValueUnsafe(_) => "env_value_unsafe",
             Self::RequirementMissing(_) => "requirement_missing",
             Self::ScopeOutOfBounds { .. } => "scope_out_of_bounds",
             Self::UnknownCellType(_) => "unknown_cell_type",
@@ -565,6 +578,7 @@ impl MutationError {
             | Self::EnvVarMissing(s)
             | Self::UnsupportedSubstitution(s)
             | Self::CtxKeyMissing(s)
+            | Self::EnvValueUnsafe(s)
             | Self::RequirementMissing(s)
             | Self::UnknownCellType(s)
             | Self::ResumeRequiresStoppedCell(s)

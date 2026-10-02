@@ -1,0 +1,89 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "import sys, json\n\n# The MENU of the objects hive (GH #951): asked on `in_schemas` with the names\n# a collector declares, it answers the declaration of every `object_*` tool it\n# serves and names every other name in `unknown` -- the answer shape of the\n# file space's `./schemas` and `memory-hive/schemas`, so a collector merges it\n# as one more answerer (`context.tool_answerer` 'objects', stamped by the\n# member). `*` asks for all four.\nFIELDS = (\"what\", \"where\", \"who\", \"when\", \"why\", \"how\", \"alias\", \"type\", \"state\", \"doc\",\n          \"related\")\n# --8<-- object-offer\n# THE OBJECT TOOLS, one list, one entry per tool (GH #951). It stands WORD FOR\n# WORD in `./schemas` (which hands it to a model's menu) and in `./tools`\n# (which checks every call against it), because a code cell has no library it\n# could share: `gh951_a_thing_becomes_a_row.rs` holds the two copies to one\n# value. The name IS the mapping: `object_<op>`.\nOID = {\"type\": \"string\",\n       \"description\": \"the object: its address `ob-<12 hex>`, as `object_find` names it\"}\n\n\ndef _obj(props, required):\n    return {\"type\": \"object\", \"properties\": props, \"required\": required,\n            \"additionalProperties\": False}\n\n\nOBJECT_OFFER = [\n    {\"name\": \"object_find\",\n     \"description\": \"Find the objects of this conversation (address `ob-<12 hex>`) whose name \"\n                    \"or alias contains `q` or whose type is `q`, each with its type, main name \"\n                    \"and state.\",\n     \"parameters\": _obj({\"q\": {\"type\": \"string\",\n                               \"description\": \"a name, a part of a name, or a type\"}}, [\"q\"])},\n    {\"name\": \"object_brief\",\n     \"description\": \"The brief of one object (address `ob-<12 hex>`): its type, main name, \"\n                    \"filled slots and the latest facts about it.\",\n     \"parameters\": _obj({\"id\": OID}, [\"id\"])},\n    {\"name\": \"object_set\",\n     \"description\": \"Set one field of an object (address `ob-<12 hex>`): a slot `what`, `where`, \"\n                    \"`who` (a person reference like `member:<id>`, never a name), `when`, \"\n                    \"`why` or `how`, or `alias`, `type`, `state`, `doc` (`fh-<12 hex>#<anchor>`) \"\n                    \"or `related` (`ob-<12 hex>`), where only the owner sets `why` and `state`.\",\n     \"parameters\": _obj({\"id\": OID,\n                         \"slot\": {\"type\": \"string\", \"enum\": list(FIELDS),\n                                  \"description\": \"the field to set\"},\n                         \"value\": {\"type\": \"string\",\n                                   \"description\": \"the new value; empty clears a slot, `who`, \"\n                                                  \"`doc` or `related`\"}},\n                        [\"id\", \"slot\", \"value\"])},\n    {\"name\": \"object_confirm\",\n     \"description\": \"Confirm an object (address `ob-<12 hex>`) as real, which makes it active \"\n                    \"at once, and only the owner confirms.\",\n     \"parameters\": _obj({\"id\": OID}, [\"id\"])},\n]\n# --8<-- end object-offer\n\n\ndoc = json.load(sys.stdin)\nasked = (doc.get(\"body\") or {}).get(\"tools\")\nif not isinstance(asked, list):\n    # ABSENT and EMPTY are two requests: a caller that declared nothing gets\n    # nothing, a request that lost its list is told so.\n    sys.stdout.write(json.dumps({\n        \"header\": {\"operation\": \"schemas\", \"error_code\": \"tools_missing\",\n                   \"schema_count\": 0, \"unknown_count\": 0},\n        \"schemas\": [], \"unknown\": [], \"sidecar\": [], \"messages\": []}))\n    sys.exit(0)\n\nserved = [t[\"name\"] for t in OBJECT_OFFER]\nnames = [str(n) for n in asked if isinstance(n, str)]\nif \"*\" in names:\n    wanted, unknown = list(served), []\nelse:\n    seen, wanted, unknown = set(), [], []\n    for n in names:\n        if n in seen:\n            continue\n        seen.add(n)\n        (wanted if n in served else unknown).append(n)\nby_name = {t[\"name\"]: t for t in OBJECT_OFFER}\nschemas = [{\"name\": n, \"description\": by_name[n][\"description\"],\n            \"parameters\": by_name[n][\"parameters\"]} for n in wanted]\nheader = {\"operation\": \"schemas\", \"schema_count\": len(schemas),\n          \"unknown_count\": len(unknown)}\nif unknown:\n    header[\"error_code\"] = \"tool_unknown\"\nsys.stdout.write(json.dumps({\"header\": header, \"schemas\": schemas, \"unknown\": unknown,\n                             \"sidecar\": [], \"messages\": []}))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "schemas": {
+          "type": "array",
+          "required": true
+        },
+        "unknown": {
+          "type": "array",
+          "required": true
+        },
+        "sidecar": {
+          "type": "array",
+          "required": true
+        },
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "schemas"
+          ]
+        },
+        "schema_count": {
+          "type": "number",
+          "required": true
+        },
+        "unknown_count": {
+          "type": "number",
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "required": false,
+          "values": [
+            "tool_unknown",
+            "tools_missing"
+          ]
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "tools": {
+          "type": "array",
+          "required": false
+        },
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The menu of this objects hive: asked with the tool names a collector declares, it answers `{name, description, parameters}` for every `object_*` tool it serves and names every other name in `unknown` -- the answer shape of the file space's `schemas`. `*` asks for all four.",
+    "use_when": "Reached on this hive's `in_schemas` lane, on an asking collector's menu tick. Never part of a tool round.",
+    "not_in_scope": "Who may change what is decided in `./tools`, not here.",
+    "emits_meaning": "schemas[]: one declaration per asked name this hive serves; unknown[]: the names it does not serve; hop.error_code `tool_unknown` or `tools_missing`. sidecar[] is always empty.",
+    "consumes_meaning": "A menu question: `tools`, the names the asking collector declares."
+  }
+}

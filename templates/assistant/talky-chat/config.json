@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "talky@6.4.2"
+    "template": "talky@6.5.0"
   },
   "override_params": {
     "brain": {
@@ -38,7 +38,17 @@
         "file_list",
         "file_find",
         "file_outline",
-        "file_links"
+        "file_links",
+        "object_find",
+        "object_brief",
+        "object_set",
+        "object_confirm",
+        "file_dir_info",
+        "file_dir_summary",
+        "lib_find",
+        "lib_symbol",
+        "lib_related",
+        "lib_tree"
       ],
       "memory_tier": "1",
       "brief_slots": [

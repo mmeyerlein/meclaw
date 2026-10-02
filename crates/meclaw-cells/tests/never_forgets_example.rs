@@ -97,7 +97,9 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// next one: twenty-two from `talky`, twenty-seven in all. MEASURED.
 /// GH #926 an eleventh (`stats`) counts the curator's own ledger on
 /// `in_stats`: twenty-three from `talky`, twenty-eight in all. MEASURED.
-const CELLS_AFTER_GROW: usize = 28;
+/// GH #949 a twelfth (`reader`) answers an app's read of its own round:
+/// twenty-four from `talky`, twenty-nine in all. MEASURED.
+const CELLS_AFTER_GROW: usize = 29;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

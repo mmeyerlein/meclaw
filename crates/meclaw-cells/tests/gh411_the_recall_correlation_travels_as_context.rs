@@ -14,10 +14,12 @@
 //! memory hive's own door: a `tool_call` arrives with `hop.tool_call_id`, the
 //! door promotes it into `context.memory_call_id`, and that is what the answer
 //! finds its way home by — through `./recall` and back out through `./tool`,
-//! which files the result under the original id. The member's two `in_query`
+//! which files the result under the original id. The member's three `in_query`
 //! doors carry no call id any more, and must not: the lane they open has ONE
 //! meaning again, the ambient leg of a turn, and a correlation key on it was the
-//! second meaning #552 removed.
+//! second meaning #552 removed. The third door is `./objects` asking about a
+//! subject (GH #951); it is told apart by the reply-to token it stamps
+//! (`recall_caller = 'objects'`), not by a correlation key.
 //!
 //! Facts about the FILES, checked with no colony and no runtime, in the
 //! `gh302_org_is_a_namespace` style: read the shipped templates off the tree, so
@@ -87,11 +89,18 @@ fn the_ambient_doors_carry_no_correlation_at_all() {
                     .is_some_and(|r| r.contains("in_query"))
         })
         .collect();
+    // A pin, not a floor: a fourth door is a new meaning of the lane and has to
+    // be named here. The third is GH #951's subject question from `./objects`
+    // (`facts` -> `in_query`, `recall_caller = 'objects'`, empty recall keys);
+    // it carries no correlation either, so the loop below holds for it as is.
+    let mut from: Vec<&str> = doors.iter().filter_map(|d| d["from"].as_str()).collect();
+    from.sort_unstable();
     assert_eq!(
-        doors.len(),
-        2,
-        "the member has exactly two recall doors into ./memory-hive \
-         (from ./assistants on 'recall', from . on 'in_recall'): {doors:#?}"
+        from,
+        [".", "./assistants", "./objects"],
+        "the member has exactly three recall doors into ./memory-hive \
+         (from ./assistants on 'recall', from . on 'in_recall', from ./objects \
+         on 'facts' — the subject question of GH #951): {doors:#?}"
     );
     for door in doors {
         assert!(

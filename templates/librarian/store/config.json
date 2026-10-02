@@ -1,0 +1,109 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "entries": {
+        "source": "text",
+        "path": "text",
+        "dir": "text",
+        "kind": "text",
+        "fmt": "text",
+        "oneline": "text",
+        "tags": "text",
+        "names": "text",
+        "nodes": "text",
+        "version": "text",
+        "announced": "text",
+        "changed_at": "text",
+        "tomb": "text",
+        "pterms": "text",
+        "nterms": "text"
+      }
+    },
+    "fts": {
+      "entries": [
+        "pterms",
+        "nterms",
+        "oneline",
+        "tags"
+      ]
+    },
+    "indexes": {
+      "entries_source": {
+        "table": "entries",
+        "on": [
+          "source"
+        ],
+        "unique": true
+      },
+      "entries_path": {
+        "table": "entries",
+        "on": [
+          "path"
+        ],
+        "unique": false
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The one store of a librarian: `entries`, one row per source of the space -- `path`, `dir`, `kind`, `fmt`, `oneline`, `tags` and `names` (JSON lists as text), `nodes`, the written `version` and the `announced` one, `changed_at`, `tomb` ('' or '1') -- and `pterms`/`nterms`, the path and the names cut into words. A full-text index over `pterms`, `nterms`, `oneline` and `tags` answers `find`.",
+    "use_when": "Inside a librarian only; `./index` is its only writer, `./query` reads (`write_surface` internal).",
+    "not_in_scope": "No content of a source, no history, no delete: a removed source stays a row with `tomb` '1'.",
+    "emits_meaning": "One answer per message, a bundle answer for more than one operation.",
+    "consumes_meaning": "One or more `tool_call` turns whose text is the JSON args of one store operation."
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "objects": {
+        "id": "text",
+        "rev": "int",
+        "type": "text",
+        "aliases": "text",
+        "state": "text",
+        "origin": "text",
+        "valid_since": "text",
+        "audience_set": "text",
+        "slots": "text",
+        "refs": "text",
+        "seen": "int",
+        "turns": "text",
+        "supersedes": "int",
+        "recorded_at": "text"
+      },
+      "keys": {
+        "key": "text",
+        "id": "text",
+        "at": "text"
+      },
+      "pushes": {
+        "id": "text",
+        "brief_hash": "text",
+        "alias_hash": "text",
+        "facts": "text",
+        "version": "text",
+        "at": "text"
+      }
+    },
+    "indexes": {
+      "objects_rev": {
+        "table": "objects",
+        "on": [
+          "id",
+          "rev"
+        ],
+        "unique": true
+      },
+      "objects_type": {
+        "table": "objects",
+        "on": [
+          "type"
+        ],
+        "unique": false
+      },
+      "keys_key": {
+        "table": "keys",
+        "on": [
+          "key",
+          "id"
+        ],
+        "unique": true
+      },
+      "keys_id": {
+        "table": "keys",
+        "on": [
+          "id"
+        ],
+        "unique": false
+      },
+      "pushes_id": {
+        "table": "pushes",
+        "on": [
+          "id"
+        ],
+        "unique": true
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "index": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The one store of an objects hive: `objects` (append-only, one row per version of an object: id `ob-<12 hex>`, `rev`, type, aliases, state candidate | active | retired, the round it was learned in, the slots `{what, where, who[], when, why, how}`, refs `{doc[], related[]}`, seen, the last turns, `supersedes`; unique (id, rev) is the compare-and-set), `keys` (the normal form of every alias -> the id, unique (key, id)) and `pushes` (per object the hashes of the last pushed brief and alias set, and the last facts).",
+    "use_when": "Inside an objects hive only; `./gate` writes `objects` and `keys`, `./push` writes `pushes`, `./tools` and `./source` read (`write_surface` internal).",
+    "not_in_scope": "No delete of an object row, no content of a fact (memory keeps facts).",
+    "emits_meaning": "One answer per message, a bundle answer for more than one operation.",
+    "consumes_meaning": "One or more `tool_call` turns whose text is the JSON args of one store operation."
+  }
+}

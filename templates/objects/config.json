@@ -1,0 +1,256 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "description": {
+    "purpose": "The objects of one member: a thing its conversations keep naming becomes a row (type, aliases, the six slots, references), learned in a round and visible only to the rounds that round covers; its brief is pushed to the curator, its aliases to memory, its version to the graph space. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path.",
+    "use_when": "One per member, beside its assistants, memory hive and graph space.",
+    "not_in_scope": "No model, no network, no clock; no content of a fact (memory keeps facts); no delete of a row; no widening of a round.",
+    "contract_in": "Lanes on `hop.route`: thing_seen, in_tool, in_schemas, in_read, alias_ack, in_facts.",
+    "contract_out": "Routes on `hop.route`, leaving through the hive path: source_changed, answer, tool_result, tool_schemas, candidate, alias, facts."
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "thing_seen",
+          "because": "a sighting of things in a turn (the curator's sidecar `things`, carried by the assistants): body `{items: [{name (1..80), kind? (<= 32), note? (<= 200)}] (<= 8), turn_id, episode_turn_id?, session_id}`, the round in `context.audience_set`. Without a round it is dropped (stderr) and nothing is written. Never answered"
+        },
+        {
+          "route": "in_tool",
+          "because": "one tool call of a model (`object_find`, `object_brief`, `object_set`, `object_confirm`): hop `tool_name`, `tool_call_id`, the arguments as JSON text in the one turn of the body; the round in `context.audience_now`, the speaker in `context.speaker`. Answered by exactly one `tool_result`"
+        },
+        {
+          "route": "in_schemas",
+          "because": "a menu question: body `tools`, the names an asking collector declares (`*` = all). Answered by exactly one `tool_schemas`"
+        },
+        {
+          "route": "in_read",
+          "because": "a graph space's pull: hop `op` (`outline` | `links`), `op_id` (`gs:<part>:<source>:<v>`), `source`; body `{op, file: 'ob-<12 hex>@<v12>', source, version, args: {version, limit}}`. Answered by exactly one `answer`; no round check (the graph space filters by the source's round)"
+        },
+        {
+          "route": "alias_ack",
+          "because": "memory's answer to `alias` (`in_alias`, GH #948): hop `{error_code, error_key, alias_tag, episode_id}`, body `{done, refused: [{alias, error_code}], messages: []}`; parked (stderr only for a code other than `alias_taken`). Causes a new `alias` only for the spellings refused `store_refused` (a refused closing read; binding again is idempotent), to the same id, at most twice -- the round rides in `alias_tag` as `<id>#r<n>`"
+        },
+        {
+          "route": "in_facts",
+          "because": "memory's answer to `facts` (restamped by the member when `hop.recall_caller == 'objects'`, `hop.subject` restated off the member's `context.objects_subject`: a refusal names no subject): a `bundle` whose `system.memory.bundle.text` is the JSON `{subject, as_of, answers, candidates[], complete, complete_reason?}` -- the facts are `candidates[]`, newest first, the object is `subject` -- or a refusal (`hop.reject_reason` / `hop.error_code`: `missing_audience`, `invalid_input`, `store_refused`), which keeps the facts last stored. Then the brief is rendered and pushed when it changed"
+        }
+      ],
+      "emits": [
+        {
+          "route": "source_changed",
+          "because": "the node source contract: once per new version of an active row `{source: 'ob-<12 hex>', version: '<v12>', path: '', fmt: 'object', parser: 'objects', mark: '', nodes, links, tomb: false, audience_set: '<the row's round>'}`; for a retired active row `{source, path: '', tomb: true, audience_set}`"
+        },
+        {
+          "route": "answer",
+          "because": "exactly one per `in_read`, hop `op`, `op_id`, `source` mirrored: `{ok: true, file: '<ob id>', version, nodes[] | links[], next: ''}` or `{ok: false, file, error: {code, message}}` (`stale_version`, `unknown_source`, `unknown_op`)"
+        },
+        {
+          "route": "tool_result",
+          "because": "the answer to `in_tool`: one turn under the call's id, its text JSON; `hop.error_code` names a refusal (`bad_request`, `missing_audience`, `owner_only`, `not_found`, `too_long`, `bad_type`, `tool_unknown`)"
+        },
+        {
+          "route": "tool_schemas",
+          "because": "the answer to `in_schemas`: `{schemas[], unknown[], sidecar[]}`, the shape of the file space's menu"
+        },
+        {
+          "route": "candidate",
+          "because": "a brief for the curator's `in_candidate`: hop `audience_set` = the row's round; body `{source: 'objects', candidates: [{id, text (<= 600), triggers (the aliases, <= 64 characters, <= 16), once: false}]}`, or `{source: 'objects', candidates: [], withdraw: [id]}` for a retired row. Only when the brief changed"
+        },
+        {
+          "route": "alias",
+          "because": "the aliases of an active row for memory's `in_alias` (GH #948): hop `alias_tag` = the object id, `<id>#r<n>` on a resend (mirrored on `alias_ack`); body `{aliases: [{alias, canonical: 'ob-<12 hex>'}] (1..32), force: false, messages: []}` -- a longer set in pieces of 32, one message each. No context. Only when the alias set changed, or to resend a spelling refused `store_refused` (at most twice)"
+        },
+        {
+          "route": "facts",
+          "because": "a question to memory's `in_query {subject}` (GH #948): hop `audience_now` = the row's round, `subject`, `recall_caller` 'objects' -- the member's door stamps the round and the caller into the context and nothing else; body `{subject, limit: 3, messages: []}`. Once per new version of an active row"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./gate",
+          "condition": "has(hop.route) && hop.route == 'thing_seen'"
+        },
+        {
+          "from": ".",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'in_tool'"
+        },
+        {
+          "from": ".",
+          "to": "./schemas",
+          "condition": "has(hop.route) && hop.route == 'in_schemas'"
+        },
+        {
+          "from": ".",
+          "to": "./source",
+          "condition": "has(hop.route) && hop.route == 'in_read'"
+        },
+        {
+          "from": ".",
+          "to": "./push",
+          "condition": "has(hop.route) && (hop.route == 'in_facts' || hop.route == 'alias_ack')"
+        },
+        {
+          "from": "./gate",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'gate_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./gate",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'gate'"
+        },
+        {
+          "from": "./tools",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'tools_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./tools",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'tools'"
+        },
+        {
+          "from": "./push",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'push_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./push",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'push'"
+        },
+        {
+          "from": "./source",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'source_store'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./source",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'source'"
+        },
+        {
+          "from": "./tools",
+          "to": "./gate",
+          "condition": "has(hop.route) && hop.route == 'edit'"
+        },
+        {
+          "from": "./gate",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'tools'"
+        },
+        {
+          "from": "./gate",
+          "to": "./push",
+          "condition": "has(hop.route) && hop.route == 'changed'"
+        },
+        {
+          "from": "./tools",
+          "to": "./brief",
+          "condition": "has(hop.route) && hop.route == 'brief_render'"
+        },
+        {
+          "from": "./push",
+          "to": "./brief",
+          "condition": "has(hop.route) && hop.route == 'brief_render'"
+        },
+        {
+          "from": "./brief",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'rendered' && has(hop.reply_cell) && hop.reply_cell == 'tools'"
+        },
+        {
+          "from": "./brief",
+          "to": "./push",
+          "condition": "has(hop.route) && hop.route == 'rendered' && has(hop.reply_cell) && hop.reply_cell == 'push'"
+        },
+        {
+          "from": "./tools",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./schemas",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_schemas'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./source",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./push",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'source_changed' || hop.route == 'facts' || hop.route == 'candidate' || hop.route == 'alias')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

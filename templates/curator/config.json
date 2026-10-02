@@ -32,7 +32,7 @@
         },
         {
           "route": "in_section",
-          "because": "one section of the sidecar block of an answer of the model this hive serves, cut by the parent's splitter (OR-KY-G2): `hop.section` names it, the body is the splitter's `{messages: [], section, payload}`, the context the one the answer came with (`session_id`, `turn_id`). `window` (`release`/`pin`, block ids) leaves `marks` rows, `gap` goes to `./push` (through `./policy`), which marks it once and looks it up; `memory` leaves a `topic` mark and, when `./intake` `pass_sections` names it, leaves again unchanged on `sidecar`; any other section is dropped and said"
+          "because": "one section of the sidecar block of an answer of the model this hive serves, cut by the parent's splitter (OR-KY-G2): `hop.section` names it, the body is the splitter's `{messages: [], section, payload}`, the context the one the answer came with (`session_id`, `turn_id`). `window` (`release`/`pin`, block ids) leaves `marks` rows, `gap` goes to `./push` (through `./policy`), which marks it once and looks it up; `memory` leaves a `topic` mark and, when `./intake` `pass_sections` names it, leaves again unchanged on `sidecar`; `things` leaves as one `thing_seen` when `./intake` `things_section` is \"1\" and the turn has a round (GH #949), and is dropped otherwise; any other section is dropped and said"
         },
         {
           "route": "in_pin",
@@ -61,6 +61,14 @@
         {
           "route": "in_stats",
           "because": "a question an observer asks about this hive (GH #926), all hop: `stats_tag` (1 to 64 characters, echoed), `stats_from` and `stats_to` (RFC 3339; `from` counts, `to` does not; `from` before `to`, at most 31 days apart), `stats_kinds` (a JSON array as text, not empty, out of `calls`, `gap`, `reread`, `ask`, `correction`, `tool_error`), `stats_samples` (0 to 50, default 0); the body `{messages: []}`. `./stats` counts it out of the ledger alone, in one round trip and without writing, and answers it exactly once on `stats` -- a question that does not hold too"
+        },
+        {
+          "route": "in_candidate",
+          "because": "push candidates of another hive or an app (GH #949), one door for every sender: `{source, candidates: [{id, text, audience_set?, triggers?, until?, once?, priority?}], withdraw?: [id]}` -- `source` one path segment by the pin rule (never `model`), at most 32 candidates, `id` 1 to 64 characters, `text` 1 to 600, at most 16 `triggers` of 1 to 64 characters with a letter or digit in each, `priority` 0 to 9 (default 5), `once` (default true without triggers, false with them), `until` RFC 3339 or absent; a repeated `id` is its last entry. Each kept candidate becomes a block of kind `candidate` and one `candidates` row per `(source, id)`, written again in place (a new text, `once` or triggers start the push's marks over), and `withdraw` ends the named ones now (`until` = now). Fail-closed on the round, `context.audience_set`: without one nothing is written (`missing_audience`); a candidate without `audience_set` takes the round, one with it must name only members of the round -- `*` only when the round holds `*`, the empty set only in an empty round -- or it alone is refused (`audience_widened`); a field out of bounds refuses it alone (`invalid_input`), a broken body the whole message. Answered on `candidate_ack` only when `hop.ack` is \"1\""
+        },
+        {
+          "route": "in_read",
+          "because": "an app's read of its own round off this hive's wall (GH #949), answered by `./reader`: `hop.read_tag` (1 to 64 characters, echoed), the body `{what, session_id?, since?, limit?}` -- `turns`, the wall rows of the round oldest first after the cursor `since` (a `seq`), optionally of one session, with the text of their blocks, at most `limit` (default 20, at most 100) a page; or `sessions`, the round's sessions with their first and last row. Fail-closed on the round, `context.audience_set`: without one, or with the declared empty one, nothing is read and the answer is `missing_audience`; with one, the store selects through `covers`, so only rows whose own audience holds the round (or names `*`) are read at all and a row without an audience never is. Answered exactly once on `read`"
         }
       ],
       "emits": [
@@ -103,6 +111,18 @@
         {
           "route": "stats",
           "because": "the answer to one `in_stats`: `{messages: [], stats: {from, to, counts, samples, truncated}}`. `counts` holds exactly the asked kinds: `calls` the `calls` rows started in the window, every other kind the `marks` rows of that kind stamped in it (`correction` counts the model rewriting a standing instruction in its sidecar, not a person correcting it). `samples` are the newest of the counted marks (under `truncated` the newest of the window's counted, oldest part), metadata only -- `at`, `kind`, `session_id`, `turn_id`, `value`, where a gap's value is its `searched` flag and a correction's is empty, and `session_id`/`turn_id` are references this answer hands out (`s1`, `s2`, ... in the order the samples first name a session, `s1#1`, `s1#2`, ... for its turns the same way), never the ledger's ids, which carry the channel -- a phone number, a chat id: no text, no audience, no identity. `truncated` is true when the window held more rows than `./stats` `scan_budget`; the count is then partial and meant to be thrown away. `hop.stats_tag` echoed, `hop.error_code` empty, `invalid_input` or `store_error`, `hop.detail` the hop key a refused question failed on (`invalid_input`) or the ledger table whose read the store refused (`store_error`: `calls`, `marks`, both comma-joined, or `ledger` when its answer names neither); a refusal carries empty `counts` and `samples`"
+        },
+        {
+          "route": "candidate_ack",
+          "because": "the receipt of one `in_candidate`, only when its `hop.ack` was \"1\" -- every curator behind a fan-out answers, and receipts nobody drains would be dead letters: `{messages: [], source, stored, refused: [{id, error_code}]}`, `stored` the number of candidates kept, `refused` each refused one (`invalid_input`, `audience_widened`), `hop.error_code` empty, or `missing_audience`/`invalid_input` when the whole body was refused and nothing written. The context of the push rides on"
+        },
+        {
+          "route": "thing_seen",
+          "because": "the named things of the person's world one turn mentions (GH #949), out of the model's sidecar section `things`: `{messages: [], items: [{name, kind?, note?}], turn_id, episode_turn_id?, session_id}` -- at most 8 entries in their checked form (`name` 1 to 80 characters, `kind` at most 32, `note` at most 200; an entry out of form is left out whole, a name counts once), `episode_turn_id` the person's episode of the turn when the call named one (GH #941). The round rides in `context.audience_set`; a section without a round is never handed on (dropped and marked `missing_audience`). Off unless `./intake` and `./schemas` `things_section` are \"1\""
+        },
+        {
+          "route": "read",
+          "because": "the answer to one `in_read`: `{messages: [], rows, next, truncated}` -- `rows` the turns (`seq`, `session_id`, `turn_id`, `kind`, `origin`, `final`, `at`, `text`; a first row larger than `./reader` `read_budget` is cut and marked `cut`) or the sessions (`session_id`, `first_seq`, `last_seq`, `first_at`, `last_at`, `turns`), `next` the cursor of the rest or '' at the end. `hop.read_tag` and `hop.read_what` echoed, `hop.error_code` always present -- empty, `missing_audience`, `invalid_input` or `store_error` -- and `hop.detail` the key a refused question failed on, or the store's code; a refused or failed read carries no rows and is never an empty page of an answer. The context of the question rides on"
         }
       ]
     },
@@ -111,7 +131,7 @@
         {
           "from": ".",
           "to": "./intake",
-          "condition": "has(hop.route) && (hop.route == 'in_curate' || hop.route == 'in_slots' || hop.route == 'in_llm' || hop.route == 'in_pack' || (hop.route == 'in_section' && (!has(hop.section) || hop.section != 'gap')) || hop.route == 'in_pin')"
+          "condition": "has(hop.route) && (hop.route == 'in_curate' || hop.route == 'in_slots' || hop.route == 'in_llm' || hop.route == 'in_pack' || (hop.route == 'in_section' && (!has(hop.section) || hop.section != 'gap')) || hop.route == 'in_pin' || hop.route == 'in_candidate')"
         },
         {
           "from": ".",
@@ -495,6 +515,55 @@
               "cur_reason"
             ]
           }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'candidate_ack' || hop.route == 'thing_seen')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./reader",
+          "condition": "has(hop.route) && hop.route == 'in_read'"
+        },
+        {
+          "from": "./reader",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./reader",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-reader'"
+        },
+        {
+          "from": "./reader",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'read'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
         }
       ]
     }
@@ -503,7 +572,7 @@
     "purpose": "Scope marker of the curator hive: the window of ONE model and the ledger of every call it got, by the policy of the model's role. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
     "use_when": "One per model whose window has to be owned: in front of a conversation brain, wired between the context collector and the `llm` cell. Nothing in the contract assumes a conversation -- any `llm` cell can sit behind it.",
     "not_in_scope": "No retrieval of its own (memory answers; `./push` only builds the question) and no tool fan-out -- the one tool family it serves is its own wall (`history_*`, GH #893) -- no persona of its own. It keeps what the model saw and decides what it sees next; what is worth remembering is the memory's business.",
-    "contract_in": "Thirteen lanes on `hop.route`: in_curate, in_slots, in_llm, in_pack, in_close, in_model, in_section, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed.",
-    "contract_out": "Nine routes on `hop.route`, leaving through the hive path: brain, turn_write, write, pack_ack, model_refused, sidecar, tool_schemas, tool_result, recall."
+    "contract_in": "Sixteen lanes on `hop.route`: in_curate, in_slots, in_llm, in_pack, in_close, in_model, in_section, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_candidate, in_read.",
+    "contract_out": "Thirteen routes on `hop.route`, leaving through the hive path: brain, turn_write, write, pack_ack, model_refused, sidecar, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read."
   }
 }

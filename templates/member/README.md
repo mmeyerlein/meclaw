@@ -1,7 +1,7 @@
-# `member@2.4.0`
+# `member@2.5.0`
 
-One person, as a level. **Six holders, three open containers and no cell of
-its own** — nine nodes and seventy-nine edges.
+One person, as a level. **Eight holders, three open containers and no cell of
+its own** — eleven nodes and one hundred and three edges.
 
 | holder | what it holds |
 |---|---|
@@ -9,6 +9,8 @@ its own** — nine nodes and seventy-nine edges.
 | [`memory-hive`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
 | [`file-space`](../file-space/README.md) | **the files** — since GH #908. This person's knowledge space: every file under one address `fh-<12 hex>`, versioned, read by line and changed only against the version a writer read. |
 | [`graph-space`](../graph-space/README.md) | **the graph of the files** — since GH #945. Every node of every file of `file-space` (functions, classes, sections; address `fh-<12 hex>#<anchor>`) and the edges between them, kept current from the space's `source_changed` and asked on `in_graph`, so a question across files wakes no file. |
+| [`librarian`](../librarian/README.md) | **the catalogue of the files** — since GH #950. One row per file of `file-space` (path, kind, one line, tags, top-level names), kept current from the space's `source_changed` and asked through the `lib_*` tools, so a model finds a file or a symbol by name and reads it with `file_read` at the address it got. |
+| [`objects`](../objects/README.md) | **the things** — since GH #951. One row per thing this person talks about (address `ob-<12 hex>`), learned in one round and shown only to a round that row covers. A turn's `thing_seen` finds or starts a row, the curator gets its brief as a candidate, the memory files facts under its address, and `graph-space` indexes it as a node source. |
 | [`firewall`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
 | [`access`](../access/README.md) | **the keys** — since 1.5.0 (GH #560). The provider credentials this person's agents authenticate with, held by the person rather than by the OS. Nothing in this level's graph reaches it but the drain for its `error` lane; a brain asks it over a v-lane. |
 
@@ -90,8 +92,31 @@ memory answers it itself:
 | `./assistants -> ./file-space` | `schemas` | the same menu tick into the file space's `in_schemas` |
 | `./file-space -> ./assistants` | `tool_schemas` | restamped to `in_menu` under `context.tool_answerer = 'files'` |
 | `./file-space -> ./graph-space` | `source_changed` | a head moved in the file space; `restore_ttl` — the door of an index job in the graph space (GH #945) |
-| `./graph-space -> ./file-space` | `pull` | the graph space's `outline`/`links`/`near` request, restamped to `in_read`; it carries no `caller`, so the answer leaves the space |
+| `./graph-space -> ./file-space` | `pull`, `hop.source.startsWith('fh-')` | the graph space's `outline`/`links`/`near` request, restamped to `in_read`; it carries no `caller`, so the answer leaves the space |
 | `./file-space -> ./graph-space` | `answer`, `hop.op_id.startsWith('gs:')` | that answer, restamped to `in_pulled`; every other answer of the space stays where it was (a tool's answer travels as `tool_result`) |
+| `./file-space -> ./librarian` | `source_changed` | the same head move; `restore_ttl` — the door of an index job in the librarian (GH #950) |
+| `./file-space -> ./librarian` | `source_described` | the summary of a head, written; `restore_ttl` — a second index job, summary line and tags of the announced version |
+| `./librarian -> ./file-space` | `pull`, `hop.op_id.startsWith('lib:f:')` | the librarian's `info`/`outline`/`list` request, restamped to `in_read` |
+| `./file-space -> ./librarian` | `answer`, `hop.op_id.startsWith('lib:')` | that answer, restamped to `in_pulled`; the space's `cur_*` keys are cleared |
+| `./librarian -> ./graph-space` | `pull`, `hop.op_id.startsWith('lib:g:')` | a `lib_symbol`/`lib_related` question, restamped to `in_graph` |
+| `./graph-space -> ./librarian` | `answer`, `hop.op_id.startsWith('lib:')` | the graph's answer, restamped to `in_pulled`; the graph's `cur_*` keys are cleared |
+| `./assistants -> ./librarian` | `tool`, `hop.tool_name.startsWith('lib_')` | a `lib_*` tool call into the librarian's `in_tool` |
+| `./librarian -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` |
+| `./assistants -> ./librarian` | `schemas` | the same menu tick into the librarian's `in_schemas` |
+| `./librarian -> ./assistants` | `tool_schemas` | restamped to `in_menu` under `context.tool_answerer = 'library'` |
+| `./assistants -> ./objects` | `tool`, `hop.tool_name.startsWith('object_')` | an object tool call into the objects' `in_tool` (GH #951); stamps the round as `audience_now` like the memory's door, and the objects answer only for a round their row covers |
+| `./objects -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` |
+| `./assistants -> ./objects` | `schemas` | the same menu tick into the objects' `in_schemas` |
+| `./objects -> ./assistants` | `tool_schemas` | restamped to `in_menu` under `context.tool_answerer = 'objects'` |
+| `./assistants -> ./objects` | `thing_seen` | the things a curator recognised in a turn, with the turn's round in `context.audience_set` |
+| `./objects -> ./assistants` | `candidate` | a row's brief, restamped to `in_candidate`; stamps `context.audience_set` off `hop.audience_set`, the round of the row |
+| `./objects -> ./memory-hive` | `alias` | a row's names, restamped to `in_alias` |
+| `./memory-hive -> ./objects` | `alias_ack` | the memory's receipt for them |
+| `./objects -> ./memory-hive` | `facts` | a facts question about one object, restamped to `in_query` (body `{subject, limit, messages}`); stamps the row's round as `audience_now`, `recall_caller = 'objects'` and the object id as `objects_subject`, and the five recall keys and `channel` as empty strings because the lane names them; memory reads a question that names its object in the body before any of them |
+| `./memory-hive -> ./objects` | `bundle` or `reject`, `hop.recall_caller == 'objects'` | the answer or the refusal, restamped to `in_facts`; restates `hop.subject` off `context.objects_subject` and deletes that key -- memory's refusal names no subject (GH #951) |
+| `./objects -> ./graph-space` | `source_changed` | a row changed version; `restore_ttl` — the same door as the file space's |
+| `./graph-space -> ./objects` | `pull`, `hop.source.startsWith('ob-')` | the graph space's `outline`/`links` request for an object, restamped to `in_read` |
+| `./objects -> ./graph-space` | `answer`, `hop.op_id.startsWith('gs:')` | that answer, restamped to `in_pulled` |
 
 They are **template** edges rather than v-lanes, and that is the one place the two legs
 differ: this level is a mandatory hop for both, so nothing is bought by drawing the tool
@@ -214,7 +239,7 @@ stamps it:
 | `. -> ./memory-hive` | `in_recall` | stamps `context.recall_caller = 'outside'`, beside the recall shape it already promotes |
 | `./memory-hive -> .` | `bundle`, `hop.recall_caller == 'outside'` | the exit this lane never had. It **restates** its own route (`set_hop {"route": "'bundle'"}`) — a no-op for the message, and the only way `hive_contract::exit_exists` can see an exit guarded on a hop key its probe cannot carry (the GH #176 carve-out; `./affinity -> .` on `answer` is written the same way) |
 | `./memory-hive -> ./assistants` | `bundle`, **default** | everything else: an assistant's own token, an unknown one, none at all. Byte for byte where every bundle went before, and the reason an unknown token is a lost answer rather than a dead letter |
-| `./memory-hive -> ./assistants` | `reject`, `hop.recall_caller != 'outside'` | a refused recall of an asker INSIDE, re-stamped to `in_bundle` |
+| `./memory-hive -> ./assistants` | `reject`, `hop.recall_caller != 'outside'` and `!= 'objects'` | a refused recall of an asker INSIDE, re-stamped to `in_bundle`; the objects' own refusal goes home to `./objects` (GH #951) |
 | `./memory-hive -> .` | `reject`, no token or `'outside'` | the outside asker's refusal, and every refusal of this hive that is not a recall's at all |
 
 **The door stamps the token; it does not carry what the caller sent.** The value
@@ -854,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.4.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1090,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.4.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.0"}]
 }}
 ```
 
@@ -1099,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.5.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1595,8 +1620,9 @@ Of the lanes the `assistant` level accepts, six cross this level:
 `in_build_result` (which enters at the member's own door and is forwarded),
 since #475 `in_export` and `in_import` (which enter at the same door and are
 forwarded the same way) and, since #926, `in_stats` (the same door, the same
-way). Five more — **`in_advice`**, **`in_sweep`**,
-**`in_round_sweep`**, **`in_pack`** and, since #916, **`in_pin`** — are **not** lanes of
+way). Since #951 `./objects` hands the assistants **`in_candidate`** as well, so that lane is supplied
+by a sibling now. Six more — **`in_advice`**, **`in_sweep`**,
+**`in_round_sweep`**, **`in_pack`**, since #916 **`in_pin`** and, since #949, **`in_read`** — are **not** lanes of
 this member, and that is a decision rather than an omission (orchestrator ruling
 W7-R5).
 
@@ -1612,6 +1638,7 @@ sits **outside** the level and addresses **through** it. These five do not:
 | `in_round_sweep` | the same owner as `in_sweep`, entering the same way. |
 | `in_pack` | `<member>/affinity`, a **sibling** of the container (GH #458). Producer and consumer are both inside this member, so the push edge is drawn from one to the other — and since GH #561 it is a **v-lane** that ends at the generation's brain rims, `<member>/assistants/<agent>/talky`, `…/talky-chat` (since GH #877) and `…/cogny`, because the assistant level declares them as the lane's connect points and stopped carrying the pack itself. A lane at this level's own door would promise something nothing outside ever sends. |
 | `in_pin` | an installed **app** of this member, a sibling of the container (#916). `install_app` draws the one edge, from the cell the app declared as `pins` straight to `<member>/assistants/<agent>`, so the declaration is the only way in: an app without `pins` has no edge, and this level has no door that any app could reach. |
+| `in_read` | an installed **app** of this member reading the ledger of its round (#949), wired from the cell the app declared as `reads` to the one brain `hop.organ` names; without a round the curator answers `missing_audience`. |
 
 They reach the assistant at its own address, `<member>/assistants/<agent>`, and
 they may: neither this level nor the assistant declares `params.ports`, so both

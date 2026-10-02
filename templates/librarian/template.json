@@ -1,0 +1,25 @@
+{
+  "name": "librarian",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The catalogue of one knowledge space ([#950](https://github.com/mmeyerlein/meclaw/issues/950)): one row per source the space holds -- its path, kind, format, summary line, tags and the names of its top-level items -- kept current from the space's own announcements, so that a question like \"where is the thing called X\" is answered from one store and wakes no file. A source announces each head move on `source_changed`; the hive writes the path at once and pulls two answers (`info`, `outline`), each written only while its version is still the announced one. `find` searches the catalogue by words (path, names, summary, tags, camel case split), `symbol` and `related` ask the graph space and add path and summary line to every address, `tree` asks the file space; four read-only tools (`lib_find`, `lib_symbol`, `lib_related`, `lib_tree`) put all four on a model's menu.",
+    "use_when": "Beside a file space and a graph space, one per knowledge space: draw `source_changed` and `source_described` into it (restoring the TTL -- each is a door), its `pull` to the file space (`lib:f:`) and the graph space (`lib:g:`) restamped to their read lanes, their answers back restamped to `in_pulled`, and ask on `in_lib` or through the tools.",
+    "not_in_scope": "No model, no embedding request, no network; no content of a source beyond its summary line; no write tool; no graph of its own (the graph space keeps it); no catalogue across knowledge spaces; no delete -- a removed source stays a grave.",
+    "examples": [
+      "PORTS - every endpoint is the HIVE path (`params.ports` is empty and therefore sealed). Entry on `hop.route`: source_changed, source_described, in_pulled, in_lib, in_tool, in_schemas. Exit: pull, answer, tool_result, tool_schemas.",
+      "QUESTION - body `{op: 'find', args: {q: 'http server', under: '/src', limit: 10}}` on `in_lib` with hop `op`, `op_id` answers `{ok, op, op_id, items: [{file, path, kind, fmt, oneline, score, why}], next}`; `next` non-empty means another page under `args.cursor`.",
+      "WIRING - in a member: `./file-space -> ./librarian` on `source_changed` and on `source_described`, each with `restore_ttl` (a door), `./librarian -> ./file-space` on `pull` with `hop.op_id.startsWith('lib:f:')` restamped to `in_read`, `./librarian -> ./graph-space` on `pull` with `lib:g:` restamped to `in_graph`, and both spaces' `answer` with `hop.op_id.startsWith('lib:')` back restamped to `in_pulled`."
+    ]
+  },
+  "tags": [
+    "librarian",
+    "catalogue",
+    "search",
+    "full-text",
+    "knowledge-space",
+    "tools",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

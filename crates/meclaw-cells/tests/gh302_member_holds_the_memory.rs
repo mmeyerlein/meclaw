@@ -195,17 +195,21 @@ fn the_level_carries_four_refs_and_three_containers() {
             "file-space".to_string(),
             "firewall".to_string(),
             "graph-space".to_string(),
+            "librarian".to_string(),
             "memory-hive".to_string(),
+            "objects".to_string(),
         ],
-        "the member owns exactly six holders — the memory, the record, the screen and, \
+        "the member owns exactly eight holders — the memory, the record, the screen and, \
          since 1.5.0, the `access` that holds this person's own provider credentials \
          (GH #560) and, since B2 (GH #908), the `file-space` that keeps this person's \
-         files, and since GH #945 the `graph-space` that keeps the graph of those \
-         files — and THREE containers — `assistants`, and since 1.3.0 `channels` \
+         files, since GH #945 the `graph-space` that keeps the graph of those \
+         files, since GH #950 the `librarian` that keeps their catalogue and since \
+         GH #951 the `objects` that keeps one row per thing this person talks about \
+         — and THREE containers — `assistants`, and since 1.3.0 `channels` \
          (GH #454) and `apps` (GH #459). It owns NO cell of its own any more: since \
          1.6.0 each holder's store writes its own seed set through the `transfer` slot \
          (GH #555), so the one `code` cell that used to file somebody else's export is \
-         gone with the lane it drained. A SEVENTH holder is something the siblings did not \
+         gone with the lane it drained. A NINTH holder is something the siblings did not \
          have to share; a missing one is something an assistant would have to hold \
          itself. `apps` is a container and not a holder for the same reason `channels` \
          is not: what stands in it is instantiated per person, and an app writes VIEWS \
@@ -245,7 +249,9 @@ fn the_level_carries_four_refs_and_three_containers() {
         "file-space",
         "firewall",
         "graph-space",
+        "librarian",
         "memory-hive",
+        "objects",
     ] {
         let cfg = config_at(&member.join(name));
         let cell = cfg.get("cell").expect("cell block");
@@ -946,6 +952,13 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
         if !lane.at.is_empty() && !consumed_inside && !leaves {
             continue;
         }
+        if let Some((_, why)) = HOLDER_PENDING.iter().find(|(l, _)| *l == route) {
+            assert!(
+                !consumed_inside && !leaves,
+                "`{route}` has its holder now -- drop it from HOLDER_PENDING ({why})"
+            );
+            continue;
+        }
         assert!(
             consumed_inside || leaves,
             "an assistant emits `{route}` and this member neither consumes it nor lets it out: \
@@ -1111,8 +1124,9 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
 ///
 /// `in_prune` stood here until GH #889: the collector keeps no window any more,
 /// so the assistant no longer accepts the lane and there is nothing left to
-/// subtract.
-const NOT_CARRIED: [(&str, &str); 5] = [
+/// subtract. `in_candidate` stood here until GH #951: the member's own `./objects`
+/// hands the assistants its briefs on that lane, so a sibling supplies it now.
+const NOT_CARRIED: [(&str, &str); 6] = [
     (
         "in_advice",
         "answered inside the assistant by ./cogny; the other producer is a SECOND agent, \
@@ -1143,7 +1157,19 @@ const NOT_CARRIED: [(&str, &str); 5] = [
          the only way in. A door at this level would let an app that declared nothing pin \
          into every curator",
     ),
+    (
+        "in_read",
+        "an installed app reading the ledger of its round (GH #949). Its only producer is the \
+         cell an app declared as `reads`, which `install_app` wires straight to \
+         `<member>/assistants/<agent>`; a door at this level would hand every caller outside a \
+         read of the member's curators",
+    ),
 ];
+
+/// A lane the assistant raises whose holder inside this member lands in a later
+/// strand of the same wave, with why nothing raises it until then. An assertion,
+/// not a mute: once an edge consumes the lane, the entry fails the test and must go.
+const HOLDER_PENDING: [(&str, &str); 0] = [];
 
 /// **The union rule, in the direction that is easy to get wrong (W7-R5).**
 ///

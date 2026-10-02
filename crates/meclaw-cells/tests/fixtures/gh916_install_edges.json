@@ -1,5 +1,5 @@
 {
-  "_source": "GH #916 -- what install_app draws for an app that offers a sidecar section, listens to closed sessions and pins through one of its cells. Member-relative; the generation is called 'sam'. Reviewed by hand against the contract: the close observer restamps 'write' as 'in_close' with the close pass's context, the binding carries 'in_close', and ONE edge leaves the declared pinning cell onto the generation as 'in_pin'.",
+  "_source": "GH #916 -- what install_app draws for an app that offers a sidecar section, listens to closed sessions and pins through one of its cells. Member-relative; the generation is called 'sam'. Reviewed by hand against the contract: the close observer restamps 'write' as 'in_close' with the close pass's context, the binding carries 'in_close', and ONE edge leaves the declared pinning cell onto the generation as 'in_pin', stamped with the member's round (GH #949: the member is 'alex', so a pin of the app is never in a round the app declared itself).",
   "declaration": {
     "offers": [
       {
@@ -93,6 +93,9 @@
       "modifier": {
         "set_hop": {
           "route": "'in_pin'"
+        },
+        "set_context": {
+          "audience_set": "'[\"agent:sam\",\"member:alex\"]'"
         }
       }
     }

@@ -16,7 +16,8 @@
         "oneline": "text",
         "bytes": "int",
         "lines": "int",
-        "born_at": "text"
+        "born_at": "text",
+        "dir": "text"
       },
       "blocks": {
         "file": "text",
@@ -89,7 +90,8 @@
         "from_pos": "int",
         "to_pos": "int",
         "oneline": "text",
-        "parser": "text"
+        "parser": "text",
+        "seq": "int"
       },
       "links": {
         "file": "text",
@@ -98,7 +100,8 @@
         "kind": "text",
         "target_name": "text",
         "pos": "int",
-        "alias": "text"
+        "alias": "text",
+        "seq": "int"
       },
       "node_runs": {
         "file": "text",
@@ -108,7 +111,8 @@
         "mark": "text",
         "nodes": "int",
         "links": "int",
-        "fvec": "text"
+        "fvec": "text",
+        "seq": "int"
       },
       "ws": {
         "ws": "text",
@@ -143,6 +147,38 @@
         "phase": "text",
         "body": "text",
         "at": "text"
+      },
+      "claims": {
+        "path": "text",
+        "op_id": "text",
+        "at": "text"
+      },
+      "dirs": {
+        "path": "text",
+        "parent": "text",
+        "depth": "int",
+        "files": "int",
+        "bytes": "int",
+        "nodes": "int",
+        "vec_counts": "text",
+        "vec_n": "int",
+        "tags": "text",
+        "dirty": "int",
+        "summary": "text",
+        "summary_seq": "int",
+        "changed_seq": "int",
+        "born": "text",
+        "tomb": "text"
+      },
+      "contrib": {
+        "file": "text",
+        "path": "text",
+        "version": "text",
+        "bytes": "int",
+        "nodes": "int",
+        "vec": "text",
+        "tags": "text",
+        "seq": "int"
       }
     },
     "indexes": {
@@ -163,6 +199,39 @@
         "on": [
           "file"
         ]
+      },
+      "files_dir": {
+        "table": "files",
+        "on": [
+          "dir"
+        ]
+      },
+      "claims_path": {
+        "table": "claims",
+        "on": [
+          "path"
+        ],
+        "unique": true
+      },
+      "dirs_path": {
+        "table": "dirs",
+        "on": [
+          "path"
+        ],
+        "unique": true
+      },
+      "dirs_parent": {
+        "table": "dirs",
+        "on": [
+          "parent"
+        ]
+      },
+      "contrib_file": {
+        "table": "contrib",
+        "on": [
+          "file"
+        ],
+        "unique": true
       }
     },
     "write_surface": "internal",
@@ -219,7 +288,7 @@
     ]
   },
   "description": {
-    "purpose": "The one store of a file space. A row belongs to the file its `file` column names: `files` (one row per file: path, head, lock, tomb), `blocks` (content-addressed pieces, one row per file and hash -- the same hash in two files is two rows), `versions` (the ordered block list of one version), `line` (the main line, append-only), `snaps`, `derived` (text of non-text files), `summaries`, `embeddings`, `nodes`, `links` and `node_runs` (the items, outgoing edges and extraction run of a file's head only, GH #944), `ws`, `ws_files`, `commits` and `pending` (working values of a cell between two store phases). Every select on a table with `file` names the file in its `where`; only `files` (path lookup, `list`, `find`) and `node_runs` (the file vectors `near` compares) are read across files.",
+    "purpose": "The one store of a file space. A row belongs to the file its `file` column names: `files` (one row per file: path, head, lock, tomb), `blocks` (content-addressed pieces, one row per file and hash -- the same hash in two files is two rows), `versions` (the ordered block list of one version), `line` (the main line, append-only), `snaps`, `derived` (text of non-text files), `summaries`, `embeddings`, `nodes`, `links` and `node_runs` (the items, outgoing edges and extraction run of a file's head only, GH #944), `ws`, `ws_files`, `commits` and `pending` (working values of a cell between two store phases); since GH #947 `claims` (one row per path a writer is taking, unique on `path`, GH #918), `dirs` (one row per directory, unique on `path`: the recursive counts and topic counters of its subtree and its lazy summary) and `contrib` (the share of one file last counted into the directories above it, unique on `file`); `nodes`/`links`/`node_runs` carry the main-line `seq` of their version. Every select on a table with `file` names the file in its `where`; only `files` (path lookup, `list`, `find`, the children of a directory by `dir`) and `node_runs` (the file vectors `near` compares) are read across files; `claims` and `dirs` have no `file` column.",
     "use_when": "Inside a file space only; the hive's cells are its only writers (`write_surface` internal).",
     "not_in_scope": "No policy of its own: every rule of the space lives in the cell that writes.",
     "emits_meaning": "One answer per message, a bundle answer for more than one operation.",

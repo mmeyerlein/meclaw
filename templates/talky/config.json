@@ -60,6 +60,14 @@
           "because": "a pin of another hive for this brain's window (GH #916): `{pins: [{text, source, until?}], replace_sources?}`, handed unchanged to `./curator` on its own `in_pin` door, which writes it into the ledger and shows it in the window (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
         },
         {
+          "route": "in_candidate",
+          "because": "a set of push candidates of another hive for this brain's curator (GH #949): `{source, candidates: [{id, text, audience_set?, triggers?, until?, once?, priority?}], withdraw?}`, handed unchanged to `./curator` on its own `in_candidate` door, which stores each candidate in its ledger and offers it to the memory push of a later turn whose round it covers -- with triggers only when the person's words name one (`templates/curator/README.md`). `context.audience_set` travels with it untouched: it is the round the candidates are stored for, and a candidate never reaches a wider one. It is answered on `candidate_ack` only when `hop.ack` is \"1\""
+        },
+        {
+          "route": "in_read",
+          "because": "an app's read of its own round off this brain's wall (GH #949): `hop.read_tag`, the body `{what, session_id?, since?, limit?}`, handed unchanged to `./curator` on its own `in_read` door, whose `./reader` answers it out of the ledger (`templates/curator/README.md`). `context.audience_set` travels with it untouched: it is the round the read is served in, a row reaches it only when its own audience holds that round, and a read without one is answered `missing_audience` with nothing read. The level above sends it here only when the app named this brain in `hop.organ`"
+        },
+        {
           "route": "in_model",
           "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector: a params body is not a turn, and the collector has no business holding, stamping or dropping one. It is the one way a model package reaches the brain; the brain applies package keys only from a params-only message (GH #853), so a turn on any other lane cannot change the model it talks to. Draw it only from the registry's `update` lane, restamped `in_model`"
         },
@@ -108,7 +116,7 @@
         },
         {
           "route": "sidecar",
-          "because": "one section of the block a turn's answer carried, as the model wrote it: hop.section names the section, hop.turn_id the round it answered (GH #916), the body carries {messages: [], section, payload}. ONE message PER SECTION -- never repaired, never re-serialised, and never judged here, so a parent distributes on hop.section and a section this composite has never heard of needs no change to it. Since talky@5.1.0 this port replaces `extraction`, which carried exactly one thing (the memory annotation, as raw text) and is now the section `memory` on this route (GH #605); a parent still wired on `hop.route == 'extraction'` writes nothing. Since talky@4.1.0 this is how per-turn extraction travels at all: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route too. The curator's own sections (`window`, `gap`) never travel here, and `memory` travels through the curator unchanged (GH #892). It is a lane and not an obligation: without the block contract in the brain's instructions there is nothing to cut and nothing ever travels here. Since GH #895 one more section leaves here that no answer carried: in a duplex call `./curator` sends a gap's find as `fact` for the voice model"
+          "because": "one section of the block a turn's answer carried, as the model wrote it: hop.section names the section, hop.turn_id the round it answered (GH #916), the body carries {messages: [], section, payload}. ONE message PER SECTION -- never repaired, never re-serialised, and never judged here, so a parent distributes on hop.section and a section this composite has never heard of needs no change to it. Since talky@5.1.0 this port replaces `extraction`, which carried exactly one thing (the memory annotation, as raw text) and is now the section `memory` on this route (GH #605); a parent still wired on `hop.route == 'extraction'` writes nothing. Since talky@4.1.0 this is how per-turn extraction travels at all: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route too. The curator's own sections (`window`, `gap`) never travel here, and `memory` travels through the curator unchanged (GH #892). Since GH #949 the section `things` does not travel here either: it goes to `./curator` and leaves as `thing_seen`. It is a lane and not an obligation: without the block contract in the brain's instructions there is nothing to cut and nothing ever travels here. Since GH #895 one more section leaves here that no answer carried: in a duplex call `./curator` sends a gap's find as `fact` for the voice model"
         },
         {
           "route": "recall",
@@ -156,6 +164,18 @@
         {
           "route": "stats",
           "because": "the curator's answer to one `in_stats`, unchanged: `stats: {from, to, counts, samples, truncated}` with `hop.stats_tag` echoed, `hop.error_code` and `hop.detail` (`templates/curator/README.md`). One answer per question; the asker matches it by its tag"
+        },
+        {
+          "route": "thing_seen",
+          "because": "the things the model named in the section `things` of an answer (GH #949): `{items: [{name, kind?, note?}], turn_id, episode_turn_id?, session_id}`, checked by `./curator` and raised only when its `things_section` is \"1\" and the turn carries a round, which rides along in `context.audience_set`. The section itself never leaves on `sidecar`: the splitter hands `things` to the curator like `window`, `gap` and `memory`, so one answer yields one `thing_seen` and no copy of it"
+        },
+        {
+          "route": "candidate_ack",
+          "because": "the receipt of one `in_candidate`, raised by `./curator` ONLY when the push asked for one with `hop.ack` \"1\" (GH #949): `{source, stored, refused: [{id, error_code}]}`, or `hop.error_code` `missing_audience` for a body without a round. Without the flag nothing answers, because a generation fans one push out to three curators and three receipts nobody drains would be three dead letters"
+        },
+        {
+          "route": "read",
+          "because": "the curator's answer to one `in_read`, unchanged: `{messages: [], rows, next, truncated}` with `hop.read_tag` and `hop.read_what` echoed, `hop.error_code` (empty, `missing_audience`, `invalid_input`, `store_error`) and `hop.detail` (`templates/curator/README.md`). One answer per question; the asker matches it by its tag, and the corridor back to it is the asker's own edge, drawn at this rim (`install_app` `reads`)"
         }
       ]
     },
@@ -212,6 +232,16 @@
           "from": ".",
           "to": "./curator",
           "condition": "has(hop.route) && hop.route == 'in_pin'"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_candidate'"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_read'"
         },
         {
           "from": ".",
@@ -352,7 +382,7 @@
         {
           "from": "./splitter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory'))",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things'))",
           "modifier": {
             "delete_context": [
               "tool_answerer",
@@ -363,7 +393,7 @@
         {
           "from": "./splitter",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory')",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')",
           "modifier": {
             "set_hop": {
               "route": "'in_section'"
@@ -664,6 +694,28 @@
           "from": "./curator",
           "to": ".",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'stats'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'thing_seen' || hop.route == 'candidate_ack')",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'read'",
           "modifier": {
             "delete_context": [
               "tool_answerer",

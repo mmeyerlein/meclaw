@@ -322,16 +322,20 @@ fn the_summary_answer_is_one_line_and_a_short_one() {
             format!("{long}\n\n{}", "s".repeat(2000)),
         ]),
     );
+    // GH #947: the answer is `(one line, short, tags)`; without a `TAGS:`
+    // line the tags are empty (the tag table is
+    // `gh947_tags_ride_the_summary.rs`).
     assert_eq!(
         got[0],
         json!([
             "The plan of the file hive.",
-            "It holds the budget and the team."
+            "It holds the budget and the team.",
+            []
         ])
     );
     assert_eq!(
         got[1],
-        json!(["Only a title", "Only a title"]),
+        json!(["Only a title", "Only a title", []]),
         "no short one: the line again"
     );
     assert_eq!(got[2], Value::Null, "an empty answer is no summary");

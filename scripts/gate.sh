@@ -303,7 +303,8 @@
 # --lanes ...`), a run OFF a lane with a cargo station is refused with exit 3
 # and `lanes active: use scripts/strand.sh test|gate --host <lane>`; only
 # `MECLAW_LANE_LOCAL_OK=<reason>` overrides, and the receipt names the reason
-# as the NOTE row `lane-local-ok`.
+# as the NOTE row `lane-local-ok`. The CI runner (`$CI`) is not refused; on
+# a host whose lanes are armed its receipt carries the NOTE row `lanes-ci`.
 #
 # And `--lane` needs `--base`: the host's copy of the
 # repository has no reliable `master`, so the kit computes the merge base
@@ -675,17 +676,18 @@ fi
 # Review L Minor 1) and every run ON a lane are not touched. The one way out
 # names its reason, and the receipt carries it:
 # `MECLAW_LANE_LOCAL_OK=<reason>` (the orchestrator, on the coordinator's word).
-lanes_active() {
-    local lock tokens
-    lock="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
-    tokens="${MECLAW_STRAND_TOKENS:-${lock%.lock}.tokens}"
-    [ -f "$tokens" ] || return 1
-    python3 -c 'import json, sys
-sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("lanes") else 1)' "$tokens" 2>/dev/null
-}
+# The probe is `meclaw_lanes_active` in `scripts/cargo-target.sh`, the one the
+# tier asks as well. `$CI` still passes -- a CI job has its own machine and no
+# armed token file -- but where the lanes ARE armed, a `CI=1` typed on this
+# host is local cargo all the same, and the receipt says so with the NOTE row
+# `lanes-ci` (C1 finding, L Nit: the pass used to be silent).
 lane_local_ok=""
-if [ -z "${CI:-}" ] && [ "$lane" = 0 ] && [ "$has_cargo" = 1 ] && lanes_active; then
-    if [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
+lanes_ci=""
+if [ "$lane" = 0 ] && [ "$has_cargo" = 1 ] \
+   && meclaw_lanes_active "${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"; then
+    if [ -n "${CI:-}" ]; then
+        lanes_ci="lanes armed on this host, cargo runs here under CI"
+    elif [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
         lane_local_ok="$MECLAW_LANE_LOCAL_OK"
     else
         echo "gate: lanes active: use scripts/strand.sh test|gate --host <lane>" \
@@ -1327,6 +1329,8 @@ master_moved_note() {
 master_moved_note
 [ -n "$lane_local_ok" ] \
     && report lane-local-ok "local cargo while lanes are armed: $lane_local_ok" 0 NOTE "" "$lane_local_ok"
+[ -n "$lanes_ci" ] \
+    && report lanes-ci "CI=${CI:-}" 0 NOTE "" "$lanes_ci"
 
 # On a lane, `display-lab` needs `node` there (GH #942): asked once, here.
 # `MECLAW_GATE_NODE` names the binary -- a test hook, `node` otherwise.

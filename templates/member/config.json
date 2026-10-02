@@ -53,7 +53,7 @@
             "./assistants",
             "./channels"
           ],
-          "because": "the `memory_recall` tool call a generation of this member made -- declared here, like `recall` above and for the same reason (GH #552, ADR-0020). It is not a lane of this rim and never was: it starts inside `./assistants` and ends inside `./memory-hive`, both siblings in here, and `at` says so. Under ADR-0020 a level that declares a lane takes part in it and may not be skipped, and taking part is exactly what this level does: the door `./assistants -> ./memory-hive` turns `tool` into the hive's own `tool_call` and stamps the two keys the hive refuses a question without -- `audience_now` (the round, from `context.audience_set`) and `channel` (the room). Nothing below this level knows the round and nothing above it knows the person, so a v-lane drawn from a generation straight to any memory would produce `missing_audience` at runtime; it is refused at mutation time instead, with `v_lane_mandatory_hop` Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case. Since GH #908 the same lane carries every `file_*` call to `./file-space`, the member's file space, on an edge conditioned on the prefix: the space's own `./tools` checks the arguments and lets only the reasoning core write."
+          "because": "the `memory_recall` tool call a generation of this member made -- declared here, like `recall` above and for the same reason (GH #552, ADR-0020). It is not a lane of this rim and never was: it starts inside `./assistants` and ends inside `./memory-hive`, both siblings in here, and `at` says so. Under ADR-0020 a level that declares a lane takes part in it and may not be skipped, and taking part is exactly what this level does: the door `./assistants -> ./memory-hive` turns `tool` into the hive's own `tool_call` and stamps the two keys the hive refuses a question without -- `audience_now` (the round, from `context.audience_set`) and `channel` (the room). Nothing below this level knows the round and nothing above it knows the person, so a v-lane drawn from a generation straight to any memory would produce `missing_audience` at runtime; it is refused at mutation time instead, with `v_lane_mandatory_hop` Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case. Since GH #908 the same lane carries every `file_*` call to `./file-space`, the member's file space, on an edge conditioned on the prefix: the space's own `./tools` checks the arguments and lets only the reasoning core write. Since GH #951 every `object_*` call goes to `./objects` the same way, and that edge stamps the round as `audience_now` like the memory's door: an object is read only by a round its row covers, and a call without one is refused with `missing_audience`."
         },
         {
           "route": "schemas",
@@ -61,7 +61,7 @@
             "./assistants",
             "./channels"
           ],
-          "because": "a generation's menu tick asking this member's memory what its tool looks like (GH #552). Same shape as `tool` and declared for the same reason: the question starts inside `./assistants`, the answer is written inside `./memory-hive`, and the door between them is this level's. A menu that never asked is a menu without `memory_recall` in it, and a round that then looks like a model which chose not to ask its memory Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case. Since GH #908 the question also reaches `./file-space`, which answers the `file_*` declarations it serves."
+          "because": "a generation's menu tick asking this member's memory what its tool looks like (GH #552). Same shape as `tool` and declared for the same reason: the question starts inside `./assistants`, the answer is written inside `./memory-hive`, and the door between them is this level's. A menu that never asked is a menu without `memory_recall` in it, and a round that then looks like a model which chose not to ask its memory Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case. Since GH #908 the question also reaches `./file-space`, which answers the `file_*` declarations it serves. Since GH #951 it also reaches `./objects`, which answers the `object_*` declarations."
         },
         {
           "route": "mutation_committed",
@@ -85,7 +85,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of assistant@3.5.0"
+          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of assistant@3.6.0"
         }
       ],
       "emits": [
@@ -152,14 +152,14 @@
           "at": [
             "./assistants"
           ],
-          "because": "the way back of `tool`, declared here for the same reason and with the same effect (GH #552). The hive's `tool_result` becomes `in_tool` on the edge `./memory-hive -> ./assistants`, which is this level restamping a lane rather than forwarding it: the result re-enters the asking round as an ordinary tool result, refusals included, and the round ends where it began. Since GH #908 `./file-space -> ./assistants` restamps the file space's `tool_result` the same way."
+          "because": "the way back of `tool`, declared here for the same reason and with the same effect (GH #552). The hive's `tool_result` becomes `in_tool` on the edge `./memory-hive -> ./assistants`, which is this level restamping a lane rather than forwarding it: the result re-enters the asking round as an ordinary tool result, refusals included, and the round ends where it began. Since GH #908 `./file-space -> ./assistants` restamps the file space's `tool_result` the same way. Since GH #951 `./objects -> ./assistants` restamps the objects' `tool_result` the same way."
         },
         {
           "route": "in_menu",
           "at": [
             "./assistants"
           ],
-          "because": "the way back of `schemas` (GH #552). The hive's `tool_schemas` becomes `in_menu` on the edge `./memory-hive -> ./assistants` and carries `context.tool_answerer == 'memory'`, which is the key the menu merge of GH #529 files an answerer's declarations under -- without it a third answerer would overwrite the menu instead of joining it. Since GH #908 the file space's `tool_schemas` comes back the same way under `context.tool_answerer == 'files'`."
+          "because": "the way back of `schemas` (GH #552). The hive's `tool_schemas` becomes `in_menu` on the edge `./memory-hive -> ./assistants` and carries `context.tool_answerer == 'memory'`, which is the key the menu merge of GH #529 files an answerer's declarations under -- without it a third answerer would overwrite the menu instead of joining it. Since GH #908 the file space's `tool_schemas` comes back the same way under `context.tool_answerer == 'files'`. Since GH #951 the objects' `tool_schemas` comes back the same way under `context.tool_answerer == 'objects'`."
         },
         {
           "route": "turn",
@@ -184,7 +184,7 @@
         },
         {
           "route": "stats",
-          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of assistant@3.5.0"
+          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of assistant@3.6.0"
         }
       ]
     },
@@ -430,7 +430,7 @@
         {
           "from": "./memory-hive",
           "to": "./assistants",
-          "condition": "has(hop.route) && hop.route == 'reject' && has(hop.recall_caller) && hop.recall_caller != 'outside'",
+          "condition": "has(hop.route) && hop.route == 'reject' && has(hop.recall_caller) && hop.recall_caller != 'outside' && hop.recall_caller != 'objects'",
           "modifier": {
             "set_hop": {
               "route": "'in_bundle'"
@@ -967,7 +967,7 @@
         {
           "from": "./graph-space",
           "to": "./file-space",
-          "condition": "has(hop.route) && hop.route == 'pull'",
+          "condition": "has(hop.route) && hop.route == 'pull' && has(hop.source) && hop.source.startsWith('fh-')",
           "modifier": {
             "set_hop": {
               "route": "'in_read'"
@@ -981,6 +981,274 @@
           "modifier": {
             "set_hop": {
               "route": "'in_pulled'"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./objects",
+          "condition": "has(hop.route) && hop.route == 'thing_seen'",
+          "modifier": {}
+        },
+        {
+          "from": "./objects",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'candidate'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_candidate'"
+            },
+            "set_context": {
+              "audience_set": "has(hop.audience_set) ? hop.audience_set : ''"
+            }
+          }
+        },
+        {
+          "from": "./objects",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'alias'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_alias'"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./objects",
+          "condition": "has(hop.route) && hop.route == 'alias_ack'",
+          "modifier": {}
+        },
+        {
+          "from": "./objects",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'facts'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_query'"
+            },
+            "set_context": {
+              "recall_query": "''",
+              "memory_tier": "''",
+              "recall_as_of": "''",
+              "recall_window_from": "''",
+              "recall_window_to": "''",
+              "audience_now": "has(hop.audience_now) ? hop.audience_now : ''",
+              "channel": "''",
+              "recall_caller": "'objects'",
+              "objects_subject": "has(hop.subject) ? hop.subject : ''"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./objects",
+          "condition": "has(hop.route) && hop.route == 'bundle' && has(hop.recall_caller) && hop.recall_caller == 'objects'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_facts'",
+              "subject": "has(context.objects_subject) ? context.objects_subject : ''"
+            },
+            "delete_context": [
+              "objects_subject"
+            ]
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./objects",
+          "condition": "has(hop.route) && hop.route == 'reject' && has(hop.recall_caller) && hop.recall_caller == 'objects'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_facts'",
+              "subject": "has(context.objects_subject) ? context.objects_subject : ''"
+            },
+            "delete_context": [
+              "objects_subject"
+            ]
+          }
+        },
+        {
+          "from": "./objects",
+          "to": "./graph-space",
+          "condition": "has(hop.route) && hop.route == 'source_changed'",
+          "modifier": {
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./graph-space",
+          "to": "./objects",
+          "condition": "has(hop.route) && hop.route == 'pull' && has(hop.source) && hop.source.startsWith('ob-')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_read'"
+            }
+          }
+        },
+        {
+          "from": "./objects",
+          "to": "./graph-space",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.op_id) && hop.op_id.startsWith('gs:')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_pulled'"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./objects",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('object_')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            },
+            "set_context": {
+              "audience_now": "has(context.audience_set) ? context.audience_set : ''"
+            }
+          }
+        },
+        {
+          "from": "./objects",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./objects",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./objects",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'objects'"
+            }
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'source_changed'",
+          "modifier": {
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'source_described'",
+          "modifier": {
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./librarian",
+          "to": "./file-space",
+          "condition": "has(hop.route) && hop.route == 'pull' && has(hop.op_id) && hop.op_id.startsWith('lib:f:')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_read'"
+            }
+          }
+        },
+        {
+          "from": "./file-space",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.op_id) && hop.op_id.startsWith('lib:')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_pulled'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./librarian",
+          "to": "./graph-space",
+          "condition": "has(hop.route) && hop.route == 'pull' && has(hop.op_id) && hop.op_id.startsWith('lib:g:')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_graph'"
+            }
+          }
+        },
+        {
+          "from": "./graph-space",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.op_id) && hop.op_id.startsWith('lib:')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_pulled'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('lib_')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./librarian",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./librarian",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'library'"
             }
           }
         },

@@ -151,6 +151,8 @@ fn build_tree(root: &std::path::Path, member: &std::path::Path) -> Value {
         "affinity",
         "file-space",
         "graph-space",
+        "librarian",
+        "objects",
         "firewall",
         "memory-hive",
     ] {

@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 33] = [
+const SHARED: [&str; 35] = [
     "actor",
     "asker",
     "audience_now",
@@ -137,6 +137,12 @@ const SHARED: [&str; 33] = [
     // with nothing, so no exit of the shell ever carries one it set.
     "model_announced",
     "model_generation",
+    // GH #951 -- the object id of a facts question. The member's `facts` door
+    // stamps it beside `recall_caller` for the memory hive's `in_query
+    // {subject}`, whose refusal (`reject`) names no subject; it rides through
+    // the memory hive, and the member's way back to `./objects` restates it as
+    // `hop.subject` and deletes it there. Without it a refusal finds no object.
+    "objects_subject",
     // GH #877 -- the delivery identity of an identity pack: which subscriber
     // row it serves and the hash of what it carries. `affinity/push` names both
     // on the pack, the builder's `in_pack` v-lane stamps them into context at
@@ -154,6 +160,14 @@ const SHARED: [&str; 33] = [
     "recall_window_to",
     "requester",
     "session_id",
+    // GH #949 -- who speaks in a turn, `member:<person>`, stamped by the entry
+    // edge of a bound channel only with a sender proof (`hop.user_id` equal to
+    // `bind_user`, else to `bind_chat`). The memory writer reads it on the
+    // person's episode and the objects hive takes the owner from it, both
+    // several rims further in, so no rim on the way may clear it. The edge
+    // that sets it is drawn by `grow_level channel`, not shipped in a hive;
+    // `examples/organism/grow-channel.json` carries it byte for byte.
+    "speaker",
     "subscriber",
     "turn_id",
 ];
@@ -197,6 +211,46 @@ fn edges(config: &Value) -> Vec<&Value> {
         .as_array()
         .map(|list| list.iter().collect())
         .unwrap_or_default()
+}
+
+/// Every `set_context` key on any edge of the shipped `examples/organism`
+/// declarations -- what the builder's recipes draw.
+fn recipe_set_keys() -> BTreeSet<String> {
+    fn walk(v: &Value, out: &mut BTreeSet<String>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(Value::Object(ctx)) =
+                    map.get("modifier").and_then(|m| m.get("set_context"))
+                {
+                    out.extend(ctx.keys().cloned());
+                }
+                for child in map.values() {
+                    walk(child, out);
+                }
+            }
+            Value::Array(list) => {
+                for child in list {
+                    walk(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let dir = templates_dir()
+        .parent()
+        .expect("the repo root")
+        .join("examples/organism");
+    let mut out = BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).expect("examples/organism") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("example");
+        let value: Value = from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        walk(&value, &mut out);
+    }
+    out
 }
 
 fn set_context_keys(edge: &Value) -> Vec<String> {
@@ -355,6 +409,11 @@ fn every_named_exemption_still_names_a_key_a_hive_sets() {
     for config in hives.values() {
         all_interior.extend(interior_keys(config));
     }
+    // A key only a recipe-drawn level sets (GH #949: `speaker` on a bound
+    // channel's entry edge) counts as set when the shipped examples carry it:
+    // `examples/organism` is byte-pinned to the renderer (gh466, gh422), so
+    // the exemption still rots into a red line once the recipe stops setting it.
+    all_interior.extend(recipe_set_keys());
 
     let stale: Vec<&str> = SHARED
         .into_iter()

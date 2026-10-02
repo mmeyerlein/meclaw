@@ -7,6 +7,9 @@
 //! the app carries `in_close`. `pins` draws ONE edge from the declared cell
 //! onto the generation, `pin` restamped `in_pin` -- the generation hands it to
 //! the curator of each brain. An app that declares neither gets neither.
+//! GH #949 (review I-1): the pin edge stamps the MEMBER's round
+//! (`["agent:<generation>","member:<ctx.member_person>"]`) over whatever round
+//! the app's message carries, so a wish with `pins` names the person.
 //!
 //! Pure script tests: the SHIPPED `classify` and `recipes` are run over stdin,
 //! nothing is booted. The colony case is `gh916_an_app_hears_its_member.rs`.
@@ -26,6 +29,9 @@ const CLASSIFY: &str = concat!(
 );
 
 const MEMBER: &str = "/os/orgs/acme/members/alex";
+/// The round the pin edge stamps, as a CEL literal: the generation `sam` is
+/// the agent, `ctx.member_person` the person (GH #949, review I-1).
+const MEMBER_ROUND: &str = r#"'["agent:sam","member:alex"]'"#;
 
 fn golden() -> Value {
     let p =
@@ -71,7 +77,23 @@ fn refusal(params: &Value) -> Value {
 
 fn params(declaration: Value) -> Value {
     json!({"scope": MEMBER, "app": "probe-app", "template": "probe-app@1.0.0",
-           "screen": "display", "generation": "sam", "declaration": declaration})
+           "screen": "display", "generation": "sam", "ctx": {"member_person": "alex"},
+           "declaration": declaration})
+}
+
+fn classify(params: Value) -> Value {
+    emit_one(
+        &shipped_script(CLASSIFY),
+        &json!({
+            "target": "/os/builder/classify",
+            "header": {"hop": {"route": "in_build"}, "context": {}},
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
+                          "text": json!({"request": "install an app",
+                                         "recipe": "install_app",
+                                         "params": params}).to_string()}],
+        }),
+    )
 }
 
 fn set(edges: &[Value]) -> BTreeSet<String> {
@@ -181,20 +203,6 @@ fn pins_names_a_cell_inside_the_app() {
 
 #[test]
 fn pins_needs_the_generation_at_the_switch() {
-    let classify = |params: Value| {
-        emit_one(
-            &shipped_script(CLASSIFY),
-            &json!({
-                "target": "/os/builder/classify",
-                "header": {"hop": {"route": "in_build"}, "context": {}},
-                "ttl": 64,
-                "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
-                              "text": json!({"request": "install an app",
-                                             "recipe": "install_app",
-                                             "params": params}).to_string()}],
-            }),
-        )
-    };
     let mut p = params(json!({"pins": "./sink"}));
     p.as_object_mut().unwrap().remove("generation");
     let out = classify(p.clone());
@@ -212,4 +220,58 @@ fn pins_needs_the_generation_at_the_switch() {
     q.as_object_mut().unwrap().remove("generation");
     let out = classify(q);
     assert_eq!(out["header"]["route"], json!("recipe"), "{out}");
+}
+
+/// GH #949 (review I-1) -- a pin leaves in its MEMBER's round. The round an
+/// app's message carries is written by the app's own template, so the edge
+/// the builder draws stamps `["agent:<generation>","member:<person>"]` over
+/// it; a wish with `pins` that names no person renders nothing and is asked,
+/// at the renderer and at the switch, with one question. `close` alone stamps
+/// no round and needs no person. The forged round on the real edge table is
+/// `gh916_an_app_hears_its_member.rs` (`a_pin_reaches_the_curator_of_every_
+/// brain_once`).
+///
+/// Red before the fix: the pin edge carries no `set_context`.
+#[test]
+fn a_pin_leaves_in_the_members_round_and_the_wish_names_the_person() {
+    let got = edges(&params(json!({"pins": "./sink"})));
+    let pin: Vec<&Value> = got
+        .iter()
+        .filter(|e| e["from"] == "./apps/probe-app/sink")
+        .collect();
+    assert_eq!(pin.len(), 1, "{got:#?}");
+    assert_eq!(
+        pin[0]["modifier"]["set_context"]["audience_set"],
+        json!(MEMBER_ROUND),
+        "the pin edge stamps the member's round: {got:#?}"
+    );
+
+    let mut p = params(json!({"pins": "./sink"}));
+    p.as_object_mut().unwrap().remove("ctx");
+    let rendered = run_recipes(&p);
+    let first = rendered.first().expect("an emission");
+    assert_eq!(
+        first["header"]["error_code"],
+        json!("wish_incomplete"),
+        "{first}"
+    );
+    assert!(first["manifest"].is_null(), "nothing is rendered: {first}");
+    let asked: Value =
+        serde_json::from_str(first["messages"][0]["text"].as_str().expect("a payload"))
+            .expect("json");
+    assert_eq!(asked["missing"], json!(["ctx.member_person"]), "{asked}");
+    let out = classify(p);
+    assert_eq!(
+        out["header"]["error_code"],
+        json!("wish_incomplete"),
+        "{out}"
+    );
+    let switch: Value =
+        serde_json::from_str(out["messages"][0]["text"].as_str().expect("a payload"))
+            .expect("json");
+    assert_eq!(switch, asked, "one question at the switch and the renderer");
+
+    let mut q = params(json!({"listens": ["close"]}));
+    q.as_object_mut().unwrap().remove("ctx");
+    assert!(!edges(&q).is_empty(), "`close` alone needs no person");
 }

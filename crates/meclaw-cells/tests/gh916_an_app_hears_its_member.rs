@@ -28,7 +28,8 @@
 //!       as `in_close` with the session, round and channel, still reaches the
 //!       memory hive's close pass and the member's own exit, never `quiet-app`;
 //!    4. a `pin` of `probe-app`'s cell reaches the curator of each of the three
-//!       brains once as `in_pin`, the round untouched; a `pin` of `quiet-app`'s
+//!       brains once as `in_pin`, in the member's round whatever round the app
+//!       wrote (GH #949, review I-1); a `pin` of `quiet-app`'s
 //!       cell is taken by no edge at all;
 //!    5. an `answer` without a channel still leaves the member exactly once;
 //!    6. the fixture's declaration is the one the reviewed golden renders.
@@ -84,6 +85,9 @@ const BACKGROUND_MODEL: &str = "background-stub";
 const BACKGROUND_REPLY: &str = "A short account of what was said.";
 
 const AUDIENCE: &str = r#"["member:owner","agent:sam"]"#;
+/// The member's round as the pin edge stamps it (GH #949, review I-1): the
+/// same set as `AUDIENCE`, written by the builder, never by the app.
+const MEMBER_ROUND: &str = r#"["agent:sam","member:owner"]"#;
 const ROUND: &str = "S-916#3";
 
 /// The generation every declaration of this file is installed for.
@@ -181,6 +185,14 @@ fn declaration(app: &str) -> Value {
 /// What `install_app` draws for `app` at a member, member-relative: the
 /// SHIPPED renderer over stdin, as `gh916_an_app_declares_close_and_pins` runs it.
 fn install_edges(app: &str) -> Vec<Value> {
+    install_edges_for(app, "owner")
+}
+
+/// [`install_edges`] for a named member person. The reviewed golden
+/// (`gh916_install_edges.json`, shared with `gh916_an_app_declares_close_and_pins`)
+/// was rendered for the person `alex`; the walk here installs for `owner`, whose
+/// member round equals the 1:1 round of [`AUDIENCE`].
+fn install_edges_for(app: &str, person: &str) -> Vec<Value> {
     let out = emit_all(
         &shipped_script(&repo("templates/builder/recipes/config.json").to_string_lossy()),
         &json!({
@@ -194,6 +206,7 @@ fn install_edges(app: &str) -> Vec<Value> {
                                                     "template": format!("{app}@1.0.0"),
                                                     "screen": "display",
                                                     "generation": GENERATION,
+                                                    "ctx": {"member_person": person},
                                                     "declaration": declaration(app)}})
                                   .to_string()}],
         }),
@@ -457,7 +470,7 @@ fn the_probe_app_declares_what_the_reviewed_golden_renders() {
         "the fixture app declares what the golden was reviewed for"
     );
     let set = |v: &[Value]| -> BTreeSet<String> { v.iter().map(|e| e.to_string()).collect() };
-    let got = install_edges(PROBE_APP);
+    let got = install_edges_for(PROBE_APP, "alex");
     let want = golden["edges"].as_array().expect("edges").clone();
     assert_eq!(set(&got), set(&want), "rendered: {got:#?}");
 }
@@ -652,31 +665,47 @@ fn a_pin_reaches_the_curator_of_every_brain_once() {
     let t = shipped_table();
     let ctx = as_map(&json!({"audience_set": AUDIENCE, "channel": "chat:916"}));
     let from = format!("{APPS}/{PROBE_APP}/sink");
-    let arrived = spread(
-        &t,
-        &from,
-        Headers::from_parts(ctx.clone(), as_map(&json!({"route": "pin"}))),
-    );
-    let want: Vec<String> = {
-        let mut v: Vec<String> = BRAINS
-            .iter()
-            .map(|b| format!("{GEN}/{b}/curator/intake"))
-            .collect();
-        v.sort();
-        v
-    };
-    assert_eq!(
-        paths(&arrived),
-        want.iter().map(String::as_str).collect::<Vec<_>>(),
-        "the pin reaches the curator of each brain, once each, and nothing else"
-    );
-    for (p, h) in &arrived {
-        assert_eq!(hop_of(h, "route"), "in_pin", "{p}");
-        assert_eq!(
-            ctx_of(h, "audience_set"),
-            AUDIENCE,
-            "{p}: the round a pin was made in is not rewritten on its way"
+    // GH #949 (review I-1): the round an app's message carries is the app's
+    // own word -- an edge inside its template can write any. The pin edge
+    // stamps the member's round over it: a forged group round, the universal
+    // one, the agent alone and no round at all each arrive as the member's.
+    for forged in [
+        Some(AUDIENCE),
+        Some(r#"["*"]"#),
+        Some(r#"["member:owner","member:guest","agent:sam"]"#),
+        Some(r#"["agent:sam"]"#),
+        None,
+    ] {
+        let mut sent = as_map(&json!({"channel": "chat:916"}));
+        if let Some(r) = forged {
+            sent.insert("audience_set".into(), json!(r));
+        }
+        let arrived = spread(
+            &t,
+            &from,
+            Headers::from_parts(sent, as_map(&json!({"route": "pin"}))),
         );
+        let want: Vec<String> = {
+            let mut v: Vec<String> = BRAINS
+                .iter()
+                .map(|b| format!("{GEN}/{b}/curator/intake"))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            paths(&arrived),
+            want.iter().map(String::as_str).collect::<Vec<_>>(),
+            "the pin reaches the curator of each brain, once each, and nothing else"
+        );
+        for (p, h) in &arrived {
+            assert_eq!(hop_of(h, "route"), "in_pin", "{p}");
+            assert_eq!(
+                ctx_of(h, "audience_set"),
+                MEMBER_ROUND,
+                "{p}: sent in {forged:?}, the pin arrives in its member's round"
+            );
+        }
     }
 
     // An app that declares no `pins` has no edge from its cell: the pin is

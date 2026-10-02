@@ -219,6 +219,37 @@ fn a_wish_that_names_no_person_is_asked_rather_than_guessed_at() {
     assert_eq!(payload(&early)["missing"], json!(["ctx.member_person"]));
 }
 
+/// GH #949 (review I-R1) -- the person stands INSIDE the round literal, a JSON
+/// string in a CEL string: `x","*` stamped `["agent:egon","member:x","*"]` on
+/// the ingress edge, a round that covers every row. A person with a quote, a
+/// backslash, a dollar sign, `*`, a comma or a control character is asked
+/// again, at the renderer and at the switch, and nothing is rendered.
+///
+/// Red before the fix: the channel rendered with `*` in its round.
+#[test]
+fn a_person_that_would_break_the_round_is_asked_again() {
+    for person in [r#"x","*"#, "x'", "x\\", "x$", "*", "x,y", "x\ty"] {
+        let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
+                                     "params": wish(Some(person))}));
+        assert_eq!(
+            out["header"]["error_code"],
+            json!("wish_incomplete"),
+            "{person:?}: {out}"
+        );
+        assert!(out["manifest"].is_null(), "{person:?}: rendered: {out}");
+        let asked = payload(&out);
+        assert_eq!(asked["missing"], json!(["ctx.member_person"]), "{asked}");
+        let early = run_classify(json!({"request": "…", "recipe": "grow_level",
+                                        "params": wish(Some(person))}));
+        assert_eq!(early["header"]["error_code"], json!("wish_incomplete"));
+        assert_eq!(
+            payload(&early),
+            asked,
+            "{person:?}: one question at both cells"
+        );
+    }
+}
+
 /// The other half of the switch's rule, unchanged: a SENTENCE that names no
 /// person is not an error, because nobody named a recipe. It falls through to
 /// the design lane, where the composer asks the same question out of the brief.

@@ -1,4 +1,4 @@
-# `session-keeper@2.3.0`
+# `session-keeper@2.3.1`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),

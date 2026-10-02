@@ -79,6 +79,16 @@ const FILE_SPACE_SCHEMAS_CELL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/file-space/schemas/config.json"
 );
+const LIBRARIAN_SCHEMAS_CELL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/librarian/schemas/config.json"
+);
+// GH #951 -- the member's objects answer the `object_*` family the way the
+// file space answers `file_*`.
+const OBJECTS_SCHEMAS_CELL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/objects/schemas/config.json"
+);
 const CURATOR_SCHEMAS_CELL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/curator/schemas/config.json"
@@ -107,6 +117,24 @@ fn what_the_file_space_answers() -> BTreeSet<String> {
         return BTreeSet::new();
     }
     what_a_schemas_cell_answers(FILE_SPACE_SCHEMAS_CELL, "/main/m/file-space/schemas")
+}
+
+/// Every `lib_*` tool the member's librarian answers the menu question with
+/// (GH #950), read off its `schemas` cell the same way.
+fn what_the_librarian_answers() -> BTreeSet<String> {
+    if !std::path::Path::new(LIBRARIAN_SCHEMAS_CELL).is_file() {
+        return BTreeSet::new();
+    }
+    what_a_schemas_cell_answers(LIBRARIAN_SCHEMAS_CELL, "/main/m/librarian/schemas")
+}
+
+/// Every `object_*` tool the member's objects answer the menu question with
+/// (GH #951), read off their `schemas` cell the same way.
+fn what_the_objects_answer() -> BTreeSet<String> {
+    if !std::path::Path::new(OBJECTS_SCHEMAS_CELL).is_file() {
+        return BTreeSet::new();
+    }
+    what_a_schemas_cell_answers(OBJECTS_SCHEMAS_CELL, "/main/m/objects/schemas")
 }
 
 fn what_a_schemas_cell_answers(cell: &str, target: &str) -> BTreeSet<String> {
@@ -286,13 +314,16 @@ fn answered(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
     // GH #908: a composite that routes a PREFIX up to the member
     // (`hop.tool_name.startsWith('file_')`) is answered, one level up, by the
     // member's file space -- every name its `schemas` cell serves under that
-    // prefix, and nothing else.
+    // prefix, and nothing else. Since GH #950 the member's librarian answers
+    // the `lib_` prefix the same way, and since GH #951 the member's objects
+    // the `object_` prefix.
+    let upstairs: BTreeSet<String> = what_the_file_space_answers()
+        .into_iter()
+        .chain(what_the_librarian_answers())
+        .chain(what_the_objects_answer())
+        .collect();
     for prefix in routed_prefixes(c) {
-        out.extend(
-            what_the_file_space_answers()
-                .into_iter()
-                .filter(|n| n.starts_with(&prefix)),
-        );
+        out.extend(upstairs.iter().filter(|n| n.starts_with(&prefix)).cloned());
     }
     if asks_its_curator(c) {
         out.extend(what_the_curator_answers());

@@ -990,8 +990,17 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     // `./file-space` on `turn`, its address line in place of the bytes.
     // 40 -> 42 with GH #926: the stats question passes through, one plain door
     // into the container on `in_stats` and one exit out of it on `stats`.
+    // 42 -> 46 with GH #950: the librarian's tool road, the same four edges as
+    // the file space's (`tool` on the `lib_` prefix and `schemas` in,
+    // `tool_result` re-stamped to `in_tool` and `tool_schemas` to `in_menu` with
+    // `tool_answerer = 'library'`).
+    // 46 -> 52 with GH #951: the objects' road -- `thing_seen` out of the
+    // container and the `candidate` back into it as `in_candidate`, and the
+    // same four tool edges as the file space's (`tool` and `schemas` in,
+    // `tool_result` re-stamped to `in_tool` and `tool_schemas` to `in_menu`
+    // with `tool_answerer = 'objects'`).
     assert_eq!(
-        declared, 42,
+        declared, 52,
         "the member's own edges to and from its assistants container are the member \
          template's, drawn ONCE at member instantiation. These reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \

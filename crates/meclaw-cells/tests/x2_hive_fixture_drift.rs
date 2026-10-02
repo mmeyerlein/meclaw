@@ -124,10 +124,10 @@ fn the_edge_fixture_is_byte_identical_to_the_shipped_hive_edge() {
         .expect("array")
         .len();
     assert_eq!(
-        n, 3,
-        "the write path inside the hive is THREE edges: writer -> store for the \
-         episode (`wstore`) and the affect mark (`astore`, GH #936), and the \
-         affect answer store -> writer"
+        n, 5,
+        "the write path inside the hive is FIVE edges: writer -> store for the \
+         episode (`wstore`), the affect mark (`astore`, GH #936) and the alias \
+         binding (`alstore`, GH #948), and the two answers store -> writer"
     );
 }
 

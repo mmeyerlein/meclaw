@@ -560,6 +560,8 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
         "memory-hive",
         "file-space",
         "graph-space",
+        "librarian",
+        "objects",
     ] {
         write(
             root,

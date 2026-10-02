@@ -1,0 +1,88 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "import sys, json\n\n# THE BRIEF OF AN OBJECT (GH #951), rendered here and nowhere else: `./push`\n# (the text of a curator candidate) and `./tools` (`object_brief`) both ask\n# this cell, so a model reads the same words in a push and in an answer.\n#\n# Pure and deterministic: the same row and the same facts give the same bytes.\n# `<type>: <main name>`, then the filled slots in a fixed order (what, where, who,\n# when, why, how) -- `who` only as `<n> people`, never a name and never a\n# reference, because a brief travels to every turn of the row's round -- then\n# at most three facts, newest first as handed in. Cut to BRIEF_MAX characters\n# by whole parts: a part that does not fit ends the brief, no part is cut.\n# Nothing here reads a clock, a store or a round: who may read a brief is\n# decided before it is rendered (`./tools`, `./push`).\nSLOTS = (\"what\", \"where\", \"who\", \"when\", \"why\", \"how\")\nBRIEF_MAX = 600\nFACTS_MAX = 3\nFACT_CHARS = 200\n\n\ndef loads(v, default):\n    if isinstance(v, str):\n        try:\n            x = json.loads(v)\n        except Exception:\n            return default\n        return x if isinstance(x, type(default)) else default\n    return v if isinstance(v, type(default)) else default\n\n\ndef one_line(v):\n    return \" \".join(str(v or \"\").split())\n\n\ndef main_name(row):\n    aliases = [a for a in loads(row.get(\"aliases\"), []) if isinstance(a, str) and a]\n    return aliases[0] if aliases else str(row.get(\"id\") or \"\")\n\n\ndef parts_of(row, facts):\n    slots = loads(row.get(\"slots\"), {})\n    parts = [\"%s: %s\" % (one_line(row.get(\"type\")) or \"thing\", one_line(main_name(row)))]\n    for s in SLOTS:\n        v = slots.get(s)\n        if s == \"who\":\n            n = len([x for x in v if isinstance(x, str) and x]) if isinstance(v, list) else 0\n            if n:\n                parts.append(\"who: %d people\" % n)\n        elif isinstance(v, str) and one_line(v):\n            parts.append(\"%s: %s\" % (s, one_line(v)))\n    for f in [f for f in (facts if isinstance(facts, list) else []) if isinstance(f, str)][:FACTS_MAX]:\n        t = one_line(f)[:FACT_CHARS]\n        if t:\n            parts.append(\"fact: %s\" % t)\n    return parts\n\n\ndef render(row, facts):\n    out = \"\"\n    for p in parts_of(row if isinstance(row, dict) else {}, facts):\n        nxt = p if not out else out + \"\\n\" + p\n        if len(nxt) > BRIEF_MAX:\n            break\n        out = nxt\n    return out\n\n\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nhop = ((doc.get(\"envelope\") or {}).get(\"header\") or {}).get(\"hop\") or {}\nlane = str(hop.get(\"route\") or \"\")\nif lane != \"brief_render\":\n    sys.stderr.write(\"objects/brief: unknown lane %r -- dropped\\n\" % lane)\n    sys.stdout.write(\"[]\")\n    sys.exit(0)\nrow = d.get(\"row\") if isinstance(d.get(\"row\"), dict) else {}\nsys.stdout.write(json.dumps([{\n    \"header\": {\"route\": \"rendered\", \"reply_cell\": str(hop.get(\"reply_cell\") or \"\")},\n    \"text\": render(row, d.get(\"facts\")),\n    \"carry\": d.get(\"carry\") if isinstance(d.get(\"carry\"), dict) else {},\n    \"messages\": []}], ensure_ascii=False))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "text": {
+          "type": "string",
+          "required": false
+        },
+        "carry": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "rendered"
+          ]
+        },
+        "reply_cell": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "row": {
+          "type": "object",
+          "required": false
+        },
+        "facts": {
+          "type": "array",
+          "required": false
+        },
+        "carry": {
+          "type": "object",
+          "required": false
+        },
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "reply_cell": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Renders the brief of one object row, pure and deterministic: `<type>: <main name>`, the filled slots in a fixed order (`who` as `<n> people`, never a name or reference), at most three facts, cut by whole parts to 600 characters.",
+    "use_when": "Inside an objects hive only, asked on `brief_render` by `./push` and `./tools`.",
+    "not_in_scope": "No store, no clock, no round decision: whoever asks has decided who may read the brief.",
+    "emits_meaning": "`rendered` with the text and the asker's `carry`, `reply_cell` mirrored.",
+    "consumes_meaning": "A row and the facts about it."
+  }
+}

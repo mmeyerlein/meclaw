@@ -1,4 +1,4 @@
-# `talky@6.4.2`
+# `talky@6.5.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- fifty-two edges,
+dispatcher for the fan-out, the close batch out to the write port -- fifty-six edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.4.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.5.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -449,21 +449,23 @@ and the `turn_id` is deterministic, so a repeat is recognisable downstream as we
 
 ## The internal wiring, edge by edge
 
-Twenty-one edges of round in this hive's `params.graph` -- plus the thirty-one that ARE the
-boundary (fourteen door edges from `.`, seventeen leaving towards it, and those are the lanes
+Twenty-one edges of round in this hive's `params.graph` -- plus the thirty-five that ARE the
+boundary (sixteen door edges from `.`, nineteen leaving towards it, and those are the lanes
 above; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
-push, GH #863, and eight of them leave `./curator` -- `write`, `turn_write`, `pack_ack` and
+push, GH #863, and ten of them leave `./curator` -- `write`, `turn_write`, `pack_ack` and
 its summarizer's `model_refused` since 6.0.0, GH #889, `sidecar` for the `memory` section it
 passes on unchanged, GH #892, and for a gap's find spoken as `fact` in a duplex call, the
 memory ask, the collector's and a gap's own, GH #895, and the answer to a stats question,
-`stats`, GH #926; the sixth door is the mutation
+`stats`, GH #926, the things its `things` section saw and a candidate's receipt, `thing_seen`
+and `candidate_ack`, GH #949, and the answer to an app's ledger read, `read`, GH #949; the sixth door is the mutation
 receipt, GH #553, the seventh is the `in_menu` fan that reaches `./schemas` beside the
 collector, GH #783, the eighth is the model door straight into `./brain`, GH #855, the ninth
 the pack door and the tenth the summarizer's model door, both into `./curator`, GH #889, the
 eleventh a gap's bundle into `./curator`, GH #895, the twelfth the renewed duplex call,
 `in_renewed` into `./curator`, GH #896, the thirteenth door another hive's pin,
-`in_pin` into `./curator`, GH #916, and the fourteenth door an observer's stats question,
-`in_stats` into `./curator`, GH #926).
+`in_pin` into `./curator`, GH #916, the fourteenth door an observer's stats question,
+`in_stats` into `./curator`, GH #926, the fifteenth a push candidate, `in_candidate` into
+`./curator`, GH #949, and the sixteenth an app's ledger read, `in_read` into `./curator`, GH #949).
 The two halves are the whole of this file, counted from it. Every one of the twenty-one names a
 sub-unit **by its path**: three of the eight nodes below are sealed hives, so the address is
 the hive and the lane in the third column is what the door behind it reads; what those three
@@ -683,7 +685,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.4.2",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.5.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1308,7 +1310,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all twenty-three cells (plus four hive markers); the two `timer`s
+The composite comes up with all twenty-four cells (plus four hive markers); the two `timer`s
 spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:

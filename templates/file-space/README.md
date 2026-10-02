@@ -1,4 +1,4 @@
-# `file-space@1.2.0`
+# `file-space@1.3.0`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -11,7 +11,7 @@ The files of one knowledge space, each a logical file hive under one address, ov
 | `…@<hex prefix>` | a version: 4 to 64 hex digits, resolved within the file; several matches → `version_ambiguous` with `candidates` |
 | `…@ws:<name>` | the file as an open workspace sees it (hop `ws` does the same) |
 | `…@snap:<name>` | a named snapshot of the file |
-| `…#<anchor>` | a node of the file (see [Nodes and links](#nodes-and-links)); `read` reads its span, every other op answers `anchor_unsupported` |
+| `…#<anchor>` | a node of the file (see [Nodes and links](#nodes-and-links)); `read` reads its span, `write_node` and `insert` write at it (see [Directories](#directories)), every other op answers `anchor_unsupported` |
 
 A version is the sha256 of the raw bytes; every answer names it by its first 12 hex digits. **No answer field carries the store, the space or the hive path**: moving a file's rows into another store changes no address. The curator's block kind `ref` stays reserved (see [`curator`](../curator/README.md), `blocks.kind`), its body `{"type":"ref","ref":"fh-…@<v12>","text":"<one line>"}`; a pin into a curator goes through `in_pin` with `pins[]`, each `{text, source, until?}`. Nothing in 1.0.0 writes a `ref` or a pin.
 
@@ -35,6 +35,7 @@ A version is the sha256 of the raw bytes; every answer names it by its first 12 
 | `model_refused` | a refused `in_model` push (the curator's pattern) |
 | `derived` | `{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller` |
 | `source_changed` | the node source contract ([Nodes and links](#nodes-and-links)): once per head move and once per removed file, whatever the `caller`; the head carries no `caller` |
+| `source_described` | `{source, version, path, oneline, tags}` once per stored summary of a file while its version is still the head ([#947](https://github.com/mmeyerlein/meclaw/issues/947)); none without a summary; the head carries no `caller` |
 | `tool_schemas` | `{schemas[], unknown[], sidecar[]}` for `in_schemas`, the shape of `memory-hive` |
 | `tool_result` | one turn under the call's id for `in_tool`: the answer as JSON text without `op_id` and `caller`; `hop.error_code` on a refusal |
 | `turn` | the turn of an `in_ingest`, once, without `attachments`: one text turn after the caption, `[file fh-<id>@<v12> "<name>", <n> pages: <oneline>]` (the page count only for a PDF, counted from its `derived` parts), or `[file "<name>" could not be stored: <code>]`; caption and hop keys unchanged; the turn leaves on what its last try left of the TTL (`./ingest -> ./extract` and `./ingest -> ./write` restore it once per try), and the door of the hive that owns the turn restores it again (GH #929) |
@@ -107,6 +108,10 @@ A repeated anchor in one file takes `~2`, `~3` in source order. `unit` is `line`
 
 **Node source contract** (route `source_changed`, for every later node source too): after each head move of a file (birth, write, workspace commit, one event per file) `{source: "fh-<12 hex>", version: "<v12>", path, fmt, parser, mark, nodes, links, tomb: false}`, emitted after its rows are written and only while that version is still the head; after a removal (`remove`, or a commit that removes) `{source, path, tomb: true}` -- no `version`: a grave has no head -- once the tomb won, its rows dropped in the bundle after it (a store bundle is no transaction: a lost tomb must not take a living head's rows). A link is `{kind, from_anchor, target_name, pos, alias?}`: `alias` only where the source binds a name of its own (python `import m as a`, `from m import f as a`), the key missing otherwise; two names for one target are two links. A source answers `outline` and `links` page by page over `{source, version?, cursor?, limit?}` -- here the `in_read` body `{op, file: <source>, args}` with an empty `caller`. Source ids carry a prefix of their kind: `fh-` a file; `ob-` is reserved.
 
+## Directories
+
+A directory is a path without a trailing `/` and one row of `dirs`, unique on `path`, kept by `./derive` ([#947](https://github.com/mmeyerlein/meclaw/issues/947)); the root `/` always exists and reads as zeros without a row. Every write that takes a path -- `create` (in a workspace too), the target of `move` and `copy`, `create_dir` -- first inserts a `claims` row, unique on `path` ([#918](https://github.com/mmeyerlein/meclaw/issues/918)): another writer's living claim, a living file at the path or above it, or a living directory at it answers `path_taken`; the claim ends with the write, and one left behind expires after `write.claim_ttl_s` (120 s). The counts come in three stages. Stages 1 (`files`, `bytes`, `nodes`) and 2 (the bit counters of the file vectors, and the counters of the topic tags a summary ends in, `TAGS: a, b`) are propagated: `contrib` holds the share of one file last counted in, and after every head move, `remove`, `move` and committed removal `./derive` moves the difference into the row of every ancestor and marks it `dirty`. Stage 3, a directory's one-line `summary`, is lazy: `dir_summary {path}` (served by `./derive`) writes it from the children's one lines only when the directory changed since, never cascading and never on a write. `subdirs` is counted on reading. The structure ops move the main line only: `create_dir {path}` (`created: false` when it lives), `remove_dir {path}` (`not_empty` while a file or a directory lives in it; a directory is never moved or copied), `move {to}` of a file (id, head and nodes stay; one `source_changed` with the new path), `copy {to}` (a new file with the same version), and `write_node {text, base}` / `insert {where?, text, base}` at `fh-<12 hex>#<anchor>` (the head's span of the node; `base` must be the head). `list` gives each directory entry `files`, `bytes`, `nodes`, `subdirs`, `dirty`, `tags` (the top 8 as `[{tag, n}]`) and `summary` (once written) and shows empty directories too; `info` carries the version's `tags`; `dir_info {path, cursor?, limit?}` answers `{path, parent, files, bytes, nodes, subdirs, dirty, tags, summary, born, children, next}`, the children in path order, 50 per page (at most 200), `{name, path, type: "dir", files, bytes, nodes, dirty, summary}` or `{name, path, type: "file", file, kind, mime, bytes, lines, version, changed, oneline}`. Tools: `file_dir_info` and `file_dir_summary` for every surface, `file_create_dir`, `file_remove_dir`, `file_move`, `file_copy` and `file_write_node` for 'cogny' only; `file_insert` takes an anchor in `file` instead of `line`.
+
 ## Ops
 
 | Lane | Op | Arguments | Answer |
@@ -150,7 +155,7 @@ Argument `file` goes into the body, `ws` onto the hop (a workspace name), `mode`
 | Code | When |
 |---|---|
 | `bad_request` / `unknown_op` / `bad_path` | no `op_id`, a malformed argument, a bad workspace name / an op the lane does not serve / a path a file cannot take |
-| `bad_address` / `anchor_unsupported` / `unknown_anchor` | not `fh-<12 hex>` or `/path`, or a malformed suffix / an address with `#…` on any op but `read` / `read` of an anchor the version has no node for (`candidates`: ≤ 5 anchors with the same last name) |
+| `bad_address` / `anchor_unsupported` / `unknown_anchor` | not `fh-<12 hex>` or `/path`, or a malformed suffix / an address with `#…` on any op but `read`, `write_node` and `insert` / `read` of an anchor the version has no node for (`candidates`: ≤ 5 anchors with the same last name) |
 | `not_found` / `tombstoned` | no such file, or none at that state / the head of a removed file (its versions stay readable) |
 | `version_unknown` / `version_ambiguous` | no / several versions of the file start with the prefix (`candidates`) |
 | `snap_unknown` / `ws_unknown` / `ws_closed` | no snapshot / no open workspace of that name (`read`) / a write into a committed or discarded workspace |

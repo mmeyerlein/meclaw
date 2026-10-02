@@ -746,6 +746,12 @@ pub fn plan_bootstrap_with_env(
                     crate::mutation::MutationError::UnsupportedSubstitution(form) => {
                         format!("unsupported_substitution: ${{{form}}}")
                     }
+                    // GH #949 (review I-3): an edge of `params.graph` whose
+                    // CEL slot an environment value would break. The message
+                    // names the variable and the slot, never the value.
+                    crate::mutation::MutationError::EnvValueUnsafe(why) => {
+                        format!("env_value_unsafe: {why}")
+                    }
                     other => format!("{other:?}"),
                 };
                 errors.push(BootstrapError::EnvSubstitution {

@@ -1050,13 +1050,22 @@ fn the_sections_that_keep_their_ids_are_the_ones_the_curator_takes() {
             .and_then(|e| e["condition"].as_str().map(str::to_string))
             .unwrap_or_else(|| panic!("no sidecar edge ./splitter -> {to}: {edges:#?}"))
     };
+    // GH #949: `things` reaches the curator as well, but it does not stay there:
+    // the curator hands it on out of the generation as `thing_seen`, so its words
+    // are not kept with their ids, like every other section that leaves. It is
+    // the one section the curator takes that `id_sections` does not name.
+    let taken = |c: &str| -> Vec<String> {
+        let mut s = sections_named(c);
+        s.retain(|name| name != "things");
+        s
+    };
     assert_eq!(
-        sections_named(&cond("./curator")),
+        taken(&cond("./curator")),
         keep,
         "the sections that keep their ids are the ones the curator takes"
     );
     let rim = cond(".");
-    assert_eq!(sections_named(&rim), keep, "{rim}");
+    assert_eq!(taken(&rim), keep, "{rim}");
     assert!(
         rim.contains("!("),
         "the rim takes every section BUT those: {rim}"

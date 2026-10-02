@@ -12,6 +12,24 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-10-02
+
+### Added
+
+- **A file space has directories and changes a file by its structure** ([#947](https://github.com/mmeyerlein/meclaw/issues/947), [#918](https://github.com/mmeyerlein/meclaw/issues/918)). `file-space@1.3.0` claims a path before any op that takes it, so two concurrent creates never share one; keeps directories as rows of their own whose counts and tags follow their files in constant work (`dir_info`, `dir_summary`, also as tools); moves, copies, writes a node and inserts at an anchor; and announces a described head once as `source_described`.
+- **Aliases from outside and questions about one subject** ([#948](https://github.com/mmeyerlein/meclaw/issues/948)). `memory-hive@3.8.0` binds aliases sent on `in_alias`, refuses a spelling already bound to another subject (compared in the store's normal form), and answers `in_query` with a `subject` from the facts the caller's round may see.
+- **An app can hand the curator candidates, and a brain names the things it saw** ([#949](https://github.com/mmeyerlein/meclaw/issues/949)). `curator@1.6.0` takes candidates on `in_candidate` and pushes the live ones a turn covers into the round's window, emits the section `things` as `thing_seen` under its round and answers `in_read` inside the caller's round; `builder@1.22.0` wires both for an app and names a speaker only when the sender proves the bound chat.
+- **A knowledge space keeps a catalogue of its sources** ([#950](https://github.com/mmeyerlein/meclaw/issues/950)). The new `librarian@1.0.0`, a holder of `member@2.5.0`, keeps one row per source current from the file space and answers `lib_find`, `lib_symbol`, `lib_related` and `lib_tree`, so a model finds a file or a symbol by name and reads it at the address it got.
+- **Things a conversation names become objects** ([#951](https://github.com/mmeyerlein/meclaw/issues/951)). The new `objects@1.0.0` keeps each named thing as a versioned row with keys and aliases, fed by `thing_seen`, answers the `object_*` tools inside the caller's round and offers its rows as sources to `graph-space@1.1.0`, which now resolves direct addresses.
+
+### Fixed
+
+- **An environment value cannot break out of an edge expression** ([#949](https://github.com/mmeyerlein/meclaw/issues/949)). A `${NAME}` substituted into an edge's `condition`, `set_context` or `set_hop` whose value carries a quote, a backslash, a control character or a line separator is refused with the new error code `env_value_unsafe`, which names the variable and the place but never the value.
+
+### Changed
+
+- **Kit and test remainders** ([#952](https://github.com/mmeyerlein/meclaw/issues/952)). The lanes probe has one source shared by the gate and the single-test runner, the network sweep counts calls instead of words, the store-read exemption for node runs admits only the one scan the file space ships, and the scenario runner's self-test runs again.
+
 ## [0.56.0] — 2026-10-02
 
 ### Added

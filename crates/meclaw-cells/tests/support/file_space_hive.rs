@@ -24,6 +24,14 @@
 //! `data_b64` or `error {code, message}` -- what the colony's
 //! `AttachmentReader` hands a code cell. `Space::sent` records every message
 //! the space delivers, so a lock can scan hops, contexts and store operations.
+//!
+//! The routing budget (GH #929, GH #947 review I-1): every delivery spends one
+//! routing decision of the message's ttl, a `restore_ttl` edge hands the
+//! colony default back first (`restore_edge_ttl`, `colony.rs`), a cell's
+//! emission and the store's answer carry the ttl they were handled under, and
+//! an `llm` answer the one its request arrived with. A message on a lane
+//! arrives behind the space's door. Only recorded, never enforced: a lock
+//! reads `worst_segment` and `ttl_dead`.
 #![allow(dead_code)]
 
 use meclaw_colony::cel_eval::{
@@ -39,6 +47,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 pub const TEMPLATE: &str = "templates/file-space";
+
+/// The colony's routing budget (`colony.json message_default_ttl`).
+pub const TTL: i64 = meclaw_core::MESSAGE_DEFAULT_TTL as i64;
 
 pub fn repo(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -199,6 +210,20 @@ struct Edge {
     to: String,
     condition: Option<CompiledCondition>,
     modifier: Option<CompiledModifier>,
+    /// `modifier.restore_ttl`: the follow-up gets the colony budget back.
+    restore: bool,
+}
+
+/// The one read of `node_runs` across files: `./read`'s `near` scan, which
+/// compares the file vector of every head and nothing else (GH #944) -- a
+/// `select` of `file, fvec` where `fvec <> ''`. Every other read of the table
+/// names its file.
+pub fn is_near_scan(sender: &str, a: &Value) -> bool {
+    sender == "read"
+        && a["operation"] == "select"
+        && a["table"] == "node_runs"
+        && a["columns"] == json!(["file", "fvec"])
+        && a["where"] == json!({"fvec": {"neq": ""}})
 }
 
 /// One file space: its cells, its edges, its store.
@@ -226,6 +251,14 @@ pub struct Space {
     /// Every message the space delivered, oldest first:
     /// `{from, to, route, header: {context, hop}, body}` (GH #907).
     pub sent: Vec<Value>,
+    /// The most routing decisions one delivery had spent since its last seam
+    /// (a restoring edge, or the lane it came in on), and where:
+    /// `(used, "from -> to route")`.
+    pub worst_segment: (i64, String),
+    /// Every delivery a colony would have dead-lettered as `ttl_expired`.
+    pub ttl_dead: Vec<String>,
+    /// The ttl each message in [`Space::llm`] arrived with, in its order.
+    llm_ttl: VecDeque<i64>,
     seq: u64,
 }
 
@@ -259,6 +292,7 @@ impl Space {
                 to: e["to"].as_str().unwrap().to_string(),
                 condition,
                 modifier,
+                restore: e["modifier"]["restore_ttl"] == json!(true),
             });
         }
         let mut cells = BTreeMap::new();
@@ -293,6 +327,9 @@ impl Space {
             before: None,
             blobs: HashMap::new(),
             sent: Vec::new(),
+            worst_segment: (0, String::new()),
+            ttl_dead: Vec::new(),
+            llm_ttl: VecDeque::new(),
             seq: 0,
         }
     }
@@ -470,7 +507,7 @@ impl Space {
         }
     }
 
-    fn route(&self, from: &str, msg: &Msg) -> Vec<(String, Msg)> {
+    fn route(&self, from: &str, msg: &Msg) -> Vec<(String, Msg, bool)> {
         let mut out = Vec::new();
         for e in self.edges.iter().filter(|e| e.from == from) {
             if let Some(c) = &e.condition
@@ -489,7 +526,7 @@ impl Space {
                     Err(_) => continue,
                 }
             }
-            out.push((e.to.clone(), m));
+            out.push((e.to.clone(), m, e.restore));
         }
         out
     }
@@ -502,12 +539,28 @@ impl Space {
     /// Carry several messages at once: all of them are queued before the
     /// first is handled, as a cell's mailbox holds a batch (GH #907).
     pub fn pump_all(&mut self, msgs: Vec<(String, Msg)>) {
+        self.carry(msgs.into_iter().map(|(f, m)| (f, m, TTL)).collect());
+    }
+
+    /// [`Space::pump_all`] with the ttl each message holds as it is emitted.
+    fn carry(&mut self, msgs: Vec<(String, Msg, i64)>) {
         let mut queue = VecDeque::from(msgs);
         let mut steps = 0;
-        while let Some((from, msg)) = queue.pop_front() {
+        while let Some((from, msg, ttl)) = queue.pop_front() {
             steps += 1;
             assert!(steps < 4000, "the space does not come to rest");
-            for (to, m) in self.route(&from, &msg) {
+            for (to, m, restore) in self.route(&from, &msg) {
+                // As the colony routes (GH #82, GH #929): a restoring edge
+                // lifts the budget to the default, the delivery spends one.
+                let held = if restore { ttl.max(TTL) } else { ttl };
+                let at = format!("{from} -> {to} {}", m.route());
+                if held <= 0 {
+                    self.ttl_dead.push(at.clone());
+                }
+                let arrived = held - 1;
+                if TTL - arrived > self.worst_segment.0 {
+                    self.worst_segment = (TTL - arrived, at);
+                }
                 self.sent.push(json!({
                     "from": from,
                     "to": to,
@@ -524,7 +577,7 @@ impl Space {
                     "store" => {
                         let sender = from.trim_start_matches("./").to_string();
                         let answer = self.store(&sender, &m);
-                        queue.push_back((to.clone(), answer));
+                        queue.push_back((to.clone(), answer, arrived));
                     }
                     "code" => {
                         let hit = matches!(&self.before,
@@ -534,10 +587,13 @@ impl Space {
                             self.db.execute_batch(&sql).expect("the one-shot SQL");
                         }
                         for o in self.run_cell(&name, &m) {
-                            queue.push_back((to.clone(), o));
+                            queue.push_back((to.clone(), o, arrived));
                         }
                     }
-                    "llm" => self.llm.push_back((name, m)),
+                    "llm" => {
+                        self.llm.push_back((name, m));
+                        self.llm_ttl.push_back(arrived);
+                    }
                     other => panic!("an edge onto {to} of type {other:?}"),
                 }
             }
@@ -565,12 +621,13 @@ impl Space {
     /// emits it. Returns the message it answered.
     pub fn llm_answer(&mut self, text: &str, finish: &str) -> Msg {
         let (cell, req) = self.llm.pop_front().expect("an llm request");
+        let ttl = self.llm_ttl.pop_front().unwrap_or(TTL);
         let msg = Msg {
             context: req.context.clone(),
             hop: obj(json!({"finish_reason": finish, "model": "stub-model"})),
             body: obj(json!({"messages": [{"origin": "assistant", "type": "text", "text": text}]})),
         };
-        self.pump(&format!("./{cell}"), msg);
+        self.carry(vec![(format!("./{cell}"), msg, ttl)]);
         req
     }
 
@@ -685,9 +742,9 @@ impl Space {
     /// delete on a table with `file` names `file` in its `where`, and every
     /// select carries a `limit`. Three reads are exempt: `files` (path lookup,
     /// `list`, `find`), `ws_files` by `ws` (the files a workspace touched,
-    /// OR-FH-68) and `node_runs` (the file vectors `near` compares, GH #944)
-    /// -- an update or delete on any of them still names its file.
-    /// The breaches, as text.
+    /// OR-FH-68) and the one `near` scan of `node_runs` (GH #944, see
+    /// [`is_near_scan`]) -- an update or delete on any of them still names its
+    /// file. The breaches, as text.
     pub fn unscoped(&self) -> Vec<String> {
         let with_file = self.file_tables();
         let mut out = Vec::new();
@@ -699,13 +756,13 @@ impl Space {
             }
             let read = matches!(op, "select" | "search" | "similar");
             // Auflage 2 exempts three READS only (review S I-2): `files` for the
-            // path lookup, `list` and `find`, `ws_files` by `ws`, and
-            // `node_runs` for `near` (GH #944: one row per head, the file
-            // vector only). An update or delete on any of them still names
-            // its file.
+            // path lookup, `list` and `find`, `ws_files` by `ws`, and the
+            // `near` scan of `node_runs` (GH #944) -- that scan alone, not
+            // every read of the table (C1 finding, review of GH #944 M-4). An
+            // update or delete on any of them still names its file.
             let exempt = read
                 && (table == "files"
-                    || table == "node_runs"
+                    || is_near_scan(sender, a)
                     || (table == "ws_files" && a["where"].get("ws").is_some()));
             if (read || matches!(op, "update" | "delete"))
                 && !exempt

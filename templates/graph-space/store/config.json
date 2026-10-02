@@ -12,7 +12,8 @@
         "version": "text",
         "announced": "text",
         "indexed_at": "text",
-        "tomb": "text"
+        "tomb": "text",
+        "audience_set": "text"
       },
       "nodes": {
         "addr": "text",
@@ -189,7 +190,7 @@
     ]
   },
   "description": {
-    "purpose": "The one store of a graph space: `sources` (one row per source: path, module, the announced and the indexed version, `tomb`), `nodes` (one per anchor of an indexed source, address `<source>#<anchor>`), `edges` (from a node or a source to a target: `state` resolved | unresolved | broken | external, `class` extracted | inferred, `since` when it broke), `names` (a module or a qualified name -> an address) and `pulls` (the answers of one announcement while the set of three is incomplete).",
+    "purpose": "The one store of a graph space: `sources` (one row per source: path, module, the announced and the indexed version, `tomb`, and `audience_set` -- the round an object hive's source belongs to, '' for a file space), `nodes` (one per anchor of an indexed source, address `<source>#<anchor>`; an object's root node has the anchor '' and the source's own address), `edges` (from a node or a source to a target: `state` resolved | unresolved | broken | external, `class` extracted | inferred, `since` when it broke), `names` (a module or a qualified name -> an address) and `pulls` (the answers of one announcement while its set -- three parts for a file space, two for an object hive -- is incomplete).",
     "use_when": "Inside a graph space only; `./index` is its only writer, `./query` reads (`write_surface` internal).",
     "not_in_scope": "No content of a source, no history: the graph holds the head of every source.",
     "emits_meaning": "One answer per message, a bundle answer for more than one operation.",

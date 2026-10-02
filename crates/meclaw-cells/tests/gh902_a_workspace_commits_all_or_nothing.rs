@@ -105,10 +105,12 @@ fn clean(s: &Space) {
         .filter(|e| !e.starts_with("derive: "))
         .collect();
     assert!(noise.is_empty(), "{noise:?}");
+    // GH #947: a file a commit removed reaches `./derive` once more, on
+    // `in_dirs` (its directories count it out) -- no lane carries `ws`.
     for e in s.stderr.iter().filter(|e| e.starts_with("derive: ")) {
         assert!(
-            e.starts_with("derive: in_derive "),
-            "only in_derive reaches derive: {e}"
+            e.starts_with("derive: in_derive ") || e.starts_with("derive: in_dirs "),
+            "only in_derive and in_dirs reach derive: {e}"
         );
         assert!(
             e.trim_end().ends_with("ws="),

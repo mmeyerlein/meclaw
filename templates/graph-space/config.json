@@ -4,10 +4,10 @@
   },
   "description": {
     "purpose": "The graph of one knowledge space: the nodes of every source of the space and the edges between them, resolved once, so that a cross question over many files never wakes a file. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
-    "use_when": "One per knowledge space whose sources (a file space) announce their head moves on `source_changed` and answer `outline`, `links` and `near`.",
+    "use_when": "One per knowledge space whose sources -- a file space (`fh-`), an object hive (`ob-`) -- announce their head moves on `source_changed` and answer `outline` and `links` (a file space also `near`).",
     "not_in_scope": "No model, no embedding request, no network; no content of a source (a node carries its anchor, kind, name and one line); no rights; no event to a consumer when an edge breaks -- a broken edge stands in the store with `since` and every answer counts it.",
-    "contract_in": "Lanes on `hop.route`: source_changed (a node source announced a version, or its removal with `tomb`), in_pulled (a source's answer to one of this hive's own `pull` requests, `op_id` `gs:<part>:<source>:<version>`), in_graph (a cross question, hop `op`, `op_id`, `caller?`).",
-    "contract_out": "Routes on `hop.route`, leaving through the hive path: pull (a read request to the announcing source: `outline`, `links` or `near`, `op_id` `gs:<part>:<source>:<version>`, no `caller`), answer (exactly one per `in_graph` question)."
+    "contract_in": "Lanes on `hop.route`: source_changed (a node source announced a version, or its removal with `tomb`; an object hive's carries the round of its rows in `audience_set`), in_pulled (a source's answer to one of this hive's own `pull` requests, `op_id` `gs:<part>:<source>:<version>`), in_graph (a cross question, hop `op`, `op_id`, `caller?`; its round in `context.audience_now`, else `context.audience_set`).",
+    "contract_out": "Routes on `hop.route`, leaving through the hive path: pull (a read request to the announcing source: `outline`, `links` or -- a file space only -- `near`, `op_id` `gs:<part>:<source>:<version>`, `hop.source` the source the member routes it by (`fh-` to the file space, `ob-` to the objects), no `caller`), answer (exactly one per `in_graph` question, filtered by its round)."
   },
   "params": {
     "ports": [],
@@ -15,25 +15,25 @@
       "accepts": [
         {
           "route": "source_changed",
-          "because": "a node source moved a head: body `{source, version, path, fmt, parser, mark, nodes, links, tomb}` (`source` `fh-<12 hex>` or `ob-<12 hex>`, `nodes`/`links` the counts the source holds for that version). Answered by nothing; the hive pulls the version (three `pull` requests) or, with `tomb`, drops the source and breaks every edge into it"
+          "because": "a node source moved a head: body `{source, version, path, fmt, parser, mark, nodes, links, tomb, audience_set?}` (`source` `fh-<12 hex>` or `ob-<12 hex>`, `nodes`/`links` the counts the source holds for that version, `audience_set` the round an object hive's rows belong to -- kept as `sources.audience_set`, '' for a file space). Answered by nothing; the hive pulls the version (three `pull` requests for `fh-`, two for `ob-`) or, with `tomb`, drops the source, breaks every extracted edge into it and deletes the inferred ones"
         },
         {
           "route": "in_pulled",
-          "because": "the answer of a node source to one of this hive's `pull` requests, the source's own `answer` restamped: hop `op_id` `gs:<part>:<source>:<version>` mirrored, body `{ok, nodes[] | links[] | near[], ...}`. Never answered"
+          "because": "the answer of a node source to one of this hive's `pull` requests, the source's own `answer` restamped: hop `op_id` `gs:<part>:<source>:<version>` mirrored, body `{ok, nodes[] | links[] | near[], ...}` -- an object's outline carries its root node with the anchor ''. Never answered"
         },
         {
           "route": "in_graph",
-          "because": "a cross question: body `{op, args}`, hop `op`, `op_id`, `caller?`. Ops `resolve {name}`, `callers {addr}`, `dependents {addr, depth <= 3}`, `deps {addr}`, `path {from, to, max <= 6}`, `similar {addr}`, `broken {}`, `stats {}`; every list takes `limit` (<= 50) and `cursor`. Answered by exactly one `answer`; no source is asked"
+          "because": "a cross question: body `{op, args}`, hop `op`, `op_id`, `caller?`, its round in `context.audience_now`, else `context.audience_set`. Ops `resolve {name}`, `callers {addr}`, `dependents {addr, depth <= 3}`, `deps {addr}`, `path {from, to, max <= 6}`, `similar {addr}`, `broken {}`, `stats {}`; an `addr` is `fh-`/`ob-<12 hex>[#anchor]`; every list takes `limit` (<= 50) and `cursor`. Answered by exactly one `answer`; no source is asked"
         }
       ],
       "emits": [
         {
           "route": "pull",
-          "because": "a read request to the source that announced a version, for the source's `in_read`: hop `op` (`outline`, `links`, `near`), `op_id` `gs:<part>:<source>:<version>`, no `caller`; body `{op, file: '<source>@<version>', args: {version, limit | k}}`. Three per announcement, whatever the size of the source"
+          "because": "a read request to the source that announced a version, for the source's `in_read`: hop `op` (`outline`, `links`, `near`), `op_id` `gs:<part>:<source>:<version>`, `source` (the member's switch: `fh-` to the file space, `ob-` to the objects), no `caller`; body `{op, file: '<source>@<version>', source, version, args: {version, limit | k}}`. Three per announcement of a file space, two of an object hive (no `near`), whatever the size of the source"
         },
         {
           "route": "answer",
-          "because": "exactly one per `in_graph` question, hop `op`, `op_id` and `caller` unchanged: `{ok, op, op_id, items, next?, broken, ...}` or `{ok: false, op, op_id, error: {code, message}}`; `broken` counts the broken edges the question touched"
+          "because": "exactly one per `in_graph` question, hop `op`, `op_id` and `caller` unchanged: `{ok, op, op_id, items, next?, broken, ...}` or `{ok: false, op, op_id, error: {code, message}}`; `broken` counts the broken edges the question touched. An object hive's source (`ob-`) is in it only when its `audience_set` covers the question's round -- its nodes, the edges from and to it, the `resolve` hits, the paths through it and the counters; a hidden address answers as an unknown one. Direct addresses (`doc`, `related`) resolve to the node they name, an object's `owner` is `external`"
         }
       ]
     },

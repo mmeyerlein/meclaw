@@ -413,6 +413,8 @@ fn build_tree(td: &tempfile::TempDir, with_trust: bool) {
         "memory-hive",
         "file-space",
         "graph-space",
+        "librarian",
+        "objects",
         "firewall",
     ] {
         write(

@@ -851,13 +851,16 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
         "schemas",
         // GH #877: every identity-pack receipt goes home to `./affinity`.
         "pack_ack",
+        // GH #951: the things a curator saw go to the person's objects, which
+        // keep the canonical entity rows the push candidates are built from.
+        "thing_seen",
     ]
     .into_iter()
     .map(str::to_string)
     .collect();
     assert_eq!(
         consumed_by_the_member, want,
-        "the member consumes exactly the nine lanes of this level it has a holder for: the \
+        "the member consumes exactly the ten lanes of this level it has a holder for: the \
          `answer` goes to a channel of the PERSON (GH #454), `recall` and `sidecar` to \
          the memory that belongs to the person (GH #122), `write` is fanned onto the \
          memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \
@@ -913,7 +916,7 @@ fn number_word(n: usize) -> String {
         return ONES[n].to_string();
     }
     let tens = [
-        "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty",
+        "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
     ];
     let t = tens
         .get(n / 10)

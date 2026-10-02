@@ -301,6 +301,9 @@ fn a_new_file_has_its_summaries_and_embeddings_and_says_so_once() {
                 json!("Budget, team, risk and the rest of the plan."),
                 json!("stub-model")
             ],
+            // GH #947: the version's topics ride the summary, an empty list
+            // when the answer has no `TAGS:` line.
+            vec![json!("tags"), json!("[]"), json!("stub-model")],
         ]
     );
     let emb = sp.rows(&format!(
@@ -363,7 +366,8 @@ fn a_head_move_derives_again_and_a_working_edit_wakes_nothing() {
     assert_ne!(v1, v2);
     assert_eq!(calls(&s), 2, "the new version is embedded");
     summarize(&mut sp, "Second.\n\nThe second plan.", "stop");
-    for (table, n) in [("summaries", 2), ("embeddings", 9)] {
+    // Summaries: one line, short, tags (GH #947).
+    for (table, n) in [("summaries", 3), ("embeddings", 9)] {
         assert_eq!(
             count(
                 &sp,
@@ -945,8 +949,8 @@ fn a_slow_older_job_never_lays_its_one_line_over_a_newer_head() {
             &sp,
             &format!("SELECT COUNT(*) FROM summaries WHERE file = '{file}' AND version = '{v1}'")
         ),
-        2,
-        "v1's rows are v1's: rows are kept per version"
+        3,
+        "v1's rows are v1's (one line, short, tags): rows are kept per version"
     );
     assert_eq!(
         oneline_of(&sp, &file),
@@ -998,8 +1002,9 @@ fn in_derive_with_a_ws_on_the_hop_derives_a_main_line_version_as_without() {
 
     assert_eq!(
         delta(m0, m1),
-        (1, 2, 0),
-        "the reference: one embedding request, two summaries, 9 rows replaced"
+        (1, 3, 0),
+        "the reference: one embedding request, three summary rows (one line, short, tags \
+         -- GH #947), 9 rows replaced"
     );
     assert_eq!(
         delta(m1, m2),

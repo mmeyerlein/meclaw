@@ -136,7 +136,11 @@ fn every_shipped_store_publishes_its_tables_and_columns() {
         // The row that publishes THIS table: it cites the declaration it was
         // derived from and names the table in backticks, so `firewall`'s store
         // at `./rules` with a table `rules` cannot be answered by its sibling.
-        let quoted = format!("`{table}`");
+        // GH #951: the backticks alone are not enough once a TABLE carries
+        // the name of its TEMPLATE -- every row of `objects` says "the
+        // template `objects`", so its `keys` row answered for the table
+        // `objects` and lacked `aliases`. The generator's own phrase is.
+        let quoted = format!("DECLARES the table `{table}`");
         let hit = rows.iter().find(|r| {
             r["kind"].as_str() == Some("store")
                 && r["source"].as_str() == Some(source.as_str())

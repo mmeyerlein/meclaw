@@ -135,15 +135,6 @@ T2='all()'
 # its own child. Same file as the runner's, same switch to move it.
 LOCK="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
 
-# Is the token file of this host armed with build lanes? It lives beside the
-# cargo lock (`scripts/strand.sh`, THE CARGO TOKEN); without one, no.
-lanes_active() {
-    local tokens="${MECLAW_STRAND_TOKENS:-${LOCK%.lock}.tokens}"
-    [ -f "$tokens" ] || return 1
-    python3 -c 'import json, sys
-sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("lanes") else 1)' "$tokens" 2>/dev/null
-}
-
 run_nextest() {
     local filter="$1"
     shift
@@ -164,10 +155,15 @@ run_nextest() {
     # tier is refused with exit 3; a single test goes to the held lane with
     # `scripts/strand.sh test '<filter>'`. Not asked: CI, a tier inside a gate
     # (the gate decided for itself), the tier ON a lane (`MECLAW_TIER_LANE`,
-    # set by the kit's remote call), and `MECLAW_LANE_LOCAL_OK=<reason>`.
-    if [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
-       && [ -z "${MECLAW_TIER_LANE:-}" ] && lanes_active; then
-        if [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
+    # set by the kit's remote call), and `MECLAW_LANE_LOCAL_OK=<reason>`. The
+    # probe is `meclaw_lanes_active` in `scripts/cargo-target.sh`, shared with
+    # the runner. CI passes, but on an armed host it says so in a NOTE line --
+    # a `CI=1` typed here is local cargo all the same (C1 finding, L Nit).
+    if [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] && [ -z "${MECLAW_TIER_LANE:-}" ] \
+       && meclaw_lanes_active "$LOCK"; then
+        if [ -n "${CI:-}" ]; then
+            echo "=== NOTE lanes armed on this host, cargo runs here under CI"
+        elif [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
             echo "=== lanes active, local cargo allowed: $MECLAW_LANE_LOCAL_OK"
         else
             echo "test-tier: lanes active: use scripts/strand.sh test|gate --host <lane>" \

@@ -441,6 +441,8 @@ fn build_tree(
         "memory-hive",
         "file-space",
         "graph-space",
+        "librarian",
+        "objects",
     ] {
         write(
             root,
