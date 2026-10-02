@@ -606,7 +606,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.4.0");
+    assert_eq!(t["version"], "1.4.1");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");

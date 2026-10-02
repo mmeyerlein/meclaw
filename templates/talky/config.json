@@ -289,7 +289,8 @@
               "curator_call": "hop.curator_call",
               "turn_id": "hop.turn_id",
               "session_id": "hop.session_id",
-              "iter": "hop.iter"
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''"
             },
             "restore_ttl": true
           }

@@ -253,7 +253,7 @@ fn the_door_extra_is_known_in_all_three_copies() {
             "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
                           "text": json!({"request": "…", "recipe": "grow_level",
                                          "params": {"scope": "/os", "level": "org",
-                                                    "name": "acme", "template": "org@2.1.1",
+                                                    "name": "acme", "template": "org@2.1.2",
                                                     "door": true}}).to_string()}],
         }),
     );
@@ -266,7 +266,7 @@ fn the_door_extra_is_known_in_all_three_copies() {
     // 3. What the RENDERER draws: one edge more for the same assistant wish.
     let edges = |door: bool| -> usize {
         let mut params = json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                                "name": "scribe", "template": "assistant@3.4.1"});
+                                "name": "scribe", "template": "assistant@3.4.2"});
         if door {
             params["door"] = json!(true);
         }

@@ -1,4 +1,4 @@
-# `talky@6.4.0`
+# `talky@6.4.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.4.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.4.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -683,7 +683,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.4.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.4.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1024,6 +1024,21 @@ the body `{"messages": [], "section": "<key>", "payload": <the section object>}`
 no section up, validates none against a schema and routes none anywhere: **the edges
 downstream distribute on `hop.section`**, so a section this composite has never heard of
 travels without a line of code changing here.
+
+**A section names the episode of its turn** (`6.4.1`,
+[#941](https://github.com/mmeyerlein/meclaw/issues/941)). Every section carries
+`context.session_id` and `context.episode_turn_id`: the id the person's episode of that
+turn has in the memory, `<session_id>#<tag>-<index>`, exactly as `turn_write` hands it on.
+`./curator` names it on the model call and the `./curator -> ./brain` edge promotes it: the
+person's row the call wrote, else the person's latest episode of that round in the session,
+so the answer after a tool round or a consult's advice names the turn it answers -- the
+latest of the round, so where turns overlap or several people speak in one round, that answer
+names the latest person's episode of the round; a session without a person's turn carries it
+empty. A consulted `cogny` writes no episodes (`turn_write: "0"`) and stamps no id of its own:
+its sections carry the value of the turn that consulted it.
+`context.turn_id` is the round's uuid and names no episode. A reader that marks the episode
+(the memory hive's `in_affect`, `session_id` + `turn_id`) takes both off the section and
+builds nothing itself.
 
 **A section body is an object or a sentence** (`5.2.1`,
 [#799](https://github.com/mmeyerlein/meclaw/issues/799)). The two halves of the block

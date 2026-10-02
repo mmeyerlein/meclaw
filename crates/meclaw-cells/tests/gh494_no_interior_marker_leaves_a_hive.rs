@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 32] = [
+const SHARED: [&str; 33] = [
     "actor",
     "asker",
     "audience_now",
@@ -106,6 +106,13 @@ const SHARED: [&str; 32] = [
     // than to any one hive.
     "delegation_id",
     "engine",
+    // GH #941 -- the person's episode of a turn, `<session>#<tag>-<index>`, set
+    // on the brain edge of `talky`/`cogny` off the curator's model call. Every
+    // sidecar section of the answer carries it out of the composite, the
+    // generation and the member to whoever reads the section, which addresses
+    // the memory hive's `in_affect` with it; a rim that cleared it would leave
+    // the reader with the round's uuid, which names no episode.
+    "episode_turn_id",
     "happened_at",
     "iter",
     "memory_call_id",

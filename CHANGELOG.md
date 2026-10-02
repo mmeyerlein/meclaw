@@ -12,6 +12,12 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.55.1] — 2026-10-02
+
+### Fixed
+
+- **A sidecar section names the memory episode of its own turn** ([#941](https://github.com/mmeyerlein/meclaw/issues/941)). `curator@1.4.1` names the person's episode on the model call and the brain edge of `talky@6.4.1` carries it as `context.episode_turn_id` (`cogny@5.6.1` writes no episodes and passes the consulting turn's value through), so a reader of a section can address the episode with the memory hive's `in_affect` without building the id itself.
+
 ## [0.55.0] — 2026-10-02
 A strand gate can run on a remote build host; the memory's close pass and the facts it stores keep the audience of the
 turns they come from, and an episode can carry an affect mark; a curator reads only the rows a round may see and can send
