@@ -1,8 +1,10 @@
 //! GH #458 — the closed list of writable pack families, and the prose says so too.
 //!
 //! The `in_pack` lane writes durable `system.*` state for an agent's brain.
-//! What it may write is a closed list — `identity`, `persona`, `handover`,
-//! `instructions` — and a slot outside it refuses the WHOLE pack.
+//! What it may write is a closed list — `identity`, `identity_short`,
+//! `persona`, `handover`, `instructions` — and a slot outside it refuses the
+//! WHOLE pack. `identity_short` joined it with GH #935 (the short form a curator
+//! role with `identity_budget: split` sends per call).
 //!
 //! Until GH #889 that list was the tuple constant `PACK_SLOTS` of
 //! `collector/assemble`, and this file locked it as a SUBSET of the same
@@ -102,11 +104,21 @@ fn rim_writable(composite: &str) -> Vec<String> {
 /// to assert protected nothing: the charter had no other owner, no export and
 /// no seed, so a grown agent came up with an empty one. See
 /// `gh488_the_agent_record_is_where_the_identity_lives.rs`.
-const THE_WRITABLE: [&str; 4] = ["identity", "persona", "handover", "instructions"];
+///
+/// `identity_short` joined with GH #935: a role that sends the identity in
+/// its short form on every call needs that form to reach the curator through
+/// the same audited door as the full one.
+const THE_WRITABLE: [&str; 5] = [
+    "identity",
+    "identity_short",
+    "persona",
+    "handover",
+    "instructions",
+];
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
-/// Claim 1. Each rim names exactly the four durable families the pack door
+/// Claim 1. Each rim names exactly the five durable families the pack door
 /// carries.
 ///
 /// GH #889: this was `every_pack_slot_is_a_protected_family`, which read
@@ -114,7 +126,7 @@ const THE_WRITABLE: [&str; 4] = ["identity", "persona", "handover", "instruction
 /// with the lane; the subset half (the curator never cuts a pack slot) is the
 /// curator's promise now, and the exact-list half is read at the rims.
 #[test]
-fn each_rim_names_exactly_the_four_writable_families() {
+fn each_rim_names_exactly_the_five_writable_families() {
     let mut want: Vec<String> = THE_WRITABLE.iter().map(|s| s.to_string()).collect();
     want.sort();
     for rim in RIMS {
@@ -122,7 +134,7 @@ fn each_rim_names_exactly_the_four_writable_families() {
         named.sort();
         assert_eq!(
             named, want,
-            "{rim}: the lane writes exactly the four durable families the pack door \
+            "{rim}: the lane writes exactly the five durable families the pack door \
              carries — a shorter list refuses a pack the affinity renders, a longer \
              one opens a family nobody audited; read out of {rim}/config.json"
         );

@@ -209,7 +209,8 @@ fn the_shipped_member_consumes_the_only_lane_that_fills_an_episodes_table() {
     assert!(
         turn_id.contains("hop.turn_id") && !turn_id.contains("context.turn_id"),
         "`turn_id` must be promoted off the HOP: `context.turn_id` is a round uuid, \
-         `hop.turn_id` is the deterministic `<session_id>#<index>` the curator's writer mints, \
+         `hop.turn_id` is the deterministic `<session_id>#<tag>-<index>` the curator's writer \
+         mints (GH #932), \
          and it is what the inline bind and the queue row are keyed on. An edge that \
          promotes the context key writes episodes nothing can ever bind to — a defect \
          that looks exactly like the missing edge from the outside. Got: {turn_id:?}"
@@ -674,7 +675,7 @@ async fn one_turn(wired: bool) -> Run {
         json!({"manifest": [{
             "scope": "/members",
             "diff": {
-                "add_nodes": [{"name": MEMBER, "template": "member@2.3.0",
+                "add_nodes": [{"name": MEMBER, "template": "member@2.3.1",
                                "override_params": {
                                    "memory-hive/clock": quiet_night(),
                                    "affinity/clock": quiet_push()}}],
@@ -792,7 +793,7 @@ async fn a_turn_becomes_an_episode_in_the_memory_of_the_member_that_produced_it(
     assert_eq!(
         row[0],
         format!("{SESSION}#0"),
-        "the episode does not carry the writer's own turn id. `<session_id>#<index>` is \
+        "the episode does not carry the writer's own turn id. The hop's turn id is \
          what the inline bind and the extraction queue are keyed on; a row minted from \
          `context.turn_id` carries a round uuid and nothing can bind to it later"
     );

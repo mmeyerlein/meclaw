@@ -133,6 +133,10 @@ def run_gate(repo, *args, plan=None, dry=True, extra_env=None, timeout_s=None):
     # The build-width cap has an "already set wins" rule; a value inherited
     # from the surrounding shell would make these tests say nothing.
     env.pop("CARGO_BUILD_JOBS", None)
+    # ... and so has the test-thread count: inside a gate run the self-test
+    # station inherits the outer runner's `NEXTEST_TEST_THREADS=4`, and the
+    # lane case (full width) went red on exactly that (GH #934, L gate).
+    env.pop("NEXTEST_TEST_THREADS", None)
     # ... and neither may a target directory inherited from the shell decide
     # where the receipt lands: TestTargetDirectory sets it deliberately.
     env.pop("CARGO_TARGET_DIR", None)
@@ -142,6 +146,14 @@ def run_gate(repo, *args, plan=None, dry=True, extra_env=None, timeout_s=None):
     # A full disk must not turn the self-test station red over a build that
     # these fake stations never run.
     env.setdefault("MECLAW_GATE_MIN_FREE_G", "0")
+    # ... and the same for the lane floor (OR-S3.L.7): below it the runner
+    # WIPES the target directory, which no test may trigger by accident.
+    env.setdefault("MECLAW_GATE_LANE_MIN_FREE_G", "0")
+    # The lane root decides what the runner may wipe; never the shell's.
+    env.pop("MECLAW_LANE_ROOT", None)
+    # A lane receipt is handed over by the kit to ONE local run, never
+    # inherited by a self-test (review X N1).
+    env.pop("MECLAW_GATE_LANE_RECEIPT", None)
     # The stage lock is a property of the HOST, and a value in the surrounding
     # shell would decide what the probe tests say. Each test sets its own.
     env.pop("MECLAW_STAGE_LOCK", None)
@@ -159,6 +171,8 @@ def run_gate(repo, *args, plan=None, dry=True, extra_env=None, timeout_s=None):
     })
     if extra_env:
         env.update(extra_env)
+    # `None` removes a variable: the one way to test a default.
+    env = {k: v for k, v in env.items() if v is not None}
     return subprocess.run([str(repo / "scripts" / "gate.sh")] + list(args),
                           cwd=str(repo), env=env, capture_output=True, text=True,
                           timeout=timeout_s)
@@ -2191,6 +2205,296 @@ class TestUsage(GateShTestCase):
         res = run_gate(self.repo, "sideways", plan=self.plan_file(PLAN_OK_BAD))
         self.assertEqual(2, res.returncode)
         self.assertIn("sideways", res.stderr)
+
+
+class TestLane(GateShTestCase):
+    """`gate.sh --lane`: the runner on a build host (GH #934).
+
+    A build host runs no colony, so the half-width cap and `nice` that protect
+    a live colony's watchdog on the owner's machine cost a factor of two there
+    for nothing (tests 459 s at full width against 788 s, measured
+    2026-10-01). The disk that fills is the target directory (a tmpfs), not
+    `/`, and the host has no `.env` -- the stations that read one are skipped
+    and run on the owner's machine afterwards.
+    """
+
+    PLAN_ENV = (
+        "ok\tscope-ok\t0\ttrue\t\n"
+        "scenarios:memory\t3 cases\t0\ttrue\t\n"
+        "guide-selftest\tunittest\t0\ttrue\t\n"
+    )
+
+    def test_lane_without_base_refuses(self):
+        res = run_gate(self.repo, "strand", "--lane", plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("--base", res.stderr)
+        self.assertNotIn("GATE-SUMMARY", res.stdout)
+
+    def test_lane_builds_and_tests_at_full_width_without_nice(self):
+        res = run_gate(self.repo, "strand", "--lane", "--base", "master~1",
+                       plan=self.plan_file(PLAN_CARGO))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        log = self.station_log("build").read_text()
+        self.assertIn("CARGO_BUILD_JOBS=<unset>", log)
+        self.assertIn("NEXTEST_TEST_THREADS=%d" % (os.cpu_count() or 1), log)
+        self.assertRegex(log, r"# cargo hygiene \(lane\):")
+        self.assertNotIn("nice -n 19", log)
+
+    def test_without_lane_the_width_stays_capped(self):
+        run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO))
+        log = self.station_log("build").read_text()
+        self.assertIn("NEXTEST_TEST_THREADS=4", log)
+        self.assertNotIn("(lane)", log)
+
+    def test_lane_checks_the_disk_of_the_target_directory(self):
+        # The target lies outside every lane root here, so the runner may not
+        # wipe it and refuses -- naming the disk it measured.
+        res = run_gate(self.repo, "strand", "--lane", "--base", "master~1",
+                       plan=self.plan_file(PLAN_CARGO),
+                       extra_env={"MECLAW_GATE_LANE_MIN_FREE_G": "999999999"})
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("free on %s" % (self.repo / "target"), res.stderr)
+
+    # --- the lane floor and the wipe (OR-S3.L.7) ------------------------------
+    # The build host's target directory is a 64 G tmpfs and a warm target
+    # after one strand gate is about 50 G: the 60 G floor of the owner's
+    # machine refused every second gate on a lane. A lane has its own floor
+    # (default 60 G since OR-S3-86: a test build of the workspace beside the
+    # rest of a warm target ran the tmpfs out of space twice, so a warm target
+    # is emptied before every lane gate) and, below it, the runner empties the
+    # target itself and builds cold. A fake `df` answers from a marker file in the target: warm
+    # while the marker is there, cold once the wipe removed it.
+
+    FAKE_DF = (
+        "#!/bin/sh\n"
+        "for a; do d=$a; done\n"
+        "echo Avail\n"
+        "if [ -e \"$d/warm\" ]; then echo \"${FAKE_DF_WARM}G\"; "
+        "else echo \"${FAKE_DF_COLD}G\"; fi\n"
+    )
+
+    def warm_target(self):
+        target = self.repo / "target"
+        (target / "debug" / "deps").mkdir(parents=True, exist_ok=True)
+        (target / "debug" / "deps" / "libbig.rlib").write_text("x")
+        (target / "warm").write_text("x")
+        return target
+
+    def run_lane_df(self, warm_g, cold_g, lane=True, **env):
+        bin_dir = pathlib.Path(self._tmp.name) / "fakebin"
+        bin_dir.mkdir(exist_ok=True)
+        df = bin_dir / "df"
+        df.write_text(self.FAKE_DF)
+        df.chmod(0o755)
+        extra = {"PATH": "%s:%s" % (bin_dir, os.environ["PATH"]),
+                 "FAKE_DF_WARM": str(warm_g), "FAKE_DF_COLD": str(cold_g),
+                 "MECLAW_LANE_ROOT": str(self._tmp.name),
+                 "MECLAW_GATE_LANE_MIN_FREE_G": None}
+        extra.update(env)
+        args = ["strand", "--lane", "--base", "master~1"] if lane else ["strand"]
+        return run_gate(self.repo, *args, plan=self.plan_file(PLAN_CARGO),
+                        extra_env=extra)
+
+    def test_lane_below_its_floor_wipes_the_target_and_builds_cold(self):
+        target = self.warm_target()
+        res = self.run_lane_df(5, 60)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse((target / "warm").exists())
+        self.assertFalse((target / "debug").exists())
+        log = self.station_log("build").read_text()
+        self.assertIn("# cargo hygiene: lane target wiped (5 G free < 60 G)", log)
+
+    def test_lane_default_floor_wipes_a_warm_target(self):
+        # A warm target on a 64 G tmpfs leaves about 14 G; ENOSPC hit two
+        # gates in that state (OR-S3-83/-84). The default floor empties it.
+        target = self.warm_target()
+        res = self.run_lane_df(14, 64)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse((target / "warm").exists())
+        self.assertIn("(14 G free < 60 G)", self.station_log("build").read_text())
+
+    def test_lane_floor_is_its_own_variable(self):
+        target = self.warm_target()
+        res = self.run_lane_df(15, 60, MECLAW_GATE_LANE_MIN_FREE_G="20",
+                               MECLAW_GATE_MIN_FREE_G="60")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse((target / "warm").exists())
+        self.assertIn("(15 G free < 20 G)", self.station_log("build").read_text())
+
+    def test_lane_above_its_floor_keeps_the_warm_target(self):
+        target = self.warm_target()
+        res = self.run_lane_df(61, 64, MECLAW_GATE_MIN_FREE_G="60")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue((target / "warm").exists())
+        self.assertNotIn("wiped", self.station_log("build").read_text())
+
+    def test_lane_still_short_after_the_wipe_refuses(self):
+        target = self.warm_target()
+        res = self.run_lane_df(5, 3)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertFalse((target / "warm").exists())
+        self.assertIn("only 3G free on %s" % target, res.stderr)
+        self.assertNotIn("GATE-SUMMARY", res.stdout)
+
+    def test_lane_never_wipes_a_target_outside_the_lane_root(self):
+        target = self.warm_target()
+        res = self.run_lane_df(5, 60, MECLAW_LANE_ROOT=None)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertTrue((target / "warm").exists())
+        self.assertIn("not under", res.stderr)
+        self.assertNotIn("GATE-SUMMARY", res.stdout)
+
+    def test_lane_root_slash_is_no_root(self):
+        target = self.warm_target()
+        res = self.run_lane_df(5, 60, MECLAW_LANE_ROOT="/")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertTrue((target / "warm").exists())
+
+    def test_without_lane_nothing_is_wiped(self):
+        target = self.warm_target()
+        # `/` carries no marker: the fake answers 5 G for it as well.
+        res = self.run_lane_df(5, 5, lane=False, MECLAW_GATE_MIN_FREE_G="60")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertTrue((target / "warm").exists())
+        self.assertIn("only 5G free on /", res.stderr)
+        self.assertNotIn("wiped", res.stdout + res.stderr)
+
+    def test_env_stations_are_skipped_on_a_lane(self):
+        res = run_gate(self.repo, "strand", "--lane", "--base", "master~1",
+                       plan=self.plan_file(self.PLAN_ENV), dry=False)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["ok"]["verdict"])
+        for name in ("scenarios:memory", "guide-selftest"):
+            with self.subTest(station=name):
+                self.assertEqual("SKIP", rows[name]["verdict"])
+                self.assertEqual("no-env (lane)", rows[name]["reason"])
+
+    # OR-S3-96: no `node` and no `github-main` ref on a build host either.
+    PLAN_LANE_LOCAL = (
+        "ok\tscope-ok\t0\ttrue\t\n"
+        "display-lab\tunittest\t0\ttrue\t\n"
+        "export-audit\tR1-R17 dry\t0\ttrue\t\n"
+    )
+
+    def test_node_and_ref_stations_are_skipped_on_a_lane(self):
+        res = run_gate(self.repo, "integration", "--lane", "--base", "master~1",
+                       plan=self.plan_file(self.PLAN_LANE_LOCAL), dry=False)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["ok"]["verdict"])
+        self.assertEqual("SKIP", rows["display-lab"]["verdict"])
+        self.assertEqual("no-node (lane)", rows["display-lab"]["reason"])
+        self.assertEqual("SKIP", rows["export-audit"]["verdict"])
+        self.assertEqual("no-ref (lane)", rows["export-audit"]["reason"])
+
+    def lane_head(self):
+        """The head a lane receipt must carry to be taken: this run's."""
+        sha = lambda ref: subprocess.run(["git", "rev-parse", ref], cwd=str(self.repo),
+                                         capture_output=True, text=True,
+                                         check=True).stdout.strip()
+        return {"mode": "strand", "rev": sha("HEAD"), "base": sha("master~1"),
+                "dirty": False}
+
+    def write_lane_receipt(self, verdict="GREEN", raw=None, **head):
+        path = pathlib.Path(self._tmp.name) / "lane-receipt.json"
+        if raw is not None:
+            path.write_text(raw)
+            return path
+        doc = self.lane_head()
+        doc.update({"verdict": verdict, "stations": [
+            {"name": "ok", "scope": "scope-ok", "secs": 3,
+             "verdict": verdict, "log": "/lane/ok.log"},
+            {"name": "export-audit", "scope": "R1-R17 dry", "secs": 0,
+             "verdict": "SKIP", "log": ""}]})
+        doc.update(head)
+        path.write_text(json.dumps(doc))
+        return path
+
+    def run_after_lane(self, plan, receipt):
+        env = {"MECLAW_GATE_LANE_RECEIPT": str(receipt)} if receipt else None
+        return run_gate(self.repo, "strand", "--base", self.lane_head()["base"],
+                        plan=self.plan_file(plan), dry=False, extra_env=env)
+
+    def local_receipt(self):
+        return json.loads((self.gate_dir() / "last-strand.json").read_text())
+
+    # The audit station reads THIS run's receipt; run here after a lane, it
+    # must see the lane's stations too, or every station the lane ran is a
+    # gap. The kit hands the fetched receipt over (MECLAW_GATE_LANE_RECEIPT).
+    AUDIT_READS_OK = ("python3 -c \"import json,sys; d=json.load(open(sys.argv[1])); "
+                      "v={s['name']: s['verdict'] for s in d['stations']}; "
+                      "sys.exit(0 if v.get('ok') == 'GREEN' else 1)\" {receipt}")
+    PLAN_AUDIT = ("guide-selftest\tunittest\t0\ttrue\t\n"
+                  "export-audit\tR1-R17 dry\t0\t%s\t\n" % AUDIT_READS_OK)
+
+    def test_a_local_run_after_a_lane_carries_the_lane_stations(self):
+        res = self.run_after_lane(self.PLAN_AUDIT, self.write_lane_receipt())
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        receipt = self.local_receipt()
+        # The lane's own SKIP of a station this run ran is not carried over.
+        self.assertEqual(["ok", "guide-selftest", "export-audit"],
+                         [s["name"] for s in receipt["stations"]])
+        self.assertEqual("GREEN", receipt["verdict"])
+
+    def test_a_red_lane_station_makes_the_carried_receipt_red(self):
+        res = self.run_after_lane("export-audit\tR1-R17 dry\t0\ttrue\t\n",
+                                  self.write_lane_receipt("RED"))
+        # This run's own summary stays this run's ...
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        # ... but the receipt the audit grades says what the lane said.
+        self.assertEqual("RED", self.local_receipt()["verdict"])
+
+    def test_without_a_lane_receipt_nothing_is_carried(self):
+        res = self.run_after_lane(self.PLAN_AUDIT, None)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+
+    # Review X F1: a lane receipt is taken only for THIS run -- same rev
+    # (full), mode and base, a clean tree like this one, a finished verdict.
+    # Anything else carries no row, and the run is RED with a reason.
+    def assert_refused(self, receipt, why):
+        res = self.run_after_lane(self.PLAN_AUDIT, receipt)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("Traceback", res.stdout + res.stderr)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["lane-receipt"]["verdict"])
+        self.assertIn(why, rows["lane-receipt"]["reason"])
+        receipt = self.local_receipt()
+        self.assertNotIn("ok", [s["name"] for s in receipt["stations"]])
+        self.assertEqual("RED", receipt["verdict"])
+
+    def test_a_lane_receipt_of_another_rev_is_refused(self):
+        self.assert_refused(self.write_lane_receipt(rev="0" * 40), "rev")
+
+    def test_a_short_rev_is_another_rev(self):
+        self.assert_refused(self.write_lane_receipt(rev=self.lane_head()["rev"][:8]), "rev")
+
+    def test_a_lane_receipt_of_another_mode_is_refused(self):
+        self.assert_refused(self.write_lane_receipt(mode="integration"), "mode")
+
+    def test_a_lane_receipt_of_another_base_is_refused(self):
+        self.assert_refused(self.write_lane_receipt(base="1" * 40), "base")
+
+    def test_a_dirty_lane_receipt_is_refused(self):
+        self.assert_refused(self.write_lane_receipt(dirty=True), "dirty")
+
+    def test_a_running_lane_receipt_is_refused(self):
+        self.assert_refused(self.write_lane_receipt(verdict="RUNNING"), "verdict")
+
+    def test_a_broken_lane_receipt_is_refused(self):
+        self.assert_refused(self.write_lane_receipt(raw="{not json"), "unreadable")
+
+    def test_a_missing_lane_receipt_is_refused(self):
+        self.assert_refused(pathlib.Path(self._tmp.name) / "nowhere.json", "unreadable")
+
+    def test_env_stations_run_without_lane(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN_ENV), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["scenarios:memory"]["verdict"])
+
+    def test_help_names_lane(self):
+        res = run_gate(self.repo, "--help")
+        self.assertIn("--lane", res.stdout)
 
 
 if __name__ == "__main__":

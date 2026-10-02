@@ -62,6 +62,9 @@ fn parse_operator_object(col: &str, spec: &Value, top_level: bool) -> Result<Pre
         "gt" => Cmp::Gt,
         "gte" => Cmp::Gte,
         "in" => return parse_in(col, val),
+        // Top level only: `or_null(covers)` would let a NULL row through,
+        // and "NULL is never visible" is the point of the operator (GH #932).
+        "covers" if top_level => return parse_covers(col, val),
         "is_null" if top_level => {
             return val
                 .as_bool()
@@ -91,6 +94,41 @@ fn parse_in(col: &str, val: &Value) -> Result<Predicate, String> {
     Ok(Predicate::In(
         arr.iter().map(|v| json_to_sql_value(Some(v))).collect(),
     ))
+}
+
+/// Most elements a `covers` round may carry (GH #932).
+pub const COVERS_MAX_ENTRIES: usize = 64;
+/// Longest element (in characters) of a `covers` round.
+pub const COVERS_MAX_CHARS: usize = 200;
+
+/// `covers`: the round is a non-empty array of 1–64 non-empty strings, each
+/// at most 200 characters. Duplicates are allowed and change nothing. The
+/// error names the key, never a value — a round is caller data.
+fn parse_covers(col: &str, val: &Value) -> Result<Predicate, String> {
+    let bad = |why: &str| format!("where.{col}.covers {why}");
+    let arr = val
+        .as_array()
+        .ok_or_else(|| bad("must be an array of strings"))?;
+    if arr.is_empty() {
+        return Err(bad("must not be empty"));
+    }
+    if arr.len() > COVERS_MAX_ENTRIES {
+        return Err(bad(&format!(
+            "carries more than {COVERS_MAX_ENTRIES} entries"
+        )));
+    }
+    for v in arr {
+        let text = v.as_str().ok_or_else(|| bad("accepts strings only"))?;
+        if text.is_empty() {
+            return Err(bad("does not accept an empty string"));
+        }
+        if text.chars().count() > COVERS_MAX_CHARS {
+            return Err(bad(&format!(
+                "entries are at most {COVERS_MAX_CHARS} characters"
+            )));
+        }
+    }
+    Ok(Predicate::Covers(Value::Array(arr.clone()).to_string()))
 }
 
 /// Parse the optional `order_by` argument: an array of `{"col", "dir"?}`.
@@ -614,6 +652,42 @@ mod tests {
         assert!(parse_filters(Some(&json!({"c": {"or_null": {"or_null": {"gt": 1}}}}))).is_err());
         assert!(parse_filters(Some(&json!({"c": {"or_null": {"is_null": true}}}))).is_err());
         assert!(parse_filters(Some(&json!({"c": {"or_null": 5}}))).is_err());
+    }
+
+    #[test]
+    fn covers_parses_a_round_and_rejects_every_other_shape() {
+        let f = parse_filters(Some(&json!({"aud": {"covers": ["e", "a", "e"]}}))).unwrap();
+        match &f[0].pred {
+            Predicate::Covers(round) => assert_eq!(round, r#"["e","a","e"]"#),
+            other => panic!("expected Covers, got {other:?}"),
+        }
+        let f = parse_filters(Some(&json!({"doc$.aud": {"covers": ["e"]}}))).unwrap();
+        assert!(matches!(f[0].col, ColRef::JsonPath { .. }));
+        assert!(matches!(f[0].pred, Predicate::Covers(_)));
+        // 64 entries of 200 characters is the largest accepted round.
+        let max: Vec<String> = (0..64).map(|i| format!("{i:0>200}")).collect();
+        assert!(parse_filters(Some(&json!({"aud": {"covers": max}}))).is_ok());
+
+        let many: Vec<String> = (0..65).map(|i| format!("w{i}")).collect();
+        let long = "y".repeat(201);
+        for (round, why) in [
+            (json!([]), "must not be empty"),
+            (json!(many), "more than 64"),
+            (json!(["e", 1]), "strings only"),
+            (json!(["e", null]), "strings only"),
+            (json!([["e"]]), "strings only"),
+            (json!(["e", ""]), "empty string"),
+            (json!([long]), "200 characters"),
+            (json!("e"), "array of strings"),
+            (json!({"e": 1}), "array of strings"),
+        ] {
+            let e = parse_filters(Some(&json!({"aud": {"covers": round.clone()}}))).unwrap_err();
+            assert!(e.starts_with("where.aud.covers "), "{round}: {e}");
+            assert!(e.contains(why), "{round}: {e}");
+            assert!(!e.contains("yyy") && !e.contains("w64"), "no value in {e}");
+        }
+        // Never inside or_null: a NULL row must not become visible.
+        assert!(parse_filters(Some(&json!({"aud": {"or_null": {"covers": ["e"]}}}))).is_err());
     }
 
     #[test]

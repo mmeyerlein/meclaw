@@ -1821,9 +1821,13 @@ fn a_row_that_lands_while_the_note_is_written_does_not_widen_it() {
             1,
         );
     }
+    // The close runs under {e, a}: since GH #932 the note reads only rows its
+    // round may see (`covers`), and an {e, a, b} close would never be shown
+    // the {e, a} row at all. Under {e, a} every row is visible, so the late
+    // {e, a, b} rows are the ones that could widen the note.
     h.lane(
         "in_close",
-        json!({"session_id": "s-long", "audience_set": AUD_EAB}),
+        json!({"session_id": "s-long", "audience_set": AUD_EA}),
         json!({"session_id": "s-long"}),
         json!({"messages": []}),
     );

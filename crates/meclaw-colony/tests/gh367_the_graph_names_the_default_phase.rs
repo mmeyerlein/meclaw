@@ -83,6 +83,7 @@ fn one_of_each_fixture() -> (std::collections::HashMap<Path, RegistryEntry>, Edg
         modifier: None,
         is_default: false,
         lane: None,
+        tap: false,
     });
     edges.insert(Edge {
         id: Uuid::now_v7(),
@@ -92,6 +93,7 @@ fn one_of_each_fixture() -> (std::collections::HashMap<Path, RegistryEntry>, Edg
         modifier: None,
         is_default: true,
         lane: None,
+        tap: false,
     });
     (registry, edges)
 }
@@ -239,6 +241,7 @@ fn dto(from: &str, to: &str, is_default: bool) -> GraphEdgeDto {
         is_default,
         // GH #559: no lane — this fixture is about the routing phase.
         lane: None,
+        tap: false,
     }
 }
 

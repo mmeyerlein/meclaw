@@ -20,7 +20,7 @@
         },
         {
           "route": "in_pack",
-          "because": "an identity pack: `system.{identity,persona,handover,instructions}` and nothing else, answered on `pack_ack` with the context passed through untouched. An unknown family refuses the whole pack (`slot_unknown`), an empty one is `pack_empty`"
+          "because": "an identity pack: `system.{identity,identity_short,persona,handover,instructions}` and nothing else, answered on `pack_ack` with the context passed through untouched. An unknown family refuses the whole pack (`slot_unknown`), an empty one is `pack_empty`"
         },
         {
           "route": "in_close",
@@ -70,7 +70,7 @@
         },
         {
           "route": "turn_write",
-          "because": "one participant turn (the person's, the model's final answer, a peer's) for whoever keeps episodes, one per message, in the collector's per-turn contract: `hop.turn_id` `<session_id>#<index>`, `hop.turn_index`, `hop.happened_at`. Off with `./writer` `turn_write` = \"0\""
+          "because": "one participant turn (the person's, the model's final answer, a peer's) for whoever keeps episodes, one per message, in the collector's per-turn contract: `hop.turn_id` `<session_id>#<tag>-<index>` (`tag` the first 8 hex of sha256 over the turn's canonical round, `[]` for none; the index counts from 0 per session and round, so it neither reveals turns of other rounds nor collides between them, GH #932), `hop.turn_index`, `hop.happened_at`. Off with `./writer` `turn_write` = \"0\""
         },
         {
           "route": "write",

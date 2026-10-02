@@ -1,4 +1,4 @@
-# `talky@6.3.0`
+# `talky@6.4.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.3.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.4.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -159,7 +159,7 @@ The rest, each optional and each still at the same address:
 | `in_bundle` | in | a memory bundle coming back |
 | `in_sweep` | in | an operator-forced session sweep |
 | `in_round_sweep` | in | the operator lane of the collector's round table: a round that ran out of iterations |
-| `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.4.0 |
+| `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `identity_short`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.4.0 |
 | `in_pin` | in | a pin of another hive for the brain's window, `{pins: [{text, source, until?}], replace_sources?}`, handed to `./curator`'s own `in_pin` (`templates/curator/README.md`). Nothing answers it. Since GH #916 |
 | `pack_ack` | out | the receipt `in_pack` answers with, accepted and refused alike: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.4.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it; since 6.0.0 a package whose `hop.subscriber` ends on `/curator/summarizer` goes to `./curator` instead (GH #889). See "The model door". Since 5.4.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
@@ -552,7 +552,7 @@ more above the generation dead-lettered it `ttl_expired` inside the curator.
 
 **Moved to `curator`** ([#889](https://github.com/mmeyerlein/meclaw/issues/889)): since
 `6.0.0` the pack enters `./curator`, which holds what the closed list allows -- `identity`,
-`persona`, `handover`, `instructions` -- in its ledger and hands it to the brain with the next
+`identity_short`, `persona`, `handover`, `instructions` -- in its ledger and hands it to the brain with the next
 call; the lane, its receipt and the edge that opens it are unchanged at this rim.
 
 **`in_pack` and `pack_ack` are one decision**, paired in `params.required_drains`. The
@@ -683,7 +683,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.3.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.4.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

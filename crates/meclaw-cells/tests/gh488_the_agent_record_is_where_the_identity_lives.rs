@@ -30,6 +30,9 @@
 //!   find it. Since GH #889 the list is read at the rims (`talky`, `cogny`) that
 //!   take the lane: `PACK_SLOTS` left `collector/assemble` with the lane, and
 //!   the curator that holds a pack now publishes no constant.
+//!   GH #935 opened the list once more, by `identity_short` (the short form
+//!   a curator role with `identity_budget: split` sends per call); the rims
+//!   state it, and claim 4 accepts an `mx.brain.identity_short` family.
 //!
 //! No colony here: this file is about a closed list, a schema mirror, a seed
 //! and four sentences. The end-to-end run lives in
@@ -348,7 +351,10 @@ fn the_prose_names_the_family_the_constant_names() {
         );
     }
 
-    for readme in ["talky/README.md", "cogny/README.md", "collector/README.md"] {
+    // GH #935: `collector/README.md` names the list as it moved to `curator`
+    // in `collector@5.0.0` (four families, history); the living list -- five
+    // families since `identity_short` -- is stated by the two rims.
+    for readme in ["talky/README.md", "cogny/README.md"] {
         let text = read_file(readme);
         let at = text.find("closed list").unwrap_or_else(|| {
             panic!(

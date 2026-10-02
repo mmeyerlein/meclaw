@@ -2287,37 +2287,62 @@ fn a_call_without_a_round_is_refused_before_a_read() {
     assert!(h.rows("SELECT * FROM marks").is_empty());
 }
 
-/// GH #925 (OR-BD-5): a row from before the rule carries no audience and
-/// reaches no round -- not even the declared empty one, which every row WITH
-/// an audience reaches.
+/// GH #925 (OR-BD-5) and GH #932: a row from before the rule carries no
+/// audience and reaches no round, not even the declared empty one. That empty
+/// round used to reach every row WITH an audience, in any session -- a `[]`
+/// call saw what {e} said elsewhere. Since GH #932 the store reads it like a
+/// round-less call (`round_where`, `covers` refuses an empty round): only the
+/// rows of the running session that declare no round either (`[]`, PP-BD-12)
+/// or name `*`. A row a declared round said, a round-less row of another
+/// session and a NULL row of its own are all not found, word for word as an
+/// id or a turn the wall never carried.
 #[test]
-fn a_row_from_before_the_rule_reaches_no_round() {
+fn the_declared_empty_round_reads_only_its_sessions_round_less_rows() {
     if !shipped() {
         return;
     }
     let mut h = Hive::new();
+    // `history` asks in session `s-now`.
     h.audience = None;
     let old = h.sow(
         1_000,
-        "s-old",
+        "s-now",
         "t-old",
         "user",
         &user("An old remark about the garden."),
         &at(20, 10),
     );
-    h.audience = Some(round(&["e"]));
+    h.audience = Some("[]".to_string());
     let new = h.sow(
         2_000,
-        "s-new",
+        "s-now",
         "t-new",
         "user",
         &user("A new remark about the garden."),
         &at(21, 10),
     );
+    h.audience = Some(round(&["e"]));
+    let heard = h.sow(
+        3_000,
+        "s-now",
+        "t-heard",
+        "user",
+        &user("A remark about the garden only e heard."),
+        &at(22, 10),
+    );
+    h.audience = Some("[]".to_string());
+    let elsewhere = h.sow(
+        4_000,
+        "s-else",
+        "t-else",
+        "user",
+        &user("A round-less remark about the garden elsewhere."),
+        &at(23, 10),
+    );
     h.audience = None;
     h.mark(
         5,
-        "s-new",
+        "s-now",
         "t-new",
         "topic",
         &topic("start", "the old plan"),
@@ -2326,18 +2351,43 @@ fn a_row_from_before_the_rule_reaches_no_round() {
     let (m, p) = h.history("history_search", json!({"query": "garden"}));
     assert_eq!(error_of(&m), "", "the empty round is declared: {p}");
     assert_eq!(ids(&p, "hits"), vec![short(&new)], "{p}");
-    let (m, _) = h.history("history_read", json!({"id": short(&old)}));
-    assert_eq!(error_of(&m), "not_found");
-    let (m, _) = h.history("history_read", json!({"from_turn": "t-old"}));
-    assert_eq!(error_of(&m), "not_found");
+    assert_eq!(p["total_hits"], 1, "{p}");
+    assert_eq!(p["scanned"], 1, "a row it may not see is not read: {p}");
+    let foreign = sha256_hex(&canonical(&user("never said on this wall")));
+    let (_, unknown) = h.history("history_read", json!({"id": short(&foreign)}));
+    for hidden in [&old, &heard, &elsewhere] {
+        let (m, p) = h.history("history_read", json!({"id": short(hidden)}));
+        assert_eq!(error_of(&m), "not_found", "{p}");
+        assert_eq!(
+            p.to_string(),
+            unknown.to_string().replace(&foreign[..12], &hidden[..12]),
+            "the same words as an id no wall carries"
+        );
+    }
+    let (_, unknown) = h.history("history_read", json!({"from_turn": "t-unknown"}));
+    for turn in ["t-old", "t-heard", "t-else"] {
+        let (m, p) = h.history("history_read", json!({"from_turn": turn}));
+        assert_eq!(error_of(&m), "not_found", "{turn}: {p}");
+        assert_eq!(
+            p.to_string(),
+            unknown.to_string().replace("t-unknown", turn),
+            "{turn}: a turn this wall never had"
+        );
+    }
+    let (m, p) = h.history("history_read", json!({"from_turn": "t-new"}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(ids(&p, "blocks"), vec![short(&new)], "{p}");
     let (m, p) = h.history("history_outline", json!({}));
     assert_eq!(
         p["sessions"],
-        json!([{"session_id": "s-new", "first_turn": "t-new", "last_turn": "t-new",
+        json!([{"session_id": "s-now", "first_turn": "t-new", "last_turn": "t-new",
                 "turns": 1, "first_at": at(21, 10), "last_at": at(21, 10), "topics": []}]),
         "{p}"
     );
-    assert!(!text_of(&m).contains("old"), "{p}");
+    let text = text_of(&m);
+    for trace in ["old", "heard", "s-else", "t-else"] {
+        assert!(!text.contains(trace), "`{trace}` in the outline: {p}");
+    }
 }
 
 /// GH #925: a neighbour the round may not see is no neighbour -- the nearest
@@ -2509,9 +2559,11 @@ fn a_reread_mark_carries_the_round() {
 /// on (9 left it right), and a range of five released blocks lost them one by
 /// one (`-RRRR` at 6, `-----` and no `reread` mark from 10 on). Now a read
 /// takes the marks of its own blocks only, the newest `scan_budget` of them the
-/// round may see, and hidden marks count toward the row bound alone: below it
-/// the answer is the one without them, at it every wall answers in the one cut
-/// form of `history_read`, without a number, and writes no `reread` mark.
+/// round may see. Since GH #932 the store hands back no hidden mark at all
+/// (`round_where`, `covers`): however many marks of another round stand on the
+/// read's blocks, the answer is the one without them -- the cut form a read
+/// took once hidden pins of its own block filled the row bound (19 and more
+/// under `scan_budget` 10) no longer occurs, and the `reread` mark is written.
 #[test]
 fn released_is_decided_by_the_marks_the_round_may_see() {
     if !shipped() {
@@ -2554,31 +2606,17 @@ fn released_is_decided_by_the_marks_the_round_may_see() {
             "{k} hidden marks of other blocks moved the read"
         );
     }
-    // Hidden marks of the block itself: below the row bound (twice
-    // `scan_budget` marks of the read's blocks, fewer than `scan_budget` of
-    // them visible) nothing moves -- a hidden pin is no later word.
-    for k in [10, 18] {
+    // Hidden marks of the block itself: a hidden pin is no later word. GH
+    // #932: from 19 on (past the row bound of twice `scan_budget`) the read
+    // answered in the cut form and wrote no `reread` mark; the store reads
+    // none of them now, so every count answers as the ledger without them.
+    for k in [10, 18, 19, 25, 40] {
         assert_eq!(
             by_id(k, true),
             (String::new(), plain.clone(), 1),
             "{k} hidden pins of the block moved the read"
         );
     }
-    let cut: Vec<(String, Value, usize)> = [19, 25, 40].iter().map(|&k| by_id(k, true)).collect();
-    for (code, p, rereads) in &cut {
-        assert_eq!(code, "too_large", "{p}");
-        assert_eq!(
-            keys(p),
-            ["budget", "detail", "error", "tool"],
-            "the cut form and nothing else: {p}"
-        );
-        assert_eq!(p["budget"], 40000, "{p}");
-        assert_eq!(*rereads, 0, "a cut read marks no re-read");
-    }
-    assert!(
-        cut.windows(2).all(|w| w[0] == w[1]),
-        "one form on every wall at the bound: {cut:?}"
-    );
 
     // A range of five blocks, each released by a visible mark, under `k`
     // hidden newer marks of other blocks.
@@ -2702,8 +2740,10 @@ fn asked(h: &mut Hive, tool: &str, args: Value) -> (String, Value, usize) {
 }
 
 /// The same call on the visible rows alone and with the hidden ones among
-/// them: the same answer, word for word, and at most one ledger round trip
-/// more. Returns the answer.
+/// them: the same answer, word for word, and the same ledger round trips.
+/// GH #932: the store filters every read of the round (`round_where`), so a
+/// hidden row never comes back and costs no read -- before, it could cost one
+/// round trip more (the read that planned the rest). Returns the answer.
 fn alike(visible: &[i64], hidden: &[i64], tool: &str, args: Value) -> Value {
     let (c1, p1, t1) = asked(&mut needle_wall(visible, &[]), tool, args.clone());
     let (c2, p2, t2) = asked(&mut needle_wall(visible, hidden), tool, args.clone());
@@ -2712,8 +2752,8 @@ fn alike(visible: &[i64], hidden: &[i64], tool: &str, args: Value) -> Value {
         (c1.as_str(), &p1),
         "{tool} {args}: the hidden rows {hidden:?} moved the answer"
     );
-    assert!(
-        t2 <= t1 + 1,
+    assert_eq!(
+        t2, t1,
         "{tool} {args}: {t2} ledger round trips, {t1} without the hidden rows"
     );
     p1
@@ -2724,8 +2764,8 @@ fn alike(visible: &[i64], hidden: &[i64], tool: &str, args: Value) -> Value {
 /// in the newest page, in the last one, after the budget's last row -- move
 /// nothing the answer says: `scanned`, `total_hits`, `cut_by`, the hits and
 /// the page where `limit` stops are those of the same wall without them, so a
-/// cut is no counter of the hidden rows. They may cost one ledger round trip
-/// more (the read that plans the rest), never a page past the bound.
+/// cut is no counter of the hidden rows. Since GH #932 they cost no ledger
+/// round trip either: the store never hands them back (`alike`).
 #[test]
 fn a_budget_counts_only_the_rows_the_round_may_see() {
     if !shipped() {
@@ -2778,93 +2818,43 @@ fn a_budget_counts_only_the_rows_the_round_may_see() {
             json!({"query": "needle", "limit": 20}),
         );
     }
-    // The bound: the first read, ceil(10 / 4) + 1 pages, the neighbours' two.
-    let mut h = needle_wall(
-        &visible,
-        &[1_410, 1_420, 1_430, 1_440, 610, 620, 630, 450, 440],
-    );
-    let (_, p, trips) = asked(
-        &mut h,
-        "history_search",
-        json!({"query": "needle", "limit": 20, "context": 1}),
-    );
+    // The round trips: the first read, ceil(10 / 4) = 3 pages, the
+    // neighbours' two -- 6, with nine hidden rows as without them (GH #932:
+    // no read that plans the rest, no wider neighbour read).
+    let crowd = [1_410, 1_420, 1_430, 1_440, 610, 620, 630, 450, 440];
+    let args = json!({"query": "needle", "limit": 20, "context": 1});
+    let p = alike(&visible, &crowd, "history_search", args.clone());
     assert_eq!(p["scanned"], 10, "{p}");
-    assert!(trips <= 1 + 4 + 2, "{trips} ledger round trips");
+    let (_, _, trips) = asked(&mut needle_wall(&visible, &crowd), "history_search", args);
+    assert_eq!(trips, 1 + 3 + 2, "{trips} ledger round trips");
 }
 
-/// The keys of an answer, in order (this crate's `serde_json` keeps a sorted
-/// map).
-fn keys(v: &Value) -> Vec<String> {
-    v.as_object()
-        .map(|o| o.keys().cloned().collect())
-        .unwrap_or_default()
-}
-
-/// The cut form of a search (OR-BD-86): an answer, no hit, no `scanned`, no
-/// `total_hits`, `cut_by` `scan_budget` and the `detail` that names the cut --
-/// nothing a wall could move.
-fn assert_cut_search(code: &str, p: &Value) {
-    assert_eq!(code, "", "a cut search is an answer: {p}");
-    assert_eq!(
-        keys(p),
-        [
-            "cut_by",
-            "detail",
-            "hits",
-            "limit",
-            "mode",
-            "query",
-            "stopped_at_limit",
-            "tool",
-            "truncated_scan"
-        ],
-        "the cut form and nothing else: {p}"
-    );
-    assert_eq!(p["hits"], json!([]), "{p}");
-    assert_eq!(p["cut_by"], "scan_budget", "{p}");
-    assert_eq!(p["truncated_scan"], true, "{p}");
-    assert_eq!(p["stopped_at_limit"], false, "{p}");
-    assert!(
-        p["detail"].as_str().is_some_and(|d| d.contains("since")),
-        "the detail says what brings hits back: {p}"
-    );
-}
-
-/// GH #925 (OR-BD-74, OR-BD-86): hidden rows are read to a bound of their own
-/// -- twice `scan_budget` rows in all, hidden or not -- so a wall full of them
-/// keeps a search finite. Where that bound leaves the answer open the search
-/// answers in the cut form: nothing it read, no field that names the rows it
-/// read (with `scanned` 0 the closing review's counter was hidden; with
-/// visible rows in the read it was 2B - `scanned`). Below it the answer is the
-/// one without them.
+/// GH #925 (OR-BD-74, OR-BD-86) and GH #932: a wall full of hidden rows
+/// answers as the wall without them, however many there are. Before GH #932
+/// hidden rows were read to a bound of their own (twice `scan_budget` rows in
+/// all), and past it the search answered in the cut form -- 25 hidden rows
+/// before three visible ones cut it. The store filters every read of the round
+/// now (`round_where`): a hidden row is never read, so there is no bound for
+/// it to reach and no cut it could cause.
 #[test]
-fn hidden_rows_past_their_bound_answer_in_the_cut_form() {
+fn hidden_rows_past_the_old_bound_leave_the_search_as_without_them() {
     if !shipped() {
         return;
     }
     let old = [10, 20, 30];
-    // 25 hidden rows, more than (2 - 1) x `scan_budget`, before three visible.
-    let crowd: Vec<i64> = (100..125).collect();
-    let (code, p, trips) = asked(
-        &mut needle_wall(&old, &crowd),
-        "history_search",
-        json!({"query": "needle", "limit": 8}),
-    );
-    assert_cut_search(&code, &p);
-    for raw in ["20", "25", "28"] {
-        assert!(!p.to_string().contains(raw), "`{raw}` in {p}");
+    // 9 hidden rows (below the old bound), 25 (past it), 100 (far past it).
+    for n in [9, 25, 100] {
+        let crowd: Vec<i64> = (100..100 + n).collect();
+        let p = alike(
+            &old,
+            &crowd,
+            "history_search",
+            json!({"query": "needle", "limit": 8}),
+        );
+        assert_eq!(p["truncated_scan"], false, "{n} hidden: {p}");
+        assert_eq!(p["scanned"], 3, "{n} hidden: {p}");
+        assert_eq!(p["total_hits"], 3, "{n} hidden: {p}");
     }
-    assert!(trips <= 1 + 4, "{trips} ledger round trips");
-    // Nine hidden rows -- below the bound -- leave no trace.
-    let few: Vec<i64> = (100..109).collect();
-    let p = alike(
-        &old,
-        &few,
-        "history_search",
-        json!({"query": "needle", "limit": 8}),
-    );
-    assert_eq!(p["truncated_scan"], false, "{p}");
-    assert_eq!(p["scanned"], 3, "{p}");
 }
 
 /// `history_read` of the turn range `t1`..`t2` under `scan_budget` 10: turn
@@ -2923,7 +2913,8 @@ fn an_outline_and_a_range_count_only_the_rows_the_round_may_see() {
         (c1, &p1),
         "eight rows it may see are no range too large"
     );
-    assert!(t2 <= t1 + 1, "{t2} ledger round trips, {t1} without");
+    // GH #932: the store never hands a hidden row back, so they cost no read.
+    assert_eq!(t2, t1, "{t2} ledger round trips, {t1} without");
     let (c1, p1, _) = turn_range(12, &[]);
     let (c2, p2, _) = turn_range(12, &[150, 250, 350]);
     assert_eq!(c1, "too_large", "{p1}");
@@ -2935,101 +2926,57 @@ fn an_outline_and_a_range_count_only_the_rows_the_round_may_see() {
     );
 }
 
-/// GH #925 (OR-BD-86, closing review I-2): the one bit. Walls with the same
-/// visible rows and different numbers of hidden rows (another round's, on
-/// top of the wall) answer every call of every tool word for word alike --
-/// with the answer of the wall without hidden rows below the row bound, with
-/// the one cut form at it, however many hidden rows there are and whatever
-/// visible hits stand in the read. Under `scan_budget` 10 the closing review
-/// read the hidden count off the answer at the bound: 11/12/14/16/19 hidden ->
-/// `scanned` 9/8/6/4/1, a range's `block_count_at_least` 21 - hidden, and the
-/// sessions of an outline.
+/// GH #925 (OR-BD-86, closing review I-2) and GH #932: walls with the same
+/// visible rows and different numbers of hidden rows (another round's, on top
+/// of the wall) answer every call of every tool word for word as the wall
+/// without hidden rows, in the same ledger round trips -- however many hidden
+/// rows there are. Under `scan_budget` 10 the closing review read the hidden
+/// count off the answer at the row bound (11/12/14/16/19 hidden -> `scanned`
+/// 9/8/6/4/1, a range's `block_count_at_least` 21 - hidden, the sessions of an
+/// outline); OR-BD-86 closed that with one cut form past the bound, the one bit
+/// hidden rows still moved. GH #932 closes the bit: the store filters every
+/// read of the round (`round_where`), no hidden row is read, so no bound is
+/// reached and the walls that answered in the cut form answer in full.
 #[test]
-fn past_the_row_bound_every_wall_answers_alike() {
+fn every_wall_answers_as_it_does_without_hidden_rows() {
     if !shipped() {
         return;
     }
     let visible: Vec<i64> = (1..=14).map(|i| i * 100).collect();
     let on_top = |k: i64| -> Vec<i64> { (1..=k).map(|j| 1_400 + j).collect() };
-    // The search: the newest 20 rows (2 x `scan_budget`) hold `k` hidden ones
-    // and 20 - `k` visible needles -- hits the cut form does not show.
-    for (args, below, at_bound) in [
-        (json!({"query": "needle", "limit": 20}), 9, [10, 13, 19]),
+    // The search: below, at and past the old bound of 20 rows in all.
+    for (args, hidden) in [
+        (json!({"query": "needle", "limit": 20}), [9, 10, 13, 19]),
         (
             json!({"query": "needle", "limit": 8, "context": 1}),
-            10,
-            [13, 16, 19],
+            [10, 13, 16, 19],
         ),
         (
             json!({"query": "number (3|7|9|11|13)00$", "mode": "regex", "limit": 20}),
-            9,
-            [10, 14, 19],
+            [9, 10, 14, 19],
         ),
     ] {
-        alike(&visible, &on_top(below), "history_search", args.clone());
-        let answers: Vec<Value> = at_bound
-            .iter()
-            .map(|&k| {
-                let (code, p, _) = asked(
-                    &mut needle_wall(&visible, &on_top(k)),
-                    "history_search",
-                    args.clone(),
-                );
-                assert_cut_search(&code, &p);
-                p
-            })
-            .collect();
-        assert!(
-            answers.windows(2).all(|w| w[0] == w[1]),
-            "{args}: {at_bound:?} hidden rows, one answer: {answers:?}"
-        );
+        for k in hidden {
+            let p = alike(&visible, &on_top(k), "history_search", args.clone());
+            assert!(p.get("detail").is_none(), "{args}, {k} hidden: {p}");
+        }
     }
-    // The outline: the newest 21 rows hold more than 10 hidden ones.
-    alike(&visible, &on_top(10), "history_outline", json!({}));
-    let outlines: Vec<Value> = [11, 15, 19]
-        .iter()
-        .map(|&k| {
-            let (code, p, _) = asked(
-                &mut needle_wall(&visible, &on_top(k)),
-                "history_outline",
-                json!({}),
-            );
-            assert_eq!(code, "", "{p}");
-            assert_eq!(
-                keys(&p),
-                ["detail", "sessions", "tool", "truncated_scan"],
-                "{p}"
-            );
-            assert_eq!(p["sessions"], json!([]), "{p}");
-            assert_eq!(p["truncated_scan"], true, "{p}");
-            p
-        })
-        .collect();
-    assert!(outlines.windows(2).all(|w| w[0] == w[1]), "{outlines:?}");
+    // The outline: 10 hidden rows were below the old bound, 11 and more cut it.
+    for k in [10, 11, 15, 19] {
+        let p = alike(&visible, &on_top(k), "history_outline", json!({}));
+        assert!(p.get("detail").is_none(), "{k} hidden: {p}");
+        assert_eq!(p["sessions"][0]["session_id"], "s1", "{k} hidden: {p}");
+    }
     // The turn range: eight visible rows, `k` hidden ones in turn `t1`; past
-    // 20 rows in all it is refused without a count.
+    // 20 rows in all it was refused without a count, now it is the plain read.
     let hidden = |k: i64| -> Vec<i64> { (1..=k).map(|j| 100 + j).collect() };
     let (c1, p1, t1) = turn_range(8, &[]);
-    let (c2, p2, t2) = turn_range(8, &hidden(12));
     assert_eq!(c1, "", "{p1}");
-    assert_eq!((c2, &p2), (c1, &p1), "twelve hidden rows: the plain read");
-    assert!(t2 <= t1 + 1, "{t2} ledger round trips, {t1} without");
-    let refusals: Vec<Value> = [13, 16, 30]
-        .iter()
-        .map(|&k| {
-            let (code, p, _) = turn_range(8, &hidden(k));
-            assert_eq!(code, "too_large", "{p}");
-            assert_eq!(keys(&p), ["budget", "detail", "error", "tool"], "{p}");
-            assert!(
-                p["detail"]
-                    .as_str()
-                    .is_some_and(|d| d.contains("fewer turns")),
-                "{p}"
-            );
-            p
-        })
-        .collect();
-    assert!(refusals.windows(2).all(|w| w[0] == w[1]), "{refusals:?}");
+    for k in [12, 13, 16, 30] {
+        let (c2, p2, t2) = turn_range(8, &hidden(k));
+        assert_eq!((&c2, &p2), (&c1, &p1), "{k} hidden rows: the plain read");
+        assert_eq!(t2, t1, "{k} hidden: {t2} ledger round trips, {t1} without");
+    }
 }
 
 /// Session `s1` around one `the needle` row: `older` visible rows before it
@@ -3078,14 +3025,16 @@ fn near_wall(
     h
 }
 
-/// GH #925 (OR-BD-86, closing review I-2): the neighbours of a hit are the
-/// `context` nearest rows the round may see in its session, as on the wall
-/// without hidden rows -- for any number of hidden rows beside it up to the
-/// neighbours' share of the row bound. Before, `context` + 4 rows were read
-/// and hidden ones dropped: 5 (`context` 1) or 6 (`context` 2) hidden rows
-/// beside a hit took a neighbour away. A side whose read holds a hidden row
-/// is read again, wider (one ledger round trip); past its share the whole
-/// search answers in the cut form.
+/// GH #925 (OR-BD-86, closing review I-2) and GH #932: the neighbours of a hit
+/// are the `context` nearest rows the round may see in its session, as on the
+/// wall without hidden rows, in the same ledger round trips -- for any number
+/// of hidden rows beside it. Before OR-BD-86, `context` + 4 rows were read and
+/// hidden ones dropped: 5 (`context` 1) or 6 (`context` 2) hidden rows beside
+/// a hit took a neighbour away; then a side whose read held a hidden row was
+/// read again, wider (one round trip more), and past its share of the row
+/// bound (15 hidden rows on one side under `scan_budget` 10) the whole search
+/// answered in the cut form. The store filters the neighbour reads now
+/// (`round_where`): no hidden row is read, no side is read again, no cut.
 #[test]
 fn the_neighbours_are_the_nearest_rows_the_round_may_see() {
     if !shipped() {
@@ -3125,50 +3074,41 @@ fn the_neighbours_are_the_nearest_rows_the_round_may_see() {
                 (c1.as_str(), &p1),
                 "context {width}, {b} hidden before and {a} after the hit"
             );
-            assert!(
-                t2 <= t1 + 1,
+            assert_eq!(
+                t2, t1,
                 "{t2} ledger round trips, {t1} without the hidden rows"
             );
         }
     }
-    // The neighbours' share of the row bound: `scan_budget` 10 -> 20 rows for
-    // the one side short of its window (`context` 2: six rows the round may
-    // see). `limit` 1 and `page_rows` 1 stop the scan itself after the hit.
+    // The old share of the row bound: `scan_budget` 10 -> 20 rows for the one
+    // side short of its window (`context` 2: six rows the round may see); 15
+    // and more hidden rows beside the hit cut the search before GH #932.
+    // `limit` 1 and `page_rows` 1 stop the scan itself after the hit.
     let over = [
         ("history", "scan_budget", json!(10)),
         ("history", "page_rows", json!(1)),
     ];
     let args = json!({"query": "needle", "context": 2, "limit": 1});
-    let (c1, p1, _) = asked(
+    let (c1, p1, t1) = asked(
         &mut near_wall(&over, 20, 0, 0, 0),
-        "history_search",
-        args.clone(),
-    );
-    let (c2, p2, _) = asked(
-        &mut near_wall(&over, 20, 0, 14, 0),
         "history_search",
         args.clone(),
     );
     assert_eq!(c1, "", "{p1}");
     assert_eq!(ids_of(&p1, "before"), ["row 19000", "row 20000"], "{p1}");
-    assert_eq!(
-        (c2, &p2),
-        (c1, &p1),
-        "14 hidden rows beside: 20 rows hold six"
-    );
-    let cuts: Vec<Value> = [15, 18]
-        .iter()
-        .map(|&b| {
-            let (code, p, _) = asked(
-                &mut near_wall(&over, 20, 0, b, 0),
-                "history_search",
-                args.clone(),
-            );
-            assert_cut_search(&code, &p);
-            p
-        })
-        .collect();
-    assert_eq!(cuts[0], cuts[1], "one cut form");
+    for b in [14, 15, 18, 60] {
+        let (c2, p2, t2) = asked(
+            &mut near_wall(&over, 20, 0, b, 0),
+            "history_search",
+            args.clone(),
+        );
+        assert_eq!(
+            (c2.as_str(), &p2),
+            (c1.as_str(), &p1),
+            "{b} hidden rows beside the hit"
+        );
+        assert_eq!(t2, t1, "{b} hidden: {t2} ledger round trips, {t1} without");
+    }
 }
 
 // ======================================================= 5. the audience gate
@@ -3179,16 +3119,23 @@ fn the_neighbours_are_the_nearest_rows_the_round_may_see() {
 /// see (closing review I-3, OR-BD-86).
 const GATED_CELLS: [&str; 6] = ["intake", "policy", "push", "handover", "history", "writer"];
 
-/// The four gate functions of every gated cell, read with `ast`, run against
-/// one table: the affinity rows (`templates/affinity/README.md`) plus the
-/// edges -- `*`, a row without an audience, the declared empty round, a round
-/// that is no JSON array, the round-less read of the running session (only
-/// its rows no round declared, or that name `*`, review M-7), and the
-/// intersection a summary or a handover block carries.
+/// The gate functions of every gated cell, read with `ast`, run against one
+/// table: the affinity rows (`templates/affinity/README.md`) plus the edges --
+/// `*`, a row without an audience, the declared empty round, a round that is
+/// no JSON array, the round-less read of the running session (only its rows
+/// that declare no round, `[]`, or name `*`, review M-7 and PP-BD-12), and the
+/// intersection a summary or a handover block carries. GH #932 adds the store
+/// half of the gate, `round_where` with its `ROUNDLESS` list: the `where`
+/// terms every ledger read of a round carries, so a hidden row is never read.
+/// It is pinned as the same text in every cell like the Python half -- a cell
+/// whose store filter drifted from the others would read rows they never see.
 const GATE_TABLE: &str = r##"# The gate table (GH #925): runs the gate functions of every curator cell that
 # carries them and prints one JSON document. Input: JSON {cell: script} on stdin.
 import ast, json, sys
-NAMES = ("audience_of", "allowed", "passes", "audience_meet")
+NAMES = ("audience_of", "allowed", "passes", "audience_meet", "round_where")
+# Top-level constants a gate function reads (GH #932: `round_where` names the
+# round-less audiences out of `ROUNDLESS`), pinned as the same text too.
+CONSTS = ("ROUNDLESS",)
 scripts = json.load(sys.stdin)
 src_of, results = {}, {}
 E, A, B, C = "member:e", "member:a", "member:b", "member:c"
@@ -3214,17 +3161,22 @@ CASES = [
     ["audience_of", ["x"], None],
     ["audience_of", ['{"a": 1}'], None],
     ["audience_of", [5], None],
-    ["passes", [{"session_id": "s1"}, None, "s1"], True],
+    # GH #932 / PP-BD-12: a round-less row carries `[]`; a row WITHOUT an
+    # audience (NULL) is one from before the rule and passes no read, the
+    # round-less one of its own session neither.
+    ["passes", [{"session_id": "s1"}, None, "s1"], False],
     ["passes", [{"session_id": "s2", "audience_set": L("*")}, None, "s1"], False],
     ["passes", [{}, None, ""], False],
     ["passes", [{"session_id": "s2", "audience_set": L(E, A, B)}, L(E, A), "s1"], True],
     ["passes", [{"session_id": "s1", "audience_set": L(E)}, L(E, A), "s1"], False],
-    ["passes", [{"session_id": "s1"}, "", "s1"], True],
+    ["passes", [{"session_id": "s1"}, "", "s1"], False],
     # Review M-7: without a round, a row a declared round said in the running
-    # session stays -- only what no round declared, or what names `*`, passes.
+    # session stays -- only what no round declared (`[]`, PP-BD-12), or what
+    # names `*`, passes (GH #932: `[]` passes now, NULL no longer does).
     ["passes", [{"session_id": "s1", "audience_set": L(E, B)}, None, "s1"], False],
-    ["passes", [{"session_id": "s1", "audience_set": "[]"}, None, "s1"], False],
-    ["passes", [{"session_id": "s1", "audience_set": None}, None, "s1"], True],
+    ["passes", [{"session_id": "s1", "audience_set": "[]"}, None, "s1"], True],
+    ["passes", [{"session_id": "s2", "audience_set": "[]"}, None, "s1"], False],
+    ["passes", [{"session_id": "s1", "audience_set": None}, None, "s1"], False],
     ["passes", [{"session_id": "s1", "audience_set": L("*")}, None, "s1"], True],
     ["passes", [{"session_id": "s1", "audience_set": L(E, A)}, "", "s1"], False],
     ["audience_meet", [[L(E, A, B), L(E, A)]], '["member:a","member:e"]'],
@@ -3233,12 +3185,30 @@ CASES = [
     ["audience_meet", [[L(E, A), None]], None],
     ["audience_meet", [[]], None],
     ["audience_meet", [[L(E), L(A)]], "[]"],
+    # GH #932, the store half: a declared, non-empty round reads with `covers`
+    # (its canonical members); none, an empty text or the declared EMPTY round
+    # (which `covers` refuses) reads only the round-less and `*` rows of the
+    # running session; without a session nothing may be read at all.
+    ["round_where", [L(E, A), "s1"], {"audience_set": {"covers": [A, E]}}],
+    ["round_where", [[B, A], ""], {"audience_set": {"covers": [A, B]}}],
+    ["round_where", [L("*"), "s1"], {"audience_set": {"covers": ["*"]}}],
+    ["round_where", [None, "s1"], {"session_id": "s1", "audience_set": {"in": ["[]", L("*")]}}],
+    ["round_where", ["", "s1"], {"session_id": "s1", "audience_set": {"in": ["[]", L("*")]}}],
+    ["round_where", ["[]", "s1"], {"session_id": "s1", "audience_set": {"in": ["[]", L("*")]}}],
+    ["round_where", [None, ""], None],
+    ["round_where", ["[]", None], None],
 ]
 for cell, script in sorted(scripts.items()):
     tree = ast.parse(script)
     defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in NAMES}
-    src_of[cell] = {k: ast.get_source_segment(script, v) for k, v in defs.items()}
+    consts = {t.id: n for n in tree.body if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name) and t.id in CONSTS}
+    src_of[cell] = {k: ast.get_source_segment(script, v)
+                    for k, v in list(defs.items()) + list(consts.items())}
     ns = {"json": json}
+    for name in CONSTS:
+        if name in consts:
+            exec(compile(ast.Module(body=[consts[name]], type_ignores=[]), cell, "exec"), ns)
     for name in NAMES:
         if name in defs:
             exec(compile(ast.Module(body=[defs[name]], type_ignores=[]), cell, "exec"), ns)
@@ -3291,7 +3261,14 @@ fn the_audience_gate_is_one_rule_in_every_cell() {
         );
     }
     let first = &report["sources"][GATED_CELLS[0]];
-    for name in ["audience_of", "allowed", "passes", "audience_meet"] {
+    for name in [
+        "audience_of",
+        "allowed",
+        "passes",
+        "audience_meet",
+        "round_where",
+        "ROUNDLESS",
+    ] {
         assert!(
             first[name].is_string(),
             "`{}` defines `{name}`",
@@ -3307,6 +3284,219 @@ fn the_audience_gate_is_one_rule_in_every_cell() {
     }
 }
 
+// ================================================== 5b. the meet of rows
+
+/// The cells that write a row made of other rows (GH #932, PP-BD-12): `policy`
+/// (the summary, a model pin) and `handover` (the note, the leaf) through
+/// `meet_of_rows`, `push` (the addendum) through `addendum_audience`.
+const MEET_CELLS: [&str; 3] = ["policy", "handover", "push"];
+
+/// The meet functions of `MEET_CELLS`, read with `ast`, run against one table.
+/// Since PP-BD-12 `[]` marks a round-less row, which the round-less reads of
+/// its session take; an EMPTY meet of declared rounds ({a} and {b}, or {e,a}
+/// and a round-less row) must therefore come out None -- the row keeps its
+/// column NULL and reaches no round -- and never `[]`. `meet_of_rows` is pinned
+/// as the same text in `policy` and `handover`; `push` answers the same rule
+/// for its two-sided `addendum_audience`. The row cases run the writers: the
+/// insert row `policy` builds with `with_meet`, the addendum mark `push`
+/// builds with `stamped(..., meet=True)`, and the note mark the `handover`
+/// script itself writes in its `note` step, run whole over a closed session
+/// whose rows carry the given audiences.
+const MEET_TABLE: &str = r##"# The meet table (GH #932, PP-BD-12): runs the meet functions of the curator
+# cells that write a row made of other rows and prints one JSON document.
+# Input: JSON {cell: script} on stdin (`policy`, `handover`, `push`).
+import ast, json, subprocess, sys
+NAMES = ("audience_of", "audience_meet", "meet_of_rows", "with_meet",
+         "addendum_audience", "stamped")
+scripts = json.load(sys.stdin)
+src_of, results = {}, {}
+E, A, B = "member:e", "member:a", "member:b"
+L = lambda *xs: json.dumps(list(xs))
+EA = '["member:a","member:e"]'
+# `meet_of_rows`, the same rows in `policy` and `handover`: an EMPTY meet is
+# the round-less `[]` only when every source naming no `*` is round-less too;
+# an empty meet of declared rounds names nobody -- None, never `[]`.
+MEET = [
+    ["meet_of_rows", [[L(A), L(B)]], None],
+    ["meet_of_rows", [[L(E, A), "[]"]], None],
+    ["meet_of_rows", [["[]", L(E, A)]], None],
+    ["meet_of_rows", [["[]", "[]"]], "[]"],
+    ["meet_of_rows", [["[]", L("*")]], "[]"],
+    ["meet_of_rows", [[L("*"), "[]"]], "[]"],
+    ["meet_of_rows", [[L(E, A), L("*")]], EA],
+    ["meet_of_rows", [[L(E, A, B), L(E, A)]], EA],
+    ["meet_of_rows", [[L("*"), L("*")]], '["*"]'],
+    ["meet_of_rows", [[L(E, A), None]], None],
+    ["meet_of_rows", [[None, "[]"]], None],
+    ["meet_of_rows", [["[]", "not json"]], None],
+    ["meet_of_rows", [[]], None],
+    ["meet_of_rows", [["[]"]], "[]"],
+    ["meet_of_rows", [[L(E, A), L(E, B), "[]"]], None],
+]
+# `addendum_audience(round, gap)` in `push`: the same rule for the addendum --
+# both round-less (or the gap names `*`) is `[]`; a declared side against a
+# round-less one, or two rounds that share nobody, is None.
+ADDENDUM = [
+    ["addendum_audience", [None, "[]"], "[]"],
+    ["addendum_audience", ["[]", "[]"], "[]"],
+    ["addendum_audience", [None, L("*")], "[]"],
+    ["addendum_audience", [None, L(E, A)], None],
+    ["addendum_audience", ["[]", L(E, A)], None],
+    ["addendum_audience", [None, None], None],
+    ["addendum_audience", [L(E, A), "[]"], None],
+    ["addendum_audience", [L(A), L(B)], None],
+    ["addendum_audience", [L(E, A), None], None],
+    ["addendum_audience", [L(E, A), L(E, A)], EA],
+    ["addendum_audience", [L(E, A), L(A, B)], '["member:a"]'],
+    ["addendum_audience", [L(E, A), L("*")], EA],
+    ["addendum_audience", [L(A, E, A), L(E, A, B)], EA],
+]
+# The rows: what a writer puts in the column when the meet of declared rounds
+# is empty -- no `audience_set` at all (NULL), never `[]`.
+ROW = {"hash": "h"}
+ROWS = {
+    "policy": [
+        # the summary (`s-row`) and a model pin (`f-pin`): `with_meet`
+        ["with_meet", [ROW, ["meet_of_rows", [[L(A), L(B)]]]], {"hash": "h"}],
+        ["with_meet", [ROW, ["meet_of_rows", [[L(E, A), "[]"]]]], {"hash": "h"}],
+        ["with_meet", [ROW, ["meet_of_rows", [["[]", "[]"]]]], {"hash": "h", "audience_set": "[]"}],
+        ["with_meet", [ROW, ["meet_of_rows", [[L(E, A), L(E, A, B)]]]], {"hash": "h", "audience_set": EA}],
+    ],
+    "push": [
+        # the addendum mark: `stamped(..., meet=True)` over `addendum_audience`
+        ["stamped", [ROW, ["addendum_audience", [L(A), L(B)]], True], {"hash": "h"}],
+        ["stamped", [ROW, ["addendum_audience", [None, L(E, A)]], True], {"hash": "h"}],
+        ["stamped", [ROW, ["addendum_audience", [None, "[]"]], True], {"hash": "h", "audience_set": "[]"}],
+        ["stamped", [ROW, ["addendum_audience", [L(E, A), L(E, A)]], True], {"hash": "h", "audience_set": EA}],
+    ],
+}
+WRAP = ("import io, json, sys\n"
+        "_d = json.load(sys.stdin)\n"
+        "sys.stdin = io.StringIO(_d['doc'])\n"
+        "exec(compile(_d['script'], 'cell', 'exec'), {'__name__': '__main__'})\n")
+
+
+def run_cell(script, doc):
+    p = subprocess.run([sys.executable, "-c", WRAP], capture_output=True, text=True,
+                       input=json.dumps({"script": script, "doc": json.dumps(doc)}))
+    return json.loads(p.stdout or "[]"), p.stderr
+
+
+def note_mark(script, auds):
+    """The `handover` note of a closed session whose rows carry `auds`: the
+    `w-mark` row the `note` step writes (two steps: the block check, then the
+    writes)."""
+    ctx = {"cur_phase": "note", "cur_call": "s3", "session_id": "s3"}
+    wall = [dict({"seq": i + 1, "session_id": "s3", "turn_id": "t%d" % i, "kind": "user",
+                  "hash": "h%d" % i, "final": 0, "at": "x"},
+                 **({} if a is None else {"audience_set": a}))
+            for i, a in enumerate(auds)]
+    data = {"r-wall": wall,
+            "r-pend": [{"key": "pending:handover:s3",
+                        "value": json.dumps({"text": "a note", "model": "m"})}]}
+    ops, err = ["r-wall", "r-marks", "r-pend"], ""
+    for _ in range(3):
+        body = {"messages": [{"origin": "tool", "id": cid, "text": json.dumps(data.get(cid, []))}
+                             for cid in ops]}
+        doc = {"body": body, "params": {},
+               "envelope": {"header": {"hop": {"operation": "select"}, "context": ctx}}}
+        out, err = run_cell(script, doc)
+        if not out:
+            break
+        msgs = {m["id"]: json.loads(m["text"]) for m in out[0].get("messages", [])}
+        if "w-mark" in msgs:
+            return msgs["w-mark"]["row"]
+        ops = list(msgs)
+    return {"error": "no w-mark", "stderr": err[-400:]}
+
+
+for cell, script in sorted(scripts.items()):
+    tree = ast.parse(script)
+    defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in NAMES}
+    src_of[cell] = {k: ast.get_source_segment(script, v) for k, v in defs.items()}
+    ns = {"json": json}
+    for name in NAMES:
+        if name in defs:
+            exec(compile(ast.Module(body=[defs[name]], type_ignores=[]), cell, "exec"), ns)
+    cases = (MEET if cell in ("policy", "handover") else ADDENDUM) + ROWS.get(cell, [])
+    bad = []
+    for fn, args, want in cases:
+        # A row case hands the writer the value of an inner call `[name, args]`.
+        inner = [a[0] for a in args if isinstance(a, list) and a and a[0] in NAMES]
+        if fn not in ns or any(n not in ns for n in inner):
+            bad.append("%s missing" % "/".join([fn] + inner))
+            continue
+        args = [ns[a[0]](*a[1]) if isinstance(a, list) and a and a[0] in NAMES else a
+                for a in args]
+        got = ns[fn](*args)
+        if got != want:
+            bad.append("%s%r = %r, want %r" % (fn, tuple(args), got, want))
+    if cell == "handover":
+        for auds, want in [([L(A), L(B)], None), ([L(A), "[]"], None),
+                           ([L(E, A), L(E, B)], '["member:e"]'), (["[]", "[]"], "[]"),
+                           ([L(E, A), L(E, A, B)], EA), ([L(E, A), None], None)]:
+            row = note_mark(script, auds)
+            got = row.get("audience_set", "<absent>")
+            if "error" in row or got != (want if want is not None else "<absent>"):
+                bad.append("note over %r: %r, want audience_set %r" % (auds, row, want))
+    results[cell] = bad
+print(json.dumps({"sources": src_of, "failures": results}))"##;
+
+#[test]
+fn an_empty_meet_of_declared_rounds_is_null_never_round_less() {
+    if !shipped() {
+        return;
+    }
+    let scripts: Map<String, Value> = MEET_CELLS
+        .iter()
+        .map(|c| (c.to_string(), Value::String(script_of(c))))
+        .collect();
+    let mut child = Command::new("python3")
+        .arg("-c")
+        .arg(MEET_TABLE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(Value::Object(scripts).to_string().as_bytes())
+        .expect("write the scripts");
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success(),
+        "the table ran: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = sj::from_slice(&out.stdout).expect("one JSON document");
+    for cell in MEET_CELLS {
+        assert_eq!(
+            report["failures"][cell],
+            json!([]),
+            "`{cell}` answers the meet table"
+        );
+    }
+    let policy = &report["sources"]["policy"]["meet_of_rows"];
+    assert!(policy.is_string(), "`policy` defines `meet_of_rows`");
+    assert_eq!(
+        &report["sources"]["handover"]["meet_of_rows"], policy,
+        "`handover` carries `meet_of_rows` as the same text as `policy`"
+    );
+    for (cell, name) in [
+        ("policy", "with_meet"),
+        ("push", "addendum_audience"),
+        ("push", "stamped"),
+    ] {
+        assert!(
+            report["sources"][cell][name].is_string(),
+            "`{cell}` defines `{name}`"
+        );
+    }
+}
+
 /// GH #929 reserve, as a history search spends it: every ledger round trip is
 /// two routing decisions on the chain of the call, and the rest of the S3
 /// segment (brain -> dispatcher -> curator -> `./history` -> `tool_result` ->
@@ -3317,19 +3507,26 @@ const S3_FIXED: usize = 10;
 /// reserve 16 (GH #929).
 const SEGMENT_MAX: usize = 64 - 16;
 
-/// GH #925 (OR-BD-78, OR-BD-86): the ledger round trips of the longest search
-/// at `scan_budget` `budget` and `page_rows` `page` -- the first read, every
-/// page the budget needs, the one read a hidden row adds (OR-BD-74), the
-/// neighbours' two and the one read hidden rows beside a hit add. It depends
-/// on the number of pages alone, not on the rows in them, which is what lets
+/// GH #925 (OR-BD-78, OR-BD-86) and GH #932: the ledger round trips of the
+/// longest search at `scan_budget` `budget` and `page_rows` `page` -- the
+/// first read (`search-rows`), one per page the budget needs (`search-page`,
+/// ceil(budget / page): each page's bundle reads the page, its bodies and
+/// what follows), and the neighbours' two (`search-near`, `search-near-2`).
+/// Before GH #932 a hidden row added two more: the read that planned the rest
+/// of the wall (OR-BD-74) and the wider read beside a hit (OR-BD-86). The
+/// store filters every read of the round now (`round_where`), so neither is
+/// ever taken. It depends on the number of pages alone, not on the rows in
+/// them, which is what lets
 /// `the_longest_search_takes_the_round_trips_worked_out_from_its_settings`
 /// prove it on a small wall.
 fn longest_search_trips(budget: usize, page: usize) -> usize {
-    1 + budget.div_ceil(page) + 1 + 2 + 1
+    1 + budget.div_ceil(page) + 2
 }
 
 /// GH #925 (OR-BD-78, OR-BD-86): at the SHIPPED settings the longest search
-/// stays inside the GH #929 reserve: 18 ledger round trips, 46 on the chain.
+/// stays inside the GH #929 reserve: 1 + ceil(5000 / 400) + 2 = 16 ledger
+/// round trips, 10 + 2 x 16 = 42 on the chain (18 and 46 before GH #932
+/// dropped the two reads hidden rows cost).
 /// Worked out from `params` alone, so a changed knob fails here without a
 /// colony and without a clock; that the script takes exactly these trips is
 /// pinned by the run below.
@@ -3355,19 +3552,20 @@ fn the_longest_search_at_the_shipped_settings_fits_the_chain_reserve() {
     );
 }
 
-/// GH #925 (OR-BD-78, OR-BD-86): the longest search takes EXACTLY the round
-/// trips `longest_search_trips` works out -- a wall past the budget, the one
-/// hit in its oldest scanned row with `context` 2, one row of another round
-/// on top and six of the hit's own session on either side of it.
+/// GH #925 (OR-BD-78, OR-BD-86) and GH #932: the longest search takes EXACTLY
+/// the round trips `longest_search_trips` works out -- a wall past the budget,
+/// the one hit in its oldest scanned row with `context` 2, one row of another
+/// round on top and six of the hit's own session on either side of it. The
+/// hidden rows stay on the wall: they cost no round trip and take no
+/// neighbour away, since the store never hands them back.
 ///
 /// Run at small settings, not the shipped ones: at 5000 / 400 the wall is
 /// 6000 rows, 1.7 s here, and the public CI runner (2026-10-01) spent the
 /// shipped 3000 ms `time_budget_ms` at 4000 of them -- `cut_by` `time_budget`,
 /// a cut of its own and not the row bounds this test is about. The clock
 /// stays as shipped; the wall shrinks instead. 50 / 4 is the shipped ratio
-/// (13 pages, the last one short: the same 18 trips over 60 rows), 48 / 4
-/// ends on a full page, 20 / 20 is one page. Every budget stays above the 13
-/// hidden rows, below which OR-BD-86 answers in the cut form (at 12 it does).
+/// (13 pages, the last one short: the same 16 trips over 60 rows), 48 / 4
+/// ends on a full page (12 pages, 15 trips), 20 / 20 is one page (4 trips).
 #[test]
 fn the_longest_search_takes_the_round_trips_worked_out_from_its_settings() {
     if !shipped() {

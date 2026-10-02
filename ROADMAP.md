@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.54.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.55.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.55.0: a strand gate can run on a remote build host; the memory's close pass and its stored facts keep the
+  audience of the turns they come from, and an episode can carry an affect mark; the curator reads only the rows
+  a round may see and can send a short identity; apps can observe tool calls without displacing a default.
 - v0.54.0: a round reads a curator's ledger row only if it was present for it (round ⊆ the row's audience), and
   the ledger counts itself on request; the control loop gets the lanes to measure goals per role and to change a
   text only behind an evaluation, shipped disabled and wired to nothing yet; TTL restores sit at named seams.

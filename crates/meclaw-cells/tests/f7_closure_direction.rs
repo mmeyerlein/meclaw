@@ -192,8 +192,11 @@ fn staged_fact(claim: &str, from: &str, replaces: &str) -> serde_json::Value {
 /// Run the apply phase over one staged fact and one parked window.
 fn apply(fact: serde_json::Value, window: &str) -> (Vec<serde_json::Value>, String) {
     let payload = serde_json::json!({"facts": [fact], "entities": [], "edges": []});
+    // GH #933: an episode carries its audience; a fact of a turn without one
+    // is no longer minted (the request round is not a fallback any more).
     let episodes = serde_json::json!({"e9": {"happened_at": "2023-05-27T09:00:00Z",
-                                             "session_id": "s2"}});
+                                             "session_id": "s2",
+                                             "audience_set": "[\"member:user\"]"}});
     let rows = serde_json::json!([
         {"key": BATCH, "kind": "payload", "payload": payload.to_string()},
         {"key": BATCH, "kind": "known", "payload": "[]"},

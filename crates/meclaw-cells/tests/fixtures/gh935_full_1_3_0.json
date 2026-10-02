@@ -1,0 +1,131 @@
+{
+  "calls": [
+    {
+      "messages": [
+        {
+          "origin": "user",
+          "text": "q1",
+          "type": "text"
+        }
+      ],
+      "system": {
+        "consult": {
+          "$replace": true
+        },
+        "history": {
+          "$replace": true
+        },
+        "identity": {
+          "$replace": true,
+          "text": "You are Tern, the navigator of the long watch. You keep the charts, the logbook and the course; you speak plainly, you name the bearing before the reason, and you never guess a depth you have not sounded."
+        },
+        "instructions": {
+          "$replace": true,
+          "mode": {
+            "text": "Be brief."
+          }
+        },
+        "persona": {
+          "$replace": true,
+          "voice": {
+            "text": "calm"
+          }
+        },
+        "pinned": {
+          "$replace": true
+        },
+        "roster": {
+          "$replace": true
+        }
+      }
+    },
+    {
+      "messages": [
+        {
+          "origin": "user",
+          "text": "q1",
+          "type": "text"
+        },
+        {
+          "origin": "assistant",
+          "text": "a1",
+          "type": "text"
+        },
+        {
+          "origin": "user",
+          "text": "q2",
+          "type": "text"
+        }
+      ],
+      "system": {
+        "consult": {
+          "$replace": true
+        },
+        "history": {
+          "$replace": true
+        },
+        "instructions": {
+          "$replace": true,
+          "mode": {
+            "text": "Be brief."
+          }
+        },
+        "pinned": {
+          "$replace": true
+        },
+        "roster": {
+          "$replace": true
+        }
+      }
+    },
+    {
+      "messages": [
+        {
+          "origin": "user",
+          "text": "q1",
+          "type": "text"
+        },
+        {
+          "origin": "assistant",
+          "text": "a1",
+          "type": "text"
+        },
+        {
+          "origin": "user",
+          "text": "q2",
+          "type": "text"
+        },
+        {
+          "origin": "assistant",
+          "text": "a2",
+          "type": "text"
+        },
+        {
+          "origin": "user",
+          "text": "q3",
+          "type": "text"
+        }
+      ],
+      "system": {
+        "consult": {
+          "$replace": true
+        },
+        "history": {
+          "$replace": true
+        },
+        "instructions": {
+          "$replace": true,
+          "mode": {
+            "text": "Be brief."
+          }
+        },
+        "pinned": {
+          "$replace": true
+        },
+        "roster": {
+          "$replace": true
+        }
+      }
+    }
+  ]
+}

@@ -318,6 +318,11 @@ pub struct PlannedEdge {
     /// edge that arrives at runtime without its lane could not be re-anchored
     /// by a later `swap_nodes`.
     pub lane: Option<String>,
+    /// GH #937: the edge is a passive tap ([`crate::config::EdgeSpec::tap`]),
+    /// carried into [`crate::edge_table::Edge::tap`] by the `InitialApply`
+    /// conversion. Dropping it would turn an observer into a regular edge that
+    /// suppresses the sender's defaults.
+    pub tap: bool,
 }
 /// GH #424 — a `cell.type: "ref"` marker the FIRST boot will grow.
 ///
@@ -947,6 +952,8 @@ pub fn plan_bootstrap_with_env(
                     is_default: spec.is_default,
                     // GH #559: the declared lane, carried as declared.
                     lane: spec.lane.clone(),
+                    // GH #937: the passive-tap flag, carried as declared.
+                    tap: spec.tap,
                 });
             }
         } else {
@@ -1275,6 +1282,7 @@ pub fn plan_bootstrap_with_env(
                 modifier: None,
                 is_default: false,
                 lane: None,
+                tap: false,
             });
         }
         let mut hive_view = crate::hive_scope::HiveScopeTable::new();

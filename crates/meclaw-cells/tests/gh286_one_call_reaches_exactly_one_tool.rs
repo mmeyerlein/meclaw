@@ -519,6 +519,7 @@ mod door_sweep {
                 modifier: None,
                 is_default: false,
                 lane: None,
+                tap: false,
             });
         }
         t

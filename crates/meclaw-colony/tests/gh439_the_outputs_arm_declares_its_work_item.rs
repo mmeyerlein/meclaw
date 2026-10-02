@@ -70,9 +70,17 @@ async fn an_emission_taken_from_the_outputs_channel_is_declared_as_work() {
     // Phase 1 — the idle baseline. Collect a stretch of beats with NOTHING in the
     // outputs channel; it must alternate strictly, so the adjacency asserted in
     // phase 2 cannot come from the idle loop.
+    //
+    // The stretch is a COUNT, not a time window. It used to be "at least 8
+    // beats within 800 ms", and a full-width test run (12 threads on a build
+    // host, 2026-10-01) delivered only 4 beats in that window: the colony was
+    // beating, the machine was busy. How fast an idle loop beats is not what
+    // this test asserts, only THAT it keeps beating, so it waits for 8 beats
+    // and fails only at a generous deadline (30 s, the failure marker used
+    // across the repo's tests).
     let mut idle: Vec<Beat> = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
-    while tokio::time::Instant::now() < deadline && idle.len() < 12 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while idle.len() < 8 {
         match tokio::time::timeout_at(deadline, hb_rx.recv()).await {
             Ok(Some(b)) => idle.push(b),
             _ => break,
@@ -109,18 +117,21 @@ async fn an_emission_taken_from_the_outputs_channel_is_declared_as_work() {
         .await
         .expect("the outputs channel is the production emission path");
 
+    // Same reason as phase 1: no fixed 800 ms window. Collect until the
+    // adjacency shows up or 24 beats have passed without it (the old cap: the
+    // arm's beat comes within the first iterations after the send); only the
+    // 30 s deadline turns a slow machine into a failure.
+    let has_double = |v: &[Beat]| v.windows(2).any(|p| is_working(&p[0]) && is_working(&p[1]));
     let mut after: Vec<Beat> = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
-    while tokio::time::Instant::now() < deadline && after.len() < 24 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while after.len() < 24 && !has_double(&after) {
         match tokio::time::timeout_at(deadline, hb_rx.recv()).await {
             Ok(Some(b)) => after.push(b),
             _ => break,
         }
     }
     assert!(
-        after
-            .windows(2)
-            .any(|p| is_working(&p[0]) && is_working(&p[1])),
+        has_double(&after),
         "the outputs arm must declare its work item before it blocks — the only \
          way two Working-class beats can follow each other is an arm that beat \
          and then the top of the next iteration; beats were {after:?}"

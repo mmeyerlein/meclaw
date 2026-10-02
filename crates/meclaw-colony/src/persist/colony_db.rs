@@ -739,12 +739,27 @@ pub(crate) fn read_edges_from(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<crate::bootstrap::PlannedEdge>, crate::bootstrap::EdgeHydrationError> {
     use crate::bootstrap::EdgeHydrationError as E;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, from_path, to_path, condition, modifier, is_default, lane FROM edges \
-             ORDER BY created_at",
-        )
-        .map_err(E::Sql)?;
+    // GH #937: `edges.tap` arrived with schema v12. The boot planner's
+    // read-only probe ([`read_persisted_edges`]) may meet a file the migration
+    // has not touched yet, so an absent column reads as `0` — a regular edge,
+    // which is what every edge written before the column existed is.
+    let has_tap = {
+        let mut stmt = conn.prepare("PRAGMA table_info(edges)").map_err(E::Sql)?;
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .map_err(E::Sql)?
+            .filter_map(Result::ok)
+            .collect();
+        names.iter().any(|name| name == "tap")
+    };
+    let sql = if has_tap {
+        "SELECT id, from_path, to_path, condition, modifier, is_default, lane, tap FROM edges \
+         ORDER BY created_at"
+    } else {
+        "SELECT id, from_path, to_path, condition, modifier, is_default, lane, 0 FROM edges \
+         ORDER BY created_at"
+    };
+    let mut stmt = conn.prepare(sql).map_err(E::Sql)?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -755,12 +770,13 @@ pub(crate) fn read_edges_from(
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, i64>(5)?,
                 r.get::<_, Option<String>>(6)?,
+                r.get::<_, i64>(7)?,
             ))
         })
         .map_err(E::Sql)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id_str, from_str, to_str, cond_src, mod_src, is_default, lane) =
+        let (id_str, from_str, to_str, cond_src, mod_src, is_default, lane, tap) =
             row.map_err(E::Sql)?;
         let id = meclaw_core::Uuid::parse_str(&id_str).map_err(|e| E::InvalidUuid {
             edge_id: id_str.clone(),
@@ -813,6 +829,9 @@ pub(crate) fn read_edges_from(
             // v9). NULL for every edge written before the column existed and
             // for every ordinary edge, which is the same statement.
             lane,
+            // GH #937: the passive-tap flag, read back from `edges.tap`
+            // (schema v12); `0` for every edge that predates the column.
+            tap: tap != 0,
         });
     }
     Ok(out)
@@ -923,7 +942,8 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: the meta table has schema_version='11' (GH #850: the
+        // Schema check: the meta table has schema_version='12' (GH #937: the
+        // edges `tap` column, on top of GH #850: the
         // mailbox_overflow table, on top of GH #612: the
         // dead_letters `detail` column, on top of the GH #559 edges `lane`, the
         // GH #491 registry `dormant`, the GH #283 edges `is_default`, the
@@ -937,7 +957,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "11");
+        assert_eq!(v, "12");
         // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);

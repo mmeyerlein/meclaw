@@ -1352,7 +1352,9 @@ fn an_addendum_is_handed_only_to_a_round_its_find_was_for() {
 /// in the ledger's one form (sorted, no duplicates, no whitespace): the gap's
 /// round, which rides the gap's ask out and its answer home (the addendum),
 /// and the round the find is handed to (`addendum_done`). A round nobody
-/// declared leaves the column NULL and the lookup goes on.
+/// declared writes `[]` (PP-BD-12, GH #932) and the lookup goes on: the mark
+/// is a round-less row of its session, found by the round-less reads of that
+/// session alone -- NULL is left to rows from before the rule.
 #[test]
 fn every_mark_of_the_push_carries_its_round() {
     if !push_shipped() {
@@ -1394,7 +1396,8 @@ fn every_mark_of_the_push_carries_its_round() {
     assert_eq!(asks.len(), 1, "looked up all the same: {:?}", h.out);
     assert_eq!(
         push_marks(&h).pop(),
-        Some(("gap".to_string(), None)),
-        "no round, no audience"
+        // PP-BD-12 (GH #932): round-less is `[]`, no longer NULL.
+        Some(("gap".to_string(), Some("[]".to_string()))),
+        "no round, the empty set"
     );
 }

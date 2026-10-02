@@ -9,5 +9,27 @@
       }
     },
     "to": "./store"
+  },
+  {
+    "condition": "has(hop.route) && hop.route == 'astore'",
+    "from": "./writer",
+    "modifier": {
+      "set_context": {
+        "affect_req": "hop.affect_req",
+        "mem_phase": "hop.phase",
+        "store_origin": "'affect'"
+      }
+    },
+    "to": "./store"
+  },
+  {
+    "condition": "context.store_origin == 'affect'",
+    "from": "./store",
+    "modifier": {
+      "set_context": {
+        "mem_phase": "context.mem_phase"
+      }
+    },
+    "to": "./writer"
   }
 ]

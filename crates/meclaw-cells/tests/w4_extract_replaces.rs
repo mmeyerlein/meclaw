@@ -217,8 +217,11 @@ fn staged_fact(predicate: &str, claim: &str, replaces: &str) -> serde_json::Valu
 /// Run the apply phase over a staged payload, with or without a parked window.
 fn apply(facts: serde_json::Value, window: Option<String>) -> (Vec<serde_json::Value>, String) {
     let payload = serde_json::json!({"facts": facts, "entities": [], "edges": []});
+    // GH #933: an episode carries its audience; a fact of a turn without one
+    // is no longer minted (the request round is not a fallback any more).
     let episodes = serde_json::json!({"e9": {"happened_at": "2026-06-05T00:00:00Z",
-                                             "session_id": "s2"}});
+                                             "session_id": "s2",
+                                             "audience_set": "[\"member:user\"]"}});
     let mut rows = vec![
         serde_json::json!({"key": BATCH, "kind": "payload", "payload": payload.to_string()}),
         serde_json::json!({"key": BATCH, "kind": "known", "payload": "[]"}),
@@ -438,8 +441,11 @@ fn a_fact_the_dedup_drops_closes_nothing() {
         "facts": [staged_fact("favorite_editor", "favorite editor is zed", "f1")],
         "entities": [], "edges": []
     });
+    // GH #933: an episode carries its audience; a fact of a turn without one
+    // is no longer minted (the request round is not a fallback any more).
     let episodes = serde_json::json!({"e9": {"happened_at": "2026-06-05T00:00:00Z",
-                                             "session_id": "s2"}});
+                                             "session_id": "s2",
+                                             "audience_set": "[\"member:user\"]"}});
     let rows = serde_json::json!([
         {"key": BATCH, "kind": "payload", "payload": payload.to_string()},
         {"key": BATCH, "kind": "known", "payload": "[\"e9:favorite_editor_is_zed\"]"},

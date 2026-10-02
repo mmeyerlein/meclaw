@@ -36,6 +36,7 @@ STRAND_SH = REPO / "scripts" / "strand.sh"
 GATE_SH = REPO / "scripts" / "gate.sh"
 TIER_SH = REPO / "scripts" / "test-tier.sh"
 GATE_PLAN = REPO / "scripts" / "gate_plan.py"
+LANE_SYNC = REPO / "scripts" / "lane_sync.sh"
 
 WAVE_DIR = "welle-x-2026-09-19"
 WAVE = "welle-x"
@@ -115,7 +116,7 @@ def make_repo(root):
     """A one-commit repo with the kit, the gate runner and a plans tree."""
     repo = pathlib.Path(root) / "repo"
     (repo / "scripts" / "tests").mkdir(parents=True, exist_ok=True)
-    for src in (STRAND_SH, GATE_SH, TIER_SH):
+    for src in (STRAND_SH, GATE_SH, TIER_SH, LANE_SYNC):
         shutil.copy(src, repo / "scripts" / src.name)
         (repo / "scripts" / src.name).chmod(0o755)
     shutil.copy(GATE_PLAN, repo / "scripts" / "gate_plan.py")
@@ -154,11 +155,19 @@ def kit_env(repo, extra_env=None):
     env.update(GIT_ENV)
     env.pop("CARGO_TARGET_DIR", None)
     for var in ("MECLAW_STRAND_TOKEN_SKIP", "CI", "MECLAW_CARGO_LOCK_HELD",
-                "MECLAW_STRAND_NOW", "MECLAW_TIER_DRY"):
+                "MECLAW_STRAND_NOW", "MECLAW_TIER_DRY", "MECLAW_GATE_LANE_RECEIPT"):
         env.pop(var, None)
     env["MECLAW_STRAND_TOKENS"] = str(repo.parent / "tokens")
     env["MECLAW_GATE_LOCK"] = str(repo.parent / "cargo.lock")
+    # ... and so is the host file of the build lanes (GH #934): the owner's
+    # real one names real machines.
+    env["MECLAW_LANES_FILE"] = str(repo.parent / "lanes")
     env.setdefault("MECLAW_GATE_MIN_FREE_G", "0")
+    # The lane floor too (default 60 G): the fake host's target lies in this
+    # machine's temp directory, and on a build host that is a tmpfs with less
+    # than 60 G free -- the runner wiped the fake target and refused, and the
+    # gate-on-a-host cases were red on the lane alone (OR-S3-96).
+    env.setdefault("MECLAW_GATE_LANE_MIN_FREE_G", "0")
     if extra_env:
         env.update(extra_env)
     return env
@@ -1282,6 +1291,488 @@ class TestToken(TokenTestCase):
                                  "a test reached %s" % host)
 
 
+LANES_FILE = """# name  ssh target  [bmc]
+north  builder@north.example.invalid  bmc-north.example.invalid
+south  builder@south.example.invalid
+spare  builder@spare.example.invalid
+"""
+
+
+class TestTokenLanes(TokenTestCase):
+    """Lanes are named tokens (GH #934): one per build host.
+
+    A strand that takes a lane learns WHICH host its gate runs on; the order
+    of `--lanes` is the order of hand-out, so the spare host stands last.
+    Everything else -- queue, TTL, exit 3, `release` naming the next -- is the
+    token of GH #861, unchanged.
+    """
+
+    def setUp(self):
+        super().setUp()
+        (self.repo.parent / "lanes").write_text(LANES_FILE)
+
+    def test_take_hands_out_lanes_in_the_order_of_init(self):
+        self.arm("--lanes", "south,north")
+        res = self.take("welle-x/a")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane south", res.stdout.strip())
+        res = self.take("welle-x/b")
+        self.assertEqual("lane north", res.stdout.strip())
+        res = self.take("welle-x/c")
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("welle-x/c is #1 in the queue", res.stderr)
+        self.assertEqual(["south", "north"],
+                         [h["lane"] for h in self.state()["holders"]])
+
+    def test_a_released_lane_goes_to_the_next(self):
+        self.arm("--lanes", "north,south")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        self.assertEqual(3, self.take("welle-x/c").returncode)
+        res = self.token("release", "--strand", "welle-x/a")
+        self.assertIn("next in the queue: welle-x/c", res.stderr)
+        res = self.take("welle-x/c")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane north", res.stdout.strip())
+
+    def test_take_again_names_the_held_lane(self):
+        self.arm("--lanes", "north")
+        self.take("welle-x/a")
+        res = self.take("welle-x/a")
+        self.assertEqual(0, res.returncode)
+        self.assertEqual("lane north", res.stdout.strip())
+
+    def test_who_names_the_lanes(self):
+        self.arm("--lanes", "north,south")
+        self.take("welle-x/a")
+        res = self.token("who")
+        self.assertIn("lanes: north south", res.stdout)
+        self.assertRegex(res.stdout, r"welle-x/a\s+lane north")
+
+    def test_token_lane_prints_the_held_lane(self):
+        self.arm("--lanes", "north,south")
+        self.assertEqual("", self.token("lane", "--strand", "welle-x/a").stdout.strip())
+        self.take("welle-x/a")
+        res = self.token("lane", "--strand", "welle-x/a")
+        self.assertEqual(0, res.returncode)
+        self.assertEqual("north", res.stdout.strip())
+
+    def test_lanes_and_max_together_refuse(self):
+        res = self.token("init", "--lanes", "north", "--max", "2")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("--lanes", res.stderr)
+        self.assertFalse((self.repo.parent / "tokens").exists())
+
+    def test_a_lane_missing_in_the_host_file_refuses(self):
+        res = self.token("init", "--lanes", "north,west")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("west", res.stderr)
+        self.assertFalse((self.repo.parent / "tokens").exists())
+
+    def test_without_a_host_file_lanes_refuse(self):
+        (self.repo.parent / "lanes").unlink()
+        res = self.token("init", "--lanes", "north")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("lanes", res.stderr)
+
+    def test_a_lane_name_twice_refuses(self):
+        res = self.token("init", "--lanes", "north,north")
+        self.assertEqual(2, res.returncode)
+
+    def test_max_alone_is_the_old_token(self):
+        self.arm("--max", "2")
+        res = self.take("welle-x/a")
+        self.assertEqual("", res.stdout.strip())
+        self.assertNotIn("lane", self.state()["holders"][0])
+        self.assertNotIn("lanes", self.state())
+
+    def test_check_with_a_lane_wants_exactly_that_lane(self):
+        self.arm("--lanes", "north,south")
+        self.take("welle-x/a")
+        ok = self.token("check", "--strand", "welle-x/a", "--lane", "north")
+        self.assertEqual(0, ok.returncode, ok.stderr)
+        bad = self.token("check", "--strand", "welle-x/a", "--lane", "south")
+        self.assertEqual(3, bad.returncode)
+        self.assertIn("holds lane north, not south", bad.stderr)
+
+
+# A fake `ssh` for the lane tests: it drops the options, logs the call and
+# runs the remote command HERE -- so `git push`, `rsync` and the remote run
+# all go through the code paths of a real host, against a directory of this
+# test. A host whose name says `unreachable` answers like a dead one.
+FAKE_SSH = """#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|-p|-l|-i|-E|-F) shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+    esac
+done
+host="$1"; shift
+printf '%s\\t%s\\n' "$host" "$*" >>"$FAKE_SSH_LOG"
+case "$host" in
+    *unreachable*) echo "ssh: connect to host $host: Connection timed out" >&2; exit 255 ;;
+esac
+exec bash -c "$*"
+"""
+
+HOST_LANES = """north  builder@north.example.invalid
+south  builder@south.example.invalid
+ghost  builder@unreachable.example.invalid
+"""
+
+# A fake `rsync` beside the fake `ssh`: the real one, unless the test asks
+# it to drop the overlay (FAKE_RSYNC_DROP: exit 0 and send nothing -- a
+# host that silently got a different tree) or to fail on a path
+# (FAKE_RSYNC_FAIL=<substring>: the archive does not come back).
+FAKE_RSYNC = """#!/usr/bin/env bash
+for a in "$@"; do
+    case "$a" in
+        --files-from=*) [ -n "${FAKE_RSYNC_DROP:-}" ] && exit 0 ;;
+    esac
+    if [ -n "${FAKE_RSYNC_FAIL:-}" ]; then
+        case "$a" in *"$FAKE_RSYNC_FAIL"*) echo "rsync: fake failure" >&2; exit 23 ;; esac
+    fi
+done
+exec %s "$@"
+"""
+
+PLAN_HOST = "ok\tscope-ok\t0\ttrue\t\nbuild\tworkspace\t1\ttrue\t\n"
+PLAN_HOST_RED = "ok\tscope-ok\t0\ttrue\t\nbad\tscope-bad\t0\tfalse\t\n"
+# `scenarios:memory` reads `.env`: skipped on the lane, run here afterwards.
+PLAN_HOST_ENV = ("ok\tscope-ok\t0\ttrue\t\n"
+                 "scenarios:memory\t1 case\t0\t%s\t\n")
+# OR-S3-96: no `node` and no `github-main` ref on a host either -- and the
+# audit, run here, reads the receipt and must find the lane's `ok` in it.
+PLAN_HOST_LOCAL = ("ok\tscope-ok\t0\ttrue\t\n"
+                   "display-lab\tunittest\t0\ttrue\t\n"
+                   "export-audit\tR1-R17 dry\t0\tpython3 -c \"import json,sys; "
+                   "d=json.load(open(sys.argv[1])); "
+                   "v={s['name']: s['verdict'] for s in d['stations']}; "
+                   "sys.exit(0 if v.get('ok') == 'GREEN' else 1)\" {receipt}\t\n")
+
+
+@unittest.skipUnless(shutil.which("rsync"), "the lane overlay needs rsync")
+class TestGateHost(TokenTestCase):
+    """`strand.sh gate --host <lane>` (GH #934): the gate on a build host.
+
+    The commit travels by `git push` into a bare repository on the host, the
+    uncommitted rest (staged or not, against HEAD) by an rsync overlay --
+    never a file whose name says secret, never a gitignored one; a tracked
+    secret refuses the gate -- and the archive comes back to the wave as if
+    the run had been local.
+    """
+
+    def setUp(self):
+        super().setUp()
+        tmp = pathlib.Path(self._tmp.name)
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        self.bin = tmp / "bin"
+        self.bin.mkdir()
+        (self.bin / "ssh").write_text(FAKE_SSH)
+        (self.bin / "ssh").chmod(0o755)
+        (self.bin / "rsync").write_text(FAKE_RSYNC % shutil.which("rsync"))
+        (self.bin / "rsync").chmod(0o755)
+        self.remote = tmp / "remote"
+        self.ssh_log = tmp / "ssh.log"
+        self.ssh_log.write_text("")
+        # The tree: a commit, a change, a new file, a deletion and the files
+        # that must never leave this machine.
+        t = self.tree
+        (t / ".gitignore").write_text("ignored.txt\n")
+        (t / "gone.txt").write_text("to be deleted\n")
+        (t / "scripts" / "kit_change.txt").write_text("committed\n")
+        _git(t, "add", ".gitignore", "gone.txt", "scripts/kit_change.txt")
+        _git(t, "commit", "-q", "-m", "a strand commit")
+        (t / "README.md").write_text("changed, not committed\n")
+        (t / "notes").mkdir()
+        (t / "notes" / "new.txt").write_text("untracked\n")
+        (t / "gone.txt").unlink()
+        (t / ".env").write_text("NEVER=sent\n")
+        (t / ".env.local").write_text("NEVER=sent\n")
+        (t / "vault.env").write_text("NEVER=sent\n")
+        (t / "notes" / "vault-pass.txt").write_text("never sent\n")
+        (t / "ignored.txt").write_text("never sent\n")
+
+    def host_gate(self, plan, *args, skip="lane-test", env=None):
+        # A gate on a host binds to a held token or names a skip reason
+        # (review M3); the cases that arm lanes pass `skip=None`.
+        extra = {"MECLAW_GATE_PLAN": str(self.plan_file(plan)),
+                 "PATH": "%s:%s" % (self.bin, os.environ["PATH"]),
+                 "MECLAW_LANE_ROOT": str(self.remote),
+                 "FAKE_SSH_LOG": str(self.ssh_log)}
+        if skip:
+            extra["MECLAW_STRAND_TOKEN_SKIP"] = skip
+        extra.update(env or {})
+        return run_strand(self.repo, "gate", *args, cwd=self.tree, extra_env=extra)
+
+    def receipts(self):
+        return self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+
+    def commit(self, files):
+        for rel, text in files.items():
+            path = self.tree / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        _git(self.tree, "add", "-f", *files)
+        _git(self.tree, "commit", "-q", "-m", "more")
+
+    def wt(self):
+        return self.remote / "wt" / "kit"
+
+    def test_the_gate_runs_on_the_host_and_comes_back_green(self):
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        lines = [l for l in res.stdout.splitlines() if l.strip()]
+        sha = _git(self.tree, "rev-parse", "--short=8", "HEAD").stdout.strip()
+        self.assertRegex(lines[0], r"^strand: lane north \(north\.example\.invalid\) rev %s "
+                                   r"overlay [0-9a-f]{16}$" % sha)
+        self.assertTrue(SUMMARY_LINE.match(lines[-1]), lines[-1])
+        self.assertIn("GREEN", lines[-1])
+        # The run happened THERE, at full width.
+        self.assertIn("(lane)", (self.wt().parent.parent / "runs" / "kit" / "logs"
+                                 / "strand-build.log").read_text())
+
+    def test_the_archive_comes_back_to_the_wave(self):
+        self.host_gate(PLAN_HOST, "--host", "north")
+        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
+        self.assertTrue((latest / "run.log").is_file())
+        self.assertTrue((latest / "summary.txt").is_file())
+        self.assertTrue((latest / "last-strand.json").is_file())
+        self.assertTrue((latest / "logs" / "strand-ok.log").is_file())
+        receipt = json.loads((latest / "last-strand.json").read_text())
+        base = _git(self.tree, "merge-base", "master", "HEAD").stdout.strip()
+        self.assertEqual(base, receipt["base"])
+
+    def test_the_host_tree_is_the_local_tree_without_the_secrets(self):
+        self.host_gate(PLAN_HOST, "--host", "north")
+        wt = self.wt()
+        self.assertEqual("committed\n", (wt / "scripts" / "kit_change.txt").read_text())
+        self.assertEqual("changed, not committed\n", (wt / "README.md").read_text())
+        self.assertEqual("untracked\n", (wt / "notes" / "new.txt").read_text())
+        self.assertFalse((wt / "gone.txt").exists())
+        for never in (".env", ".env.local", "vault.env", "notes/vault-pass.txt",
+                      "ignored.txt"):
+            with self.subTest(path=never):
+                self.assertFalse((wt / never).exists())
+        self.assertNotIn("NEVER=sent", self.ssh_log.read_text())
+
+    def test_a_second_run_takes_the_new_state(self):
+        self.host_gate(PLAN_HOST, "--host", "north")
+        (self.tree / "notes" / "new.txt").unlink()
+        (self.tree / "README.md").write_text("second state\n")
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse((self.wt() / "notes" / "new.txt").exists())
+        self.assertEqual("second state\n", (self.wt() / "README.md").read_text())
+
+    def test_the_held_lane_is_the_host_without_host(self):
+        self.arm("--lanes", "south,north")
+        self.assertEqual("lane south", self.take(None, cwd=self.tree).stdout.strip())
+        res = self.host_gate(PLAN_HOST, skip=None)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(res.stdout.startswith("strand: lane south "), res.stdout)
+
+    def test_a_host_other_than_the_held_lane_is_refused(self):
+        self.arm("--lanes", "south,north")
+        self.take(None, cwd=self.tree)
+        res = self.host_gate(PLAN_HOST, "--host", "north", skip=None)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn("holds lane south, not north", res.stderr)
+        self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
+
+    def test_an_unreachable_host_is_exit_two_without_latest(self):
+        self.arm("--lanes", "ghost")
+        self.take(None, cwd=self.tree)
+        res = self.host_gate(PLAN_HOST, skip=None)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand: lane ghost unreachable", res.stderr)
+        self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
+        self.assertEqual(["welle-x/kit"], self.holders())
+
+    def test_an_unknown_lane_is_refused(self):
+        res = self.host_gate(PLAN_HOST, "--host", "west")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("west", res.stderr)
+
+    def test_a_red_station_is_passed_through(self):
+        res = self.host_gate(PLAN_HOST_RED, "--host", "north")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^GATE bad \[scope-bad\] \d+s RED")
+        self.assertRegex(res.stdout, r"(?m)^GATE-SUMMARY .* RED$")
+
+    def test_env_stations_run_here_with_a_second_summary(self):
+        res = self.host_gate(PLAN_HOST_ENV % "true", "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        sums = [l for l in res.stdout.splitlines() if l.startswith("GATE-SUMMARY ")]
+        self.assertEqual(2, len(sums), res.stdout)
+        self.assertTrue(all(l.endswith(" GREEN") for l in sums), sums)
+        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
+        self.assertIn("SKIP no-env (lane)", (latest / "run.log").read_text())
+        self.assertRegex((latest / "run-local.log").read_text(),
+                         r"(?m)^GATE scenarios:memory \[1 case\] \d+s GREEN")
+
+    def test_node_and_ref_stations_run_here_and_the_audit_sees_the_lane(self):
+        res = self.host_gate(PLAN_HOST_LOCAL, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
+        remote = (latest / "run.log").read_text()
+        self.assertRegex(remote, r"(?m)^GATE display-lab \[unittest\] 0s SKIP no-node \(lane\)$")
+        self.assertRegex(remote, r"(?m)^GATE export-audit \[R1-R17 dry\] 0s SKIP no-ref \(lane\)$")
+        local = (latest / "run-local.log").read_text()
+        self.assertRegex(local, r"(?m)^GATE display-lab \[unittest\] \d+s GREEN")
+        self.assertRegex(local, r"(?m)^GATE export-audit \[R1-R17 dry\] \d+s GREEN")
+        self.assertNotRegex(local, r"(?m)^GATE ok ")
+
+    def test_a_red_env_station_here_makes_the_gate_red(self):
+        res = self.host_gate(PLAN_HOST_ENV % "false", "--host", "north")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^GATE scenarios:memory \[1 case\] \d+s RED")
+        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
+        self.assertIn(" RED", (latest / "summary.txt").read_text())
+
+    def test_without_host_and_lane_the_gate_stays_local(self):
+        res = self.host_gate(PLAN_HOST)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("strand: lane", res.stdout)
+        self.assertEqual("", self.ssh_log.read_text())
+
+    # --- fix round 1 (OR-S3-64): the host gates exactly the local tree, and
+    # no secret leaves this machine.
+
+    def test_staged_changes_additions_deletions_and_renames_travel(self):
+        # Review I1: `ls-files -m/-d` compare against the index, so a staged
+        # change stayed old on the host, a staged new file was missing and a
+        # `git rm` stayed.
+        self.commit({"src/a.txt": "old a\n", "src/b.txt": "b\n", "src/c.txt": "c\n"})
+        (self.tree / "src" / "a.txt").write_text("staged a\n")
+        (self.tree / "src" / "n.txt").write_text("staged new\n")
+        _git(self.tree, "add", "src/a.txt", "src/n.txt")
+        _git(self.tree, "rm", "-q", "src/b.txt")
+        _git(self.tree, "mv", "src/c.txt", "src/moved.txt")
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        wt = self.wt()
+        self.assertEqual("staged a\n", (wt / "src" / "a.txt").read_text())
+        self.assertEqual("staged new\n", (wt / "src" / "n.txt").read_text())
+        self.assertFalse((wt / "src" / "b.txt").exists())
+        self.assertFalse((wt / "src" / "c.txt").exists())
+        self.assertEqual("c\n", (wt / "src" / "moved.txt").read_text())
+
+    def test_tracked_files_under_vault_and_env_paths_travel(self):
+        # Review I2: the exclusion matched any path COMPONENT `vault*`/`.env*`
+        # and kept tracked source at its committed state on the host.
+        self.commit({"crates/x/src/vault/mod.rs": "old\n",
+                     "templates/vault/a.json": "{}\n",
+                     "examples/vault-pilot/b.txt": "old\n",
+                     ".env.example": "KEY=\n"})
+        (self.tree / "crates/x/src/vault/mod.rs").write_text("new\n")
+        (self.tree / "examples/vault-pilot/b.txt").write_text("new\n")
+        (self.tree / "examples/vault-pilot/c.txt").write_text("untracked\n")
+        (self.tree / ".env.example").write_text("KEY=\nOTHER=\n")
+        _git(self.tree, "rm", "-q", "templates/vault/a.json")
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        wt = self.wt()
+        self.assertEqual("new\n", (wt / "crates/x/src/vault/mod.rs").read_text())
+        self.assertEqual("new\n", (wt / "examples/vault-pilot/b.txt").read_text())
+        self.assertEqual("untracked\n", (wt / "examples/vault-pilot/c.txt").read_text())
+        self.assertEqual("KEY=\nOTHER=\n", (wt / ".env.example").read_text())
+        self.assertFalse((wt / "templates/vault/a.json").exists())
+        for never in (".env", ".env.local", "vault.env", "notes/vault-pass.txt"):
+            with self.subTest(path=never):
+                self.assertFalse((wt / never).exists())
+
+    def assert_refused(self, res, path):
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn(path, res.stderr)
+        self.assertNotIn("GREEN", res.stdout)
+        self.assertFalse(self.receipts().exists())
+        self.assertNotIn("receive-pack", self.ssh_log.read_text())
+        self.assertNotIn("NEVER=sent", self.ssh_log.read_text())
+
+    def test_a_staged_secret_is_refused_with_its_path(self):
+        (self.tree / "config").mkdir()
+        (self.tree / "config" / ".env.prod").write_text("NEVER=sent\n")
+        _git(self.tree, "add", "-f", "config/.env.prod")
+        self.assert_refused(self.host_gate(PLAN_HOST, "--host", "north"), "config/.env.prod")
+
+    def test_a_changed_tracked_secret_is_refused_with_its_path(self):
+        self.commit({"deploy/vault-pass.txt": "placeholder\n"})
+        (self.tree / "deploy" / "vault-pass.txt").write_text("NEVER=sent\n")
+        self.assert_refused(self.host_gate(PLAN_HOST, "--host", "north"), "deploy/vault-pass.txt")
+
+    def test_a_committed_secret_is_refused_before_the_push(self):
+        # The commit travels by `git push`: a secret in it would leave by
+        # that road, not by the overlay.
+        self.commit({".cargo/credentials.toml": "NEVER=sent\n"})
+        self.assert_refused(self.host_gate(PLAN_HOST, "--host", "north"), ".cargo/credentials.toml")
+
+    def test_the_overlay_hash_is_the_same_on_both_sides(self):
+        res = subprocess.run([str(self.repo / "scripts" / "lane_sync.sh"), "digest"],
+                             cwd=str(self.tree), env=kit_env(self.repo),
+                             capture_output=True, text=True)
+        self.assertEqual(0, res.returncode, res.stderr)
+        local = res.stdout.strip()
+        self.assertRegex(local, r"^[0-9a-f]{16}$")
+        gate = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, gate.returncode, gate.stdout + gate.stderr)
+        self.assertTrue(gate.stdout.splitlines()[0].endswith(" overlay " + local), gate.stdout)
+
+    def test_a_host_tree_that_differs_is_refused(self):
+        res = self.host_gate(PLAN_HOST, "--host", "north", env={"FAKE_RSYNC_DROP": "1"})
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("overlay", res.stderr)
+        self.assertNotIn("GATE-SUMMARY", res.stdout)
+        self.assertFalse((self.receipts() / "latest").exists())
+
+    def test_a_receipt_that_does_not_come_back_is_not_green(self):
+        # Review M5: the acceptance wants receipt and logs HERE.
+        res = self.host_gate(PLAN_HOST, "--host", "north", env={"FAKE_RSYNC_FAIL": "/runs/kit"})
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("did not come back", res.stderr)
+        self.assertFalse((self.receipts() / "latest" / "summary.txt").exists())
+
+    def test_a_host_gate_without_a_held_token_names_a_reason(self):
+        # Review M3: unarmed, a gate on a host bound to nothing.
+        res = self.host_gate(PLAN_HOST, "--host", "north", skip=None)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn("MECLAW_STRAND_TOKEN_SKIP", res.stderr)
+        self.assertEqual("", self.ssh_log.read_text())
+
+    def test_a_held_anonymous_token_binds_a_host_gate(self):
+        self.arm("--max", "1")
+        self.take(None, cwd=self.tree)
+        res = self.host_gate(PLAN_HOST, "--host", "north", skip=None)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    def test_the_exclusion_list_is_pinned(self):
+        res = subprocess.run([str(self.repo / "scripts" / "lane_sync.sh"), "files"],
+                             cwd=str(self.tree), env=kit_env(self.repo),
+                             capture_output=True, text=True)
+        self.assertEqual(0, res.returncode, res.stderr)
+        sent = sorted(res.stdout.split("\0")[:-1])
+        self.assertEqual(["README.md", "notes/new.txt"], sent)
+
+
+class TestLanesStatus(TokenTestCase):
+    def test_one_line_per_lane(self):
+        tmp = pathlib.Path(self._tmp.name)
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        b = tmp / "bin"; b.mkdir()
+        (b / "ssh").write_text(FAKE_SSH); (b / "ssh").chmod(0o755)
+        (tmp / "remote").mkdir()
+        res = run_strand(self.repo, "lanes", "status", extra_env={
+            "PATH": "%s:%s" % (b, os.environ["PATH"]),
+            "MECLAW_LANE_ROOT": str(tmp / "remote"),
+            "FAKE_SSH_LOG": str(tmp / "ssh.log")})
+        self.assertEqual(0, res.returncode, res.stderr)
+        lines = res.stdout.splitlines()
+        self.assertEqual(3, len(lines), res.stdout)
+        self.assertRegex(lines[0], r"^north\s+reachable\s+free \d+G\s+bare none$")
+        self.assertRegex(lines[2], r"^ghost\s+unreachable$")
+
+
 class TestTokenGuards(TokenTestCase):
     """Where the token is checked: `strand.sh gate` and `test-tier.sh`."""
 
@@ -1400,7 +1891,7 @@ class TestPublicHygiene(unittest.TestCase):
     `docs/development-rules.md` section 6, which nothing checks yet.
     """
 
-    FILES = (STRAND_SH,
+    FILES = (STRAND_SH, LANE_SYNC,
              REPO / "scripts" / "wave_receipt.py",
              pathlib.Path(__file__).resolve(),
              REPO / "scripts" / "tests" / "test_wave_receipt.py")

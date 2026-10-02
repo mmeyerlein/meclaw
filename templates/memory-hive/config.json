@@ -27,7 +27,7 @@
             "audience_now",
             "channel"
           ],
-          "because": "a question against this memory. The five recall keys (recall_query, memory_tier, recall_as_of, recall_window_from, recall_window_to) come as context, always all five, empty string = unset. The asking round comes with them and is required: `audience_now` (a JSON list of who is present right now) and `channel` (where the question is being asked); `channel_open_history` is optional and defaults to '0', '1' saying this room shows joiners its history. Without `audience_now` or `channel` the question is refused on `reject` rather than answered unfiltered -- a recall without an audience is not a recall with an empty one. TWO MORE KEYS are read and neither is in the list above, for the same reason `channel_open_history` is not: the list names what a caller MUST have promoted, and a key with a default is not one of them. `session_id` scopes the session read -- the tier-0 leg reads the episodes of THAT session, and a question that names none reads a session called 'default', which in a live colony is nobody's. `recall_caller` is a REPLY-TO TOKEN this hive never reads: whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how ONE hive serves SEVERAL askers and each of them gets ITS answer (GH #532). The token has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: left on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs AND ONE KEY IS READ TWICE (GH #536): `audience_now` is the audience gate's yardstick and, since the self leg, ALSO an IDENTITY -- its `member:`/`person:` tokens are the people this question is asked by, and a question in the first person (\"what are my sons called?\") anchors on them because it names nobody else. That is a second reading of a key the caller already promotes, not a new requirement: nothing has to be wired for it, and it widens no disclosure -- an anchor decides what is LOOKED UP, never what is seen, and every row it nominates is still measured against the same gate."
+          "because": "a question against this memory. The five recall keys (recall_query, memory_tier, recall_as_of, recall_window_from, recall_window_to) come as context, always all five, empty string = unset. The asking round comes with them and is required: `audience_now` (a JSON list of who is present right now) and `channel` (where the question is being asked); `channel_open_history` is optional and defaults to '0', '1' saying this room shows joiners its history. Without `audience_now` or `channel` the question is refused on `reject` rather than answered unfiltered -- a recall without an audience is not a recall with an empty one. TWO MORE KEYS are read and neither is in the list above, for the same reason `channel_open_history` is not: the list names what a caller MUST have promoted, and a key with a default is not one of them. `session_id` scopes the session read -- the tier-0 leg reads the episodes of THAT session, and a question that names none reads a session called 'default', which in a live colony is nobody's. `recall_caller` is a REPLY-TO TOKEN this hive never reads: whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how ONE hive serves SEVERAL askers and each of them gets ITS answer (GH #532). The token has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: left on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs AND ONE KEY IS READ TWICE (GH #536): `audience_now` is the audience gate's yardstick and, since the self leg, ALSO an IDENTITY -- its `member:`/`person:` tokens are the people this question is asked by, and a question in the first person (\"what are my sons called?\") anchors on them because it names nobody else. That is a second reading of a key the caller already promotes, not a new requirement: nothing has to be wired for it, and it widens no disclosure -- an anchor decides what is LOOKED UP, never what is seen, and every row it nominates is still measured against the same gate. GH #936: `hop.affect_filter` (optional, a JSON object as text: valence_max, valence_min, arousal_min, min_confidence) keeps only candidates whose source episode carries an affect mark inside it -- applied after the audience gate, never widening it; a malformed one is refused on `reject` with `invalid_input`. Every candidate of the record carries `affect` (null = unknown)."
         },
         {
           "route": "in_remember",
@@ -56,6 +56,13 @@
           "route": "in_import",
           "context": [],
           "because": "take such a document into this RUNNING hive, idempotently. Since 3.3.0 it is ONE message and the WHOLE directory (GH #261): `hop.import_from` names the run directory the export wrote, nothing travels in the body and nothing is inferred. Every `seed/<table>.jsonl` of it is parsed before the first row is written, and every table of the call is applied in ONE transaction, so a document that is refused anywhere writes nothing at all -- not even the tables ahead of the refusal, and that holds for a broken file as well as for a table whose columns no longer agree with this store. Applying the same directory twice leaves the same state; that is what makes it a backup and a merge rather than only a birth seed. A document whose declared schema disagrees with this store by a single column, in either direction, is REFUSED on `reject` with nothing written: an imported row whose participant set did not survive is a row that may be told to anyone"
+        },
+        {
+          "route": "in_affect",
+          "context": [
+            "audience_now"
+          ],
+          "because": "GH #936: mark how one remembered turn read -- the body carries `affect: {episode_id | session_id + turn_id, valence (-1..1), arousal (0..1), confidence (0..1), source}` and `hop.affect_tag` (at most 64 characters) is echoed on the answer. The address `session_id` + `turn_id` names the INCOMING turn of that turn, never the agent's own answer. The asking round is `audience_now`, the reader's round as on `in_query`: the mark is written only on an episode that round may READ (the subset rule, `*` universal, an episode without an audience readable by nobody), so a round cannot learn that a turn it was not part of exists by being allowed to annotate it. The last write wins; the column holds the current reading, not a history. This hive recognizes nothing -- the reading comes from whoever sends it, and the mark is never a ranking signal of `in_query`."
         },
         {
           "route": "tool_call",
@@ -100,6 +107,10 @@
         {
           "route": "dump",
           "because": "the receipt of ONE applied import: `hop.export_of` counts the tables the document applied, `hop.rows_written` the rows that were NEW (so zero means the target already had every one of them), and `hop.export_final` is always '1' because since GH #261 a directory is applied whole or not at all and there is no part sequence left to be the last of. Since 0.30.0 the lane carries nothing else -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe. Undrained, it becomes `no_route` in the dead-letter queue, which is where the shipped member leaves it (GH #284 state 2): the receipt localises itself with its sender and its trace instead of being dropped inside a cell that read it and said nothing"
+        },
+        {
+          "route": "affect_ack",
+          "because": "GH #936: the one answer of `in_affect`. `hop.episode_id` and body `affect_ack: {episode_id}` name the episode -- the caller's own id on a refusal, the resolved one once written -- and `hop.error_code` says what happened: '' written, 'not_visible' unknown OR not readable by the round (one answer for both, so the lane is no existence oracle), 'missing_audience' no round, 'invalid_input' a key out of form or range (`hop.error_key` names it). Every answer carries the same keys and never the episode text. A store refusal leaves on `reject` instead. Drain it: undrained, a recognizer cannot tell a filed mark from a refused one."
         },
         {
           "route": "tool_result",
@@ -166,6 +177,16 @@
         "accepts": "in_schemas",
         "emits": "tool_schemas",
         "because": "a collector that asks this memory what it serves and does not subscribe to the answer offers its model a menu without `memory_recall` in it -- and the round then looks like a model that chose not to ask its memory, which is the one failure nobody can see from the outside"
+      },
+      {
+        "accepts": "in_affect",
+        "emits": "affect_ack",
+        "because": "a mark a recognizer sends and whose answer nobody takes back is indistinguishable from a mark that was refused -- the lane writes into memory, and the only proof it did is this answer"
+      },
+      {
+        "accepts": "in_affect",
+        "emits": "reject",
+        "because": "a mark the store refused to read or write leaves here; undrained, the recognizer waits for an acknowledgement that never comes"
       }
     ],
     "graph": {
@@ -173,7 +194,12 @@
         {
           "from": ".",
           "to": "./writer",
-          "condition": "has(hop.route) && hop.route == 'in_episode'"
+          "condition": "has(hop.route) && hop.route == 'in_episode'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'episode'"
+            }
+          }
         },
         {
           "from": ".",
@@ -182,6 +208,9 @@
           "modifier": {
             "set_hop": {
               "phase": "'recall'"
+            },
+            "set_context": {
+              "affect_filter": "has(hop.affect_filter) ? hop.affect_filter : ''"
             }
           }
         },
@@ -399,7 +428,12 @@
         {
           "from": "./close-glue",
           "to": "./closer",
-          "condition": "has(hop.route) && hop.route == 'close'"
+          "condition": "has(hop.route) && hop.route == 'close'",
+          "modifier": {
+            "set_context": {
+              "close_group": "has(hop.close_group) ? hop.close_group : '0'"
+            }
+          }
         },
         {
           "from": "./closer",
@@ -431,6 +465,39 @@
           "modifier": {
             "set_context": {
               "mem_phase": "'embed'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'in_affect'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'affect'",
+              "mem_phase": "'affect'"
+            }
+          }
+        },
+        {
+          "from": "./writer",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'astore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'affect'",
+              "mem_phase": "hop.phase",
+              "affect_req": "hop.affect_req"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./writer",
+          "condition": "context.store_origin == 'affect'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "context.mem_phase"
             }
           }
         },
@@ -527,7 +594,10 @@
               "recall_caller": "has(context.recall_caller) ? context.recall_caller : ''"
             },
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -554,7 +624,10 @@
               "recall_caller": "has(context.recall_caller) ? context.recall_caller : ''"
             },
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -578,7 +651,10 @@
           "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -602,7 +678,37 @@
           "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./writer",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'affect_ack'",
+          "modifier": {
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -626,7 +732,10 @@
           "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -650,7 +759,10 @@
           "condition": "has(hop.route) && hop.route == 'close_report'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -674,7 +786,10 @@
           "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -721,7 +836,10 @@
           "condition": "has(hop.route) && hop.route == 'export_done'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -745,7 +863,10 @@
           "condition": "has(hop.route) && hop.route == 'dump'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -769,7 +890,10 @@
           "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -801,7 +925,10 @@
               "route": "'tool_schemas'"
             },
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -858,7 +985,10 @@
               "route": "'model_refused'"
             },
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -885,7 +1015,10 @@
               "route": "'model_refused'"
             },
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -912,7 +1045,10 @@
               "route": "'model_refused'"
             },
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -939,7 +1075,10 @@
               "route": "'model_refused'"
             },
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -985,7 +1124,10 @@
           "condition": "has(hop.route) && hop.route == 'tool_result'",
           "modifier": {
             "delete_context": [
+              "affect_filter",
+              "affect_req",
               "batch_id",
+              "close_group",
               "close_pass",
               "dream_from",
               "dream_run",
@@ -1011,7 +1153,7 @@
     "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one MEMBER's memory behind ITS OWN PATH (ADR-0002 E1 -- agents are lenses on it, a second agent of the same member inherits what that member knows). `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The transfer lane (#243) carries the content OUT as a versioned document and back IN to a running hive, so a memory is an asset with an identity of its own rather than a side effect of one deployment. The recall tool (#552) is the same memory reached the way a model reaches any tool: `tool_call` in, one `tool_result` out, and the declaration handed out on `in_schemas` by the hive that enforces it. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
     "use_when": "Instantiate once per member; wire the lanes at the hive path in the same mutation. Every write lane needs the provenance of the turn on its ingress context (audience_set, channel, and speaker/agent_id), every read lane the asking round (audience_now, channel).",
     "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph.",
-    "contract_in": "Eight lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_close_pass -- this session is over, read it whole once. in_export -- write the remembered content out as a document. in_import -- take one part of such a document in, idempotently. tool_call -- one `memory_recall` call a brain made, correlated by `hop.tool_call_id` (#552). in_schemas -- what does that tool look like. Which cell serves a lane is this hive's business.",
+    "contract_in": "Nine lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_close_pass -- this session is over, read it whole once. in_export -- write the remembered content out as a document. in_import -- take one part of such a document in, idempotently. tool_call -- one `memory_recall` call a brain made, correlated by `hop.tool_call_id` (#552). in_schemas -- what does that tool look like. in_affect -- file how one remembered turn read (GH #936). Which cell serves a lane is this hive's business.",
     "contract_out": "Six lanes, out of the hive path. bundle -- the answer to a question. close_report -- what the close pass did with one session. dump -- the transfer document, part by part, and the receipt of an applied part. reject -- something this hive would not take; the body says which and why. tool_result -- the answer to one `memory_recall` call, refusals included. tool_schemas -- this memory's own declaration of that tool (#552)."
   }
 }

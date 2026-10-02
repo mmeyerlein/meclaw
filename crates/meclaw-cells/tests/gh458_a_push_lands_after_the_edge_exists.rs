@@ -543,6 +543,7 @@ fn the_pack_ack_drain_is_required() {
         modifier: None,
         is_default: false,
         lane: None,
+        tap: false,
     };
     // How a caller says which lane of a SEALED hive it is sending into: it
     // stamps the route on the edge (GH #237) — exactly what the door edge in

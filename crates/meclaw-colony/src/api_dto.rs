@@ -380,6 +380,14 @@ pub struct GraphEdgeDto {
     /// it says it because the declaration is what made the edge legal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
+    /// GH #937: `true` for a passive tap edge, which fires beside the sender's
+    /// other edges and never suppresses its defaults.
+    ///
+    /// Emitted only when `true`, like `lane`: an absent key IS the statement —
+    /// this edge is a regular edge, the kind every edge was before the key
+    /// existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tap: bool,
 }
 
 /// Reply for [`crate::ColonyMsg::ReadMutationsAudit`].

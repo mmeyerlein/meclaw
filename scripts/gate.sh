@@ -23,6 +23,8 @@
 #     --log-dir DIR  see --archive
 #     --no-nice      do not wrap cargo stations in nice/ionice, and do not
 #                    cap the build width
+#     --lane         this run is on a build host (see A RUN ON A BUILD HOST);
+#                    needs --base
 #     --resync       force a full touch of every build input (see GHOST BINARIES)
 #     --no-precheck-stop
 #                    run the cargo stations even when `precheck` is RED
@@ -202,6 +204,13 @@
 #                                set it to 0: a full disk must not turn the
 #                                self-test station red with a message about
 #                                a build it never runs.
+#   MECLAW_GATE_LANE_MIN_FREE_G=<n>  the floor with --lane, on the target
+#                                directory (default 60); below it the runner
+#                                wipes the target (A RUN ON A BUILD HOST).
+#                                The tests set it to 0 as well.
+#   MECLAW_GATE_LANE_RECEIPT=<path>  set by `strand.sh gate --host` for the
+#                                local half: the lane's receipt, carried into
+#                                this run's (A RUN ON A BUILD HOST).
 #   MECLAW_GATE_GH=<cmd>         the GitHub CLI the runner comments the #721
 #                                occurrence with (default `gh`). The tests
 #                                point it at a stub: no test of this suite
@@ -255,6 +264,38 @@
 # and a red station in the same run print both: RED wins the summary and the
 # exit code, and the question is still printed, so one run lists everything.
 #
+# A RUN ON A BUILD HOST (--lane)
+# ===============================
+# `scripts/strand.sh gate --host <lane>` pushes the strand to a build host and
+# runs this runner there with `--lane` (GH #934). A build host runs no colony,
+# so the two caps below that protect a live colony's watchdog -- half the
+# cores for the build, four test threads, nice/ionice -- only cost time there:
+# the test station took 459 s at full width against 788 s capped on the same
+# commit (measured 2026-10-01). So `--lane` builds and tests at full width.
+# The disk that a cold build fills is the target directory (a tmpfs on a build
+# host), so a floor is checked there instead of on `/`: its own,
+# `MECLAW_GATE_LANE_MIN_FREE_G` (default 60 G, like the owner's machine but
+# measured on the target, not on `/`) -- the tmpfs holds 64 G and a warm
+# target about 50 G, so a warm target is emptied before every lane gate. Below that
+# floor the runner empties the target directory (only under `/srv/target` or
+# `MECLAW_LANE_ROOT`, otherwise exit 2), notes it in the station logs and
+# builds cold; still short after that, it refuses with exit 2. The cargo lock stays: one host is one lane is one run, and the lock
+# only ever guards against a second run by hand.
+#
+# A build host never gets a `.env`. The stations whose runner reads one
+# (`gate_plan.py --print env-stations`) are reported as `SKIP no-env (lane)`,
+# and the kit runs exactly those on the owner's machine afterwards. No `.env`
+# link is made either. The same holds for what else a host lacks (OR-S3-96):
+# `display-lab` needs `node` (`SKIP no-node (lane)`), `export-audit` the
+# `github-main` ref (`SKIP no-ref (lane)`) -- one list, `--print lane-local`.
+# The kit hands the lane's receipt to that local run as
+# `MECLAW_GATE_LANE_RECEIPT`: its stations go into this run's receipt (all but
+# the ones this run performs itself), and a RED or ASK among them is the
+# receipt's verdict -- so `export-audit` here grades the whole run, not the
+# few stations it shares a runner with. The summary line stays this run's. And `--lane` needs `--base`: the host's copy of the
+# repository has no reliable `master`, so the kit computes the merge base
+# where it does and hands it over.
+#
 # Exit 0 = green. 1 = a station is RED. 2 = the runner refused to start. 4 =
 # ASK: a question for the owner is open and nothing is red. 3 is the strand
 # kit's token queue and never comes from here.
@@ -271,7 +312,7 @@ usage() {
 # --- arguments --------------------------------------------------------------
 mode=""; base=""; only=""; fail_fast=0; plan_only=0
 log_dir="${MECLAW_GATE_ARCHIVE:-}"
-no_nice=0; resync=0; no_precheck_stop=0
+no_nice=0; resync=0; no_precheck_stop=0; lane=0
 decides=()
 
 if [ $# -ge 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
@@ -308,6 +349,7 @@ while [ $# -gt 0 ]; do
         --fail-fast) fail_fast=1; shift ;;
         --plan-only) plan_only=1; shift ;;
         --no-nice)   no_nice=1; shift ;;
+        --lane)      lane=1; shift ;;
         --resync)    resync=1; shift ;;
         --no-precheck-stop) no_precheck_stop=1; shift ;;
         --decide)    need_value "$1" "$#"; decides+=("$2"); shift 2 ;;
@@ -315,6 +357,12 @@ while [ $# -gt 0 ]; do
         *) echo "gate: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+if [ "$lane" = 1 ] && [ -z "$base" ]; then
+    echo "gate: --lane needs --base <sha> -- a build host has no reliable master;" \
+         "the kit computes the merge base where it does" >&2
+    exit 2
+fi
 
 # --- --decide (see A QUESTION FOR THE OWNER) ----------------------------------
 # Checked here, before anything runs: a mistyped answer found after an hour of
@@ -394,7 +442,8 @@ link_main_env() {
     [ -L "$root/.env" ] && [ -e "$root/.env" ] && echo "gate: env = $main_env (linked)"
     return 0
 }
-link_main_env
+# A build host gets no `.env` and no link to one (see A RUN ON A BUILD HOST).
+[ "$lane" = 1 ] || link_main_env
 
 # Everything this run writes is namespaced by the tree it runs in -- see
 # ARTEFACTS. Worktrees have distinct directory names (the main tree is
@@ -442,6 +491,9 @@ dirty_any=0
 dirty_tracked=$(git status --porcelain=v1 -z 2>/dev/null \
     | meclaw_porcelain_paths tracked | sed '/^$/d')
 gate_ignored=$(python3 "$root/scripts/gate_plan.py" --print ignored 2>/dev/null || true)
+# `<name>\t<reason>` per line: what a lane leaves to the owner's machine.
+lane_local=""
+[ "$lane" = 1 ] && lane_local=$(python3 "$root/scripts/gate_plan.py" --print lane-local 2>/dev/null || true)
 if [ -n "$dirty_tracked" ] && [ -n "$gate_ignored" ]; then
     dirty_tracked=$(printf '%s\n' "$dirty_tracked" | grep -vxF "$gate_ignored" || true)
 fi
@@ -602,6 +654,33 @@ fi
 # description tree in a pass (GH #753).
 export MECLAW_GATE_MODE="$mode"
 
+# Empty the target directory of a lane (see the floor in the hygiene block
+# below). Only ever a path strictly under the lane root -- `/srv/target` or
+# `MECLAW_LANE_ROOT` -- never `/`, never empty: a wrong `CARGO_TARGET_DIR`
+# must cost a refused gate, not a disk. The line it leaves goes into every
+# cargo station log next to `# cargo hygiene`.
+lane_wipe_note=""
+lane_wipe_target() {
+    local free="$1" floor="$2" t r ok=0 root_c
+    t=$(realpath -m -- "$target_dir" 2>/dev/null || true)
+    if [ -n "$t" ] && [ "$t" != / ]; then
+        for r in /srv/target "${MECLAW_LANE_ROOT:-}"; do
+            [ -n "$r" ] || continue
+            root_c=$(realpath -m -- "$r" 2>/dev/null || true)
+            if [ -z "$root_c" ] || [ "$root_c" = / ]; then continue; fi
+            case "$t" in "$root_c"/?*) ok=1 ;; esac
+        done
+    fi
+    if [ "$ok" != 1 ]; then
+        echo "gate: only ${free}G free on $target_dir -- need ${floor}G on a lane, and the target is" >&2
+        echo "      not under /srv/target or MECLAW_LANE_ROOT, so the runner will not wipe it." >&2
+        exit 2
+    fi
+    find "$t" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+    lane_wipe_note="# cargo hygiene: lane target wiped (${free} G free < ${floor} G)"
+    echo "gate: ${lane_wipe_note#\# cargo hygiene: } -- building cold"
+}
+
 # --- hygiene (not in ci: there the runner owns the machine) ------------------
 wrap=()
 lock_path=""
@@ -610,9 +689,31 @@ if [ "$mode" != ci ]; then
         # A live colony shares this disk. A cargo target directory that runs it
         # dry takes the colony down with the build, so the gate refuses first.
         min_free=${MECLAW_GATE_MIN_FREE_G:-60}
-        free_g=$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')
+        # On a build host the target directory is what fills up, not `/`.
+        disk=/
+        if [ "$lane" = 1 ]; then
+            mkdir -p "$target_dir" 2>/dev/null || true
+            disk="$target_dir"
+            # A lane has its own floor, and below it the runner empties the
+            # target itself (OR-S3.L.7). WHY: the build host's target is a
+            # 64 G tmpfs and a warm target after one strand gate is about
+            # 50 G, so the 60 G floor above refused every second gate on a
+            # lane (measured on a build host, 2026-10-01). Nothing else lives
+            # there -- no colony to protect -- and a cold build costs about
+            # six minutes, a refused gate costs a hand on the host. The
+            # default is 60 G, not 10 G: a workspace test build needs about
+            # 50 G of deps plus 14 G incremental, and beside the rest of a
+            # warm target it ran the tmpfs out of space mid-build twice
+            # (ENOSPC, OR-S3-83/-84) -- a cold build is cheaper than that.
+            min_free=${MECLAW_GATE_LANE_MIN_FREE_G:-60}
+            free_g=$(df -BG --output=avail "$disk" 2>/dev/null | tail -1 | tr -dc '0-9')
+            if [ -n "$free_g" ] && [ "$free_g" -lt "$min_free" ]; then
+                lane_wipe_target "$free_g" "$min_free"
+            fi
+        fi
+        free_g=$(df -BG --output=avail "$disk" 2>/dev/null | tail -1 | tr -dc '0-9')
         if [ -n "$free_g" ] && [ "$free_g" -lt "$min_free" ]; then
-            echo "gate: only ${free_g}G free on / -- need ${min_free}G for a cargo station." >&2
+            echo "gate: only ${free_g}G free on $disk -- need ${min_free}G for a cargo station." >&2
             echo "      Free some disk (delete stale target directories), then start the gate again." >&2
             exit 2
         fi
@@ -620,10 +721,15 @@ if [ "$mode" != ci ]; then
     # A live colony's watchdog reads a long CPU gap as a wedge; half the cores
     # is the ceiling while it runs, and a tmpfs TMPDIR keeps the test fsyncs
     # off the spinning parts of the machine.
-    export NEXTEST_TEST_THREADS=${NEXTEST_TEST_THREADS:-4}
+    # On a build host there is no colony: full width (A RUN ON A BUILD HOST).
+    if [ "$lane" = 1 ]; then
+        export NEXTEST_TEST_THREADS=${NEXTEST_TEST_THREADS:-$(nproc 2>/dev/null || echo 4)}
+    else
+        export NEXTEST_TEST_THREADS=${NEXTEST_TEST_THREADS:-4}
+    fi
     export TMPDIR=/dev/shm/meclaw-tests
     mkdir -p "$TMPDIR" 2>/dev/null || true
-    if [ "$no_nice" = 0 ]; then
+    if [ "$no_nice" = 0 ] && [ "$lane" = 0 ]; then
         # A shared machine builds at half width, like it tests at half width:
         # a full-width cold build starves a colony sharing the host (measured
         # 2026-09-04). nice/ionice alone did not stop it -- the watchdog reads
@@ -632,7 +738,7 @@ if [ "$mode" != ci ]; then
         [ "$half" -lt 1 ] && half=1
         export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$half}
     fi
-    [ "$no_nice" = 0 ] && wrap+=(nice -n 19 ionice -c3)
+    [ "$no_nice" = 0 ] && [ "$lane" = 0 ] && wrap+=(nice -n 19 ionice -c3)
     # The cargo lock. WHEN it is taken and for how long: see the header section
     # "THE CARGO LOCK IS HELD FOR THE WHOLE RUN". WHERE it lives: on a
     # descriptor of this shell (fd 9), never in a station's argv. `flock <file>
@@ -741,9 +847,21 @@ write_receipt() {
     MECLAW_R_FINISHED="$finished" MECLAW_R_VERDICT="$1" \
     MECLAW_R_ROWS="$rows_file" MECLAW_R_OUT="$receipt" \
     MECLAW_R_DECISIONS="$decisions_file" \
+    MECLAW_R_LANE="${MECLAW_GATE_LANE_RECEIPT:-}" \
+    MECLAW_R_RUN_NAMES="$(printf '%s\n' ${st_names[@]+"${st_names[@]}"})" \
     python3 - <<'PY'
 import json, os
 rows = []
+# The stations a lane ran for this run (see A RUN ON A BUILD HOST), minus the
+# ones this run performs itself.
+lane_verdict = ""
+if os.environ.get("MECLAW_R_LANE"):
+    with open(os.environ["MECLAW_R_LANE"]) as fh:
+        lane = json.load(fh)
+    here = set(os.environ.get("MECLAW_R_RUN_NAMES", "").split("\n"))
+    rows = [r for r in lane.get("stations", []) if r.get("name") not in here]
+    seen = {r.get("verdict") for r in rows} | {lane.get("verdict")}
+    lane_verdict = "RED" if "RED" in seen else "ASK" if "ASK" in seen else ""
 with open(os.environ["MECLAW_R_ROWS"]) as fh:
     for line in fh:
         line = line.rstrip("\n")
@@ -780,7 +898,10 @@ doc = {
     "started": os.environ["MECLAW_R_STARTED"],
     "finished": os.environ["MECLAW_R_FINISHED"] or None,
     "stations": rows,
-    "verdict": os.environ["MECLAW_R_VERDICT"],
+    # RED beats ASK beats GREEN, over the lane's half too.
+    "verdict": (lane_verdict if lane_verdict == "RED"
+                or (lane_verdict == "ASK" and os.environ["MECLAW_R_VERDICT"] in ("GREEN", "RUNNING"))
+                else os.environ["MECLAW_R_VERDICT"]),
     # The owner's answers to a station's question (`--decide`), as applied in
     # this run. Always present and `[]` without one, so a reader never has to
     # tell "nobody decided anything" from "a runner that did not know how".
@@ -823,6 +944,43 @@ report() {   # name scope secs verdict log [reason]
     esac
     write_receipt "$(running_verdict)"
 }
+
+# A lane receipt (MECLAW_GATE_LANE_RECEIPT, see A RUN ON A BUILD HOST) is taken
+# for THIS run only: the same full rev, mode and base, a tree as clean or dirty
+# as this one, a finished verdict. Anything else carries no row -- the run is
+# RED with the reason, because the stations it would carry did not run over
+# this tree (review X F1). Checked once, before the first station.
+if [ -n "${MECLAW_GATE_LANE_RECEIPT:-}" ]; then
+    lane_refused=$(MECLAW_R_LANE="$MECLAW_GATE_LANE_RECEIPT" MECLAW_R_MODE="$mode" \
+        MECLAW_R_REV="$rev" MECLAW_R_BASE="$base" MECLAW_R_DIRTY="$dirty" python3 - <<'PY'
+import json, os
+try:
+    with open(os.environ["MECLAW_R_LANE"]) as fh:
+        lane = json.load(fh)
+    if not isinstance(lane, dict) or not isinstance(lane.get("stations"), list):
+        raise ValueError("no stations")
+except (OSError, ValueError) as exc:
+    print("unreadable: %s" % exc.__class__.__name__)
+    raise SystemExit(0)
+want = {"rev": os.environ["MECLAW_R_REV"], "mode": os.environ["MECLAW_R_MODE"],
+        "base": os.environ["MECLAW_R_BASE"]}
+for key, value in want.items():
+    if str(lane.get(key) or "") != value or (key == "rev" and len(value) != 40):
+        print("%s %s, this run %s" % (key, lane.get(key) or "(none)", value or "(none)"))
+        raise SystemExit(0)
+if bool(lane.get("dirty")) != (os.environ["MECLAW_R_DIRTY"] == "1"):
+    print("dirty %s, this run %s" % (bool(lane.get("dirty")),
+                                      os.environ["MECLAW_R_DIRTY"] == "1"))
+elif lane.get("verdict") not in ("GREEN", "RED", "ASK"):
+    print("verdict %s, not a finished run" % (lane.get("verdict") or "(none)"))
+PY
+)
+    if [ -n "$lane_refused" ]; then
+        echo "gate: lane receipt $MECLAW_GATE_LANE_RECEIPT not taken -- $lane_refused" >&2
+        unset MECLAW_GATE_LANE_RECEIPT
+        report lane-receipt "MECLAW_GATE_LANE_RECEIPT" 0 RED "" "$lane_refused"
+    fi
+fi
 
 # --- ghost binaries ---------------------------------------------------------
 # Several worktrees share one target/. cargo decides freshness by mtime and
@@ -1138,6 +1296,17 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
         continue
     fi
 
+    # A build host has no `.env`, no `node` and no `github-main` ref (A RUN ON
+    # A BUILD HOST); the kit runs these stations on the owner's machine after
+    # the remote run.
+    if [ "$lane" = 1 ]; then
+        why=$(printf '%s\n' "$lane_local" | awk -F'\t' -v n="$name" '$1 == n {print $2; exit}')
+        if [ -n "$why" ]; then
+            report "$name" "$scope" 0 SKIP "" "$why (lane)"
+            continue
+        fi
+    fi
+
     why=$(missing_tool "$name")
     if [ -n "$why" ]; then
         report "$name" "$scope" 0 SKIP "" "$why"
@@ -1164,9 +1333,10 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
     if [ "$cargo" = 1 ] && [ "$mode" != ci ]; then
         # The conditions a build ran under belong in its log: half-width is a
         # deliberate cap, not an accident, and a slow gate is a fair question.
-        printf '# cargo hygiene: CARGO_BUILD_JOBS=%s NEXTEST_TEST_THREADS=%s TMPDIR=%s\n' \
-            "${CARGO_BUILD_JOBS:-<unset>}" "${NEXTEST_TEST_THREADS:-<unset>}" \
+        printf '# cargo hygiene%s: CARGO_BUILD_JOBS=%s NEXTEST_TEST_THREADS=%s TMPDIR=%s\n' \
+            "$([ "$lane" = 1 ] && echo ' (lane)')" "${CARGO_BUILD_JOBS:-<unset>}" "${NEXTEST_TEST_THREADS:-<unset>}" \
             "${TMPDIR:-<unset>}" >>"$log"
+        [ -n "$lane_wipe_note" ] && printf '%s\n' "$lane_wipe_note" >>"$log"
     fi
     s_start=$(date +%s)
     rc=0

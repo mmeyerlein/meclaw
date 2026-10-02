@@ -117,6 +117,7 @@ fn add_edges(table: &mut EdgeTable, base: &str, specs: &[EdgeSpec], label: &str)
             modifier,
             is_default: spec.is_default,
             lane: spec.lane.clone(),
+            tap: spec.tap,
         });
     }
 }

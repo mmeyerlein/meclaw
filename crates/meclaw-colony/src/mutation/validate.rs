@@ -1116,6 +1116,50 @@ fn addressed_edges_and_cycle(
                     ));
                 }
             }
+            // GH #937 (review Important 2, ruling b): `tap` marks a PASSIVE
+            // edge — it fires beside the sender's other edges and never counts
+            // when the router drops the sender's defaults for a regular hit
+            // (`edge_table::apply_edges`). Same discipline and code as
+            // `default`: absent = a regular edge, non-boolean = `edge_schema`.
+            //
+            // A tap may be neither a default nor a TTL-restoring edge. A
+            // default is a routing PHASE the tap stands outside of, and a
+            // restoring edge hands its target fresh budget — an observer that
+            // watches must not change how long the traffic it watches may run.
+            match e.get("tap") {
+                None => {}
+                Some(v) if v.as_bool().is_some() => {}
+                Some(_) => {
+                    violations.push((
+                        MutationError::EdgeSchema("add_edges[].tap must be boolean".into()),
+                        Some(format!("add_edges[{i}]")),
+                    ));
+                }
+            }
+            if e.get("tap").and_then(|v| v.as_bool()) == Some(true) {
+                if e.get("default").and_then(|v| v.as_bool()) == Some(true) {
+                    violations.push((
+                        MutationError::EdgeSchema(format!(
+                            "add_edges[] {from}->{to}: tap and default are exclusive — a passive \
+                             tap edge stands outside the default phase and cannot be a default"
+                        )),
+                        Some(format!("add_edges[{i}]")),
+                    ));
+                }
+                if e.get("modifier")
+                    .and_then(|m| m.get("restore_ttl"))
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+                {
+                    violations.push((
+                        MutationError::EdgeSchema(format!(
+                            "add_edges[] {from}->{to}: a tap edge cannot carry \
+                             modifier.restore_ttl — a passive tap edge gives no TTL budget"
+                        )),
+                        Some(format!("add_edges[{i}]")),
+                    ));
+                }
+            }
             // GH #283 (ruling Q1 2026-08-21): one advisory per UNGUARDED
             // default, in the SAME words `bootstrap.rs` puts into
             // `BootstrapPlan::advisories` — the declaration paths must not
@@ -1198,6 +1242,43 @@ fn addressed_edges_and_cycle(
                             )),
                             Some(format!("add_edges[{i}]")),
                         ));
+                    }
+                }
+                // GH #937 (ruling OR-S3-16): a `delete_context` entry with a `*`
+                // is a PREFIX, and the one form is `"<p>*"` — at least one
+                // character, the `*` once and last. `"*"` would clear the whole
+                // context (the round, the session, the channel) on one edge, and
+                // `"a*b"` reads like a glob nobody implements; both are refused
+                // here rather than run as a key nobody sets.
+                if let Some(del) = modif.get("delete_context").and_then(|v| v.as_array()) {
+                    for entry in del.iter().filter_map(|v| v.as_str()) {
+                        if entry.contains('*')
+                            && crate::cel_eval::delete_entry_prefix(entry).is_none()
+                        {
+                            violations.push((
+                                MutationError::EdgeSchema(format!(
+                                    "add_edges[].modifier.delete_context entry '{entry}' is \
+                                     not a key and not a prefix: a prefix is '<p>*' with at \
+                                     least one character before the one '*', which stands last"
+                                )),
+                                Some(format!("add_edges[{i}]")),
+                            ));
+                        } else if let Some(key) = crate::cel_eval::delete_entry_covers_round(entry)
+                        {
+                            // Review of #937 (Important 3): a prefix may not
+                            // reach into the round. `"a*"` would delete who may
+                            // hear the turn without the word appearing in the
+                            // manifest; naming the key exactly stays legal.
+                            violations.push((
+                                MutationError::EdgeSchema(format!(
+                                    "add_edges[].modifier.delete_context entry '{entry}' is \
+                                     a prefix that covers the round key '{key}': a prefix \
+                                     may not delete the round, name the key exactly if this \
+                                     edge means to"
+                                )),
+                                Some(format!("add_edges[{i}]")),
+                            ));
+                        }
                     }
                 }
                 // GH #82 (ruling 2026-08-13): `restore_ttl` is a boolean
@@ -3142,7 +3223,9 @@ pub struct HeaderEdgeView {
     pub to: String,
     /// `modifier.set_context` keys promoted on this edge.
     pub set_context: std::collections::BTreeSet<String>,
-    /// `modifier.delete_context` keys removed on this edge.
+    /// `modifier.delete_context` entries of this edge, verbatim: exact keys and,
+    /// since GH #937, prefix entries `"<p>*"`. Read through
+    /// `crate::cel_eval::delete_entry_matches`, never by set lookup.
     pub delete_context: std::collections::BTreeSet<String>,
     /// `modifier.set_hop` keys written on this edge.
     pub set_hop: std::collections::BTreeSet<String>,
@@ -3467,7 +3550,13 @@ fn context_key_reachable(
                     let e = &edges[ei];
                     // A delete on this edge severs the key on THIS path; do not
                     // traverse it.
-                    if e.delete_context.contains(key) {
+                    // GH #937: a prefix entry (`"c_*"`) severs every key it
+                    // starts, read by the same function `apply_modifier` runs —
+                    // the check is never looser than the delete.
+                    if e.delete_context
+                        .iter()
+                        .any(|d| crate::cel_eval::delete_entry_matches(d, key))
+                    {
                         continue;
                     }
                     // A promotion on this edge is a setter root → reachable.
@@ -4520,6 +4609,101 @@ mod tests {
             }
             other => panic!("expected EdgeSchema, got {other:?}"),
         }
+    }
+
+    /// GH #937 test support: validate one `add_edges` entry `a -> b` and
+    /// return the `edge_schema` message it is refused with, if any.
+    fn tap_entry_verdict(entry: meclaw_core::serde_json::Value) -> Option<String> {
+        let factories = factories_with(&["echo"]);
+        let registry_names: Vec<String> = vec!["a".into(), "b".into()];
+        let existing_edges: Vec<(String, String)> = vec![];
+        let diff = json!({ "add_edges": [entry] });
+        match validate_post_state_with_edges(
+            &diff,
+            &factories,
+            &registry_names,
+            &existing_edges,
+            &[],
+        ) {
+            Ok(_) => None,
+            Err(MutationError::EdgeSchema(msg)) => Some(msg),
+            Err(other) => panic!("expected EdgeSchema or Ok, got {other:?}"),
+        }
+    }
+
+    /// GH #937 (review Important 2, ruling b): `tap` is a declaration like
+    /// `default` — a non-boolean is a schema error, not a silently ignored key.
+    #[test]
+    fn validate_with_edges_rejects_non_boolean_tap() {
+        let msg = tap_entry_verdict(json!({"from": "a", "to": "b", "tap": "yes"}))
+            .expect("a non-boolean tap must be refused");
+        assert!(
+            msg.contains("tap") && msg.contains("boolean"),
+            "msg must say tap is boolean: {msg}"
+        );
+    }
+
+    /// GH #937: a passive tap stands outside the default phase, so a tap that
+    /// is also a default is refused.
+    #[test]
+    fn validate_with_edges_rejects_a_tap_that_is_a_default() {
+        let msg = tap_entry_verdict(json!({
+            "from": "a", "to": "b",
+            "condition": "has(hop.x)",
+            "tap": true,
+            "default": true
+        }))
+        .expect("tap + default must be refused");
+        assert!(
+            msg.contains("tap") && msg.contains("default"),
+            "msg must name tap and default: {msg}"
+        );
+    }
+
+    /// GH #937: a passive tap gives no TTL budget, so a tap that restores TTL
+    /// is refused — even when it is bounded by a condition.
+    #[test]
+    fn validate_with_edges_rejects_a_tap_that_restores_ttl() {
+        let msg = tap_entry_verdict(json!({
+            "from": "a", "to": "b",
+            "condition": "int(context.iter) < 12",
+            "tap": true,
+            "modifier": {
+                "set_context": {"iter": "int(context.iter) + 1"},
+                "restore_ttl": true
+            }
+        }))
+        .expect("tap + restore_ttl must be refused");
+        assert!(
+            msg.contains("tap") && msg.contains("restore_ttl"),
+            "msg must name tap and restore_ttl: {msg}"
+        );
+    }
+
+    /// GH #937: the counterpart — a tap on its own, and a tap explicitly
+    /// declared `default: false` / `restore_ttl: false`, are legal.
+    #[test]
+    fn validate_with_edges_accepts_a_plain_tap() {
+        assert_eq!(
+            tap_entry_verdict(json!({"from": "a", "to": "b", "tap": true})),
+            None,
+            "a plain tap edge must validate"
+        );
+        assert_eq!(
+            tap_entry_verdict(json!({
+                "from": "a", "to": "b",
+                "tap": true,
+                "default": false,
+                "modifier": {"restore_ttl": false}
+            })),
+            None,
+            "a tap with default:false and restore_ttl:false must validate"
+        );
+        assert_eq!(
+            tap_entry_verdict(json!({"from": "a", "to": "b", "tap": false})),
+            None,
+            "tap:false is a regular edge"
+        );
     }
 
     /// Substrate fix, modifier schema (post-finding-6): a `modifier` key outside

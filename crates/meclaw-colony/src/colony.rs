@@ -2158,6 +2158,7 @@ async fn run_shutdown_teardown(
                     modifier: None,
                     is_default: false,
                     lane: None,
+                    tap: false,
                 });
                 let _ = edge_ack.send(());
             }
@@ -2442,6 +2443,8 @@ async fn run_shutdown_teardown(
                             // GH #559: and the declared lane, for the same
                             // reason as the phase beside it.
                             lane: e.lane.clone(),
+                            // GH #937: and the passive-tap flag.
+                            tap: e.tap,
                         });
                     }
                     // Direct send via writer_tx (NOT &ColonyDb across .await,
@@ -2787,6 +2790,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     // column beside it. A v-lane that comes back as an ordinary
                     // deep edge could not be re-anchored by a later swap.
                     lane: e.lane,
+                    // GH #937: a tap rehydrated as a regular edge would
+                    // suppress its sender's defaults one restart later.
+                    tap: e.tap,
                 });
             }
             // Hard-fail (symmetric to read_edges above): a corrupt persisted
@@ -3169,7 +3175,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         adopt_overflow(&registry, &mut in_flight, &registered);
                     }
                     ColonyMsg::AddEdge { id, from, to, ack } => {
-                        edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false, lane: None });
+                        edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false, lane: None, tap: false });
                         let _ = ack.send(());
                     }
                     ColonyMsg::SetNodeContract { path, contract, ack } => {
@@ -3378,6 +3384,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     is_default: e.is_default,
                                     // GH #559: see the twin arm above.
                                     lane: e.lane.clone(),
+                                    // GH #937: see the twin arm above.
+                                    tap: e.tap,
                                 });
                             }
                             // op-before-ack. Direct send via writer_tx (NOT &ColonyDb
@@ -6416,8 +6424,15 @@ pub(crate) async fn handle_mutation(
                     continue;
                 };
                 let entry_lane = e.get("lane").and_then(|v| v.as_str());
+                // GH #937 (review A): the tap flag is no identity term either
+                // (a sixth term would deliver twice), so a regular entry on a
+                // standing tap — or a tap on a standing regular edge — was
+                // swallowed by the dedup and the sender's default kept firing.
+                // Same disagreement as the lane, same refusal; the replace
+                // path (`apply_replace::displaced_by`) already reads it so.
+                let entry_tap = e.get("tap").and_then(|v| v.as_bool()).unwrap_or(false);
                 let disagreeing = edges.iter().find(|old| {
-                    old.lane.as_deref() != entry_lane
+                    (old.lane.as_deref() != entry_lane || old.tap != entry_tap)
                         && !doomed.contains(&old.id)
                         && crate::mutation::validate::edge_identity_equal_views(
                             &crate::mutation::validate::EdgeMatchView::from(*old),
@@ -6429,7 +6444,14 @@ pub(crate) async fn handle_mutation(
                     // the caller can see neither: the entry's declaration and
                     // the standing edge's.
                     let says = crate::mutation::validate::lane_says(entry_lane);
-                    let standing = old.lane.as_deref().map_or_else(
+                    let standing = if old.lane.as_deref() == entry_lane {
+                        format!(
+                            "an identical edge with tap = {} already exists; remove it in the \
+                             same diff or match its tap",
+                            old.tap
+                        )
+                    } else {
+                        old.lane.as_deref().map_or_else(
                         || {
                             "an identical edge without a lane already exists; remove it in the \
                             same diff or drop the lane"
@@ -6441,7 +6463,8 @@ pub(crate) async fn handle_mutation(
                                  the same diff or match its lane"
                             )
                         },
-                    );
+                        )
+                    };
                     let err = crate::mutation::MutationError::EdgeSchema(format!(
                         "add_edges[{i}] {says} on '{from_abs}' -> '{to_abs}', but {standing}. \
                          Edge identity is the five routing terms, so the two are the same edge to \
@@ -6485,6 +6508,7 @@ pub(crate) async fn handle_mutation(
                 usize,
                 crate::mutation::validate::EdgeMatchView,
                 Option<&str>,
+                bool,
             )> = Vec::new();
             for (j, e) in adds.iter().enumerate() {
                 // GH #574: same reader as the standing-edge face above, so the
@@ -6494,9 +6518,11 @@ pub(crate) async fn handle_mutation(
                     continue;
                 };
                 let lane = e.get("lane").and_then(|v| v.as_str());
-                if let Some((i, _, earlier_lane)) =
-                    seen.iter().find(|(_, earlier, earlier_lane)| {
-                        *earlier_lane != lane
+                // GH #937 (review A): the tap flag disagrees like the lane does.
+                let tap = e.get("tap").and_then(|v| v.as_bool()).unwrap_or(false);
+                if let Some((i, _, earlier_lane, earlier_tap)) =
+                    seen.iter().find(|(_, earlier, earlier_lane, earlier_tap)| {
+                        (*earlier_lane != lane || *earlier_tap != tap)
                             && crate::mutation::validate::edge_identity_equal_views(earlier, &view)
                     })
                 {
@@ -6504,10 +6530,11 @@ pub(crate) async fn handle_mutation(
                     // see from the outside which two of their lines collapsed
                     // into one.
                     let err = crate::mutation::MutationError::EdgeSchema(format!(
-                        "add_edges[{i}] {a} and add_edges[{j}] {b} on '{from_abs}' -> \
-                         '{to_abs}', but the five routing terms are equal. Edge identity is \
-                         the five terms, so the second entry would be silently dropped by the \
-                         apply arm; keep one lane, or draw two different edges.",
+                        "add_edges[{i}] {a} (tap = {earlier_tap}) and add_edges[{j}] {b} \
+                         (tap = {tap}) on '{from_abs}' -> '{to_abs}', but the five routing \
+                         terms are equal. Edge identity is the five terms, so the second entry \
+                         would be silently dropped by the apply arm; keep one lane and one tap \
+                         flag, or draw two different edges.",
                         a = crate::mutation::validate::lane_says(*earlier_lane),
                         b = crate::mutation::validate::lane_says(lane),
                         from_abs = view.from.as_str(),
@@ -6519,7 +6546,7 @@ pub(crate) async fn handle_mutation(
                         Some(format!("add_edges[{j}]")),
                     ));
                 }
-                seen.push((j, view, lane));
+                seen.push((j, view, lane, tap));
             }
         }
 
@@ -7305,6 +7332,8 @@ pub(crate) async fn handle_mutation(
                     // GH #559: verbatim, like the phase above — a swing moves
                     // endpoints and nothing else.
                     lane: sw.lane.clone(),
+                    // GH #937: verbatim — a swung tap stays passive.
+                    tap: sw.tap,
                 });
                 inserted_edge_ids.push(edge_id);
                 write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -7322,6 +7351,8 @@ pub(crate) async fn handle_mutation(
                     // GH #559: verbatim, like the phase above — a swing moves
                     // endpoints and nothing else.
                     lane: sw.lane.clone(),
+                    // GH #937: verbatim — a swung tap stays passive.
+                    tap: sw.tap,
                 });
             }
             // THEN remove the old edges (fetch each removed Edge for rollback,
@@ -7376,6 +7407,8 @@ pub(crate) async fn handle_mutation(
                 is_default: sw.is_default,
                 // GH #559: verbatim, like the phase above.
                 lane: sw.lane.clone(),
+                // GH #937: verbatim — a swung tap stays passive.
+                tap: sw.tap,
             });
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -7391,6 +7424,8 @@ pub(crate) async fn handle_mutation(
                 is_default: sw.is_default,
                 // GH #559: verbatim, like the phase above.
                 lane: sw.lane.clone(),
+                // GH #937: verbatim — a swung tap stays passive.
+                tap: sw.tap,
             });
         }
         for old_id in plan.remove_ids {
@@ -7538,6 +7573,8 @@ pub(crate) async fn handle_mutation(
                 // with the boot, which carries the same key — one template, two
                 // doors, two meanings.
                 lane: edge.lane.clone(),
+                // GH #937: the template's passive-tap flag, same discipline.
+                tap: edge.tap,
             };
             involved.push(edge.from.clone());
             involved.push(edge.to.clone());
@@ -7556,6 +7593,8 @@ pub(crate) async fn handle_mutation(
             let is_default = candidate.is_default;
             // GH #559: and the declared lane, off the same candidate.
             let internal_lane = candidate.lane.clone();
+            // GH #937: and the passive-tap flag.
+            let internal_tap = candidate.tap;
             edges.insert(candidate);
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -7570,6 +7609,7 @@ pub(crate) async fn handle_mutation(
                 // phase above, so the row and the RAM edge agree by
                 // construction.
                 lane: internal_lane,
+                tap: internal_tap,
             });
         }
     }
@@ -7702,6 +7742,8 @@ pub(crate) async fn handle_mutation(
                 .and_then(|m| meclaw_core::serde_json::to_string(&m.source).ok());
             let is_default = candidate.is_default;
             let lane = candidate.lane.clone();
+            // GH #937: the passive-tap flag, off the same candidate.
+            let tap = candidate.tap;
             let (from, to) = (candidate.from.clone(), candidate.to.clone());
             edges.insert(candidate);
             inserted_edge_ids.push(edge_id);
@@ -7714,6 +7756,7 @@ pub(crate) async fn handle_mutation(
                 modifier: mod_src,
                 is_default,
                 lane,
+                tap,
             });
         }
         for old in old_inner_rest {
@@ -7923,6 +7966,10 @@ pub(crate) async fn handle_mutation(
                     .get("lane")
                     .and_then(|v| v.as_str())
                     .map(std::string::ToString::to_string),
+                // GH #937: the passive-tap flag the DIFF declared. Absent = a
+                // regular edge. Validate has already refused every non-boolean
+                // and every tap that is also a default or restores TTL.
+                tap: e.get("tap").and_then(|v| v.as_bool()).unwrap_or(false),
             };
             involved.push(from_path.clone());
             involved.push(to_path.clone());
@@ -7942,6 +7989,8 @@ pub(crate) async fn handle_mutation(
             // candidate — the row and the RAM edge then say the same thing by
             // construction rather than by two readers agreeing.
             let lane = candidate.lane.clone();
+            // GH #937: and the passive-tap flag, off the same candidate.
+            let tap = candidate.tap;
             edges.insert(candidate);
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -7953,6 +8002,7 @@ pub(crate) async fn handle_mutation(
                 modifier: mod_src,
                 is_default,
                 lane,
+                tap,
             });
         }
     }
@@ -12795,6 +12845,7 @@ mod tests {
                     modifier: None,
                     is_default: false,
                     lane: None,
+                    tap: false,
                 }],
                 hive_scopes: vec![],
                 ack: ia_ack_tx,
@@ -13803,6 +13854,7 @@ mod tests {
             modifier: Some(crate::cel_eval::parse_modifier(&spec_a).unwrap()),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let edge_b = crate::bootstrap::PlannedEdge {
             id: Uuid::now_v7(),
@@ -13812,6 +13864,7 @@ mod tests {
             modifier: Some(crate::cel_eval::parse_modifier(&spec_b).unwrap()),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let (ia_ack_tx, ia_ack_rx) = oneshot::channel();
         inbox_tx

@@ -412,13 +412,31 @@ fn episodes(db: &std::path::Path) -> Vec<Episode> {
     out
 }
 
-/// `"<session>#<index>"` -> index. A row whose id does not carry one sorts
+/// `"<session>#<tag>-<index>"` -> index (GH #932: the index counts per
+/// round, after the round's tag). A row whose id does not carry one sorts
 /// last, loudly.
 fn index_of(turn_id: &str) -> i64 {
     turn_id
         .rsplit_once('#')
+        .and_then(|(_, t)| t.rsplit_once('-'))
         .and_then(|(_, i)| i.parse::<i64>().ok())
         .unwrap_or(i64::MAX)
+}
+
+/// `hop.turn_id` of episode `index` as the curator writer stamps it (GH #932,
+/// OR-S3.K.1): `<session>#<tag>-<index>`, `tag` the first 8 hex of sha256
+/// over the canonical round. The surface edge of this colony promotes no
+/// round into the talky, so the curator writes round-less: the round is `[]`
+/// (PP-BD-12). WHY the tag: `<session>#<index>` counted over every round of
+/// a session, so its gaps told a round how many turns it did not see.
+fn turn_id_of(session: &str, index: usize) -> String {
+    use sha2::{Digest, Sha256};
+    let tag: String = Sha256::digest(b"[]")
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{session}#{tag}-{index}")
 }
 
 /// Polls the hive store's own `cell.db` until it holds `n` episodes.
@@ -472,12 +490,12 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
         rows,
         vec![
             Episode {
-                turn_id: format!("{session}#0"),
+                turn_id: turn_id_of(&session, 0),
                 sender: "user".to_string(),
                 content: "my editor is helix".to_string(),
             },
             Episode {
-                turn_id: format!("{session}#1"),
+                turn_id: turn_id_of(&session, 1),
                 sender: "assistant".to_string(),
                 content: "Noted.".to_string(),
             }
@@ -494,13 +512,13 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
     let rows = await_episodes(&db, 4);
     assert_eq!(
         rows.iter().map(|e| e.turn_id.clone()).collect::<Vec<_>>(),
-        (0..4).map(|i| format!("{session}#{i}")).collect::<Vec<_>>(),
+        (0..4).map(|i| turn_id_of(&session, i)).collect::<Vec<_>>(),
         "four turns, four ids, none of them twice -- {rows:?}"
     );
     assert_eq!(
         rows[3],
         Episode {
-            turn_id: format!("{session}#3"),
+            turn_id: turn_id_of(&session, 3),
             sender: "assistant".to_string(),
             content: "Noted that too.".to_string(),
         }

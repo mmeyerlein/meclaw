@@ -776,6 +776,7 @@ fn talky_edges() -> meclaw_colony::edge_table::EdgeTable {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
     }
     table

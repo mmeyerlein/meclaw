@@ -161,6 +161,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
     }
     t

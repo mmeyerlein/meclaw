@@ -515,6 +515,7 @@ pub fn warn_on_missing_drains(
             // the same table.
             is_default: *is_default,
             lane: None,
+            tap: false,
         });
     }
     for req in reqs {
@@ -581,6 +582,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         }
     }
 

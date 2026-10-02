@@ -32,7 +32,7 @@
 //!    the person never sees the annotation.** The block names no episode -- it
 //!    cannot -- and the hive binds it to the newest `user` episode of the
 //!    session, the row the per-turn lane minted under
-//!    `turn_id = "<session_id>#<index>"`. The answer that reaches the channel
+//!    `turn_id = "<session_id>#<tag>-<index>"` (GH #932). The answer that reaches the channel
 //!    carries no fence.
 //! 2. **Extraction never costs the answer.** A block with a broken payload is
 //!    NOT cut: the splitter flags it and leaves the answer alone, nothing is
@@ -521,6 +521,17 @@ fn turn(text: &str) -> Message {
         .build()
 }
 
+/// The tag of a round in the curator writer's turn id (GH #932): the first
+/// 8 hex of sha256 over the round's canonical text.
+fn round_tag(canonical_round: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(canonical_round.as_bytes())
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 fn hop_of(m: &Message, key: &str) -> String {
     m.headers
         .hop
@@ -723,10 +734,16 @@ async fn an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered() {
     // here is what makes the ordering explicit (module note).
     let user_rows = await_rows(&db, USER_EPISODE, 1);
     let user_turn = &user_rows[0];
+    // GH #932 (OR-S3.K.1): the writer's id is `<session>#<tag>-<index>`, the
+    // index counted per (session, round), `tag` the first 8 hex of sha256 over
+    // the canonical round. The surface edge of this colony promotes no round
+    // into the talky, so the curator writes round-less (`[]`, PP-BD-12) and
+    // the tag is the one of `[]`; `<session>#<index>` counted over all rounds
+    // and told a round how many turns it did not see.
     assert_eq!(
         user_turn[1],
-        format!("{session}#0"),
-        "under the curator writer's deterministic id (GH #889)"
+        format!("{session}#{}-0", round_tag("[]")),
+        "under the curator writer's deterministic id (GH #889, GH #932)"
     );
     std::fs::write(&marker, b"go").unwrap();
 

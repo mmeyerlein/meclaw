@@ -964,6 +964,9 @@ pub fn handle_read_graph(
             // lane is what made a deep edge legal — an edge that shows its
             // endpoints and hides its licence is unreviewable.
             lane: e.lane.clone(),
+            // GH #937: a passive tap shows itself — without the key a reader
+            // could not tell an observer from a regular edge.
+            tap: e.tap,
         })
         .collect();
     crate::api_dto::ReadGraphReply {

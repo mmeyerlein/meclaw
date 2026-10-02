@@ -741,6 +741,13 @@ pub struct EdgeSpec {
     /// against. See [`crate::mutation::port_boundary::v_lane_verdict`].
     #[serde(default)]
     pub lane: Option<String>,
+    /// GH #937 (review Important 2, ruling b): `true` marks a PASSIVE edge —
+    /// it fires beside the sender's other edges and never counts when the
+    /// router drops the sender's default edges for a matching regular edge
+    /// (see [`crate::edge_table::Edge::tap`]). Absent = `false`, an ordinary
+    /// edge. A tap may be neither `default` nor `restore_ttl`.
+    #[serde(default)]
+    pub tap: bool,
 }
 
 #[cfg(test)]

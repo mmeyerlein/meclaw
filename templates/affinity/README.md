@@ -1,4 +1,4 @@
-# `affinity@3.6.2`
+# `affinity@3.7.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -201,6 +201,7 @@ fifth is the agent's own durable state:
 | slot | reads | lands in the recipient as |
 |---|---|---|
 | `identity` | the subject's AIeOS identity, motivations and summary | `system.identity`, one rendered leaf |
+| `identity_short` | names and kind out of the `identity` the same request would render, never more, cut at a word boundary after `identity_short_max` characters (default 400; asked for explicitly, never by default) | `system.identity_short`, one rendered leaf |
 | `peer` | how the subject speaks, what it likes, where to reach it, and how far this record trusts it (`trust_level` and its `trust_rank`, § The write ops) -- in an answered brief only: a refusal carries neither, and a missing rank means no | `system.peer`, one rendered leaf |
 | `relationship` | the relation walk from the asker to the subject | `system.relationship`, one rendered leaf |
 | `channel` | the channel persona for `channel` | `system.channel`, one rendered leaf |
@@ -659,7 +660,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.6.2` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.7.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -973,7 +974,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.6.2`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.7.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

@@ -623,6 +623,7 @@ fn member_table() -> EdgeTable {
             }),
             is_default: spec.is_default,
             lane: None,
+            tap: false,
         });
     }
     t

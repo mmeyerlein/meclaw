@@ -1057,7 +1057,8 @@ async fn a_round_reads_back_only_what_it_was_present_for() {
     }
 
     // The write side: every session's words stand on the wall under its
-    // round, canonical -- and under none when the round declared none.
+    // round, canonical -- and under `[]` when the round declared none
+    // (PP-BD-12, GH #932: NULL is left to rows from before the rule).
     let mut hash_of = BTreeMap::new();
     for s in &SESSIONS {
         let prefix = format!("{}-", s.channel);
@@ -1071,7 +1072,7 @@ async fn a_round_reads_back_only_what_it_was_present_for() {
             "{}: the person's words are not on the wall: {wall:#?}",
             s.channel
         );
-        let want = s.round.map(canonical);
+        let want = Some(s.round.map_or_else(|| "[]".to_string(), canonical));
         for r in &rows {
             assert_eq!(
                 r[1], want,
@@ -1761,8 +1762,11 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
         (CLOSE_ONE_REPLY, Some(ea.as_str())),
         (CLOSE_TWO_SAYS, Some(eb.as_str())),
         (CLOSE_TWO_REPLY, Some(eb.as_str())),
-        (CLOSE_THREE_SAYS, None),
-        (CLOSE_THREE_REPLY, None),
+        // PP-BD-12 (GH #932): a round-less turn's rows carry `[]`, no longer
+        // NULL -- NULL is left to rows from before the rule, which no reader
+        // takes; `[]` is what the round-less reads of the session find.
+        (CLOSE_THREE_SAYS, Some("[]")),
+        (CLOSE_THREE_REPLY, Some("[]")),
     ] {
         let rows: Vec<&Vec<Option<String>>> = wall
             .iter()
@@ -1780,8 +1784,9 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
     let audiences: BTreeSet<Option<String>> = wall.iter().map(|r| r[3].clone()).collect();
     assert_eq!(
         audiences,
-        BTreeSet::from([Some(ea.clone()), Some(eb.clone()), None]),
-        "the session holds rows of {{e,a}}, of {{e,b}} and without an audience: {wall:#?}"
+        BTreeSet::from([Some(ea.clone()), Some(eb.clone()), Some("[]".to_string())]),
+        "the session holds rows of {{e,a}}, of {{e,b}} and of no round (`[]`, \
+         PP-BD-12): {wall:#?}"
     );
     // What the close round may hand on, counted off the ledger the way the
     // writer counts: a person's turn or a final answer is a said turn, every

@@ -109,6 +109,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
             modifier,
             is_default: false,
             lane: None,
+            tap: false,
         });
     }
     // The hive has to be wired from outside, or `check_lane_doors` skips it.
@@ -120,6 +121,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
         modifier: None,
         is_default: false,
         lane: None,
+        tap: false,
     });
     t
 }

@@ -749,6 +749,7 @@ fn a_vouching_level_keeps_a_lane_door_check_it_can_pass() {
             }),
             is_default: false,
             lane: None,
+            tap: false,
         })
         .collect();
     edges.push(meclaw_colony::edge_table::Edge {
@@ -762,6 +763,7 @@ fn a_vouching_level_keeps_a_lane_door_check_it_can_pass() {
         modifier: None,
         is_default: false,
         lane: None,
+        tap: false,
     });
     let mut table = meclaw_colony::edge_table::EdgeTable::new();
     for e in edges {

@@ -36,8 +36,19 @@ pub struct CompiledModifier {
     pub source: ModifierSpec,
     /// Per-key pre-compiled `context` set-expressions.
     pub set_context: BTreeMap<String, Arc<Program>>,
-    /// `context` keys to remove (idempotent for non-existent keys).
+    /// `context` keys to remove (idempotent for non-existent keys) — the EXACT
+    /// entries of `delete_context`. A prefix entry (`"c_*"`) is not in here but
+    /// in [`Self::delete_context_prefixes`], so an exact key is never read as a
+    /// pattern and a pattern never as a key (GH #937).
     pub delete_context: Vec<String>,
+    /// GH #937 — the PREFIX entries of `delete_context`, stored without their
+    /// trailing `*`: every `context` key that starts with one of them is
+    /// removed. A hive that parks its working keys under one prefix (`c_*`)
+    /// clears them on its exit edge without a canonical list per hive that
+    /// every new key has to be added to. No regex and no glob: the one form is
+    /// `"<p>*"` with a non-empty `p` and no other `*` (ruling OR-S3-16), read by
+    /// [`delete_entry_prefix`].
+    pub delete_context_prefixes: Vec<String>,
     /// Per-key pre-compiled `hop` set-expressions.
     pub set_hop: BTreeMap<String, Arc<Program>>,
     /// `hop` keys to remove (idempotent for non-existent keys).
@@ -66,6 +77,53 @@ pub fn parse_condition(source: &str) -> Result<CompiledCondition, String> {
 /// first parse error, so the caller can attribute the failure to a specific
 /// key. The returned key is prefixed `set_context.`/`set_hop.` to disambiguate
 /// the two compartments.
+/// GH #937 — the one reading of a `delete_context` entry as a PREFIX.
+///
+/// `Some(p)` iff the entry is `"<p>*"` with at least one character before the
+/// `*` and no other `*` anywhere (ruling OR-S3-16: the narrowest form, no
+/// glob). Every other entry — `"*"`, `"a*b"`, `"**"`, a plain key — is `None`
+/// and keeps today's EXACT meaning; the mutation door refuses the malformed
+/// ones before they reach a graph (`validate.rs`, `delete_context` form), so
+/// at run time a boot-loaded `"*"` is merely a key nobody sets.
+#[must_use]
+pub fn delete_entry_prefix(entry: &str) -> Option<&str> {
+    let p = entry.strip_suffix('*')?;
+    (!p.is_empty() && !p.contains('*')).then_some(p)
+}
+
+/// GH #937 — the context keys that carry the ROUND: who may hear this turn
+/// (`audience_set`) and who is hearing it now (`audience_now`). A prefix entry
+/// that starts one of them would delete the round on an edge whose manifest
+/// never says the word, so the mutation door refuses it (`validate.rs`,
+/// `delete_context` form; review of #937, Important 3). An EXACT entry naming
+/// one stays legal: it is visible, which is the whole point.
+pub const ROUND_CONTEXT_KEYS: [&str; 2] = ["audience_set", "audience_now"];
+
+/// GH #937 — the first round key (`ROUND_CONTEXT_KEYS`) the PREFIX entry
+/// `entry` would delete, or `None` for an exact entry and for a prefix that
+/// covers none.
+#[must_use]
+pub fn delete_entry_covers_round(entry: &str) -> Option<&'static str> {
+    delete_entry_prefix(entry)?;
+    ROUND_CONTEXT_KEYS
+        .into_iter()
+        .find(|k| delete_entry_matches(entry, k))
+}
+
+/// GH #937 — does the `delete_context` entry `entry` remove the key `key`?
+///
+/// Exact entries match themselves, a prefix entry every key it starts. The
+/// locality check (`validate.rs`, `context_key_reachable`) asks THIS function
+/// rather than a set lookup, so it can never judge a path differently from the
+/// way [`apply_modifier`] then runs it.
+#[must_use]
+pub fn delete_entry_matches(entry: &str, key: &str) -> bool {
+    match delete_entry_prefix(entry) {
+        Some(p) => key.starts_with(p),
+        None => entry == key,
+    }
+}
+
 pub fn parse_modifier(spec: &ModifierSpec) -> Result<CompiledModifier, (String, String)> {
     let mut set_context = BTreeMap::new();
     for (k, expr) in &spec.set_context {
@@ -82,7 +140,17 @@ pub fn parse_modifier(spec: &ModifierSpec) -> Result<CompiledModifier, (String, 
     Ok(CompiledModifier {
         source: spec.clone(),
         set_context,
-        delete_context: spec.delete_context.clone(),
+        delete_context: spec
+            .delete_context
+            .iter()
+            .filter(|e| delete_entry_prefix(e).is_none())
+            .cloned()
+            .collect(),
+        delete_context_prefixes: spec
+            .delete_context
+            .iter()
+            .filter_map(|e| delete_entry_prefix(e).map(str::to_string))
+            .collect(),
         set_hop,
         delete_hop: spec.delete_hop.clone(),
         restore_ttl: spec.restore_ttl,
@@ -183,6 +251,16 @@ pub fn apply_modifier(m: &CompiledModifier, headers_in: &Headers) -> Result<Head
     }
     for k in &m.delete_context {
         out.context.remove(k);
+    }
+    // GH #937: after the exact deletes and, like them, after every `set_*`
+    // (spec Z.832) — a key this very edge promoted under the prefix is gone too,
+    // exactly as an exact entry naming it would remove it.
+    if !m.delete_context_prefixes.is_empty() {
+        out.context.retain(|k, _| {
+            !m.delete_context_prefixes
+                .iter()
+                .any(|p| k.starts_with(p.as_str()))
+        });
     }
     for k in &m.delete_hop {
         out.hop.remove(k);

@@ -34,6 +34,21 @@ pub struct Edge {
     /// routing terms, and the lane is a declaration ABOUT an edge rather than a
     /// term the router reads.
     pub lane: Option<String>,
+    /// GH #937 (review Important 2, ruling b) — a PASSIVE edge: it fires
+    /// beside the sender's other edges and never takes part in the default
+    /// suppression of [`apply_edges`].
+    ///
+    /// Why: `apply_edges` hands out the regular hits and consults the default
+    /// edges only when no regular edge decided. An observer edge laid by an
+    /// `install_app` recipe onto a tool that is reached through a default edge
+    /// (`./talky -> ./tools`, `default: true`) was a regular hit, so it
+    /// suppressed the default and took the call away from the tool. A tap
+    /// watches; it must not change where the regular traffic goes.
+    ///
+    /// A tap is never a default and never gives TTL budget (`restore_ttl`) —
+    /// `mutation::validate` refuses both combinations. Like `lane`, NOT part of
+    /// edge identity (`contains_equal`).
+    pub tap: bool,
 }
 
 /// Table of edges indexed by their source path for O(1) fan-out lookups.
@@ -224,21 +239,37 @@ pub fn evaluate_edge(edge: &Edge, headers: &Headers) -> Option<EdgeDecision> {
 /// identical), also in insertion order. The suppression asks whether ANY regular
 /// edge decided, never whether exactly one did: there is no dispatch group and
 /// no exactly-one semantics here.
+///
+/// GH #937 (review Important 2, ruling b): [`Edge::tap`] edges are PASSIVE and
+/// sit outside both phases. They are never "regular" — a tap hit alone does not
+/// suppress the defaults — and they are always evaluated, after the phase
+/// result, also in insertion order. Result = (regular hits, else default hits)
+/// plus tap hits. Without this an observer edge on a tool reached through a
+/// default edge counted as a regular hit, suppressed the default and took the
+/// call away from the tool it was only meant to watch. `validate` guarantees a
+/// tap is never a default, so the `!e.tap` filter on the default phase is a
+/// belt for edges that arrived by another door.
 pub fn apply_edges(table: &EdgeTable, from: &Path, headers: &Headers) -> Vec<EdgeDecision> {
     let edges = table.edges_from(from);
-    let regular: Vec<EdgeDecision> = edges
+    let mut decisions: Vec<EdgeDecision> = edges
         .iter()
-        .filter(|e| !e.is_default)
+        .filter(|e| !e.is_default && !e.tap)
         .filter_map(|e| evaluate_edge(e, headers))
         .collect();
-    if !regular.is_empty() {
-        return regular;
+    if decisions.is_empty() {
+        decisions = edges
+            .iter()
+            .filter(|e| e.is_default && !e.tap)
+            .filter_map(|e| evaluate_edge(e, headers))
+            .collect();
     }
-    edges
-        .iter()
-        .filter(|e| e.is_default)
-        .filter_map(|e| evaluate_edge(e, headers))
-        .collect()
+    decisions.extend(
+        edges
+            .iter()
+            .filter(|e| e.tap)
+            .filter_map(|e| evaluate_edge(e, headers)),
+    );
+    decisions
 }
 
 #[cfg(test)]
@@ -256,6 +287,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         let found = table.edges_from(&Path::new("/a"));
         assert_eq!(found.len(), 1);
@@ -273,6 +305,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -282,6 +315,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         let found = table.edges_from(&Path::new("/a"));
         assert_eq!(found.len(), 2);
@@ -306,6 +340,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -315,6 +350,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -324,6 +360,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         let into_c = table.edges_to(&Path::new("/c"));
         assert_eq!(into_c.len(), 2);
@@ -342,6 +379,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         assert!(table.edges_to(&Path::new("/x")).is_empty());
     }
@@ -354,6 +392,7 @@ mod tests {
             source: crate::config::ModifierSpec::default(),
             set_context: std::collections::BTreeMap::new(),
             delete_context: vec![],
+            delete_context_prefixes: vec![],
             set_hop: std::collections::BTreeMap::new(),
             delete_hop: vec![],
             restore_ttl: false,
@@ -366,6 +405,7 @@ mod tests {
             modifier: Some(modif),
             is_default: false,
             lane: None,
+            tap: false,
         };
         assert!(e.condition.is_some());
         assert!(e.modifier.is_some());
@@ -389,6 +429,7 @@ mod tests {
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
             is_default: false,
             lane: None,
+            tap: false,
         };
         table.insert(base());
 
@@ -425,6 +466,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         };
         assert!(
             !table.contains_equal(&identity),
@@ -448,10 +490,12 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         };
         let default = || Edge {
             is_default: true,
             lane: None,
+            tap: false,
             ..regular()
         };
 
@@ -505,6 +549,7 @@ mod tests {
             modifier: Some(m),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);
@@ -570,6 +615,7 @@ mod tests {
             modifier: Some(m),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);
@@ -638,6 +684,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         };
         let h = headers();
         let dec = evaluate_edge(&e, &h).unwrap();
@@ -663,6 +710,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         let r = apply_edges(&table, &Path::new("/a"), &headers());
         assert_eq!(r.len(), 1);
@@ -680,6 +728,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -689,6 +738,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         let r = apply_edges(&table, &Path::new("/a"), &headers());
         assert_eq!(r.len(), 2);
@@ -725,6 +775,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -734,6 +785,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
 
         let matched = apply_edges(&table, &Path::new("/a"), &hop_tool_name("alpha"));
@@ -780,6 +832,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         }
     }
 
@@ -794,7 +847,103 @@ mod hook_tests {
             modifier: None,
             is_default: true,
             lane: None,
+            tap: false,
         }
+    }
+
+    /// GH #937 test support: a passive tap edge from `/a` that watches every
+    /// message carrying `hop.tool_name` (an observer laid by an app recipe).
+    fn tap_edge(to: &str) -> Edge {
+        Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new(to),
+            condition: Some(
+                crate::cel_eval::parse_condition("has(hop.tool_name)")
+                    .expect("condition should parse"),
+            ),
+            modifier: None,
+            is_default: false,
+            lane: None,
+            tap: true,
+        }
+    }
+
+    /// GH #937 (review Important 2, ruling b): the three ways a default, a
+    /// regular edge and a passive tap meet on one sender, as one table.
+    ///
+    /// (a) default + matching tap → BOTH fire: a tap hit is not a regular hit,
+    ///     so it never suppresses the default — the observer watches the call
+    ///     instead of taking it away from the tool;
+    /// (b) default + matching regular edge → only the regular edge: the pinned,
+    ///     documented GH #283 suppression is untouched;
+    /// (c) default + regular + tap all matching → regular + tap, no default:
+    ///     the tap rides beside whatever the two phases decided.
+    #[test]
+    fn a_tap_fires_beside_the_phases_and_never_suppresses_a_default() {
+        type Build = fn() -> Vec<Edge>;
+        let cases: [(&str, Build, &[&str]); 3] = [
+            (
+                "(a) default + tap",
+                || vec![default_edge("/tools", None), tap_edge("/observer")],
+                &["/tools", "/observer"],
+            ),
+            (
+                "(b) default + regular",
+                || vec![default_edge("/tools", None), regular_alpha_edge()],
+                &["/alpha"],
+            ),
+            (
+                "(c) default + regular + tap",
+                || {
+                    vec![
+                        default_edge("/tools", None),
+                        tap_edge("/observer"),
+                        regular_alpha_edge(),
+                    ]
+                },
+                &["/alpha", "/observer"],
+            ),
+        ];
+        for (label, build, expected) in cases {
+            let mut table = EdgeTable::new();
+            for edge in build() {
+                table.insert(edge);
+            }
+            let decisions = apply_edges(
+                &table,
+                &Path::new("/a"),
+                &hop_headers(&[("tool_name", "alpha")]),
+            );
+            let targets: Vec<&str> = decisions.iter().map(|d| d.target.as_str()).collect();
+            assert_eq!(targets, expected.to_vec(), "{label}");
+        }
+    }
+
+    /// GH #937: a tap that does not match leaves the default phase exactly as
+    /// it was, and a lone tap on a sender without a default is just its own hit.
+    #[test]
+    fn a_non_matching_tap_changes_nothing_and_a_lone_tap_still_fires() {
+        let mut table = EdgeTable::new();
+        table.insert(default_edge("/tools", None));
+        table.insert(tap_edge("/observer"));
+        let decisions = apply_edges(&table, &Path::new("/a"), &hop_headers(&[]));
+        let targets: Vec<&str> = decisions.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec!["/tools"],
+            "a silent tap leaves the default alone"
+        );
+
+        let mut lone = EdgeTable::new();
+        lone.insert(tap_edge("/observer"));
+        let decisions = apply_edges(
+            &lone,
+            &Path::new("/a"),
+            &hop_headers(&[("tool_name", "alpha")]),
+        );
+        let targets: Vec<&str> = decisions.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(targets, vec!["/observer"], "a lone matching tap fires");
     }
 
     /// GH #283: a default edge is a declared consumer for what would otherwise
@@ -904,6 +1053,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -913,6 +1063,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
         table.insert(default_edge("/catchall", None));
 
@@ -942,6 +1093,7 @@ mod hook_tests {
             modifier: Some(crate::cel_eval::parse_modifier(&spec).expect("modifier should parse")),
             is_default: true,
             lane: None,
+            tap: false,
         });
 
         let decisions = apply_edges(
@@ -990,6 +1142,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         };
         let mut hop = meclaw_core::serde_json::Map::new();
         hop.insert(
@@ -1015,6 +1168,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         };
         let mut hop = meclaw_core::serde_json::Map::new();
         hop.insert(
@@ -1040,6 +1194,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         };
         let result = evaluate_edge(&edge, &Headers::new());
         assert!(
@@ -1067,6 +1222,7 @@ mod hook_tests {
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let mut ctx = meclaw_core::serde_json::Map::new();
         ctx.insert("iter".into(), meclaw_core::serde_json::json!("0"));
@@ -1082,6 +1238,7 @@ mod hook_tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         };
         assert!(
             !evaluate_edge(&plain, &h).expect("edge takes").restore_ttl,
@@ -1125,6 +1282,7 @@ mod hook_tests {
             modifier: Some(m),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);

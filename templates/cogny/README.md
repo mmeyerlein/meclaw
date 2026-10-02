@@ -1,4 +1,4 @@
-# `cogny@5.5.0`
+# `cogny@5.6.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.3.0"},
+{"cell": {"type": "ref", "template": "curator@1.4.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.5.0` above it in its provenance chain.
+`cogny@5.6.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -675,7 +675,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.5.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.6.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -880,7 +880,7 @@ rides on `hop.route`.
 | `tool` | out | a tool call for a cell the parent wired; `hop.tool_name` says which one |
 | `recall` | out | a memory read the brain ASKED for, since 4.4.0: `hop.memory_call_id` names the tool call it belongs to and must come back on `in_bundle`, or the answer is filed as a turn's memory leg and the round waits for a result that never comes |
 | `error` | out | a failed inference on the brain. **Wire it** -- unwired it dead-letters, loudly |
-| `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
+| `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `identity_short`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
 | `in_pin` | in | a pin of another hive for the brain's window, `{pins: [{text, source, until?}], replace_sources?}`, handed to `./curator`'s own `in_pin` (`templates/curator/README.md`). Nothing answers it. Since GH #916 |
 | `sidecar` | out | one section of the block the core's answer carried, `hop.section` and `hop.turn_id` (the round) beside it, the body `{messages: [], section, payload}`: every section but `window`, `gap` and `memory`, which `./curator` takes, as a talky does. Since GH #916 |
 | `pack_ack` | out | the receipt `in_pack` answers with -- ONE per pack, not one per brain: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.2.0 |
@@ -894,7 +894,7 @@ rides on `hop.route`.
 
 **The door in the wall (`in_pack`, GH #458) moved to `curator`** with `5.2.0`
 ([#889](https://github.com/mmeyerlein/meclaw/issues/889)): the pack enters `./curator`, which
-holds the closed list `identity` / `persona` / `handover` / `instructions` in its ledger, hands
+holds the closed list `identity` / `identity_short` / `persona` / `handover` / `instructions` in its ledger, hands
 it to the brain with the next call and answers `pack_ack` once per pack; the lane and the
 mutation that opens it are in [`templates/talky/README.md`](../talky/README.md) § "The door in
 the wall".

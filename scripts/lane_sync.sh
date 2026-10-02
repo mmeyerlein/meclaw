@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# meclaw -- the transport of a gate onto a build host (a "lane").
+#
+#     scripts/lane_sync.sh files                          what the overlay sends (NUL-separated)
+#     scripts/lane_sync.sh digest                         the overlay hash of this tree
+#     scripts/lane_sync.sh push <ssh-target> <strand>     commit + overlay onto the host, prints `<rev> <hash>`
+#     scripts/lane_sync.sh run <ssh-target> <strand> <mode> <base> [gate.sh options]
+#     scripts/lane_sync.sh fetch <ssh-target> <strand> <dir>
+#     scripts/lane_sync.sh status <ssh-target>            one status word line for `strand.sh lanes status`
+#
+# `scripts/strand.sh gate --host <lane>` is the caller; nobody needs to run
+# this by hand. It lives apart from the kit because it is the one part that
+# talks to another machine, and the tests drive it through a fake `ssh` on
+# PATH (GH #934).
+#
+# THE LAYOUT ON THE HOST, under `${MECLAW_LANE_ROOT:-/srv/target}` (a tmpfs
+# on a build host, so everything below is gone after a reboot and the first
+# push carries the whole history again):
+#
+#     meclaw.git        a bare repository the strands push into
+#     wt/<strand>       one worktree per strand, checked out detached
+#     target/           ONE cargo target directory for all strands of the host
+#     runs/<strand>     receipt and station logs of the last run
+#
+# WHAT TRAVELS: exactly the tree a local gate would see. The commit travels
+# by `git push` -- the history the host needs for the merge base comes with
+# it. The uncommitted rest travels as an rsync overlay measured against
+# HEAD, not against the index: every staged or unstaged change to a tracked
+# file (`git diff --no-renames --name-only HEAD`), every untracked file that
+# is not ignored (`git ls-files -o --exclude-standard`), and every deletion,
+# staged or not (`--diff-filter=D`), is deleted there. The first cut listed
+# `git ls-files -m -o` / `-d`, which compare against the INDEX: after a
+# `git add` -- the normal state before a strand gates -- the host checked a
+# different tree than the local gate would have (review I1).
+#
+# WHAT NEVER LEAVES THIS MACHINE: a file whose NAME says secret --
+# `.env`, `.env.<anything>` except `*.example`, `vault.env`, `vault-pass*`,
+# `.netrc`, `.git-credentials`, `.cargo/credentials*` (`secret_name()`).
+# By name and nothing else: a path COMPONENT `vault` or `.env*` matched
+# tracked source (`src/vault/*.rs`, `templates/vault/...`) and kept it at its
+# committed state on the host (review I2). An untracked secret -- the `.env`
+# link a linked worktree carries -- is left out silently; it is not part of
+# the tree under test. A TRACKED secret is a collision: in HEAD it would
+# leave by `git push`, changed it would leave by the overlay, and leaving it
+# out would gate a different tree. Either way the push is refused with the
+# path, before anything reaches the host (exit 5). A tracked `*.example` is
+# a template without values and travels like any file.
+#
+# THE OVERLAY HASH. After the overlay, both sides hash the same list -- HEAD,
+# then per path its sha256 or `absent` -- and the push is refused when the
+# two differ (exit 5): no remote gate starts on a tree that is not the local
+# one. `push` prints the rev and that hash; the kit names it in its first line.
+#
+# Exit 0 = done. 2 = the host did not answer (the caller says
+# "unreachable"). 5 = refused here: a secret collision or a different tree
+# on the host (the caller names the path or the hashes). `run` exits with
+# the remote runner's code (0/1/2/4), and 255 when ssh itself lost the host.
+
+set -uo pipefail
+
+ROOT="${MECLAW_LANE_ROOT:-/srv/target}"
+SSH_OPTS=(-o BatchMode=yes -o "ConnectTimeout=${MECLAW_LANE_CONNECT_TIMEOUT:-10}")
+
+die() { echo "lane_sync: $*" >&2; exit 2; }
+
+q() { printf '%q' "$1"; }
+
+# A file that holds a secret, by its name. No word splitting and no glob
+# over the path (review M1): only `case` patterns on the string.
+secret_name() {
+    local base="${1##*/}"
+    case "$base" in
+        *.example) return 1 ;;
+        .env|.env.*|vault.env|vault-pass*|.netrc|.git-credentials) return 0 ;;
+    esac
+    case "/$1" in
+        */.cargo/credentials|*/.cargo/credentials.*) return 0 ;;
+    esac
+    return 1
+}
+
+# The lists, NUL-separated, paths from the top of the tree. `--no-renames`:
+# a rename is a deletion plus a new file, and both must reach the host.
+changed_tracked() { git diff --no-renames --name-only -z --diff-filter=d HEAD --; }
+deleted_tracked() { git diff --no-renames --name-only -z --diff-filter=D HEAD --; }
+untracked() { git ls-files -z -o --exclude-standard; }
+
+# Tracked secrets: in the commit (they would leave by the push) or changed
+# against it (they would leave by the overlay). One path per line.
+collisions() {
+    local f
+    { git ls-tree -r -z --name-only HEAD; changed_tracked; } | while IFS= read -r -d '' f; do
+        secret_name "$f" && printf '%s\n' "$f"
+    done | sort -u
+}
+
+overlay_files() {
+    local f
+    changed_tracked | while IFS= read -r -d '' f; do
+        secret_name "$f" || printf '%s\0' "$f"
+    done
+    untracked | while IFS= read -r -d '' f; do
+        secret_name "$f" || printf '%s\0' "$f"
+    done
+}
+
+deleted_files() { deleted_tracked; }
+
+# The overlay hash: run HERE and THERE over the same list on stdin
+# (overlay plus deletions, sorted), in the tree, by `bash -c`.
+# shellcheck disable=SC2016
+DIGEST='{ git rev-parse HEAD; while IFS= read -r -d "" f; do
+    if [ -L "$f" ]; then printf "link %s %s\n" "$f" "$(readlink -- "$f")"
+    elif [ -e "$f" ]; then sha256sum -- "$f"
+    else printf "absent  %s\n" "$f"; fi
+done; } | sha256sum | cut -c1-16'
+
+digest_list() {   # the list both sides hash
+    { overlay_files; deleted_files; } | sort -z -u
+}
+
+remote() {   # target, command string
+    local target="$1"; shift
+    # SC2029: the command string is built HERE on purpose, every value in it
+    # quoted with `q` -- the host runs exactly what this side composed.
+    # shellcheck disable=SC2029
+    ssh "${SSH_OPTS[@]}" "$target" "$*"
+}
+
+cmd_push() {
+    local target="$1" strand="$2" sha wt top
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || die "not a git repository"
+    cd "$top" || die "cannot enter $top"
+    sha=$(git rev-parse HEAD) || die "no HEAD to push"
+    wt="$ROOT/wt/$strand"
+
+    # Before anything reaches the host: no tracked secret (exit 5, with the
+    # paths). Fail closed -- never send it, never gate without it.
+    local hits
+    hits=$(collisions)
+    if [ -n "$hits" ]; then
+        echo "lane_sync: refused -- tracked secret file(s), they would leave this machine:" >&2
+        printf '  %s\n' "$hits" >&2
+        exit 5
+    fi
+
+    # The bare repository; a fresh host (tmpfs) has none.
+    remote "$target" "mkdir -p $(q "$ROOT/wt") && { test -d $(q "$ROOT/meclaw.git") || git init -q --bare $(q "$ROOT/meclaw.git"); }" \
+        || die "the host $target did not answer"
+    GIT_SSH_COMMAND="ssh ${SSH_OPTS[*]}" \
+        git push -q --force "$target:$ROOT/meclaw.git" "$sha:refs/heads/lane/$strand" \
+        || die "git push to $target failed"
+
+    # The worktree: checked out at the commit, cleaned of the last overlay.
+    # `git clean` without -x keeps the ignored files a run left behind; the
+    # target directory lives outside the worktree anyway.
+    remote "$target" "set -e
+        if git -C $(q "$wt") rev-parse --git-dir >/dev/null 2>&1; then
+            git -C $(q "$wt") checkout -q --force --detach $sha
+            git -C $(q "$wt") clean -fdq
+        else
+            rm -rf $(q "$wt")
+            git --git-dir=$(q "$ROOT/meclaw.git") worktree prune
+            git --git-dir=$(q "$ROOT/meclaw.git") worktree add -q --force --detach $(q "$wt") $sha
+        fi" >/dev/null || die "the checkout on $target failed"
+
+    # The overlay: what is not committed yet.
+    local list
+    list=$(mktemp) || die "no temp file"
+    overlay_files >"$list"
+    if [ -s "$list" ]; then
+        # `--checksum`: rsync's quick check (size + mtime) skipped a change
+        # of equal size when the host's checkout fell into the same second
+        # as the local write -- measured on the first build host, the
+        # overlay hash below refused it. The overlay is small; compare content.
+        rsync -a --checksum --from0 --files-from="$list" -e "ssh ${SSH_OPTS[*]}" ./ "$target:$wt/" \
+            || { rm -f "$list"; die "the overlay to $target failed"; }
+    fi
+    deleted_files >"$list"
+    if [ -s "$list" ]; then
+        remote "$target" "cd $(q "$wt") && xargs -0 rm -f --" <"$list" \
+            || { rm -f "$list"; die "the deletions on $target failed"; }
+    fi
+    # The same tree on both sides, or no remote gate (exit 5).
+    local here there
+    digest_list >"$list"
+    here=$(bash -c "$DIGEST" <"$list")
+    there=$(remote "$target" "cd $(q "$wt") && bash -c $(q "$DIGEST")" <"$list") \
+        || { rm -f "$list"; die "the overlay hash on $target failed"; }
+    rm -f "$list"
+    if [ -z "$here" ] || [ "$here" != "$there" ]; then
+        echo "lane_sync: refused -- the overlay on $target is not this tree (here ${here:-?}, there ${there:-?})" >&2
+        exit 5
+    fi
+    printf '%s %s\n' "$sha" "$here"
+}
+
+cmd_run() {
+    local target="$1" strand="$2" mode="$3" base="$4"; shift 4
+    local wt="$ROOT/wt/$strand" runs="$ROOT/runs/$strand" args="" a
+    for a in "$@"; do args+=" $(q "$a")"; done
+    # BLOCKING: the caller waits for the verdict like for a local run. A
+    # non-interactive ssh shell does not read the profile that puts rustup's
+    # `~/.cargo/bin` on PATH, so the command puts it there itself (measured on
+    # the first build host: `cargo: command not found`).
+    # shellcheck disable=SC2029
+    ssh "${SSH_OPTS[@]}" -o ServerAliveInterval=60 "$target" \
+        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && rm -rf $(q "$runs") && mkdir -p $(q "$runs") && CARGO_TARGET_DIR=$(q "$ROOT/target") scripts/gate.sh $(q "$mode") --lane --base $(q "$base") --log-dir $(q "$runs")$args"
+}
+
+cmd_fetch() {
+    local target="$1" strand="$2" dest="$3"
+    mkdir -p "$dest" || die "cannot create $dest"
+    rsync -a -e "ssh ${SSH_OPTS[*]}" "$target:$ROOT/runs/$strand/" "$dest/" \
+        || die "could not fetch the receipt from $target"
+}
+
+cmd_status() {
+    local target="$1" out
+    # `bare` = the number of strand refs the host holds, `none` without a repo.
+    out=$(remote "$target" "df -BG --output=avail $(q "$ROOT") 2>/dev/null | tail -1 | tr -dc 0-9; echo; if test -d $(q "$ROOT/meclaw.git"); then git --git-dir=$(q "$ROOT/meclaw.git") for-each-ref refs/heads/lane | wc -l; else echo none; fi" 2>/dev/null) \
+        || { echo "unreachable"; return 0; }
+    local free bare
+    free=$(printf '%s\n' "$out" | sed -n 1p)
+    bare=$(printf '%s\n' "$out" | sed -n 2p | tr -d ' ')
+    [ "$bare" = none ] || bare="$bare refs"
+    printf 'reachable  free %sG  bare %s\n' "${free:-?}" "$bare"
+}
+
+[ $# -ge 1 ] || die "expected files|digest|push|run|fetch|status"
+sub="$1"; shift
+case "$sub" in
+    files)  cd "$(git rev-parse --show-toplevel 2>/dev/null)" || die "not a git repository"
+            overlay_files ;;
+    digest) cd "$(git rev-parse --show-toplevel 2>/dev/null)" || die "not a git repository"
+            digest_list | bash -c "$DIGEST" ;;
+    push)   [ $# -eq 2 ] || die "push <ssh-target> <strand>"; cmd_push "$@" ;;
+    run)    [ $# -ge 4 ] || die "run <ssh-target> <strand> <mode> <base> [options]"; cmd_run "$@" ;;
+    fetch)  [ $# -eq 3 ] || die "fetch <ssh-target> <strand> <dir>"; cmd_fetch "$@" ;;
+    status) [ $# -eq 1 ] || die "status <ssh-target>"; cmd_status "$@" ;;
+    *) die "unknown subcommand: $sub" ;;
+esac

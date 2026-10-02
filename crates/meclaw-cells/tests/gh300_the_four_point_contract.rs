@@ -297,16 +297,18 @@ fn run_pass(store: &mut Store, rows: &dyn Fn(&str) -> Value, verdict: &Value) ->
     panic!("the close pass did not terminate within 40 round trips: {ops:?}");
 }
 
-/// A session of two turns, no facts, no topics, no exceptions.
+/// A session of two turns, no facts, no topics, no exceptions. Every row
+/// carries the one audience of the session (GH #933: the close pass reads per
+/// round, and a row without an audience is in no round's prompt).
 fn plain(table: &str) -> Value {
     match table {
         "episodes" => json!([
             {"id": "e-2", "session_id": SESSION, "sender": "assistant", "speaker": "assistant",
              "content": "blue it is", "happened_at": "2026-08-21T10:00:10Z",
-             "recorded_at": "2026-08-21T10:00:11Z"},
+             "recorded_at": "2026-08-21T10:00:11Z", "audience_set": AUDIENCE},
             {"id": "e-1", "session_id": SESSION, "sender": "user", "speaker": "user",
              "content": "my favourite colour is blue", "happened_at": "2026-08-21T10:00:00Z",
-             "recorded_at": "2026-08-21T10:00:01Z"},
+             "recorded_at": "2026-08-21T10:00:01Z", "audience_set": AUDIENCE},
         ]),
         _ => json!([]),
     }
@@ -318,7 +320,8 @@ fn fact(id: &str, episode: &str, subject: &str, predicate: &str, claim: &str) ->
            "canonical_subject": subject, "predicate": predicate,
            "canonical_predicate": predicate, "claim": claim, "canonical_claim": claim,
            "fact_kind": "world", "confidence": 70,
-           "valid_from": "2026-08-21T10:00:00Z", "recorded_at": "2026-08-21T10:00:05Z"})
+           "valid_from": "2026-08-21T10:00:00Z", "recorded_at": "2026-08-21T10:00:05Z",
+           "audience_set": AUDIENCE})
 }
 
 /// The plain session plus two open facts.
@@ -427,7 +430,8 @@ fn a_sharpening_and_a_correction_both_supersede_the_record_they_name() {
 fn a_closed_topic_is_a_guarded_update_that_says_who_closed_it() {
     let rows = |table: &str| match table {
         "topics" => json!([{"id": "t-1", "name": "the sailing trip", "session_id": SESSION,
-                            "opened_episode_id": "e-1", "opened_at": "2026-08-21T10:00:00Z"}]),
+                            "opened_episode_id": "e-1", "opened_at": "2026-08-21T10:00:00Z",
+                            "audience_set": AUDIENCE}]),
         other => plain(other),
     };
     let verdict = json!({"close_topics": [{"id": "t-1", "ended_episode_id": "e-2"}]});
@@ -565,7 +569,7 @@ fn the_prompt_states_the_four_points_and_shows_what_may_be_referenced() {
                                         "session_id": SESSION, "status": "pending",
                                         "enqueued_at": "2026-08-21T10:00:11Z"}]),
         "topics" => json!([{"id": "t-1", "name": "colours", "session_id": SESSION,
-                            "opened_episode_id": "e-1"}]),
+                            "opened_episode_id": "e-1", "audience_set": AUDIENCE}]),
         other => with_facts(other),
     };
     let pass = run_pass(&mut Store::new(), &rows, &json!({"nothing_to_add": true}));
@@ -641,7 +645,8 @@ fn a_second_close_of_one_session_renders_its_own_sets() {
         "episodes" => json!([{"id": "e-9", "session_id": SESSION, "sender": "user",
                               "speaker": "user", "content": "a later turn",
                               "happened_at": "2026-08-21T11:00:00Z",
-                              "recorded_at": "2026-08-21T11:00:01Z"}]),
+                              "recorded_at": "2026-08-21T11:00:01Z",
+                              "audience_set": AUDIENCE}]),
         _ => json!([]),
     };
     let pass = run_pass(&mut store, &second, &json!({"nothing_to_add": true}));

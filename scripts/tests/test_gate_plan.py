@@ -23,7 +23,11 @@ import gate_plan as gp  # noqa: E402
 
 
 def mini_repo(case):
-    """A throw-away tree with the four test sources the grep rules need."""
+    """A throw-away tree with the four test sources the grep rules need.
+
+    It has no scenario-class target, so a `tests` scope over it subtracts
+    nothing (`gate_plan.scenario_for`, GH #934).
+    """
     tmp = tempfile.TemporaryDirectory()
     case.addCleanup(tmp.cleanup)
     root = pathlib.Path(tmp.name)
@@ -82,7 +86,7 @@ class Classify(unittest.TestCase):
         self.assertIn("tests", st)
         self.assertEqual(
             st["tests"].scope,
-            "binary_id(=meclaw-cells::reads_the_doc) - (%s)" % gp.SCENARIO)
+            "binary_id(=meclaw-cells::reads_the_doc)")
         self.assertTrue(st["tests"].cargo)
 
     def test_rule_8_covers_every_path_outside_crates(self):
@@ -113,7 +117,8 @@ class Classify(unittest.TestCase):
 
     def test_rust_src_in_colony_runs_rdeps_minus_scenario(self):
         st = by_name(gp.plan(["crates/meclaw-colony/src/route.rs"], "strand", repo=None))
-        self.assertEqual(st["tests"].scope, "rdeps(meclaw-colony) - (%s)" % gp.SCENARIO)
+        self.assertEqual(st["tests"].scope,
+                         "rdeps(meclaw-colony) - (%s)" % gp.scenario_for(None))
         self.assertIn("-p", st["clippy"].cmds[0])
         self.assertIn("meclaw-colony", st["clippy"].cmds[0])
         self.assertIn("unwrap-budget", st)
@@ -143,8 +148,7 @@ class Classify(unittest.TestCase):
             ["crates/meclaw-cells/tests/mock_openai.rs"], "strand", repo=repo))
         self.assertEqual(
             st["tests"].scope,
-            "binary_id(=meclaw-cells::gh3_llm) + binary_id(=meclaw-cells::mock_openai)"
-            " - (%s)" % gp.SCENARIO)
+            "binary_id(=meclaw-cells::gh3_llm) + binary_id(=meclaw-cells::mock_openai)")
 
     def test_a_deleted_test_file_emits_no_binary_id(self):
         """nextest HARD-ERRORS on a `binary_id(=..)` that matches no binary.
@@ -167,7 +171,7 @@ class Classify(unittest.TestCase):
              "crates/meclaw-cells/tests/gh2_all.rs"], "strand", repo=repo))
         self.assertEqual(
             st["tests"].scope,
-            "binary_id(=meclaw-cells::gh2_all) - (%s)" % gp.SCENARIO)
+            "binary_id(=meclaw-cells::gh2_all)")
 
     def test_a_directory_test_target_counts_through_its_main_rs(self):
         repo = mini_repo(self)
@@ -179,7 +183,7 @@ class Classify(unittest.TestCase):
             ["crates/meclaw-cells/tests/suite/part.rs"], "strand", repo=repo))
         self.assertEqual(
             st["tests"].scope,
-            "binary_id(=meclaw-cells::suite) - (%s)" % gp.SCENARIO)
+            "binary_id(=meclaw-cells::suite)")
 
     def test_a_directory_without_a_main_rs_is_no_binary(self):
         repo = mini_repo(self)
@@ -194,8 +198,7 @@ class Classify(unittest.TestCase):
             ["templates/memory-hive/store/config.json"], "strand", repo=repo))
         self.assertEqual(
             st["tests"].scope,
-            "binary_id(=meclaw-cells::gh1_uses_hive) + binary_id(=meclaw-cells::gh2_all)"
-            " - (%s)" % gp.SCENARIO)
+            "binary_id(=meclaw-cells::gh1_uses_hive) + binary_id(=meclaw-cells::gh2_all)")
         self.assertIn("scenarios:memory", st)
         self.assertIn("recall-harness", st)
         self.assertIn("catalogue", st)
@@ -213,7 +216,7 @@ class Classify(unittest.TestCase):
         self.assertNotIn("recall-harness", st)
         self.assertEqual(
             st["tests"].scope,
-            "binary_id(=meclaw-cells::gh2_all) - (%s)" % gp.SCENARIO)
+            "binary_id(=meclaw-cells::gh2_all)")
 
     def test_display_scenarios_are_a_station_that_travels(self):
         """The pins of the one normative display document (development-rules § 10).
@@ -478,12 +481,12 @@ class Classify(unittest.TestCase):
         st = by_name(gp.plan(["examples/organism/grow-1.json"], "strand", repo=repo))
         self.assertEqual(
             st["tests"].scope,
-            "binary_id(=meclaw-cells::gh4_example) - (%s)" % gp.SCENARIO)
+            "binary_id(=meclaw-cells::gh4_example)")
         self.assertIn("scenarios:builder", st)
 
     def test_workspace_class_runs_all(self):
         st = by_name(gp.plan(["Cargo.lock"], "strand", repo=None))
-        self.assertEqual(st["tests"].scope, "all() - (%s)" % gp.SCENARIO)
+        self.assertEqual(st["tests"].scope, "all() - (%s)" % gp.scenario_for(None))
         self.assertIn("--workspace", st["clippy"].cmds[0])
         self.assertIn("deny", st)
 
@@ -1671,7 +1674,7 @@ class Cli(unittest.TestCase):
 
     def test_print_scenario(self):
         r = self.run_cli("--print", "scenario")
-        self.assertEqual(r.stdout.strip(), gp.SCENARIO)
+        self.assertEqual(r.stdout.strip(), gp.scenario_for(None))
 
     def test_print_ignored(self):
         """`scripts/gate.sh` subtracts these before it calls a tree dirty."""
@@ -1728,6 +1731,156 @@ class LiveBinariesAreScenarioTest(unittest.TestCase):
         for name in self.live_binaries():
             with self.subTest(binary=name):
                 self.assertIn("binary(/^%s$/)" % name, gp.SCENARIO)
+
+
+def scenario_repo(case, stems):
+    """A throw-away tree whose test targets are exactly `stems` (plus `gh2_all`)."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    root = pathlib.Path(tmp.name)
+    tests = root / "crates" / "meclaw-cells" / "tests"
+    tests.mkdir(parents=True)
+    (root / "crates" / "meclaw-cells" / "Cargo.toml").write_text(
+        '[package]\nname = "meclaw-cells"\n', encoding="utf-8")
+    for stem in list(stems) + ["gh2_all"]:
+        (tests / (stem + ".rs")).write_text("fn main() {}\n", encoding="utf-8")
+    return str(root)
+
+
+class ScenarioFilterFollowsTheTree(unittest.TestCase):
+    """GH #934: a scenario operator for a binary the tree does not have.
+
+    nextest refuses a filterset whose `binary(...)` operator matches nothing
+    ("operator didn't match any binary IDs"), and that takes the whole `tests`
+    station down. A public clone has no `slack_live.rs`, so the subtraction
+    `- (... binary(/^slack_live$/) ...)` broke every `tests` station there. The
+    resolver now names only the operators that match a test target in the tree
+    -- every entry of the list, not only `slack_live`.
+    """
+
+    def test_a_tree_without_slack_live_plans_no_operator_for_it(self):
+        repo = scenario_repo(self, ["phase_7_demo"])
+        expr = gp.scenario_for(repo)
+        self.assertNotIn("slack_live", expr)
+        self.assertIn("binary(/_demo$/)", expr)
+        self.assertNotIn("binary(/e2e/)", expr)
+
+    def test_a_tree_with_slack_live_plans_it(self):
+        repo = scenario_repo(self, ["slack_live", "proxy_edge_e2e"])
+        expr = gp.scenario_for(repo)
+        self.assertIn("binary(/^slack_live$/)", expr)
+        self.assertIn("binary(/e2e/)", expr)
+        self.assertNotIn("_demo", expr)
+
+    def test_a_directory_target_counts(self):
+        repo = scenario_repo(self, [])
+        d = pathlib.Path(repo) / "crates" / "meclaw-cells" / "tests" / "workshop_scenario"
+        d.mkdir()
+        (d / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        self.assertEqual(gp.scenario_for(repo), "binary(/^workshop_scenario$/)")
+
+    def test_the_real_tree_keeps_the_whole_class(self):
+        """Every operator of the class matches a target of the full tree.
+
+        Presence guard: the public clone ships without `slack_live.rs`, and
+        there the resolver drops that operator on purpose (the two tests
+        above lock both directions on throw-away trees).
+        """
+        if not (REPO / "crates" / "meclaw-cells" / "tests" / "slack_live.rs").exists():
+            self.skipTest("slack_live.rs not in this tree (public clone)")
+        self.assertEqual(gp.scenario_for(None), gp.SCENARIO)
+
+    def test_the_tests_scope_subtracts_only_what_exists(self):
+        repo = scenario_repo(self, ["slack_live"])
+        st = by_name(gp.plan(["crates/meclaw-cells/tests/gh2_all.rs"], "strand", repo=repo))
+        self.assertEqual(st["tests"].scope,
+                         "binary_id(=meclaw-cells::gh2_all) - (binary(/^slack_live$/))")
+
+    def test_no_scenario_target_means_no_subtraction(self):
+        repo = scenario_repo(self, [])
+        st = by_name(gp.plan(["crates/meclaw-cells/tests/gh2_all.rs"], "strand", repo=repo))
+        self.assertEqual(st["tests"].scope, "binary_id(=meclaw-cells::gh2_all)")
+
+    def test_print_scenario_reads_the_named_tree(self):
+        repo = scenario_repo(self, ["slack_live"])
+        r = subprocess.run([sys.executable, str(SCRIPTS / "gate_plan.py"),
+                            "--print", "scenario", "--repo", repo],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(r.stdout.strip(), "binary(/^slack_live$/)")
+
+    def test_print_scenario_of_an_empty_class_is_a_valid_filterset(self):
+        """`test-tier.sh` builds `all() - ( <this> )`; an empty string is no filterset."""
+        repo = scenario_repo(self, [])
+        r = subprocess.run([sys.executable, str(SCRIPTS / "gate_plan.py"),
+                            "--print", "scenario", "--repo", repo],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(r.stdout.strip(), "none()")
+
+
+class EnvStationsAreMarked(unittest.TestCase):
+    """GH #934: the stations whose runner reads `<repo>/.env`.
+
+    A build host gets no `.env` (it never leaves the owner's machine), so
+    `gate.sh --lane` skips these and the kit runs them locally afterwards. The
+    mark lives here, beside the stations, and nowhere else.
+    """
+
+    def test_the_marked_stations(self):
+        self.assertEqual(set(gp.ENV_STATIONS),
+                         {"scenarios:memory", "scenarios:builder", "guide-selftest"})
+
+    def test_every_marked_station_is_a_station(self):
+        for name in gp.ENV_STATIONS:
+            with self.subTest(station=name):
+                self.assertIn(name, gp.STATION_ORDER)
+
+    def test_print_env_stations(self):
+        r = subprocess.run([sys.executable, str(SCRIPTS / "gate_plan.py"),
+                            "--print", "env-stations"],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(r.stdout.split(), list(gp.ENV_STATIONS))
+
+    def test_json_rows_carry_the_mark(self):
+        """Table: a release over a docs diff plans all three, display unmarked."""
+        out = gp.to_json(["docs/a.md"], "release", None)
+        env = {row["name"]: row.get("env", False) for row in out["stations"]}
+        for name in ("scenarios:memory", "scenarios:builder", "guide-selftest"):
+            with self.subTest(station=name):
+                self.assertIs(env[name], True)
+        self.assertIs(env["scenarios:display"], False)
+        self.assertIs(env.get("tests", False), False)
+
+    def test_a_strand_over_a_script_diff_plans_no_env_station(self):
+        """The normal case of a lane: nothing to run locally afterwards."""
+        out = gp.to_json(["scripts/strand.sh"], "strand", None)
+        self.assertFalse([r["name"] for r in out["stations"] if r.get("env")])
+
+    # --- OR-S3-96: what else a lane lacks. A build host has no `node` and no
+    # `github-main` ref either, so those stations run here as well -- the same
+    # list, one reason per station.
+
+    def test_the_lane_local_stations_and_their_reasons(self):
+        self.assertEqual(dict(gp.LANE_LOCAL), {
+            "scenarios:memory": "no-env", "scenarios:builder": "no-env",
+            "guide-selftest": "no-env", "display-lab": "no-node",
+            "export-audit": "no-ref"})
+
+    def test_every_env_station_is_lane_local_with_no_env(self):
+        for name in gp.ENV_STATIONS:
+            with self.subTest(station=name):
+                self.assertEqual("no-env", gp.LANE_LOCAL[name])
+
+    def test_every_lane_local_station_is_a_station(self):
+        for name in gp.LANE_LOCAL:
+            with self.subTest(station=name):
+                self.assertIn(name, gp.STATION_ORDER)
+
+    def test_print_lane_local(self):
+        r = subprocess.run([sys.executable, str(SCRIPTS / "gate_plan.py"),
+                            "--print", "lane-local"],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual([l.split("\t") for l in r.stdout.splitlines()],
+                         [[n, why] for n, why in gp.LANE_LOCAL.items()])
 
 
 if __name__ == "__main__":

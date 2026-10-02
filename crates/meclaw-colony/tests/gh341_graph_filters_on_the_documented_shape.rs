@@ -64,6 +64,7 @@ fn two_hive_fixture() -> (std::collections::HashMap<Path, RegistryEntry>, EdgeTa
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         });
     }
     (registry, edges)

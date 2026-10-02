@@ -230,7 +230,10 @@ pub fn render_where_qualified(
     let mut clauses = Vec::with_capacity(filters.len());
     let mut vals = Vec::new();
     for f in filters {
-        let col = render_col_ref(cat, &f.col, qualify)?;
+        let col = match f.pred {
+            Predicate::Covers(_) => render_covers_operand(cat, &f.col)?,
+            _ => render_col_ref(cat, &f.col, qualify)?,
+        };
         clauses.push(render_predicate(&col, &f.pred, &mut vals));
     }
     Ok((format!(" WHERE {}", clauses.join(" AND ")), vals))
@@ -271,6 +274,30 @@ pub fn render_json_path(ident: &str, path: &JsonPath) -> String {
     format!("json_extract(\"{ident}\", '{}')", path.as_str())
 }
 
+/// The operand of a `covers` predicate (GH #932) — differs from
+/// [`render_col_ref`] in two ways, both load-bearing:
+///
+/// 1. it is ALWAYS table-qualified, also in `select`/`update`/`delete`: the
+///    predicate reads the value inside `json_each(…)` subqueries, and
+///    `json_each` has its own columns (`id`, `key`, `value`, `type`, …) — an
+///    unqualified `"id"` there would silently bind to the subquery's `id`;
+/// 2. a JSON path is read with `->`, which yields the JSON TEXT at the path
+///    (a string comes back quoted), not with `json_extract`, which unwraps a
+///    string — a stored string `"[\"e\"]"` would otherwise pass as an array.
+fn render_covers_operand(cat: &Catalog, col: &ColRef) -> Result<String, CatalogError> {
+    let ident = qualified(cat, col.column(), true)?;
+    Ok(match col {
+        ColRef::Column(_) => format!("\"{ident}\""),
+        // `->` raises `malformed JSON` on a column that is not JSON at all,
+        // before the predicate's own guard sees anything; the column-level
+        // guard turns that row into NULL, i.e. false (review I-1).
+        ColRef::JsonPath { path, .. } => format!(
+            "(CASE WHEN json_valid(\"{ident}\") THEN \"{ident}\" -> '{}' END)",
+            path.as_str()
+        ),
+    })
+}
+
 /// `operand` is already rendered (a quoted column or a `json_extract(…)`).
 fn render_predicate(operand: &str, pred: &Predicate, vals: &mut Vec<SqlValue>) -> String {
     match pred {
@@ -285,6 +312,22 @@ fn render_predicate(operand: &str, pred: &Predicate, vals: &mut Vec<SqlValue>) -
         }
         Predicate::IsNull(true) => format!("{operand} IS NULL"),
         Predicate::IsNull(false) => format!("{operand} IS NOT NULL"),
+        // One condition for both halves of the rule: the row array holds the
+        // element "*", or no round element is missing from its string
+        // elements. The CASE guard comes first so `json_each` never sees a
+        // NULL, a non-JSON text or a non-array: a broken row value is false,
+        // never an error. Membership goes through `json_each`, not a string
+        // match, so neither order nor a "*" inside a longer element counts.
+        Predicate::Covers(round) => {
+            vals.push(SqlValue::Text(round.clone()));
+            format!(
+                "(CASE WHEN json_valid({operand}) AND json_type({operand}) = 'array' THEN \
+                 (EXISTS (SELECT 1 FROM json_each({operand}) WHERE type = 'text' AND value = '*') \
+                 OR NOT EXISTS (SELECT 1 FROM json_each(?) WHERE value NOT IN \
+                 (SELECT value FROM json_each({operand}) WHERE type = 'text'))) \
+                 ELSE 0 END)"
+            )
+        }
         Predicate::OrNull(inner) => {
             format!(
                 "({} OR {operand} IS NULL)",
@@ -348,6 +391,52 @@ mod tests {
             render_where(&f4, &cat).unwrap().0,
             " WHERE (\"a\" IN (?,?) OR \"a\" IS NULL)"
         );
+    }
+
+    /// GH #932: `covers` renders exactly one placeholder for the whole round,
+    /// the operand is table-qualified (also outside `search`), a JSON path is
+    /// read with `->`, and no round text reaches the statement.
+    #[test]
+    fn covers_binds_the_round_as_one_parameter() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute("CREATE TABLE f (id TEXT, aud TEXT, doc TEXT)", [])
+            .unwrap();
+        let cat = cat(&c, "f");
+        for round in [json!(["e", "a"]), json!(["it's", "50%", "say \"hi\"", "*"])] {
+            let f = parse_filters(Some(&json!({"aud": {"covers": round.clone()}}))).unwrap();
+            for qualify in [false, true] {
+                let (clause, vals) = render_where_qualified(&f, &cat, qualify).unwrap();
+                assert_eq!(clause.matches('?').count(), 1, "{clause}");
+                assert!(clause.contains("json_each(\"f\".\"aud\")"), "{clause}");
+                assert!(!clause.contains("json_each(\"aud\")"), "{clause}");
+                for needle in ["it's", "50%", "hi", "\"e\""] {
+                    assert!(!clause.contains(needle), "{needle} leaked into {clause}");
+                }
+                assert_eq!(vals.len(), 1);
+                assert_eq!(vals[0], SqlValue::Text(round.to_string()));
+            }
+            // The rendered statement is valid SQL and runs against the table.
+            let (clause, vals) = render_where(&f, &cat).unwrap();
+            let n: i64 = c
+                .query_row(
+                    &format!("SELECT count(*) FROM \"f\"{clause}"),
+                    rusqlite::params_from_iter(vals),
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0);
+        }
+        let f = parse_filters(Some(&json!({"doc$.aud": {"covers": ["e"]}, "id": "x"}))).unwrap();
+        let (clause, vals) = render_where(&f, &cat).unwrap();
+        assert!(
+            clause.contains(
+                "(CASE WHEN json_valid(\"f\".\"doc\") THEN \"f\".\"doc\" -> '$.aud' END)"
+            ),
+            "{clause}"
+        );
+        assert!(!clause.contains("json_extract"), "{clause}");
+        assert!(clause.ends_with(" AND \"id\" = ?"), "{clause}");
+        assert_eq!(vals.len(), 2);
     }
 
     /// The traversal CTE, pinned character for character. Everything in the

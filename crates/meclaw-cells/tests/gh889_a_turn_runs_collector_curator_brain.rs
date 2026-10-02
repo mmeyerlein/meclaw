@@ -28,8 +28,10 @@
 //!    lane gets one message per participant turn -- the opening `user` turn and
 //!    the final `assistant` answer; the tool call and its result are never
 //!    turns -- and its store holds exactly those two `episodes` rows under
-//!    `<session_id>#0` and `<session_id>#1`. That is the `turn_write` contract
-//!    of `collector@4.4.1`, carried over word for word: one message per turn.
+//!    `<session_id>#<tag>-0` and `<session_id>#<tag>-1`, `tag` the round's
+//!    (GH #932: a per-round index, so the id no longer counts other rounds'
+//!    turns). That is the `turn_write` contract of `collector@4.4.1`, one
+//!    message per turn, with the id form GH #932 gave it.
 //! 4. **cogny remembers nothing.** Its curator ships `writer.turn_write "0"`
 //!    (OR-KX-V3; before, every consult turn left a `turn_write` nobody drained),
 //!    and no message on `turn_write` travels anywhere in the run.
@@ -826,6 +828,24 @@ fn rows(db: &std::path::Path, sql: &str) -> Vec<Vec<String>> {
     .expect("rows")
 }
 
+/// `hop.turn_id` of an episode as the curator writer stamps it (GH #932,
+/// OR-S3.K.1): `<session>#<tag>-<index>`, `tag` the first 8 hex of sha256
+/// over the round in its canonical form (a JSON array, sorted, no duplicates,
+/// no whitespace -- the writer's `audience_of`).
+fn curator_turn_id(session: &str, round: &str, index: u32) -> String {
+    use sha2::{Digest, Sha256};
+    let mut names: Vec<String> = meclaw_core::serde_json::from_str(round).expect("a round");
+    names.sort();
+    names.dedup();
+    let canonical = meclaw_core::serde_json::to_string(&names).expect("serialise");
+    let tag: String = Sha256::digest(canonical.as_bytes())
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{session}#{tag}-{index}")
+}
+
 fn episodes(db: &std::path::Path) -> Vec<Vec<String>> {
     rows(
         db,
@@ -1075,12 +1095,19 @@ async fn a_talky_turn_runs_collector_curator_brain_and_writes_one_episode_per_tu
         "both episodes belong to the one session of the turn: {eps:#?}"
     );
     let by_turn: BTreeMap<String, &Vec<String>> = eps.iter().map(|e| (e[0].clone(), e)).collect();
-    let (first, second) = (format!("{session}#0"), format!("{session}#1"));
+    // GH #932 (OR-S3.K.1): the curator writer's id is `<session>#<tag>-<index>`,
+    // `tag` the first 8 hex of sha256 over the canonical round, the index
+    // counted per (session, round) -- `<session>#<index>` over all rounds let
+    // a round count the turns it was not allowed to see.
+    let (first, second) = (
+        curator_turn_id(&session, AUDIENCE, 0),
+        curator_turn_id(&session, AUDIENCE, 1),
+    );
     assert_eq!(
         by_turn.keys().cloned().collect::<Vec<_>>(),
         vec![first.clone(), second.clone()],
-        "each turn under its own deterministic `<session_id>#<index>` and none twice \
-         (the `turn_write` contract of collector@4.4.1): {eps:#?}"
+        "each turn under its own deterministic `<session_id>#<tag>-<index>` and none \
+         twice (the `turn_write` contract of collector@4.4.1, GH #932): {eps:#?}"
     );
     let (user, assistant) = (by_turn[&first], by_turn[&second]);
     assert_eq!(user[2], "user", "{user:?}");
@@ -1319,7 +1346,7 @@ fn the_talky_curator_renders_the_nothing_form_its_splitter_cuts() {
     assert!(!form.is_empty(), "talky's splitter speaks a sidecar");
     let curator = read_json(&repo("templates/talky/curator/config.json"));
     assert_eq!(
-        curator["cell"]["template"], "curator@1.3.0",
+        curator["cell"]["template"], "curator@1.4.0",
         "the ref this road boots: {curator}"
     );
     assert_eq!(

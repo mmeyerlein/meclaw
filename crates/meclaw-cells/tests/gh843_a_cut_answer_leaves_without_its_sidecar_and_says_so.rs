@@ -74,6 +74,7 @@ fn table(base: &str, rel: &str) -> EdgeTable {
             }),
             is_default: spec.is_default,
             lane: spec.lane.clone(),
+            tap: spec.tap,
         });
     }
     t

@@ -1,0 +1,41 @@
+{
+  "header": {
+    "audience": "agent:alpha",
+    "carry": "",
+    "channel": "peer-friend",
+    "phase": "",
+    "route": "answer",
+    "slots": "[\"identity\"]",
+    "subject": "peer:colA/org1/jonas/-",
+    "subscriber": ""
+  },
+  "messages": [
+    {
+      "id": "call-935",
+      "origin": "tool",
+      "text": "affinity brief on Jonas Berg (person) for agent:alpha: slots identity, trust known (2), 0 relation(s)\n{\"identity\": {\"kind\": \"person\", \"motivations\": {\"core_drive\": \"keep the choir singing\"}, \"names\": {\"first\": \"Jonas\", \"last\": \"Berg\", \"middle\": \"Peter\", \"nickname\": \"Jo\"}}}",
+      "type": "tool_result"
+    }
+  ],
+  "system": {
+    "identity": {
+      "kind": "person",
+      "motivations": {
+        "core_drive": "keep the choir singing"
+      },
+      "names": {
+        "first": "Jonas",
+        "last": "Berg",
+        "middle": "Peter",
+        "nickname": "Jo"
+      },
+      "text": "affinity brief on Jonas Berg (person) -- identity\nkind: person\nmotivations.core_drive: keep the choir singing\nnames.first: Jonas\nnames.last: Berg\nnames.middle: Peter\nnames.nickname: Jo"
+    }
+  },
+  "who": {
+    "identity": "colA/org1/jonas/-",
+    "known": true,
+    "name": "Jonas Berg",
+    "ref": "7dc04c9d"
+  }
+}

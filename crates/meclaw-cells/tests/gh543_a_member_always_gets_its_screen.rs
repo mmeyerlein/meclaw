@@ -366,6 +366,7 @@ fn table_of(decl: &Value, container: &str) -> EdgeTable {
             modifier: None,
             is_default: e["default"].as_bool().unwrap_or(false),
             lane: None,
+            tap: false,
         });
     }
     t

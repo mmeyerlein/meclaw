@@ -2244,6 +2244,7 @@ locks. Pinned by `gh929_every_restoring_edge_sits_on_a_seam` (the table) and
     regular edges.
   - A hive's `{"from": "."}` out-edge may be a default too. It then consumes the traffic that would
     otherwise dead-letter as `hive_no_route`.
+  - `tap: true` (GH #937) marks a passive edge — it fires beside the sender's other edges, never counts when a sender's default edges are dropped for a matching regular edge, and may be neither `default` nor `restore_ttl`.
 
 - On fan-out (one output, N edges) colony copies the `context` identically into each of the N
   produced messages; the cell never touches `context`. Branch-specific content lives in the `hop`,

@@ -85,6 +85,13 @@ pub enum Predicate {
     /// in-list — never another `OrNull` and never `IsNull` (parse-enforced),
     /// because both would be semantically empty.
     OrNull(Box<Predicate>),
+    /// The audience set rule (GH #932): true exactly when the row value is a
+    /// JSON array that contains the element `"*"` or every element of the
+    /// round. NULL, a non-array, an empty array and a value that is not JSON
+    /// are false — never an error. The round is the parse-checked array
+    /// serialized as JSON text and bound as ONE parameter, never formatted
+    /// into the statement.
+    Covers(String),
 }
 
 /// Sort direction of an `order_by` term — a closed set. The keyword is rendered

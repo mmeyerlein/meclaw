@@ -369,8 +369,14 @@ fn each_result_set_is_parked_before_the_next_read_leaves() {
     }
     kinds.sort_unstable();
     assert_eq!(kinds, ["exceptions", "facts", "topics", "turns"]);
-    // And the meet: the last op reads the four back under that one key.
-    let meet = ops.last().expect("a non-empty chain");
+    // And the meet: the last READ takes the four back under that one key. Since
+    // GH #933 an empty session (no round to ask) goes straight to the apply, so
+    // the sweep write may follow the meet -- but no further read does.
+    let meet = ops
+        .iter()
+        .rev()
+        .find(|a| a["operation"] == "select")
+        .expect("a non-empty chain");
     assert_eq!(meet["operation"], "select");
     assert_eq!(meet["table"], "scratch");
     assert_eq!(meet["where"]["key"], key);

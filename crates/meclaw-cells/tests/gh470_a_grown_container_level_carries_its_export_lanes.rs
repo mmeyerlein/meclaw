@@ -303,6 +303,7 @@ fn container_table(edges: &[Value]) -> meclaw_colony::edge_table::EdgeTable {
             modifier: None,
             is_default: e["default"].as_bool().unwrap_or(false),
             lane: None,
+            tap: false,
         });
     }
     t

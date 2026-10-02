@@ -413,7 +413,7 @@ becomes a manifest, reaches the gate, asks, and stops there. The receipt an oper
 the one the front door renders; nothing is applied, and nothing is lost silently. A colony
 that wants the round to finish wires `ask` to a broker, `in_verdict` back, and `mutate` on to
 the mutation door — which is exactly the shape
-[`meclaw-os@2.2.0`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
+[`meclaw-os@2.2.1`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
 grow when you want an OS rather than an agent with a door.
 
 ```bash
@@ -444,7 +444,7 @@ A built colony arrives in two stages instead.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", ONE edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.0"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.1"}}
 ```
 
 ```bash
@@ -460,7 +460,7 @@ The third file is a **declaration, not a cell**. The first start resolves it aga
 template library and grows it — the capability broker, the control loop, the baumeister, the
 submitter, the front door, the empty `orgs` container and the sixty-nine edges between them —
 through the very resolution and staging a mutation takes. Then the marker is **gone**: what stands at its
-address is [`meclaw-os@2.2.0`](../../templates/meclaw-os/). A second boot finds nothing to grow.
+address is [`meclaw-os@2.2.1`](../../templates/meclaw-os/). A second boot finds nothing to grow.
 
 **The one edge is the whole birth topology.** `./os -> /colony/mutations`, on the `mutate` lane
 and nothing else. It cannot be added by a mutation on any scope — an edge *is* a mutation — so it
@@ -499,7 +499,7 @@ change:
 curl -s -X POST http://127.0.0.1:7778/messages -H 'Content-Type: application/json' -d '{
   "target": "/os", "hop": {"route": "in_build"},
   "body": {"messages": [{"origin": "user", "type": "text", "id": "",
-    "text": "{\"request\": \"grow an org named acme from org@2.1.0 under /os\", \"scope\": \"/os\"}"}]}}'
+    "text": "{\"request\": \"grow an org named acme from org@2.1.1 under /os\", \"scope\": \"/os\"}"}]}}'
 
 # -> receipt, hop.draft_state 'draft_ready', hop.manifest_sha256 <digest>,
 #    hop.draft_path /os/operator/drafts, body.manifest the declarations verbatim.

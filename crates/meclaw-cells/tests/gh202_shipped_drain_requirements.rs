@@ -60,6 +60,7 @@ fn edge(from: &str, to: &str, condition: Option<&str>) -> Edge {
         modifier: None,
         is_default: false,
         lane: None,
+        tap: false,
     }
 }
 

@@ -12,6 +12,24 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.55.0] — 2026-10-02
+A strand gate can run on a remote build host; the memory's close pass and the facts it stores keep the audience of the
+turns they come from, and an episode can carry an affect mark; a curator reads only the rows a round may see and can send
+a short identity after the first call; an app can observe the tool calls and results of another app.
+
+### Added
+
+- **A strand gate runs on a remote build host** ([#934](https://github.com/mmeyerlein/meclaw/issues/934)). The strand kit hands out build hosts as named lanes, sends the exact local tree there without any secret file, refuses to start when the tree on the host hashes differently, and brings the receipt back.
+- **A curator can send a short identity after the first call** ([#935](https://github.com/mmeyerlein/meclaw/issues/935)). The knob `identity_budget` of `curator@1.4.0` chooses between the whole identity on every call and the whole identity once with a short form after it, which `affinity@3.7.0` renders as the fifth pack family `identity_short` from no more than the whole identity would show.
+- **An episode can carry an affect mark** ([#936](https://github.com/mmeyerlein/meclaw/issues/936)). `memory-hive@3.7.0` writes the mark on its own lane and answers with an acknowledgement, and recall returns it and filters by it, never with a mark from an episode the round could not read.
+- **An app can observe the tool calls and results of another app** ([#937](https://github.com/mmeyerlein/meclaw/issues/937)). `install_app` in `builder@1.20.0` draws observer edges as passive taps that never displace a default, and `delete_context` takes a prefix that may not reach the keys of the round.
+
+### Fixed
+
+- **A curator's readers never learn what a round may not see** ([#932](https://github.com/mmeyerlein/meclaw/issues/932)). Every reader selects its rows through the store's new `covers` operator, so counts, page edges and timing are computed over the round's own rows only, and turn ids are counted per round.
+- **The memory's close pass stores a fact under the audience it was drawn from** ([#933](https://github.com/mmeyerlein/meclaw/issues/933)). The close pass runs once per audience group, a closer sees only facts and topics of that group, and a fact without a resolvable audience is not written.
+- **A brief no longer names a person the disclosure did not release** ([#939](https://github.com/mmeyerlein/meclaw/issues/939)). The head of every identity slot is built from the name parts the disclosure released instead of the stored display name.
+
 ## [0.54.0] — 2026-10-01
 A curator's ledger knows which round each line belongs to and gives a round only what it was there for; a curator counts
 its own ledger on request, and the colony's control loop gets the lanes to measure goals per role from those counts and to

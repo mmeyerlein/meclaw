@@ -165,6 +165,8 @@ pub fn edge_view_from_modifier_spec(
     };
     if let Some(spec) = m {
         view.set_context = spec.set_context.keys().cloned().collect();
+        // Verbatim, prefix entries (`"c_*"`, GH #937) included: the locality
+        // check reads them with the same matcher `apply_modifier` runs.
         view.delete_context = spec.delete_context.iter().cloned().collect();
         view.set_hop = spec.set_hop.keys().cloned().collect();
         view.delete_hop = spec.delete_hop.iter().cloned().collect();
@@ -631,6 +633,7 @@ mod tests {
             modifier: modifier.map(|m| crate::cel_eval::parse_modifier(&m).unwrap()),
             is_default: false,
             lane: None,
+            tap: false,
         }
     }
 

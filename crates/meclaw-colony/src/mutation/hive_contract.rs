@@ -1195,6 +1195,7 @@ pub fn edge_table_from_boot_edges(edges: &[BootEdge]) -> EdgeTable {
             // GH #283: the phase as the caller read it off the running graph.
             is_default: *is_default,
             lane: None,
+            tap: false,
         });
     }
     table
@@ -1216,6 +1217,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         }
     }
 

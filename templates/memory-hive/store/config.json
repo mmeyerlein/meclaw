@@ -15,7 +15,8 @@
         "audience_set": "text",
         "content": "text",
         "happened_at": "text",
-        "recorded_at": "text"
+        "recorded_at": "text",
+        "affect": "text"
       },
       "topics": {
         "id": "text",

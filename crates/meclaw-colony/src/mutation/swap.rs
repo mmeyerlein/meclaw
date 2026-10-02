@@ -85,6 +85,10 @@ pub(crate) struct SwungEdge {
     /// legality rests on that declaration, into an ordinary deep edge nobody
     /// could re-check.
     pub(crate) lane: Option<String>,
+    /// GH #937: the passive-tap flag, carried for the same reason — a swing
+    /// that dropped it would turn an observer into a regular edge that
+    /// suppresses the sender's default edges.
+    pub(crate) tap: bool,
 }
 
 /// The plan returned by [`plan_edge_swing`].
@@ -340,6 +344,8 @@ pub(crate) fn plan_edge_swing(t2: &Path, t3: &Path, edges: &EdgeTable) -> SwingP
             // (`v_lane_reanchor_verdict`); by the time an edge reaches here its
             // lane is settled and only its endpoints move.
             lane: e.lane.clone(),
+            // GH #937: verbatim — a swung tap stays passive.
+            tap: e.tap,
         });
     }
 
@@ -363,6 +369,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         }
     }
 
@@ -434,6 +441,7 @@ mod tests {
             modifier: Some(modif.clone()),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let tbl = table_with(vec![e]);
 

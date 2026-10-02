@@ -1363,6 +1363,7 @@ fn table(base: &str, rel: &str) -> EdgeTable {
             }),
             is_default: spec.is_default,
             lane: spec.lane.clone(),
+            tap: spec.tap,
         });
     }
     t
@@ -1811,7 +1812,11 @@ fn a_round_without_an_audience_sees_only_what_no_round_declared_and_is_marked_on
         ("s1", "t5"),
         "user",
         &user("said in s1 with no round"),
-        None,
+        // A round-less row is `[]` since PP-BD-12 (GH #932): the store filter
+        // (`round_where`) hands the round-less call `[]`/`*` rows of its
+        // session by value; a NULL row is one from before the rule and is
+        // seen by no round at all.
+        Some("[]"),
     );
     seeded(
         &mut h,
@@ -1852,14 +1857,17 @@ fn a_round_without_an_audience_sees_only_what_no_round_declared_and_is_marked_on
             "SELECT value, session_id, turn_id, audience_set FROM marks \
              WHERE kind = 'missing_audience'"
         ),
-        vec![vec![json!(cid), json!("s1"), json!("t1"), Value::Null]],
+        // PP-BD-12 (GH #932): a round-less row declares the empty set, not
+        // NULL -- NULL is left to rows from before the rule.
+        vec![vec![json!(cid), json!("s1"), json!("t1"), json!("[]")]],
         "one mark for the call, with no audience of its own"
     );
     assert_eq!(
         h.rows(&format!(
             "SELECT audience_set FROM calls WHERE call_id = '{cid}'"
         )),
-        vec![vec![Value::Null]]
+        vec![vec![json!("[]")]],
+        "the call record of a round-less call is `[]` too (PP-BD-12)"
     );
     // One mark per call, not per read.
     let next = curate_in(&mut h, "s1", "t2", Value::Null, "still none");
@@ -3335,4 +3343,109 @@ fn the_meet_of_a_summary_is_the_intersection_of_its_sources() {
         "{{e,a,b}}+{{e,a}} is {{e,a}}; `*` is neutral; one source without an audience, \
          or none at all, is none"
     );
+}
+
+/// Review IA-1 (GH #932, OR-S3.K.20): a mark another round has already READ
+/// lives as its `marks_on` entry, and that entry travels through a rebuild of
+/// {e,a} unchanged -- even for a block {e,a}'s window no longer shows. Only
+/// what {e,a} itself said about a block it drops goes, as `released` did. A
+/// prune over every audience would lose an {e,b} release or pin silently and
+/// reshape {e,b}'s window through a rebuild of {e,a}. The not-yet-read half
+/// (the cursor per round) is `gh932::another_rounds_marks_survive_a_rebuild_
+/// under_this_one`; this is the already-read half, as a pure table row.
+#[test]
+fn a_read_mark_of_another_round_survives_a_rebuild_of_this_one() {
+    if !shipped() {
+        return;
+    }
+    let shown = sha256_hex("shown");
+    let (gone, pinned) = (
+        sha256_hex("gone")[..12].to_string(),
+        sha256_hex("pinned")[..12].to_string(),
+    );
+    let kept = shown[..12].to_string();
+    let rows = json!([{"seq": 40, "session_id": "s1", "turn_id": "t4", "iter": 0,
+                       "kind": "user", "hash": shown, "at": "2026-10-01T10:00:00.000000Z",
+                       "chars": 10, "audience_set": EA}]);
+    // `gone` is no block of {e,a}'s new window: {e,a} and {e,b} both released
+    // it; {e,b} pinned `pinned`, which {e,a} never shows; {e,a} released the
+    // block it still shows.
+    let prev = json!({"cover": 0, "marks_on": {
+        gone.clone(): {EA: [1, 0, 1, "release"], EB: [2, 0, 2, "release"]},
+        pinned.clone(): {EB: [3, 1, 3, "pin"]},
+        kept.clone(): {EA: [4, 0, 4, "release"]}}});
+    let probe = "(lambda p: {'marks_on': p['marks_on'], 'released': p['released'], \
+                 'eb': sorted(released_in(p['marks_on'], ARGS['eb'])), \
+                 'ea': sorted(released_in(p['marks_on'], ARGS['ea']))})\
+                 (window_plan(ARGS['rows'], [], [], [], ARGS['prev'], ARGS['as_of'], \
+                 round_value=ARGS['ea'])['plan'])";
+    let (got, _) = policy_scope(
+        json!({"role": "talky", "keep_recent": 12}),
+        probe,
+        json!({"rows": rows, "prev": prev, "as_of": 1_790_668_800_000i64, "ea": EA, "eb": EB}),
+    );
+    assert_eq!(
+        got["marks_on"],
+        json!({gone.clone(): {EB: [2, 0, 2, "release"]},
+               pinned: {EB: [3, 1, 3, "pin"]},
+               kept.clone(): {EA: [4, 0, 4, "release"]}}),
+        "{{e,b}}'s entries travel unchanged; {{e,a}}'s entry of a block it dropped goes"
+    );
+    assert_eq!(
+        got["released"],
+        json!([kept.clone()]),
+        "{{e,a}}'s window: its own release"
+    );
+    assert_eq!(got["eb"], json!([gone]), "{{e,b}} still holds its release");
+    assert_eq!(got["ea"], json!([kept]), "{{e,a}} holds none of {{e,b}}'s");
+}
+
+/// Review IA-2 (GH #932, review I-7): the summary cover a call without a plan
+/// starts its wall at is read as far as its round may see it -- `h-cover`
+/// (`handover-done`) and `b-cover` (`win-plan`) go through the gate as
+/// `./intake`'s `a-cover`/`b-cover` do. An {e,b} summary covering past every
+/// {e,a} row must not move {e,a}'s wall; a round-less call (whose summaries
+/// carry no session) reads none and starts at 0.
+#[test]
+fn the_cover_a_call_without_a_plan_reads_is_its_rounds() {
+    if !shipped() {
+        return;
+    }
+    let covers = json!({"audience_set": {"covers": ["member:a", "member:e"]}});
+    let slim = json!({"session": "s1", "turn": "t9", "iter": "0", "plan": "{}", "hop": {}});
+    for (aud, gated) in [(json!(EA), true), (Value::Null, false)] {
+        let (out, err) = policy_step("handover-done", &aud, json!({}), &[]);
+        let ops = out.first().map(ops_of).unwrap_or_default();
+        let (out2, err2) = policy_step(
+            "win-plan",
+            &aud,
+            json!({}),
+            &[
+                ("h-slim", json!([{"value": slim.to_string()}])),
+                ("h-cover", json!([{"covers_to_seq": 50}])),
+            ],
+        );
+        let ops2 = out2.first().map(ops_of).unwrap_or_default();
+        for (id, op) in [
+            ("h-cover", ops.get("h-cover")),
+            ("b-cover", ops2.get("b-cover")),
+        ] {
+            if gated {
+                let op = op.unwrap_or_else(|| panic!("{id}: a round reads its cover: {err}{err2}"));
+                assert_eq!(op["where"], covers, "{id}: only summaries {{e,a}} may see");
+            } else {
+                assert!(
+                    op.is_none(),
+                    "{id}: a round-less call reads no cover: {op:?}"
+                );
+            }
+        }
+        if gated {
+            assert_eq!(
+                ops2["b-wallh"]["where"]["seq"],
+                json!({"gt": 50}),
+                "the wall starts at the cover the round read"
+            );
+        }
+    }
 }

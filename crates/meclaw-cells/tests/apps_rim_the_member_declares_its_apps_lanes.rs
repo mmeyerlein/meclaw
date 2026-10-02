@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.3.0",
+            v, "2.3.1",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -414,12 +414,14 @@ fn the_versions_moved_with_the_declarations() {
              second digit: `in_stats` and `stats` cross the level to and from \
              `./assistants`, and the apps rim stays as it was; it pins \
              `file-space@1.1.1` (GH #929) and derives `./assistants` from \
-             `assistant@3.4.0`"
+             `assistant@3.4.0`; 2.3.1 only pins `affinity@3.7.0` and \
+             `memory-hive@3.7.0` and derives `./assistants` from `assistant@3.4.1`, \
+             the third digit"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.4.0",
+            v, "3.4.1",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -452,7 +454,8 @@ fn the_versions_moved_with_the_declarations() {
              `cogny@5.4.0`; GH #926 makes it 3.4.0, the second digit: `in_stats` \
              joins the level and reaches the curator of the brain `hop.stats_role` \
              names, `stats` leaves it, and it pins `talky@6.3.0` and `cogny@5.5.0`; \
-             GH #929 rides along: the door of `in_turn` restores the TTL"
+             GH #929 rides along: the door of `in_turn` restores the TTL; 3.4.1 only \
+             pins `talky@6.4.0` and `cogny@5.6.0`, the third digit"
         );
     }
 }

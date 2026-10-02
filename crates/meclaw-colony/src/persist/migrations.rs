@@ -51,13 +51,18 @@
 //! every row written before the column existed was and stays. The value is
 //! persisted because the declaration has to survive a reboot — a `swap_nodes`
 //! that re-anchors the edge asks the new target's contract about THIS lane.
+//! v12 (GH #937 passive taps): `edges` gains `tap` as an
+//! `INTEGER NOT NULL DEFAULT 0` column — `1` marks a passive edge that fires
+//! beside the sender's other edges and never suppresses its default edges.
+//! ALTER TABLE in-place; rows written before the column existed read `0`, which
+//! is what they were routed as — an old edge must never come back as a tap.
 //!
 //! IMPORTANT: affects `colony.db` exclusively. `cell.db` stays at v1.
 
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 11;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 12;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +90,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=10 => {
+        1..=11 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -240,6 +245,17 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                     [],
                 )?;
             }
+            // v11→v12 (GH #937): the passive-tap flag. `NOT NULL DEFAULT 0`,
+            // so every pre-existing row is a regular edge — exactly what it was
+            // routed as before the column existed. Same two guards and the same
+            // rationale as the stages above.
+            if current <= 11 && table_exists(&tx, "edges")? && !column_exists(&tx, "edges", "tap")?
+            {
+                tx.execute(
+                    "ALTER TABLE edges ADD COLUMN tap INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                 rusqlite::params![TARGET_SCHEMA_VERSION.to_string()],
@@ -301,6 +317,47 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    /// GH #937 (v11→v12): an OLD edge row keeps every value it had and reads
+    /// `tap = 0` — a regular edge, never a passive tap; a second pass changes
+    /// nothing.
+    #[test]
+    fn migrate_v11_to_v12_adds_the_edges_tap_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta (key, value) VALUES ('schema_version', '11');
+             CREATE TABLE edges (
+               id TEXT PRIMARY KEY, from_path TEXT NOT NULL,
+               to_path TEXT NOT NULL, created_at INTEGER NOT NULL,
+               condition TEXT, modifier TEXT,
+               is_default INTEGER NOT NULL DEFAULT 0, lane TEXT);
+             INSERT INTO edges (id, from_path, to_path, created_at, is_default, lane)
+               VALUES ('e-1', '/a', '/b', 0, 1, 'recall');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent second pass
+        assert!(column_exists(&conn, "edges", "tap").unwrap());
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        let (tap, is_default, lane): (i64, i64, Option<String>) = conn
+            .query_row(
+                "SELECT tap, is_default, lane FROM edges WHERE id = 'e-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(tap, 0, "an old edge reads as a regular edge");
+        assert_eq!(is_default, 1, "the old row keeps its phase");
+        assert_eq!(
+            lane.as_deref(),
+            Some("recall"),
+            "the old row keeps its lane"
+        );
     }
 
     /// GH #850 (v10→v11): an old database opens and gains the overflow table;

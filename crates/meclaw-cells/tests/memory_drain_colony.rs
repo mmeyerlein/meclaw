@@ -88,8 +88,10 @@ fn memory_write_path(root: &std::path::Path) {
     .unwrap();
     assert_eq!(
         edges.as_array().expect("edge array").len(),
-        1,
-        "the write path inside the hive is ONE edge: writer -> store"
+        3,
+        "the write path inside the hive is THREE edges: writer -> store for the \
+         episode (`wstore`) and the affect mark (`astore`, GH #936), and the \
+         affect answer store -> writer"
     );
     write(
         root,

@@ -553,6 +553,15 @@ fn sha256_hex(s: &str) -> String {
         .collect()
 }
 
+/// `hop.turn_id` of an episode as `./writer` stamps it (GH #932,
+/// OR-S3.K.1): `<session>#<tag>-<index>`, `tag` the first 8 hex of sha256
+/// over the canonical round, the index counted per (session, round) from 0.
+/// WHY: the old `<session>#<index>` counted over every round of a session,
+/// so its gaps told a round how many turns it did not see.
+fn episode_turn_id(session: &str, round: &str, index: u32) -> String {
+    format!("{session}#{}-{index}", &sha256_hex(round)[..8])
+}
+
 fn texts(call: &Msg) -> Vec<String> {
     call.messages()
         .iter()
@@ -597,7 +606,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.3.0");
+    assert_eq!(t["version"], "1.4.0");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -1034,8 +1043,16 @@ fn a_duplex_pair_is_two_episodes() {
     assert_eq!(
         eps,
         vec![
-            (json!("s1#0"), user("how is the weather?")),
-            (json!("s1#1"), said("sunny, sixteen degrees"))
+            // GH #932: the turn id carries the round's tag; every round here
+            // is the standard one, so the index still counts 0, 1, ...
+            (
+                json!(episode_turn_id("s1", ROUND_E, 0)),
+                user("how is the weather?")
+            ),
+            (
+                json!(episode_turn_id("s1", ROUND_E, 1)),
+                said("sunny, sixteen degrees")
+            )
         ]
     );
     assert_eq!(
@@ -1078,8 +1095,14 @@ fn a_duplex_pair_is_two_episodes() {
     assert_eq!(
         eps,
         vec![
-            (json!("s1#3"), user("and the day after?")),
-            (json!("s1#4"), said("rain, I am afraid"))
+            (
+                json!(episode_turn_id("s1", ROUND_E, 3)),
+                user("and the day after?")
+            ),
+            (
+                json!(episode_turn_id("s1", ROUND_E, 4)),
+                said("rain, I am afraid")
+            )
         ],
         "an evidence pair is no tool call: the answer half is an episode"
     );
@@ -1954,15 +1977,16 @@ fn each_participant_turn_writes_one_episode() {
         got,
         vec![
             (
-                json!("s1#0"),
+                // GH #932: `<session>#<tag>-<index>`, one round throughout.
+                json!(episode_turn_id("s1", ROUND_E, 0)),
                 json!({"origin": "user", "type": "text", "text": "hello"})
             ),
             (
-                json!("s1#1"),
+                json!(episode_turn_id("s1", ROUND_E, 1)),
                 json!({"origin": "assistant", "type": "text", "text": "hi"})
             ),
             (
-                json!("s1#2"),
+                json!(episode_turn_id("s1", ROUND_E, 2)),
                 json!({"origin": "peer", "type": "text", "text": "from afar",
                                    "speaker": "North", "speaker_ref": "dc365e79"})
             ),
@@ -2139,10 +2163,12 @@ fn a_close_hands_on_only_the_rows_its_round_may_see() {
             "SELECT DISTINCT audience_set FROM wall WHERE session_id = 's1' \
              ORDER BY audience_set"
         ),
+        // PP-BD-12 (GH #932): the round-less round writes `[]`, not NULL --
+        // NULL is left to rows from before the rule -- and `[]` sorts last.
         vec![
-            vec![Value::Null],
             vec![json!(ROUND_AE)],
-            vec![json!("[\"member:b\",\"member:e\"]")]
+            vec![json!("[\"member:b\",\"member:e\"]")],
+            vec![json!("[]")]
         ],
         "the session holds rows of {{e,a}}, of {{e,b}} and of no round"
     );
@@ -2474,11 +2500,16 @@ fn the_round_is_written_on_every_row_it_causes() {
 }
 
 /// A round that declares no audience is written all the same, its rows with
-/// `audience_set` NULL: nothing refuses the round, and no reader hands such
-/// a row to another one (OR-BD-5). Its call is marked once `missing_audience`
-/// by `./policy` (OR-BD-4), that mark NULL like every row of the round.
+/// `audience_set` `[]` (PP-BD-12, GH #932): nothing refuses the round, the
+/// rows declare no round, so only a round-less read of their own session
+/// finds them (`round_where`) and no reader hands them to another round.
+/// NULL stays the mark of a row from before the rule (OR-BD-5) -- before
+/// GH #932 these rows were NULL, which made them indistinguishable from such
+/// legacy rows and invisible to the store filter. Its call is marked once
+/// `missing_audience` by `./policy` (OR-BD-4), that mark `[]` like every row
+/// of the round.
 #[test]
-fn a_round_without_an_audience_writes_null() {
+fn a_round_without_an_audience_writes_the_empty_set() {
     if !shipped() {
         return;
     }
@@ -2503,17 +2534,17 @@ fn a_round_without_an_audience_writes_null() {
     assert_eq!(
         h.rows("SELECT kind, audience_set FROM wall ORDER BY seq"),
         vec![
-            vec![json!("user"), Value::Null],
-            vec![json!("tool_call"), Value::Null],
-            vec![json!("tool_result"), Value::Null]
+            vec![json!("user"), json!("[]")],
+            vec![json!("tool_call"), json!("[]")],
+            vec![json!("tool_result"), json!("[]")]
         ]
     );
     assert_eq!(
         h.rows("SELECT kind, audience_set FROM marks ORDER BY kind"),
         vec![
-            vec![json!("missing_audience"), Value::Null],
-            vec![json!("release"), Value::Null],
-            vec![json!("tool_error"), Value::Null]
+            vec![json!("missing_audience"), json!("[]")],
+            vec![json!("release"), json!("[]")],
+            vec![json!("tool_error"), json!("[]")]
         ]
     );
 }

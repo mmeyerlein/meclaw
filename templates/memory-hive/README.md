@@ -1,4 +1,4 @@
-# `memory-hive@3.6.4`
+# `memory-hive@3.7.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -564,8 +564,11 @@ writer.
 Send a session to `in_close_pass` when it ends. Nothing travels in the body — the lane names a
 session and the hive reads its own turns. Inside, `close-glue` reads four sets out of its own
 store (the turns, the records those turns left standing, the topics still open and the
-`pending` rows nobody annotated), parks them, renders one prompt, and `closer` — the hive's
-`MODEL_CLOSER` slot — answers with a verdict. The verdict costs one extra store round trip on
+`pending` rows nobody annotated), parks them, renders one prompt per round, and `closer` — the
+hive's `MODEL_CLOSER` slot — answers each with a verdict. A round is the set of turns with one
+audience (GH #933): its prompt holds only those turns and only the open records and topics of that
+same audience, every fact it writes carries that audience, and a turn without an audience is in
+no prompt. The verdict costs one extra store round trip on
 purpose: a `code` cell is stateless, and every one of the four points needs something only the
 READ phases saw, so the verdict parks itself next to those four sets and is read back with them.
 
@@ -591,8 +594,9 @@ hive's own port edge stamps (`close_pass`), and that key buys exactly one privil
 carry a `shown` window, so its `replaces` can be honoured — see the replacement window in the
 opening list above.
 
-What the pass did leaves on `close_report` with eight numbers on the hop (`added`, `sharpened`,
-`corrected`, `closed`, `restated`, `unseen_refs`, `exceptions`, `truncated`). **Drain it**: the
+What the pass did leaves on `close_report` with ten numbers on the hop (`added`, `sharpened`,
+`corrected`, `closed`, `restated`, `unseen_refs`, `exceptions`, `truncated`, `groups`,
+`unaudienced`). **Drain it**: the
 writes answer nobody, so without the report a caller cannot tell a pass that ran and changed
 nothing from a pass that never ran at all. A pass with no verdict — the call errored, the answer
 was not JSON, or the parked verdict was gone — leaves on `reject` with
@@ -612,7 +616,8 @@ conversation-guide harness on 2026-08-23 (26 turns each, one close each) cost 0.
 0.0766 EUR for their close call, priced from `scripts/prices-openrouter-2026-08-22.json`. Over
 those three runs the close call was **0.2308 EUR of 0.2899 EUR — about 80 % of everything the
 colony spent**, front model, tool loop and all. The cost class follows from the shape rather than
-from the model: one call, the whole session in the prompt, a strong model by ruling. Budget one
+from the model: one call per round (almost always one per session), the round whole in the prompt,
+a strong model by ruling. Budget one
 such call per closed session and size `close_turn_rows` / `close_fact_rows` knowing
 that both bound what the prompt pays for.
 
@@ -882,6 +887,18 @@ An episode hit from a peer turn is shown as `peer <ref>`.
 The per-turn contract tells a front model the same: a turn marked `[peer <ref> · <name>]` is
 recorded as what that participant stated (`inline-contract.md`).
 
+## An affect mark on an episode ([#936](https://github.com/mmeyerlein/meclaw/issues/936))
+
+`episodes.affect` holds one mark of how a turn read -- `{valence: -1..1, arousal: 0..1, confidence: 0..1,
+source, at}` as JSON text, `NULL` = unknown -- written through the `in_affect` lane by a recognizer elsewhere in
+the colony (this hive recognizes nothing). The body addresses the episode by `episode_id` or by `session_id` +
+`turn_id` (the incoming turn, never the agent's answer); the round is `audience_now`, and the mark is written only
+on an episode that round may read, so unknown and unreadable both answer `affect_ack` with `error_code:
+not_visible`, and no answer carries the episode text; the last write wins. `in_query` hands each candidate's
+source-episode mark back (`affect`, null = unknown or an episode the round may not read, one more call in the hydration bundle and no extra store
+message) and takes an optional `hop.affect_filter` (`valence_max`, `valence_min`, `arousal_min`, `min_confidence`)
+that is applied after the audience gate and drops candidates without a mark, beliefs included; the mark is never a ranking signal.
+
 ## Taking a memory out, putting it into another (#243)
 
 Until 2.2.0 there was no way to get the content a hive had accumulated *out* of it, and no way
@@ -906,7 +923,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.6.4` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.7.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1313,7 +1330,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.3.0",
+{"add_nodes": [{"name": "alex", "template": "member@2.3.1",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

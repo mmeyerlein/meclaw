@@ -198,7 +198,8 @@ USAGE
     gate_plan.py --mode {strand,integration,release,ci}
                  (--files-from FILE | --files PATH...) [--repo DIR]
                  [--format {json,tsv}]
-    gate_plan.py --print scenario|ignored|persona-sources [--repo DIR]
+    gate_plan.py --print scenario|ignored|persona-sources|env-stations|lane-local
+                 [--repo DIR]
 
 `--files-from -` reads paths from stdin, one per line.
 
@@ -248,10 +249,71 @@ MODES = ("strand", "integration", "release", "ci")
 # The `*_live` binaries are here for a second reason beside cost: they open a
 # billed session against a third party, so they never ride a diff.
 # `scripts/tests/test_gate_plan.py` locks the suffix rule against the tree.
-SCENARIO = ('binary(/_demo$/) + binary(/_demo_/) + binary(/e2e/) '
-            '+ binary(/^workshop_scenario$/) + binary(/^slack_live$/) '
-            '+ binary(/^gpt_live_live$/) '
-            '+ binary(/^harness_real_cli_smoke$/) + binary(/^audit_14_/)')
+SCENARIO_TERMS = (
+    "binary(/_demo$/)", "binary(/_demo_/)", "binary(/e2e/)",
+    "binary(/^workshop_scenario$/)", "binary(/^slack_live$/)",
+    "binary(/^gpt_live_live$/)",
+    "binary(/^harness_real_cli_smoke$/)", "binary(/^audit_14_/)",
+)
+SCENARIO = " + ".join(SCENARIO_TERMS)
+
+_TERM_RE = re.compile(r"^binary\(/(.*)/\)$")
+
+
+def _test_targets(repo):
+    """The names of the test binaries cargo autodiscovers in the tree.
+
+    `crates/*/tests/<stem>.rs` and `crates/*/tests/<stem>/main.rs` -- the same
+    shape `_test_binary_exists` reads. Nothing here compiles anything.
+    """
+    root = REPO_ROOT if repo is None else repo
+    names = set()
+    for path in globmod.glob(os.path.join(root, "crates", "*", "tests", "*.rs")):
+        names.add(os.path.splitext(os.path.basename(path))[0])
+    for path in globmod.glob(os.path.join(root, "crates", "*", "tests", "*", "main.rs")):
+        names.add(os.path.basename(os.path.dirname(path)))
+    return names
+
+
+def scenario_for(repo=None):
+    """The scenario class, narrowed to the operators the tree can match.
+
+    nextest refuses a filterset whose `binary(...)` operator matches no binary
+    ("operator didn't match any binary IDs") -- the same refusal
+    `_test_binary_exists` guards against -- and that took the whole `tests`
+    station down in a public clone, which has no `slack_live.rs` (GH #934,
+    measured on a build host 2026-10-01). So every term of the class is kept
+    only when a test target of the tree matches it. The real tree matches all
+    of them; `scripts/tests/test_gate_plan.py` locks both directions.
+    """
+    names = _test_targets(repo)
+    kept = []
+    for term in SCENARIO_TERMS:
+        m = _TERM_RE.match(term)
+        rx = re.compile(m.group(1)) if m else None
+        if rx is None or any(rx.search(n) for n in names):
+            kept.append(term)
+    return " + ".join(kept)
+
+
+# The stations whose runner reads `<repo>/.env` (the scenario runners copy
+# keys out of it into every colony they boot; the guide harness runs the
+# scenario engine). A build host never gets a `.env` -- it stays on the
+# owner's machine -- so `scripts/gate.sh --lane` reports these as
+# `SKIP no-env (lane)` and `scripts/strand.sh gate --host` runs them locally
+# afterwards (GH #934). Published with `--print env-stations`.
+ENV_STATIONS = ("scenarios:memory", "scenarios:builder", "guide-selftest")
+
+# Everything a lane runs HERE afterwards, with the reason it cannot run there
+# (OR-S3-96): the stations above (no `.env`), `display-lab` (its runline tests
+# call `node`, and a build host has none) and `export-audit` (it diffs against
+# the `github-main` ref, which only the owner's clone carries). One list, one
+# mechanism: `scripts/gate.sh --lane` reports each as `SKIP <reason> (lane)`,
+# and `scripts/strand.sh gate --host` runs exactly those here, handing the
+# lane's receipt over so the audit grades the whole run. Published with
+# `--print lane-local` (`<name>\t<reason>` per line).
+LANE_LOCAL = {name: "no-env" for name in ENV_STATIONS}
+LANE_LOCAL.update({"display-lab": "no-node", "export-audit": "no-ref"})
 
 # Run artefacts of the two suites. They are committed, they change on every
 # run, and they never justify a station -- so they carry no diff class at all.
@@ -1103,7 +1165,10 @@ def test_filter(paths, mode, repo=None):
     if mode == "ci":
         # CI shards run the tests; the expression is planned, not reduced.
         return expr
-    return "%s - (%s)" % (expr, SCENARIO)
+    scenario = scenario_for(repo)
+    if not scenario:
+        return expr
+    return "%s - (%s)" % (expr, scenario)
 
 
 # --- scope helpers ----------------------------------------------------------
@@ -1556,6 +1621,8 @@ def to_json(paths, mode, repo=None):
                 row["cwds"] = list(st.cwds)
         if not st.run:
             row["run"] = False
+        if st.name in ENV_STATIONS:
+            row["env"] = True
         rows.append(row)
     return {
         "mode": mode,
@@ -1594,13 +1661,26 @@ def main(argv=None):
     ap.add_argument("--repo", metavar="DIR",
                     help="tree the test sources are read from (default: this repo)")
     ap.add_argument("--format", choices=("json", "tsv"), default="tsv")
-    ap.add_argument("--print", dest="what", choices=("scenario", "ignored", "persona-sources"),
+    ap.add_argument("--print", dest="what", choices=("scenario", "ignored", "persona-sources",
+                                                    "env-stations", "lane-local"),
                     help="print a constant and exit (`ignored`, `persona-sources`: "
                          "one path per line; `persona-sources` reads `--repo`)")
     args = ap.parse_args(argv)
 
     if args.what == "scenario":
-        print(SCENARIO)
+        # Narrowed to the tree (`--repo`, default this one): `test-tier.sh`
+        # builds `all() - ( <this> )`, and an empty class is `none()`.
+        print(scenario_for(args.repo) or "none()")
+        return 0
+
+    if args.what == "env-stations":
+        for name in ENV_STATIONS:
+            print(name)
+        return 0
+
+    if args.what == "lane-local":
+        for name, why in LANE_LOCAL.items():
+            print("%s\t%s" % (name, why))
         return 0
 
     if args.what == "ignored":

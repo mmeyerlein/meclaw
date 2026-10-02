@@ -77,6 +77,10 @@ pub struct EdgeSpec {
     /// door (a template's statement about ITSELF, ruling 2026-08-15); what they
     /// owe is to mean the same thing through both.
     pub lane: Option<String>,
+    /// GH #937: the template edge's passive-tap flag (`tap`), read here for
+    /// the reason `is_default` and `lane` are — a template that declares an
+    /// observer has to declare one in every instance, too.
+    pub tap: bool,
 }
 
 /// Parsed representation of a SUBTREE template directory.
@@ -850,6 +854,8 @@ fn edge_spec_from_config(spec: ConfigEdgeSpec) -> EdgeSpec {
         // `deny_unknown_fields`, so a misspelling is already a boot error and
         // this read cannot silently invent a lane.
         lane: spec.lane,
+        // GH #937: and the passive-tap flag, same discipline.
+        tap: spec.tap,
     }
 }
 
@@ -1992,6 +1998,8 @@ pub(crate) fn resolve_internal_edges(
                 is_default: spec.is_default,
                 // GH #559: and so does the lane.
                 lane: spec.lane,
+                // GH #937: and so does the passive-tap flag.
+                tap: spec.tap,
             });
         }
     }
@@ -2065,6 +2073,9 @@ pub struct ResolvedEdge {
     /// GH #559: the declared lane, kept verbatim for the same reason — an
     /// instance of a template that declares a v-lane has to BE one.
     pub lane: Option<String>,
+    /// GH #937: the passive-tap flag, kept verbatim — resolution changes an
+    /// edge's endpoints, never whether it is a tap.
+    pub tap: bool,
 }
 
 /// Result of staging one SUBTREE template instance into `.staging`.

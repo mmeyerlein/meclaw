@@ -706,6 +706,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
             modifier: None,
             is_default: spec.is_default,
             lane: None,
+            tap: false,
         });
     }
     t

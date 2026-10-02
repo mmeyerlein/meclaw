@@ -202,6 +202,9 @@ pub enum ColonyWriteOp {
         /// Persisted as `edges.lane` (schema v9) so a reboot rehydrates the
         /// declaration a later `swap_nodes` has to re-check.
         lane: Option<String>,
+        /// GH #937: the passive-tap flag. Persisted as `edges.tap` (schema
+        /// v12) so a reboot does not turn an observer into a regular edge.
+        tap: bool,
     },
     /// Phase 6 T21: delete an edge row by id (fire-and-forget; durable via FIFO).
     RemoveEdge {
@@ -514,9 +517,9 @@ fn apply_op(
                     .as_ref()
                     .and_then(|m| meclaw_core::serde_json::to_string(&m.source).ok());
                 tx.execute(
-                    "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier, is_default, lane) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    rusqlite::params![e.id.to_string(), e.from.as_str(), e.to.as_str(), now, condition, modifier, e.is_default, e.lane],
+                    "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier, is_default, lane, tap) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rusqlite::params![e.id.to_string(), e.from.as_str(), e.to.as_str(), now, condition, modifier, e.is_default, e.lane, e.tap],
                 )?;
             }
             // Bootstrap-Recovery: clear the in-flight marker in the SAME
@@ -672,11 +675,12 @@ fn apply_op(
             modifier,
             is_default,
             lane,
+            tap,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier, is_default, lane) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                rusqlite::params![id, from, to, created_at, condition, modifier, is_default, lane],
+                "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier, is_default, lane, tap) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![id, from, to, created_at, condition, modifier, is_default, lane, tap],
             )?;
         }
         ColonyWriteOp::RemoveEdge { id } => {
@@ -1176,6 +1180,7 @@ mod tests {
                 modifier: Some(r#"{"set_hop":{"tier":"'gold'"}}"#.into()),
                 is_default: false,
                 lane: None,
+                tap: false,
             },
             &mut Vec::new(),
             &mut Vec::new(),
@@ -1217,6 +1222,7 @@ mod tests {
                     modifier: None,
                     is_default,
                     lane: None,
+                    tap: false,
                 },
                 &mut Vec::new(),
                 &mut Vec::new(),
@@ -1501,6 +1507,7 @@ mod tests {
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
             is_default: false,
             lane: None,
+            tap: false,
         };
         let id_str = edge.id.to_string();
 

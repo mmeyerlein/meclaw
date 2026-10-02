@@ -88,6 +88,7 @@ fn edge(condition: &str) -> Edge {
         modifier: None,
         is_default: false,
         lane: None,
+        tap: false,
     }
 }
 

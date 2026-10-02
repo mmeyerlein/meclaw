@@ -81,6 +81,8 @@ const SCRIPTED: &[Scripted] = &[
             ("disclosure_rows", "_int", "DISCLOSURE_ROWS"),
             ("traverse_depth", "_int", "TRAVERSE_DEPTH"),
             ("traverse_nodes", "_int", "TRAVERSE_NODES"),
+            // GH #935: the cap of the `identity_short` request slot.
+            ("identity_short_max", "_int", "IDENTITY_SHORT_MAX"),
         ],
     },
     Scripted {
@@ -342,9 +344,9 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 9,
-        "the scripted half of this migration is nine knobs; the tenth is the \
-         push tick, which has no script"
+        total, 10,
+        "the scripted half of this migration is nine knobs plus the cap of the \
+         `identity_short` slot (GH #935); the push tick has no script"
     );
 }
 

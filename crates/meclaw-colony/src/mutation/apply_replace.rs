@@ -207,6 +207,8 @@ pub fn compile_inner_edges(lift: &StagedReplace) -> Result<Vec<Edge>, MutationEr
             modifier,
             is_default: edge.is_default,
             lane: edge.lane.clone(),
+            // GH #937: the passive-tap flag, verbatim like the lane.
+            tap: edge.tap,
         });
     }
     Ok(out)
@@ -405,9 +407,13 @@ pub fn old_inner_edges(edges: &EdgeTable, hive: &Path) -> Vec<Edge> {
 /// lane. Such an old edge is retained by the lift rather than removed and
 /// re-laid: the edge stays under the same id, and a kept child stays wired
 /// without a gap.
+///
+/// GH #937: the passive-tap flag is no identity term either and is compared
+/// beside the lane, for the lane's reason — a lift that turns a regular edge
+/// into a tap (or back) must land the new declaration, not keep the old one.
 pub fn retained_by(old: &Edge, new: &[Edge]) -> bool {
     new.iter()
-        .any(|n| same_identity(old, n) && old.lane == n.lane)
+        .any(|n| same_identity(old, n) && old.lane == n.lane && old.tap == n.tap)
 }
 
 /// True iff one of `new` is the same edge as `old` on the five identity terms
@@ -417,7 +423,7 @@ pub fn retained_by(old: &Edge, new: &[Edge]) -> bool {
 /// in, and the new one is inserted like any other.
 pub fn displaced_by(old: &Edge, new: &[Edge]) -> bool {
     new.iter()
-        .any(|n| same_identity(old, n) && old.lane != n.lane)
+        .any(|n| same_identity(old, n) && (old.lane != n.lane || old.tap != n.tap))
 }
 
 /// The five-term identity the dedup compares on, as one predicate.
@@ -500,6 +506,7 @@ mod tests {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         }
     }
 
@@ -575,5 +582,25 @@ mod tests {
         let other = edge("/h", "/h/b", Some("hop.route == 'x'"));
         assert!(!retained_by(&old, std::slice::from_ref(&other)));
         assert!(!displaced_by(&old, std::slice::from_ref(&other)));
+    }
+
+    /// GH #937: the passive-tap flag is no identity term, like the lane, so a
+    /// lift that flips it must displace the old edge rather than retain it —
+    /// otherwise the dedup skips the new declaration and the old one stays.
+    #[test]
+    fn a_tap_disagreement_displaces_the_old_edge_instead_of_retaining_it() {
+        let tapped = |tap: bool| Edge {
+            tap,
+            ..edge("/h", "/h/a", Some("hop.route == 'x'"))
+        };
+        let old = tapped(false);
+        assert!(retained_by(&old, &[tapped(false)]));
+        assert!(!displaced_by(&old, &[tapped(false)]));
+        assert!(!retained_by(&old, &[tapped(true)]));
+        assert!(displaced_by(&old, &[tapped(true)]));
+
+        let old = tapped(true);
+        assert!(retained_by(&old, &[tapped(true)]));
+        assert!(displaced_by(&old, &[tapped(false)]));
     }
 }

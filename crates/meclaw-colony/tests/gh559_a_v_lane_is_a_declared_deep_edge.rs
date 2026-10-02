@@ -831,6 +831,7 @@ fn one_lane_one_plain() -> (std::collections::HashMap<Path, RegistryEntry>, Edge
             modifier: None,
             is_default: false,
             lane: lane.map(str::to_string),
+            tap: false,
         });
     };
     edge("/deep", Some("in_pack"));
@@ -906,6 +907,7 @@ async fn a_persisted_lane_survives_the_rehydration() {
             modifier: None,
             is_default: false,
             lane: Some("in_pack".to_string()),
+            tap: false,
         })
         .await;
         db.send_op(ColonyWriteOp::InsertEdge {
@@ -917,6 +919,7 @@ async fn a_persisted_lane_survives_the_rehydration() {
             modifier: None,
             is_default: false,
             lane: None,
+            tap: false,
         })
         .await;
         db.shutdown_async().await;

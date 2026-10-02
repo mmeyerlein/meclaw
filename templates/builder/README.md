@@ -1,4 +1,4 @@
-# `builder@1.19.0`
+# `builder@1.20.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -1058,7 +1058,7 @@ names and versions, never with a block — so whoever places the wish reads
 beside `scope` (the member), `app` (the instance name, which is the template's
 name), `template` and `screen` (the node in `./channels` the app draws on).
 `generation` joins them whenever the declaration offers something, observes
-tool results or pins, and the switch refuses the wish without it
+tool calls or tool results, or pins, and the switch refuses the wish without it
 (`recipe_params_incomplete`, `missing: ["generation"]`).
 
 **The vocabulary is closed**, and a word outside it is refused as
@@ -1071,6 +1071,35 @@ an offer is a `tool` (with its `tools`) or a `sidecar`
 cell of the member with the lanes it sends and hears back. An app that
 "listens to gossip" would otherwise install green and hear nothing.
 
+**Observing is closed the same way**
+([#937](https://github.com/mmeyerlein/meclaw/issues/937)).
+`observes_tool_calls` is an object `{at, tools, route?}`; `observes_tool_results`
+is either the original string `./<name>` (every result, unstamped, unchanged)
+or the same object. `at` is a cell `./<name>` inside the app, `tools` lists 1 to
+16 distinct names (`[a-z][a-z0-9_]{0,63}`), and `route` (`[a-z][a-z_]{0,39}`) is
+what the cell hears them as — `in_tool_call` and `in_tool_result` by default.
+An observation is a fan-out, never an interception: the call still reaches
+whoever offers the tool, the result still reaches the assistant. Every observer
+edge is a **tap** (`"tap": true`): the edge table weighs a sender's edges flat
+and drops its DEFAULT edges once a regular edge matches, and a surface's own
+`./<caller> -> ./tools` is a default — a regular observer edge on one of the
+generation's own tools would take the call instead of overhearing it. A tap
+does not count in that decision, so the observed tool runs either way. The
+result side is bounded to the generation the app is installed for: the edges
+off `./memory-hive` and `./apps` read `context.assistant`, the stamp the call
+carried out, so an observer never hears another generation's rounds. The
+observing app has to declare the producer's LANE at that cell in its contract
+(`{"route": "tool", "at": ["./<at>"]}` or `{"route": "tool_result", "at":
+["./<at>"]}` under `params.contract.accepts`) — the mutation door matches the
+lane, not the restamped route, and refuses a missing one as
+`v_lane_no_connect_point`.
+
+**An app that emits turns needs a member with a door.** A turn an app hands
+into its member without naming an addressee is routed by the member's door
+(`door: true`, § *The member's door* in the member README); without one it ends
+as `hive_no_route`. The recipe reads no tree and no app contract, so it cannot
+find that out — the member has to be grown with the door first.
+
 **What each kind draws**, all of it in ONE declaration at the member — the
 lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 
@@ -1079,7 +1108,8 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 | `screen` | the view edge out of the app, every declared lane plus `error`, stamped `channel_node`/`channel` with the screen; the owner edge back in on `event`/`receipt` — the two `grow_level level=app` draws |
 | `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer: the member draws `. -> ./apps` itself. `close` observes the close batch of a session (`write` off `./assistants`, the batch the member's close pass takes) and restamps it `in_close` with the close pass's context (`session_id`, `audience_set`, `channel`); the body travels unchanged (`messages[]`, `rounds`, `hop.turn_count`), and `write` has a regular exit at the member, so this observer suppresses no default |
 | `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each surface of the generation, guarded on the tool names; every offering cell answers the menu tick on a `schemas` v-lane from each surface; one exit stamps `tool_answerer` |
-| `observes_tool_results` | two `tool_result` v-lanes into the named cell: from the generation's `./tools` and from `./memory-hive` |
+| `observes_tool_calls` | per surface of the generation one `tool` v-lane into `at` — the offer's own edge (same guard on the tool names, same stamp) with another target, restamped `route` (default `in_tool_call`), drawn as a tap |
+| `observes_tool_results` | as a string: two `tool_result` v-lanes into the named cell, from the generation's `./tools` and from `./memory-hive`. As an object: the same two, guarded on the tool names and restamped `route` (default `in_tool_result`), plus one off `./apps` for the other apps' results — the container as source so the install order does not matter, `context.tool_answerer` excluding the observer's own results; all three taps, and the two shared producers guarded on `context.assistant` |
 | `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |
 | `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
 
