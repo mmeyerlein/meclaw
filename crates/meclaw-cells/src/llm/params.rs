@@ -112,7 +112,7 @@ pub enum CacheMode {
 ///
 /// Deliberately orthogonal to `provider`: the Responses API is the SAME vendor
 /// with a different wire shape, not a different provider. Keeping this a
-/// separate axis leaves the `provider == "openai"` constraint untouched
+/// separate axis leaves the provider list untouched
 /// (plan D1) and makes `auth × wire_dialect` the vendor-neutral matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -128,16 +128,15 @@ pub enum WireDialect {
 ///
 /// Required: `provider`, `model`, plus exactly one credential — `api_key`
 /// (for `auth: "api_key"`) or `auth_ref` (for `auth: "oauth_subscription"`).
-/// All other fields have defaults. `provider` names the WIRE PROTOCOL, and
-/// `"openai"` is the only one implemented so far (see the field doc).
+/// All other fields have defaults. `provider` names the WIRE PROTOCOL, one of
+/// the closed list [`PROVIDERS`] (see the field doc).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LlmParams {
     /// The wire protocol this cell speaks — NOT the vendor (maintainer ruling on
-    /// GH #387). `"openai"` is the OpenAI-compatible HTTP API and the first
-    /// and currently only implemented protocol; the vendor is chosen through
-    /// `base_url` (OpenAI itself, OpenRouter, vLLM, …). Further protocols get
-    /// added when a real consumer concretely needs one (`docs/defer-register.md`
-    /// carries the defer plus its trigger).
+    /// GH #387). `"openai"` is the OpenAI-compatible HTTP API, `"decisions"`
+    /// (GH #957) the typed question/answer wire; the vendor is chosen through
+    /// `base_url` (OpenAI itself, OpenRouter, vLLM, …). The list is closed
+    /// ([`PROVIDERS`]): a protocol is added when a real consumer needs one.
     pub provider: String,
     /// Model id (e.g. `"gpt-4o"`).
     pub model: String,
@@ -517,22 +516,30 @@ impl LlmParams {
     /// direct construction is `pub` only so tests/integration tests can
     /// drive the cell without the full Colony.
     ///
-    /// Validates `provider == "openai"` — the only wire protocol implemented
-    /// so far (cell-types.md § `llm` params; maintainer ruling on GH #387). All
+    /// Validates `provider` against the closed list [`PROVIDERS`] (GH #387,
+    /// GH #957) and, for `decisions`, the params that wire cannot carry. All
     /// other fields are validated structurally by serde. The returned error
     /// message never echoes the `api_key` value (Plan § 12-API_KEY).
     #[doc(hidden)]
     pub fn parse(raw: &serde_json::Value) -> Result<Self, String> {
         let raw = with_cache_knobs_checked(raw)?;
         let p: Self = serde_json::from_value(raw).map_err(|e| format!("invalid LlmParams: {e}"))?;
-        // `provider` is the wire protocol, not the vendor: `"openai"` is the
-        // OpenAI-compatible HTTP API and so far the only protocol with a
-        // translate behind it. A vendor swap happens through `base_url`.
-        if p.provider != "openai" {
+        // `provider` is the wire protocol, not the vendor: a closed list, one
+        // translate behind each name (GH #957). A vendor swap happens through
+        // `base_url`; anything outside the list is a loud spawn reject.
+        if !PROVIDERS.contains(&p.provider.as_str()) {
             return Err(format!(
-                "provider must be 'openai' in phase 8, got '{}'",
+                "provider must be one of {}, got '{}'",
+                PROVIDERS
+                    .iter()
+                    .map(|n| format!("'{n}'"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 p.provider
             ));
+        }
+        if p.is_decisions() {
+            p.check_decisions()?;
         }
         // P10 auth validation — strictly ADDITIVE, after the untouched provider
         // check. Exactly one credential, and the dialect must be able to carry
@@ -623,6 +630,57 @@ impl LlmParams {
             }
         }
         Ok(p)
+    }
+
+    /// GH #957: whether this cell speaks the decisions protocol (typed
+    /// questions in, typed answers out) rather than the chat wire.
+    pub fn is_decisions(&self) -> bool {
+        self.provider == PROVIDER_DECISIONS
+    }
+
+    /// GH #957: what a decisions cell refuses at birth. The decisions wire has
+    /// no tools, no structured-output switch, no stream, no dialect and no
+    /// subscription login, so a param that asks for one of them would be
+    /// silently ignored -- it is refused by name instead
+    /// (`decisions_unsupported_param`). `model` and `base_url` may be empty
+    /// here: the registry or an overlay fills them, and a call without them
+    /// is refused at call time (`decisions_unconfigured`) without a request.
+    fn check_decisions(&self) -> Result<(), String> {
+        let mut named: Vec<String> = Vec::new();
+        if self.wire_dialect.is_some() {
+            named.push("wire_dialect".into());
+        }
+        if self.auth != AuthMode::ApiKey {
+            named.push("auth".into());
+        }
+        if self.cache_mode != CacheMode::Off {
+            named.push("cache_mode".into());
+        }
+        if self.reasoning_effort.is_some() {
+            named.push("reasoning_effort".into());
+        }
+        if self.reasoning.is_some() {
+            named.push("reasoning".into());
+        }
+        if self.thinking_budget.is_some() {
+            named.push("thinking_budget".into());
+        }
+        // `tools`, `tool_choice`, `response_format` and `stream` can only
+        // reach a request through the pass-through map; the decisions wire
+        // takes no pass-through at all, so every key in it is named.
+        named.extend(
+            self.provider_extra
+                .keys()
+                .map(|k| format!("provider_extra.{k}")),
+        );
+        if named.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "decisions_unsupported_param: provider 'decisions' does not take {}",
+                named.join(", ")
+            ))
+        }
     }
 
     /// The wire dialect this cell actually speaks: the explicit
@@ -799,6 +857,14 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     // P14 auth dimension.
     "oauth_client_version",
 ];
+
+/// GH #957: the provider for typed decisions (see `translate_decisions`).
+pub const PROVIDER_DECISIONS: &str = "decisions";
+
+/// GH #957: the wire protocols a `llm` cell speaks -- a closed list. `openai`
+/// is the OpenAI-compatible chat wire (both dialects), `decisions` the typed
+/// question/answer wire. Anything else is a spawn reject naming this list.
+pub const PROVIDERS: &[&str] = &["openai", PROVIDER_DECISIONS];
 
 /// Param keys that may NOT be changed at runtime via a params-update message.
 ///
@@ -1595,6 +1661,63 @@ mod tests {
             err.contains("openai"),
             "error must mention provider constraint: {err}"
         );
+        // GH #957: the reject names the whole closed list.
+        assert!(err.contains("'decisions'"), "{err}");
+    }
+
+    // ───── GH #957: the decisions provider ─────
+
+    fn decisions_raw() -> serde_json::Value {
+        json!({"provider": "decisions", "model": "", "base_url": "", "api_key": "x"})
+    }
+
+    #[test]
+    fn a_decisions_cell_may_be_born_without_model_and_base_url() {
+        let p = LlmParams::parse(&decisions_raw()).expect("empty model is a birth value");
+        assert!(p.is_decisions());
+        assert_eq!(p.model, "");
+    }
+
+    #[test]
+    fn a_decisions_cell_refuses_what_its_wire_cannot_carry_by_name() {
+        for (key, value) in [
+            ("wire_dialect", json!("chat_completions")),
+            ("cache_mode", json!("implicit")),
+            ("reasoning_effort", json!("low")),
+            ("thinking_budget", json!(100)),
+            ("provider_extra", json!({"tools": []})),
+            (
+                "provider_extra",
+                json!({"response_format": {"type": "json_object"}}),
+            ),
+            ("provider_extra", json!({"stream": true})),
+            ("provider_extra", json!({"tool_choice": "auto"})),
+        ] {
+            let mut raw = decisions_raw();
+            raw[key] = value;
+            let err = LlmParams::parse(&raw).expect_err(key);
+            assert!(
+                err.starts_with("decisions_unsupported_param"),
+                "{key}: {err}"
+            );
+            assert!(err.contains(key), "the reject names the param: {err}");
+        }
+    }
+
+    #[test]
+    fn the_provider_stays_frozen_for_a_decisions_cell() {
+        let p = LlmParams::parse(&decisions_raw()).unwrap();
+        let update = json!({"provider": "openai"}).as_object().unwrap().clone();
+        assert!(matches!(
+            p.apply_update(&update),
+            Err(super::ParamUpdateError::Immutable(_))
+        ));
+        let update = json!({"model": "vendor/decider-2"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, _) = p.apply_update(&update).expect("model is a run-time key");
+        assert_eq!(merged.model, "vendor/decider-2");
     }
 
     // ───── GH #890: the provider cache and the window ─────

@@ -36,6 +36,16 @@ it. A conflict in `compose.py` itself is left to `compose.py`: regenerating
 `script_inline` from a file full of markers would hide it in a line no reviewer
 can read.
 
+The catalogue's copies (GH #958) need nothing of their own here, and that is by
+design: `compose.py` carries `catalog.json` verbatim, line for line, so the merge of
+`script_inline` merges the embedded catalogue exactly the way git merges the file;
+and a block copy is a readable field of its target's `config.json`, merged by the
+second pass. What a block-copy target does need is THIS driver, because it is a
+code cell too and carries its own one-line script: every target in
+`display_sync.BLOCK_COPIES` is named in `.gitattributes` beside the display's
+config (pinned in `scripts/tests/test_display_sync.py`). After any merge,
+`display_sync.py --check` says whether the copies still agree.
+
 Enable it once per clone -- `strand.sh new` does this for a fresh worktree:
 
     git config merge.display-sync.name 'display template sync'

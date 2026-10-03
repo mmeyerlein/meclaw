@@ -62,10 +62,11 @@ fn the_catalogue_has_an_input_line() {
     let all = probe();
     assert_eq!(
         all.len(),
-        36,
-        // Twenty-five since `display@2.6.0` put `display-browser` in the
-        // catalogue (GH #767); the count was left at the wave-F number.
-        "six the screen owns, five windows, twenty-five contents"
+        39,
+        // Thirty-nine since GH #958 put `display-card`, `display-steps` and
+        // `display-step` in the catalogue: five the screen owns, four windows,
+        // thirty contents (counted in `catalog.json`, the one source).
+        "five the screen owns, four windows, thirty contents"
     );
     let input = one(&all, "display-input");
     assert_eq!(input["layer"], "content", "{input}");

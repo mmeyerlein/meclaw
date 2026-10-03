@@ -1,4 +1,4 @@
-# `llm-registry@2.4.0`
+# `llm-registry@2.5.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -91,7 +91,7 @@ it is born with.
 |---|---|
 | `model` | `model_id` |
 | `base_url` | `base_url` (empty = the cell keeps its own endpoint) |
-| `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own) |
+| `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own; `decisions` marks the row's protocol and is never sent, see below) |
 | `model_prompt` | `prompt` -- the lines this model needs in every system prompt and no other model does; the brain puts them FIRST in its system part |
 | `cache_mode`, `cache_ttl_s`, `context_window` | the columns of the same names -- how the model's provider caches a prompt prefix and for how many seconds, and its window in tokens; empty or 0 = the cell keeps its own (GH #890) |
 | `reasoning_effort`, `reasoning_wire`, `reasoning`, `thinking_budget`, `max_tokens`, `temperature`, `external_timeout_ms`, `provider_extra` | `package`, a json object; any other key in it is dropped and never reaches a cell |
@@ -103,6 +103,17 @@ credential is a rebirth, not a message. A package that names a `base_url` is tak
 brain whose `base_url_allow` lists that origin (GH #853); a brain without the list refuses the
 whole push, loudly, on its error lane. A row with an empty `base_url` is how a catalogue says
 *this model lives where the cell already points*.
+
+**Two protocols, kept apart (GH #957).** A row whose `wire_dialect` is `decisions` is a typed
+decisions model (typed questions about one state in, typed answers out), served only to a cell
+born with `provider: "decisions"`; every other row is a chat model. A subscriber states its
+protocol with `"protocol": "decisions"` on `subscribe` or in its announcement entry (absent =
+chat), and every resolution -- targeted, global, prose, tier -- skips a row of the other
+protocol, so an override can never hand a decisions cell a chat model or the reverse; `select`
+takes the same `protocol` key. A decisions subscriber may state no start model at all: it is
+born on an empty one and waits for the registry. Its `base_url` is the service root without
+`/v1` (example `https://openrouter.ai/api`; the cell appends `/alpha/decisions`), and its push
+never carries `wire_dialect`. The translator is shown chat rows only.
 
 ## The precedence
 
@@ -504,7 +515,7 @@ pins this: an incident row changes no other table and emits nothing.
 | `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s` | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
 | `tiers` | the index: `tier -> model_id`, with `since`, `decided_by`, `active` | `seed/tiers.jsonl` at instantiation, then `hand` (`remap`) |
 | `overrides` | the replacements: `id`, `scope` (`global` \| `target`), `match`, `model_id`, `since`, `decided_by`, `active`. Since 2.2.0 | `hand` (`override_set`, `override_clear`, `reset`) |
-| `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
+| `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push; `protocol` (`""` = chat, `decisions`, GH #957) | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
 | `translations` | since 2.3.0: one row per answered `(requirement_hash, catalogue_hash)` -- `model_id`, `reason`, `at` | `hand`, after checking the translator's answer |
 | `open_questions` | since 2.3.0: the questions asked and not yet answered -- `requirement_hash`, `catalogue_hash`, `claim`, `at`; a row counts as open until its answer, refusal or failure, 120 s at most; an expired row stays until the next claim of its pair removes it | `hand` |
 | `resolutions` | the journal: every lookup and every push, granted, refused or skipped -- with `rank` and `source_id` (the override id, `tier:<name>` or `translation:<requirement_hash>`) since 2.2.0; since 2.3.0 also every translation stored, refused or failed; since 2.3.1 every refusal a cell sent back (`hand_refused_by_cell`, `hand_refusal_stale`, `hand_refusal_unknown`, `hand_refusal_unaddressed`) | `select`, `hand` |
@@ -534,7 +545,9 @@ the **template** -- the store has a `delete` op and would happily run it.
 2026-09-26** -- id, context window and list price in cents per million tokens, all behind one
 OpenAI-compatible gateway endpoint (`https://openrouter.ai/api/v1`, `chat_completions`), each
 with a sentence of `strengths` for the translator and how its provider caches (`cache_mode`,
-`cache_ttl_s`, the source in its `note`) -- plus one row retired on purpose:
+`cache_ttl_s`, the source in its `note`) -- plus one row retired on purpose and, since GH #957,
+one typed decisions model behind the same gateway (`https://openrouter.ai/api`, `decisions`),
+read 2026-10-02:
 
 | model | context | in / out (cents per million) | status |
 |---|---|---|---|
@@ -545,6 +558,7 @@ with a sentence of `strengths` for the translator and how its provider caches (`
 | `openai/gpt-6-sol` | 1 050 000 | 200 / 1000 | active |
 | `qwen/qwen3.8-flash` | 1 000 000 | 15 / 47 | active |
 | `openai/gpt-5.6-luna` | 1 050 000 | 20 / 120 | retired |
+| `typesafe/jev-1.13` (decisions) | 32 000 | 4 / 0 | active |
 
 `tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5`)
 and `strong` (`anthropic/claude-opus-5.5`). Prices and listings move; every row says in its

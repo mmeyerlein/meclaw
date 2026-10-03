@@ -287,15 +287,20 @@ fn a_line_says_which_channel_it_came_from() {
          (§ 8.4, R-26-1)"
     );
     // The catalogue has to KNOW the prop, or the renderer drops it before the
-    // template ever sees it.
-    let start = compose
-        .find("_c(\"display-chat-line\"")
+    // template ever sees it. Since GH #958 the catalogue is `compose/catalog.json`.
+    let cat: meclaw_core::serde_json::Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(repo("templates/display/compose/catalog.json"))
+            .expect("catalog.json ships"),
+    )
+    .expect("catalog.json parses");
+    let entry = cat["components"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|c| c["name"] == "display-chat-line")
         .expect("`display-chat-line` is not in the catalogue");
-    let rest = &compose[start..];
-    let end = rest.find("}),").map(|i| i + 3).unwrap_or(rest.len());
-    let entry = &rest[..end];
-    assert!(
-        entry.contains("\"at\": \"int\""),
+    assert_eq!(
+        entry["props"]["at"]["type"], "int",
         "`display-chat-line` does not declare `at` as an int prop: § 3.3 -- time \
          points are epoch milliseconds (R-26-1)"
     );

@@ -102,12 +102,12 @@ pub fn have_python() -> bool {
         .is_ok()
 }
 
-fn read_json(p: &std::path::Path) -> Value {
+pub fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     meclaw_core::serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
-fn write_json(p: &std::path::Path, v: &Value) {
+pub fn write_json(p: &std::path::Path, v: &Value) {
     std::fs::create_dir_all(p.parent().expect("a parent")).expect("dirs");
     std::fs::write(
         p,
@@ -116,13 +116,13 @@ fn write_json(p: &std::path::Path, v: &Value) {
     .expect("write");
 }
 
-fn patch_json(p: &std::path::Path, f: impl FnOnce(&mut Value)) {
+pub fn patch_json(p: &std::path::Path, f: impl FnOnce(&mut Value)) {
     let mut v = read_json(p);
     f(&mut v);
     write_json(p, &v);
 }
 
-fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
+pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
     std::fs::create_dir_all(dst).expect("dirs");
     for entry in std::fs::read_dir(src).expect("read_dir") {
         let entry = entry.expect("entry");
@@ -600,7 +600,7 @@ fn canned(text: &str) -> MockResponse {
 /// run beside each other -- and beside a gate, and beside the live colonies of this host --
 /// without a port ever being a reason for a red run.
 pub async fn boot(opts: Boot) -> Colony {
-    boot_inner(opts, false).await
+    boot_inner(opts, false, None).await
 }
 
 /// [`boot`], plus a `voice` cell with the `echo` provider on the mount the screen's
@@ -611,10 +611,20 @@ pub async fn boot(opts: Boot) -> Colony {
 /// behind it (GH #867). Echo, because it needs no credential and sends every frame straight
 /// back -- the page then has audio to count on both sides of its own socket.
 pub async fn boot_with_voice_echo(opts: Boot) -> Colony {
-    boot_inner(opts, true).await
+    boot_inner(opts, true, None).await
 }
 
-async fn boot_inner(opts: Boot, voice_echo: bool) -> Colony {
+/// [`boot`], plus whatever `grow` writes into the tree before the colony boots (GH #959:
+/// the presenter locks put an app hive under `/alex/apps` and rewire the two levels
+/// above it). `grow` gets the colony root; the shipped screen is already in place.
+pub async fn boot_with(opts: Boot, grow: impl FnOnce(&std::path::Path)) -> Colony {
+    boot_inner(opts, false, Some(Box::new(grow))).await
+}
+
+/// The tree hook of [`boot_with`].
+type Grow<'a> = Box<dyn FnOnce(&std::path::Path) + 'a>;
+
+async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Colony {
     let (judge_addr, judge_join, judge_asks) =
         start_mock_server_capturing(vec![canned(&opts.verdict.to_string())]).await;
 
@@ -789,6 +799,10 @@ async fn boot_inner(opts: Boot, voice_echo: bool) -> Colony {
                 }
             }),
         );
+    }
+
+    if let Some(grow) = grow {
+        grow(root);
     }
 
     let surfaces = Arc::new(SurfaceRegistry::new());

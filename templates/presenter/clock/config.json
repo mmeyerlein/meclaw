@@ -1,0 +1,22 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {},
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The presenter's own clock. It carries no schedule of its own: `stage` orders exactly one one-shot, named `deadline`, for the earliest moment a verdict or a window's data is due, and replaces it when that moment moves.",
+    "use_when": "Always, as part of the presenter. It is not a poll (GH #553): a presenter with nothing in flight orders nothing.",
+    "not_in_scope": "No cron, no content: the strike carries an empty body, and what it means is the `in_tick` lane the hive's edge stamps on it."
+  }
+}

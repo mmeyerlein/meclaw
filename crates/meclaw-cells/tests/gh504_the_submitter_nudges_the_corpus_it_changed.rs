@@ -444,15 +444,17 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // librarian at `builder-librarian@2.2.16`.
         // 1.22.0 takes `candidates` and `reads` in `install_app` (GH #949) and pins
         // its librarian at `builder-librarian@2.2.17`.
-        "builder@1.22.0"
+        // 1.23.0 takes `shows` in `install_app` (GH #960) and pins its librarian
+        // at `builder-librarian@2.2.18`.
+        "builder@1.23.0"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],
-        "operator@1.2.4"
+        "operator@1.2.5"
     );
     assert_eq!(
         read("templates/operator/submit/config.json")["cell"]["template"],
-        "submit@2.3.5"
+        "submit@2.4.0"
     );
 }
 

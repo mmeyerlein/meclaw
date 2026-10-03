@@ -571,7 +571,9 @@ fn instances_of(template: &str, cell: &str) -> Vec<(String, Map<String, Value>)>
     out
 }
 
-/// The shipped catalogue's rows, as the store seeds them.
+/// The shipped catalogue's CHAT rows, as the store seeds them. GH #957: a
+/// row whose `wire_dialect` is `decisions` is only ever resolved for a
+/// decisions subscriber, never pushed to the chat brains this sweep walks.
 fn catalogue_rows() -> Vec<Value> {
     let seed = std::fs::read_to_string(repo("templates/llm-registry/store/seed/models.jsonl"))
         .expect("the shipped catalogue");
@@ -585,6 +587,7 @@ fn catalogue_rows() -> Vec<Value> {
             }
         })
         .filter(|row| row["model_id"].as_str().is_some())
+        .filter(|row| row["wire_dialect"] != "decisions")
         .collect()
 }
 

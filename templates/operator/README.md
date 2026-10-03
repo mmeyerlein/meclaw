@@ -1,4 +1,4 @@
-# `operator@1.2.4`
+# `operator@1.2.5`
 
 **One front door into the OS, and one place a submission lives.** A sealed hive at the
 colony shell with one occupant per subject, reached by naming a lane and never a cell. It

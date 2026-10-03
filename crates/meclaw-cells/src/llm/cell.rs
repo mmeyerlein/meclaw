@@ -6,7 +6,7 @@ use crate::llm::translate::{TranslateError, TranslatedResponse};
 use crate::llm::wire::WireError;
 use crate::llm::{
     auth, latency, output, package, params::LlmParams, state, system_gate, tool_scope, translate,
-    translate_responses, wire,
+    translate_decisions, translate_responses, wire,
 };
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
@@ -29,6 +29,8 @@ const CREDENTIAL_PENDING_DETAIL: &str =
 /// turn keeps the sink it arrived with, and the receipt or the answer lands on
 /// the trace that asked for it.
 struct ParkedTurn {
+    /// GH #957: the provider the receipt names in `meta.provider`.
+    provider: &'static str,
     msg: Message,
     sink: OutputSink,
     reply_target: meclaw_core::Path,
@@ -131,7 +133,8 @@ async fn credential_warden(
 /// not — the cell's state belongs to the cell task alone, and everything this
 /// emission needs travels with the turn.
 async fn emit_credential_pending(turn: &ParkedTurn) {
-    output::emit_error(
+    output::emit_error_for(
+        turn.provider,
         &turn.sink,
         turn.reply_target.clone(),
         "credential_pending",
@@ -666,7 +669,8 @@ impl LlmCell {
         detail: &str,
         started_at_unix_ms: i64,
     ) {
-        output::emit_error(
+        output::emit_error_for(
+            &self.params.provider,
             sink,
             target,
             "invalid_input",
@@ -680,6 +684,239 @@ impl LlmCell {
             None,
         )
         .await;
+    }
+
+    /// R3 / GH #421 + GH #457: park a turn of a cell that spends a grant and
+    /// holds no credential yet, and ask the vault once. `None` = parked (or
+    /// refused with its receipt); `Some` hands the message back to run now.
+    /// One guard for every lane -- both chat dialects and, since GH #957, the
+    /// decisions wire.
+    async fn park_without_credential(
+        &mut self,
+        msg: Message,
+        sink: &OutputSink,
+        reply_target: Path,
+        started_at_unix_ms: i64,
+        clock: &latency::PhaseClock,
+    ) -> Option<(Message, Path)> {
+        if self.bearer().is_some() {
+            return Some((msg, reply_target));
+        }
+        let Some(grant) = self
+            .params
+            .credential_grant_id
+            .clone()
+            .filter(|g| !g.is_empty())
+        else {
+            return Some((msg, reply_target));
+        };
+        let ask_target = reply_target.clone();
+        let turn = ParkedTurn {
+            provider: if self.params.is_decisions() {
+                crate::llm::params::PROVIDER_DECISIONS
+            } else {
+                "openai"
+            },
+            msg,
+            sink: sink.clone(),
+            reply_target,
+            started_at_unix_ms,
+        };
+        match self.park_turn(turn) {
+            ParkOutcome::Asked => {
+                self.ask_for_credential(sink, &ask_target, &grant).await;
+            }
+            ParkOutcome::Parked => {}
+            ParkOutcome::Refused(turn) => {
+                emit_credential_pending(&turn).await;
+                self.log_phases(clock, "credential_pending");
+            }
+        }
+        None
+    }
+
+    /// GH #957: one call of a `decisions` cell. The body's `decide` slot is
+    /// read (neither `system` nor `messages` is), validated, translated in
+    /// `translate_decisions`, sent once without a stream, and answered with
+    /// exactly one emission: the whole decision, or an error on the error
+    /// path -- never half of one. Nothing reaches `cell.db`: a decision has
+    /// no history.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_decisions(
+        &mut self,
+        msg: Message,
+        content_obj: &meclaw_core::serde_json::Map<String, Value>,
+        has_params: bool,
+        sink: &OutputSink,
+        reply_target: Path,
+        started_at_unix_ms: i64,
+        mut clock: latency::PhaseClock,
+    ) {
+        let elapsed = || (unix_ms_now() - started_at_unix_ms).max(0) as u64;
+        let request = DecisionsRequest {
+            messages: content_obj
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            decide: content_obj.get("decide").cloned(),
+        };
+        // A params-only push (the registry's `{system: {}, params}` form) was
+        // applied above and is answered with silence, as on the chat lanes.
+        if has_params && !content_obj.contains_key("decide") {
+            return;
+        }
+        if content_obj.contains_key("attachments") {
+            decisions_error(
+                sink,
+                reply_target,
+                &request,
+                "decisions_unsupported_param",
+                "provider 'decisions' takes no attachments",
+                "parse",
+                started_at_unix_ms,
+                0,
+                None,
+            )
+            .await;
+            return;
+        }
+        let asked = match translate_decisions::parse_decide(content_obj.get("decide")) {
+            Ok(a) => a,
+            Err(detail) => {
+                decisions_error(
+                    sink,
+                    reply_target,
+                    &request,
+                    "decide_invalid",
+                    &detail,
+                    "parse",
+                    started_at_unix_ms,
+                    0,
+                    None,
+                )
+                .await;
+                return;
+            }
+        };
+        // Born on an empty key, filled by the registry or an overlay: until
+        // then there is nothing to call, and the caller hears so at once.
+        let base = self.params.base_url.clone().unwrap_or_default();
+        if self.params.model.trim().is_empty() || base.trim().is_empty() {
+            decisions_error(
+                sink,
+                reply_target,
+                &request,
+                "decisions_unconfigured",
+                "provider 'decisions' needs a model and a base_url before it can be asked",
+                "parse",
+                started_at_unix_ms,
+                0,
+                None,
+            )
+            .await;
+            return;
+        }
+        let request_json = match translate_decisions::build_request(&self.params.model, &asked) {
+            Ok(r) => r,
+            Err(detail) => {
+                decisions_error(
+                    sink,
+                    reply_target,
+                    &request,
+                    "decide_invalid",
+                    &detail,
+                    "translate",
+                    started_at_unix_ms,
+                    0,
+                    None,
+                )
+                .await;
+                return;
+            }
+        };
+        let Some((_msg, reply_target)) = self
+            .park_without_credential(msg, sink, reply_target, started_at_unix_ms, &clock)
+            .await
+        else {
+            return;
+        };
+        clock.translated();
+        let url = crate::llm::params::endpoint_url(&base, translate_decisions::DECISIONS_PATH);
+        let timeout = std::time::Duration::from_millis(self.params.external_timeout_ms);
+        let attribution_headers = translate::build_attribution_headers(&self.params);
+        let (wire_result, wire_timings) = wire::call_openai_timed(
+            &self.http,
+            &url,
+            self.bearer(),
+            &attribution_headers,
+            &request_json,
+            timeout,
+        )
+        .await;
+        clock.wired(wire_timings);
+        let response_json = match wire_result {
+            Ok(json) => json,
+            Err(err) => {
+                let code = wire::wire_error_to_code(&err);
+                decisions_error(
+                    sink,
+                    reply_target,
+                    &request,
+                    code,
+                    &format!("wire: {err:?}"),
+                    "wire",
+                    started_at_unix_ms,
+                    elapsed(),
+                    wire::wire_error_meta(&err),
+                )
+                .await;
+                self.log_phases(&clock, code);
+                return;
+            }
+        };
+        let decided = match translate_decisions::parse_response(&response_json, &asked) {
+            Ok(d) => d,
+            Err(detail) => {
+                decisions_error(
+                    sink,
+                    reply_target,
+                    &request,
+                    "decision_incomplete",
+                    &detail,
+                    "parse",
+                    started_at_unix_ms,
+                    elapsed(),
+                    None,
+                )
+                .await;
+                self.log_phases(&clock, "decision_incomplete");
+                return;
+            }
+        };
+        let model = decided
+            .model
+            .clone()
+            .unwrap_or_else(|| self.params.model.clone());
+        let usage = output::HopUsage {
+            tokens_prompt: decided.tokens_prompt,
+            tokens_completion: decided.tokens_completion,
+            tokens_cached: None,
+            tokens_cache_write: None,
+            cost: decided.cost,
+        };
+        output::emit_decision(
+            sink,
+            reply_target,
+            decided.answers,
+            usage,
+            &model,
+            decided.response_id.as_deref().unwrap_or_default(),
+            started_at_unix_ms,
+            elapsed(),
+        )
+        .await;
+        self.log_phases(&clock, "ok");
     }
 
     /// The credential this cell presents, in precedence order.
@@ -734,6 +971,9 @@ impl LlmCell {
 
     /// The wire dialect as the string that appears in the instrumentation.
     fn dialect_name(&self) -> &'static str {
+        if self.params.is_decisions() {
+            return crate::llm::params::PROVIDER_DECISIONS;
+        }
         match self.params.effective_wire_dialect() {
             WireDialect::ChatCompletions => "chat_completions",
             WireDialect::Responses => "responses",
@@ -817,6 +1057,54 @@ fn non_image_detail(blob_id: meclaw_core::Uuid, mime: &str) -> String {
         "attachment {blob_id}: mime type '{mime}' is not an image; \
          the llm cell consumes image/* attachments only"
     )
+}
+
+/// GH #957: the error path of a `decisions` cell -- the shared error body
+/// (`finish_reason` `error`, `error_code`, `meta.error`), `meta.provider`
+/// `decisions`, and the request handed on: the caller's `messages` and the
+/// incoming `decide` slot ride in the body unchanged, so a failover edge onto
+/// a second `decisions` cell has something to decide (review I-1,
+/// OR-DP-59; without it the second cell answered `decide_invalid`).
+#[allow(clippy::too_many_arguments)]
+async fn decisions_error(
+    sink: &OutputSink,
+    target: Path,
+    request: &DecisionsRequest,
+    code: &str,
+    detail: &str,
+    source: &str,
+    started_at_unix_ms: i64,
+    latency_ms: u64,
+    extra: Option<meclaw_core::serde_json::Map<String, Value>>,
+) {
+    let carry = request.decide.as_ref().map(|d| {
+        let mut m = meclaw_core::serde_json::Map::new();
+        m.insert("decide".into(), d.clone());
+        m
+    });
+    output::emit_error_carrying(
+        crate::llm::params::PROVIDER_DECISIONS,
+        sink,
+        target,
+        code,
+        detail,
+        source,
+        request.messages.clone(),
+        started_at_unix_ms,
+        latency_ms,
+        None,
+        None,
+        extra,
+        None,
+        carry,
+    )
+    .await;
+}
+
+/// The body slots a failed decision hands on (see `decisions_error`).
+struct DecisionsRequest {
+    messages: Vec<Value>,
+    decide: Option<Value>,
 }
 
 /// Returns the current wall-clock time as Unix milliseconds (i64). Used for
@@ -1070,7 +1358,8 @@ impl LlmCell {
             let content = match &msg.body {
                 Body::Inline(v) => v.clone(),
                 Body::Blob(_) => {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         "provider_error",
@@ -1090,7 +1379,8 @@ impl LlmCell {
             let content_obj = match content.as_object() {
                 Some(o) => o,
                 None => {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         "provider_error",
@@ -1115,7 +1405,8 @@ impl LlmCell {
             let tool_scope = match tool_scope::ToolScope::parse(content_obj.get("tool_scope")) {
                 Ok(s) => s,
                 Err(detail) => {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         "invalid_input",
@@ -1165,7 +1456,8 @@ impl LlmCell {
                     sink.sender_path().as_str()
                 );
                 if !is_turn {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         "invalid_input",
@@ -1194,7 +1486,8 @@ impl LlmCell {
                     None => {
                         // GH #863: an own push refused names itself (no model:
                         // the slot is no object).
-                        output::emit_error_with_hop(
+                        output::emit_error_with_hop_for(
+                            &self.params.provider,
                             sink,
                             reply_target,
                             "invalid_input",
@@ -1234,7 +1527,8 @@ impl LlmCell {
                                 })
                                 .await;
                             if let Err(e) = persist_result {
-                                output::emit_error_with_hop(
+                                output::emit_error_with_hop_for(
+                                    &self.params.provider,
                                     sink,
                                     reply_target,
                                     "provider_error",
@@ -1272,7 +1566,8 @@ impl LlmCell {
                             // GH #863: the guard or the immutable rule said no. Addressed
                             // to this cell, the refusal names the push and the model it
                             // named, so the registry learns what this cell does NOT run.
-                            output::emit_error_with_hop(
+                            output::emit_error_with_hop_for(
+                                &self.params.provider,
                                 sink,
                                 reply_target,
                                 "invalid_input",
@@ -1366,6 +1661,24 @@ impl LlmCell {
                 return;
             }
 
+            // GH #957: the provider fork. A `decisions` cell reads its own
+            // `decide` slot and none of the chat path below (no system tree,
+            // no history, no tools) -- one `match` on the provider, here,
+            // because everything past this point is the chat wire's.
+            if self.params.is_decisions() {
+                self.run_decisions(
+                    msg,
+                    content_obj,
+                    has_params,
+                    sink,
+                    reply_target,
+                    started_at_unix_ms,
+                    clock,
+                )
+                .await;
+                return;
+            }
+
             let system = content_obj.get("system");
             let messages = content_obj.get("messages");
             if system.is_none() && messages.is_none() {
@@ -1373,7 +1686,8 @@ impl LlmCell {
                 if has_params {
                     return;
                 }
-                output::emit_error(
+                output::emit_error_for(
+                    &self.params.provider,
                     sink,
                     reply_target,
                     "provider_error",
@@ -1421,32 +1735,12 @@ impl LlmCell {
             // delivered box does not open (`refuse_parked`), or the bound is
             // full (here). Every one of them names a message; none of them is
             // silence.
-            if self.bearer().is_none()
-                && let Some(grant) = self
-                    .params
-                    .credential_grant_id
-                    .clone()
-                    .filter(|g| !g.is_empty())
-            {
-                let ask_target = reply_target.clone();
-                let turn = ParkedTurn {
-                    msg,
-                    sink: sink.clone(),
-                    reply_target,
-                    started_at_unix_ms,
-                };
-                match self.park_turn(turn) {
-                    ParkOutcome::Asked => {
-                        self.ask_for_credential(sink, &ask_target, &grant).await;
-                    }
-                    ParkOutcome::Parked => {}
-                    ParkOutcome::Refused(turn) => {
-                        emit_credential_pending(&turn).await;
-                        self.log_phases(&clock, "credential_pending");
-                    }
-                }
+            let Some((_msg, reply_target)) = self
+                .park_without_credential(msg, sink, reply_target, started_at_unix_ms, &clock)
+                .await
+            else {
                 return;
-            }
+            };
 
             // Step 3 (prep): validate the messages-slot shape. If present but
             // NOT a JSON array → parse-error (same code path as other parse
@@ -1455,7 +1749,8 @@ impl LlmCell {
                 Some(v) => match v.as_array() {
                     Some(arr) => Some(arr.clone()),
                     None => {
-                        output::emit_error(
+                        output::emit_error_for(
+                            &self.params.provider,
                             sink,
                             reply_target,
                             "provider_error",
@@ -1561,7 +1856,8 @@ impl LlmCell {
                         .await;
                     }
                     state::PersistError::Sql(e) => {
-                        output::emit_error(
+                        output::emit_error_for(
+                            &self.params.provider,
                             sink,
                             reply_target,
                             "provider_error",
@@ -1597,7 +1893,8 @@ impl LlmCell {
             let system_tree = match db.call(|conn| state::read_system_tree(conn)).await {
                 Ok(t) => t,
                 Err(e) => {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         "provider_error",
@@ -1625,7 +1922,8 @@ impl LlmCell {
             // extract_tools (uniform story for `tools.*` residue) and before
             // the P10 dialect fork (covers both wires).
             if let Err(detail) = state::check_text_id_residue(&system_tree) {
-                output::emit_error(
+                output::emit_error_for(
+                    &self.params.provider,
                     sink,
                     reply_target,
                     "provider_error",
@@ -1660,7 +1958,8 @@ impl LlmCell {
                     }
                 },
                 Err(e) => {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         translate::translate_error_to_code(&e),
@@ -1700,7 +1999,8 @@ impl LlmCell {
             {
                 Ok(parts) => parts,
                 Err((code, detail)) => {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         code,
@@ -1793,7 +2093,8 @@ impl LlmCell {
                     }
                     Err(f) => {
                         let code = f.code;
-                        output::emit_error(
+                        output::emit_error_for(
+                            &self.params.provider,
                             sink,
                             reply_target,
                             f.code,
@@ -1832,7 +2133,8 @@ impl LlmCell {
                     r
                 }
                 Err(e) => {
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         translate::translate_error_to_code(&e),
@@ -1898,7 +2200,8 @@ impl LlmCell {
                 Ok(json) => json,
                 Err(err) => {
                     let code = wire::wire_error_to_code(&err);
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         code,
@@ -1928,7 +2231,8 @@ impl LlmCell {
                 Err(e) => {
                     let resp_model = response_json.get("model").and_then(|v| v.as_str());
                     let resp_id = response_json.get("id").and_then(|v| v.as_str());
-                    output::emit_error(
+                    output::emit_error_for(
+                        &self.params.provider,
                         sink,
                         reply_target,
                         translate::translate_error_to_code(&e),

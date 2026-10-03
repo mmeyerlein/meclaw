@@ -124,7 +124,7 @@ closed, is not one of the four.
 
 What a browser needs: a **secure context** for the microphone, which means an
 `https://` origin or `localhost` / `127.0.0.1`. On a plain `http://` LAN address
-there is no microphone to open, and `display@2.8.1` says so on the page.
+there is no microphone to open, and `display@2.9.0` says so on the page.
 
 ## Audio frames
 

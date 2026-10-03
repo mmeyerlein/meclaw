@@ -21,8 +21,9 @@ use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{CellOutput, OutputSink, Path};
 
 /// Every key this module writes into a hop header, with its JSON type -- the
-/// success path ([`emit_assistant_turn`]) and the error path
-/// ([`emit_error_with_hop`]) together, each written only when it has a value.
+/// success path ([`emit_assistant_turn`]), the error path
+/// ([`emit_error_with_hop_for`]) and the decisions path ([`emit_decision`])
+/// together, each written only when it has a value.
 ///
 /// GH #890 (F15 of the gate wave, OR-KX-G8): the header grew keys the shipped
 /// `llm` cells never declared -- `latency_ms`, `tokens_cached` and `cost` were
@@ -213,6 +214,63 @@ pub(crate) async fn emit_assistant_turn(
         .await;
 }
 
+/// GH #957 success path of a `decisions` cell: ONE emission carrying the
+/// whole verdict, `{decision: {answers, model, ms}}`, beside an empty
+/// `messages` slot (a UBF body needs one of its three slots, and a decision
+/// is no conversation turn).
+///
+/// The hop header carries only keys of [`HOP_KEYS`]: `finish_reason` `stop`
+/// (so an edge tells it from the error path's `error` the way it does for a
+/// chat answer), `model`, `latency_ms` and the usage figures the service
+/// reported. A caller's correlation is NOT written here: `hop` dies at every
+/// emission and `context` travels on unchanged, so the caller carries its own
+/// key in `context` (OR-DP-11) and this cell never learns its name.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn emit_decision(
+    sink: &OutputSink,
+    target: Path,
+    answers: Map<String, Value>,
+    usage: HopUsage,
+    model: &str,
+    response_id: &str,
+    started_at_unix_ms: i64,
+    latency_ms: u64,
+) {
+    let mut header = Map::new();
+    header.insert("finish_reason".into(), Value::String("stop".into()));
+    usage.write_into(&mut header);
+    header.insert("latency_ms".into(), Value::from(latency_ms));
+    header.insert("model".into(), Value::String(model.to_string()));
+
+    let mut decision = Map::new();
+    decision.insert("answers".into(), Value::Object(answers));
+    decision.insert("model".into(), Value::String(model.to_string()));
+    decision.insert("ms".into(), Value::from(latency_ms));
+
+    let mut meta = Map::new();
+    meta.insert(
+        "provider".into(),
+        Value::String(crate::llm::params::PROVIDER_DECISIONS.into()),
+    );
+    meta.insert("model".into(), Value::String(model.to_string()));
+    meta.insert("response_id".into(), Value::String(response_id.to_string()));
+    meta.insert("latency_ms".into(), Value::from(latency_ms));
+    meta.insert("started_at".into(), Value::from(started_at_unix_ms));
+
+    let mut body = Map::new();
+    body.insert("decision".into(), Value::Object(decision));
+    body.insert("messages".into(), Value::Array(Vec::new()));
+    body.insert("meta".into(), Value::Object(meta));
+    body.insert("header".into(), Value::Object(header));
+
+    let _ = sink
+        .push(CellOutput {
+            target,
+            content: Value::Object(body),
+        })
+        .await;
+}
+
 /// Error-path emission (Gate-1 final): `messages` is `input_messages` UNCHANGED
 /// so failover edges keyed on `finish_reason="error"` can route the original
 /// conversation to a backup llm-cell. `header.error_code` carries the typed
@@ -238,7 +296,42 @@ pub(crate) async fn emit_error(
     response_id: Option<&str>,
     extra_error_meta: Option<Map<String, Value>>,
 ) {
-    emit_error_with_hop(
+    emit_error_for(
+        "openai",
+        sink,
+        target,
+        error_code,
+        detail,
+        error_source,
+        input_messages,
+        started_at_unix_ms,
+        latency_ms,
+        response_model,
+        response_id,
+        extra_error_meta,
+    )
+    .await;
+}
+
+/// [`emit_error`] naming the cell's own provider in `meta.provider`
+/// (GH #957) -- what every call site inside the cell uses.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn emit_error_for(
+    provider: &str,
+    sink: &OutputSink,
+    target: Path,
+    error_code: &str,
+    detail: &str,
+    error_source: &str,
+    input_messages: Vec<Value>,
+    started_at_unix_ms: i64,
+    latency_ms: u64,
+    response_model: Option<&str>,
+    response_id: Option<&str>,
+    extra_error_meta: Option<Map<String, Value>>,
+) {
+    emit_error_with_hop_for(
+        provider,
         sink,
         target,
         error_code,
@@ -264,8 +357,12 @@ pub(crate) async fn emit_error(
 /// other error keeps the shape it had. A key the fixed header already carries
 /// (`finish_reason`, `error_code`, `latency_ms`) is never overwritten: an error
 /// stays an error whatever the caller adds.
+///
+/// GH #957: `provider` names the wire that failed in `meta.provider`,
+/// instead of a fixed `openai`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn emit_error_with_hop(
+pub(crate) async fn emit_error_with_hop_for(
+    provider: &str,
     sink: &OutputSink,
     target: Path,
     error_code: &str,
@@ -278,6 +375,46 @@ pub(crate) async fn emit_error_with_hop(
     response_id: Option<&str>,
     extra_error_meta: Option<Map<String, Value>>,
     extra_hop: Option<Map<String, Value>>,
+) {
+    emit_error_carrying(
+        provider,
+        sink,
+        target,
+        error_code,
+        detail,
+        error_source,
+        input_messages,
+        started_at_unix_ms,
+        latency_ms,
+        response_model,
+        response_id,
+        extra_error_meta,
+        extra_hop,
+        None,
+    )
+    .await;
+}
+
+/// The shared error body, plus `carry`: body slots of the incoming request
+/// handed on unchanged (GH #957, review I-1 / OR-DP-59: a failed `decisions`
+/// call carries its `decide` slot so a failover cell has something to
+/// decide). A carried key never overwrites `messages`, `meta` or `header`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn emit_error_carrying(
+    provider: &str,
+    sink: &OutputSink,
+    target: Path,
+    error_code: &str,
+    detail: &str,
+    error_source: &str,
+    input_messages: Vec<Value>,
+    started_at_unix_ms: i64,
+    latency_ms: u64,
+    response_model: Option<&str>,
+    response_id: Option<&str>,
+    extra_error_meta: Option<Map<String, Value>>,
+    extra_hop: Option<Map<String, Value>>,
+    carry: Option<Map<String, Value>>,
 ) {
     let mut header = Map::new();
     header.insert("finish_reason".into(), Value::String("error".into()));
@@ -305,7 +442,7 @@ pub(crate) async fn emit_error_with_hop(
     }
 
     let mut meta = Map::new();
-    meta.insert("provider".into(), Value::String("openai".into()));
+    meta.insert("provider".into(), Value::String(provider.into()));
     meta.insert("latency_ms".into(), Value::from(latency_ms));
     meta.insert("started_at".into(), Value::from(started_at_unix_ms));
     meta.insert("error".into(), Value::Object(error_obj));
@@ -320,6 +457,9 @@ pub(crate) async fn emit_error_with_hop(
     body.insert("messages".into(), Value::Array(input_messages));
     body.insert("meta".into(), Value::Object(meta));
     body.insert("header".into(), Value::Object(header));
+    for (k, v) in carry.unwrap_or_default() {
+        body.entry(k).or_insert(v);
+    }
 
     let _ = sink
         .push(CellOutput {
@@ -593,9 +733,22 @@ mod tests {
         )
         .await;
         let error = rx.recv().await.unwrap().content["header"].clone();
+        // GH #957: the decisions emitter writes from the same list.
+        emit_decision(
+            &sink,
+            Path::new("/sink"),
+            Map::new(),
+            full,
+            "vendor/decider",
+            "id-1",
+            1,
+            1,
+        )
+        .await;
+        let decision = rx.recv().await.unwrap().content["header"].clone();
         let named: std::collections::BTreeSet<&str> = HOP_KEYS.iter().map(|(k, _)| *k).collect();
         let mut written = std::collections::BTreeSet::new();
-        for header in [&success, &error] {
+        for header in [&success, &error, &decision] {
             for (key, value) in header.as_object().unwrap() {
                 let (_, ty) = HOP_KEYS
                     .iter()
@@ -650,7 +803,37 @@ mod tests {
         assert!(em.content["meta"].get("response_id").is_none());
     }
 
-    /// GH #863: `emit_error` is `emit_error_with_hop` without extra keys, and
+    /// GH #957: a decision is ONE emission -- the verdict, an empty `messages`
+    /// slot (UBF), `meta.provider` = `decisions`, `finish_reason` `stop`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emit_decision_is_one_whole_body() {
+        let (sink, mut rx) = mk_sink();
+        let mut answers = Map::new();
+        answers.insert("wants".into(), json!({"yes": 0.8}));
+        emit_decision(
+            &sink,
+            Path::new("/sink"),
+            answers,
+            HopUsage::default(),
+            "vendor/decider",
+            "id-1",
+            7,
+            42,
+        )
+        .await;
+        let em = rx.recv().await.unwrap().content;
+        assert_eq!(
+            em["decision"],
+            json!({"answers": {"wants": {"yes": 0.8}}, "model": "vendor/decider", "ms": 42})
+        );
+        assert_eq!(em["messages"], json!([]));
+        assert_eq!(em["meta"]["provider"], "decisions");
+        assert_eq!(em["header"]["finish_reason"], "stop");
+        meclaw_core::validate_ubf_body(&em).expect("a decision is a UBF body");
+        assert!(rx.try_recv().is_err(), "exactly one emission");
+    }
+
+    /// GH #863: `emit_error` is `emit_error_with_hop_for` without extra keys, and
     /// that is byte for byte the body it always emitted -- every error that is
     /// not the refusal of an own push keeps its shape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -672,7 +855,8 @@ mod tests {
         )
         .await;
         let plain = rx.recv().await.unwrap().content;
-        emit_error_with_hop(
+        emit_error_with_hop_for(
+            "openai",
             &sink,
             Path::new("/sink"),
             "invalid_input",
@@ -708,7 +892,8 @@ mod tests {
         extra.insert("refused_subscriber".into(), json!("/a/talky/brain"));
         extra.insert("refused_model".into(), json!("m2"));
         extra.insert("finish_reason".into(), json!("stop"));
-        emit_error_with_hop(
+        emit_error_with_hop_for(
+            "openai",
             &sink,
             Path::new("/sink"),
             "invalid_input",

@@ -13,6 +13,7 @@ evening because three sessions moved the living tree while the gates ran
 """
 
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -194,6 +195,109 @@ class TheCheapMarkCheck(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 2, done.stdout)
         self.assertIn("usage", done.stderr)
+
+
+class TheCatalogueCopies(unittest.TestCase):
+    """`compose/catalog.json` is the one source of the screen's components (GH #958).
+
+    `display_sync.py` embeds it into `compose.py` as `CATALOG_JSON` and writes a
+    block copy into every target of `BLOCK_COPIES`; `--check` is the verdict over
+    every copy and exits 1 on drift. Pinned against throw-away copies of the
+    template, never by editing the real one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name) / "compose"
+        self.root.mkdir()
+        for name in ("compose.py", "display-dna.css", "catalog.json", "config.json"):
+            (self.root / name).write_bytes((display_sync.COMPOSE_ROOT / name).read_bytes())
+        self.templates = pathlib.Path(self.tmp.name) / "templates"
+        (self.templates / "reader").mkdir(parents=True)
+        (self.templates / "reader" / "config.json").write_text(
+            '{"params": {"other": 1}}\n', encoding="utf-8")
+        self.targets = [("reader/config.json", ("params", "catalog"))]
+
+    def catalog(self):
+        return json.loads((self.root / "catalog.json").read_text(encoding="utf-8"))
+
+    def test_the_shipped_copies_agree(self):
+        done = subprocess.run([sys.executable, str(SYNC), "--check"],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_the_cli_exits_one_on_drift(self):
+        """`--check` over the command line, in a throw-away tree shaped like the
+        repository (the script finds its roots from its own path)."""
+        tree = pathlib.Path(self.tmp.name) / "repo"
+        (tree / "scripts").mkdir(parents=True)
+        for name in ("display_sync.py", "display_sheet_strip.py"):
+            (tree / "scripts" / name).write_bytes((REPO / "scripts" / name).read_bytes())
+        compose = tree / "templates" / "display" / "compose"
+        compose.mkdir(parents=True)
+        for name in ("compose.py", "display-dna.css", "catalog.json", "config.json"):
+            (compose / name).write_bytes((self.root / name).read_bytes())
+        # The shipped block-copy targets travel too: `--check` reads every one of them.
+        for rel, _keys in display_sync.BLOCK_COPIES:
+            (tree / "templates" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tree / "templates" / rel).write_bytes((REPO / "templates" / rel).read_bytes())
+        cli = [sys.executable, str(tree / "scripts" / "display_sync.py"), "--check"]
+        done = subprocess.run(cli, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        cat = self.catalog()
+        cat["components"][0]["describe"] = "something else"
+        (compose / "catalog.json").write_text(json.dumps(cat), encoding="utf-8")
+        done = subprocess.run(cli, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("DRIFT: compose.py CATALOG_JSON differs from catalog.json", done.stdout)
+
+    def test_an_edited_catalogue_is_drift_and_a_verdict(self):
+        cat = self.catalog()
+        cat["components"][0]["describe"] = "something else"
+        (self.root / "catalog.json").write_text(json.dumps(cat), encoding="utf-8")
+        drift = display_sync.check_copies(self.root, targets=[])
+        self.assertEqual(len(drift), 1, drift)
+        self.assertIn("CATALOG_JSON", drift[0])
+
+    def test_the_embedding_round_trips(self):
+        blob = display_sync.catalog_blob((self.root / "catalog.json").read_text(encoding="utf-8"))
+        py = display_sync.embed_catalog('A = 1\nCATALOG_JSON = r"""old"""\nB = 2\n', blob)
+        self.assertEqual(display_sync.embedded(py, "CATALOG_JSON"), blob)
+        self.assertEqual(json.loads(blob), self.catalog())
+
+    def test_the_block_copy_carries_blocks_and_four_fields(self):
+        cat = self.catalog()
+        blocks = display_sync.block_copy(cat)
+        names = [b["name"] for b in blocks]
+        self.assertEqual(names, [c["name"] for c in cat["components"] if c.get("block")])
+        self.assertIn("display-card", names)
+        self.assertNotIn("display-shell", names)
+        for block in blocks:
+            self.assertEqual(sorted(block), sorted(display_sync.BLOCK_FIELDS), block["name"])
+
+    def test_a_block_target_is_written_and_then_judged(self):
+        self.assertEqual(display_sync.check_copies(
+            self.root, targets=self.targets, templates=self.templates),
+            ["reader/config.json params.catalog differs from the block copy of catalog.json"])
+        display_sync.write_block_copies(self.catalog(), self.targets, self.templates)
+        cfg = json.loads((self.templates / "reader" / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["params"]["other"], 1, "the rest of the config is kept")
+        self.assertEqual(display_sync.check_copies(
+            self.root, targets=self.targets, templates=self.templates), [])
+
+    def test_a_drifted_script_copy_is_named(self):
+        cfg = json.loads((self.root / "config.json").read_text(encoding="utf-8"))
+        cfg["params"]["script_inline"] += "# hand edit\n"
+        (self.root / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertEqual(display_sync.check_copies(self.root, targets=[]),
+                         ["config.json script_inline differs from compose.py"])
+
+    def test_every_block_target_merges_with_the_driver(self):
+        """A block-copy target is a code cell with a one-line script of its own, so
+        the merge driver has to be named for it the way it is for the display."""
+        attrs = (REPO / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        for rel, _keys in display_sync.BLOCK_COPIES + [("display/compose/config.json", ())]:
+            self.assertIn("templates/%s merge=display-sync" % rel, attrs, rel)
 
 
 if __name__ == "__main__":

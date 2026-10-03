@@ -1,0 +1,206 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "turn",
+          "because": "somebody said something. Every turn with text becomes ONE call to the decider over every known topic (R-29-6): there are no trigger words, and the state of the call is the turn's text and nothing else"
+        },
+        {
+          "route": "mutation_committed",
+          "because": "the graph moved, and an app with `shows` may have arrived or changed. Each one asks every such app for its topics once; a code cell has no boot event, so the receipt of this hive's own installation is the first ask"
+        },
+        {
+          "route": "show_topics",
+          "because": "an app said its topics (`{topics: [...]}`, the manifest of the template README). Each topic is checked against the catalogue copy and replaces that app's rows; a malformed, duplicate or overflowing topic is refused out loud on `in_show {op: refused}`, never kept quietly"
+        },
+        {
+          "route": "show_data",
+          "because": "the owning app answered a data request: `{topic, turn_id, sets: {<name>: {value?, rows?, audience_set}}}`. Several partial answers may come; each can release blocks, and only data whose `audience_set` covers the screen's round counts"
+        },
+        {
+          "route": "event",
+          "because": "the screen reports a gesture on a presenter window. The windows carry no control, so it is heard and answered with nothing"
+        },
+        {
+          "route": "receipt",
+          "because": "the screen refused a write. It is heard and answered with nothing: the journal row of the turn already says what was shown"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package for the decider, pushed by the colony's llm-registry: a PARAMS-ONLY body that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./decide`, the one llm cell of this hive, past `stage`, because a params body is not a request. Draw it only from the registry's `update` lane, restamped `in_model`; as shipped nothing is drawn and the decider runs on its start values"
+        }
+      ],
+      "emits": [
+        {
+          "route": "view",
+          "because": "a sure verdict opened a window, or a block was placed in it. One view per topic, `show-<topic>`, on the canvas; which surface holds it is the wiring's question"
+        },
+        {
+          "route": "withdraw",
+          "because": "the window waited `data_wait_ms` and no block could be placed: an open window with nothing in it is no window"
+        },
+        {
+          "route": "in_show",
+          "because": "`{op: topics}` to every app with `shows`, `{op: data, topic, request, lead, also, turn_id, sets}` to the one app that owns the chosen topic (`hop.show_app`), `{op: refused, topic, reason}` to an app whose topic was refused"
+        },
+        {
+          "route": "error",
+          "because": "a store bundle or a clock order failed. It leaves rather than being logged, because a presenter that kept a fault to itself would be a screen that quietly stopped answering"
+        },
+        {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that `./decide` refused: its error, with the decider's path in `hop.refused_subscriber` and the named model in `hop.refused_model`, leaves here instead of reaching `stage` as a verdict. A parent without an edge for it dead-letters it `no_route`, loudly"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./stage",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'mutation_committed' || hop.route == 'show_topics' || hop.route == 'show_data' || hop.route == 'event' || hop.route == 'receipt')",
+          "modifier": {
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./decide",
+          "condition": "has(hop.route) && hop.route == 'in_model'"
+        },
+        {
+          "from": "./stage",
+          "to": "./decide",
+          "condition": "has(hop.route) && (hop.route == 'decide')",
+          "modifier": {
+            "set_context": {
+              "show_origin": "'decide'",
+              "show_id": "hop.show_id"
+            },
+            "delete_context": [
+              "show_phase"
+            ]
+          }
+        },
+        {
+          "from": "./decide",
+          "to": "./stage",
+          "condition": "!has(hop.refused_subscriber) && has(context.show_origin) && context.show_origin == 'decide' && has(context.show_id)",
+          "modifier": {
+            "set_hop": {
+              "show_id": "context.show_id",
+              "route": "'in_decision'"
+            },
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": "./decide",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": "./stage",
+          "to": "./store",
+          "condition": "has(hop.route) && (hop.route == 'store')",
+          "modifier": {
+            "set_context": {
+              "show_origin": "'store'",
+              "show_phase": "hop.phase"
+            },
+            "delete_context": [
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./stage",
+          "condition": "has(context.show_origin) && context.show_origin == 'store'"
+        },
+        {
+          "from": "./stage",
+          "to": "./clock",
+          "condition": "has(hop.route) && (hop.route == 'clock')",
+          "modifier": {
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": "./clock",
+          "to": "./stage",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'deadline'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tick'"
+            },
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": "./clock",
+          "to": "./stage",
+          "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tick_error'"
+            },
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": "./stage",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'in_show' || hop.route == 'error')",
+          "modifier": {
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "The presenter: when the decider is sure that something on the screen helps with what was just said, something is shown. Every turn asks the decider once; a sure verdict opens a window with a working hint and asks the owning app for its data; blocks slide in as their data arrives.",
+    "use_when": "On a member with a screen and at least one app that declares `shows`.",
+    "not_in_scope": "No trigger words, no data or memory sent to the decider, no layout or focus (the screen's curator decides), no port and no credential of its own beyond the decider's key."
+  }
+}

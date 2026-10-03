@@ -477,6 +477,8 @@ body::after {
  * below 15px the weight goes up, never down. */
 .display-kicker,
 .display-pane-kicker,
+.display-card-kicker,
+.display-steps-title,
 .display-value-label,
 .display-list-title,
 .display-weather-place,
@@ -500,6 +502,7 @@ body::after {
 
 /* The figure voice: one number, tight and tabular. */
 .display-value-number,
+.display-card-value,
 .display-weather-temp,
 .display-clock-time,
 .display-timer-remaining {
@@ -516,6 +519,7 @@ body::after {
 .display-pane-title,
 .display-panel-title,
 .display-overlay-title,
+.display-card-title,
 .display-document-title,
 .display-notification-title {
   margin: 0;
@@ -1115,10 +1119,117 @@ body::after {
   box-shadow: inset 0 0 0 1.5px var(--fg-tertiary);
 }
 
+/* `working` is the first answer of a window whose content is still on its way
+ * (GH #958): the dot breathes like `thinking`, and a quiet stroke runs under the
+ * line, so a person sees within a frame that something was understood and is
+ * being fetched. One stroke, the accent wash, never a spinner -- a spinner says
+ * "wait", this says "coming". Reduced motion keeps the stroke and stops it. */
+.display-status[data-kind="working"] {
+  position: relative;
+  overflow: hidden;
+}
+
+/* The dot is a box of its own: `.display-status` wears `display-lead`, which
+ * blockifies it, and an inline span takes no inline-size -- measured in both
+ * engines while the working hint was built, every status dot drew nothing. */
+.display-status-dot { display: inline-block; vertical-align: middle; margin-inline-end: 8px; }
+
+.display-status[data-kind="working"] .display-status-dot {
+  background-color: var(--accent-soft);
+  animation: display-pulse 1.6s var(--ease) infinite;
+}
+
+.display-status[data-kind="working"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: display-working 1.8s var(--ease) infinite;
+}
+
+@keyframes display-working {
+  0% { background-position: -40% 0; }
+  100% { background-position: 140% 0; }
+}
+
 @keyframes display-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+
+/* display-card — the general card (GH #958): kicker, title, a value riding its
+ * unit, a line, and any blocks under it. It wears the field of the content
+ * blocks, so a card inside a pane reads like a list or a chart inside one. */
+.display-card,
+.display-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.display-card-unit {
+  margin-inline-start: 3px;
+  font-size: 0.5em;
+  letter-spacing: 0;
+  color: var(--fg-tertiary);
+}
+
+.display-card-body {
+  margin: 0;
+  font-size: var(--t-body);
+  line-height: 1.5;
+  color: var(--fg-secondary);
+}
+
+.display-card-blocks:empty { display: none; }
+.display-card-blocks { display: flex; flex-direction: column; gap: var(--gap-s); }
+
+/* display-steps / display-step — a path or a report of work. A row per step,
+ * the mark carries the state: filled done, breathing running, open todo, the
+ * accent for failed, a struck ring for blocked. */
+.display-steps-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.display-step {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: var(--t-small);
+  line-height: 1.45;
+}
+
+.display-steps-items > .display-step:first-child { border-top: 0; }
+
+.display-step-mark {
+  flex: none;
+  inline-size: 9px;
+  block-size: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--fg-tertiary);
+}
+
+.display-step[data-step-state="done"] .display-step-mark { background-color: var(--fg-secondary); box-shadow: none; }
+.display-step[data-step-state="running"] .display-step-mark {
+  background-color: var(--accent-soft);
+  animation: display-pulse 1.6s var(--ease) infinite;
+}
+.display-step[data-step-state="failed"] .display-step-mark { background-color: var(--accent); box-shadow: none; }
+.display-step[data-step-state="blocked"] .display-step-mark { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.display-step[data-step-state="todo"] .display-step-label { color: var(--fg-secondary); }
+
+.display-step-label { flex: 1 1 auto; min-inline-size: 0; color: var(--fg-primary); }
+.display-step-detail,
+.display-step-at { color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
 
 /* display-action / display-option — controls: control radius, rim without the cast
  * shadow (they sit on a pane, they do not float above one). Hover is a
@@ -1198,6 +1309,8 @@ body::after {
  * and never a border, so no field grows by the pixel it wears — the same reason
  * the four state rings are shadows. */
 .display-list,
+.display-card,
+.display-steps,
 .display-table,
 .display-chat,
 .display-document,
@@ -2606,7 +2719,9 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-dock { transition: none !important; }
 
   .display-os[data-phase="speaking"] .display-os-mark,
-  .display-status .display-status-dot { animation: none !important; }
+  .display-status .display-status-dot,
+  .display-status[data-kind="working"]::after,
+  .display-step[data-step-state="running"] .display-step-mark { animation: none !important; }
   /* Urgent keeps breathing under reduced motion, only slower: it is the one
    * animation that carries meaning (ruling, 08.09.). A tile says it too. */
   :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],

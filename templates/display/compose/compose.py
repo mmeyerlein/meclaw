@@ -1903,6 +1903,8 @@ body::after {
 
 .display-kicker,
 .display-pane-kicker,
+.display-card-kicker,
+.display-steps-title,
 .display-value-label,
 .display-list-title,
 .display-weather-place,
@@ -1925,6 +1927,7 @@ body::after {
 }
 
 .display-value-number,
+.display-card-value,
 .display-weather-temp,
 .display-clock-time,
 .display-timer-remaining {
@@ -1940,6 +1943,7 @@ body::after {
 .display-pane-title,
 .display-panel-title,
 .display-overlay-title,
+.display-card-title,
 .display-document-title,
 .display-notification-title {
   margin: 0;
@@ -2461,10 +2465,103 @@ body::after {
   box-shadow: inset 0 0 0 1.5px var(--fg-tertiary);
 }
 
+.display-status[data-kind="working"] {
+  position: relative;
+  overflow: hidden;
+}
+
+.display-status-dot { display: inline-block; vertical-align: middle; margin-inline-end: 8px; }
+
+.display-status[data-kind="working"] .display-status-dot {
+  background-color: var(--accent-soft);
+  animation: display-pulse 1.6s var(--ease) infinite;
+}
+
+.display-status[data-kind="working"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: display-working 1.8s var(--ease) infinite;
+}
+
+@keyframes display-working {
+  0% { background-position: -40% 0; }
+  100% { background-position: 140% 0; }
+}
+
 @keyframes display-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+
+.display-card,
+.display-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.display-card-unit {
+  margin-inline-start: 3px;
+  font-size: 0.5em;
+  letter-spacing: 0;
+  color: var(--fg-tertiary);
+}
+
+.display-card-body {
+  margin: 0;
+  font-size: var(--t-body);
+  line-height: 1.5;
+  color: var(--fg-secondary);
+}
+
+.display-card-blocks:empty { display: none; }
+.display-card-blocks { display: flex; flex-direction: column; gap: var(--gap-s); }
+
+.display-steps-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.display-step {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: var(--t-small);
+  line-height: 1.45;
+}
+
+.display-steps-items > .display-step:first-child { border-top: 0; }
+
+.display-step-mark {
+  flex: none;
+  inline-size: 9px;
+  block-size: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--fg-tertiary);
+}
+
+.display-step[data-step-state="done"] .display-step-mark { background-color: var(--fg-secondary); box-shadow: none; }
+.display-step[data-step-state="running"] .display-step-mark {
+  background-color: var(--accent-soft);
+  animation: display-pulse 1.6s var(--ease) infinite;
+}
+.display-step[data-step-state="failed"] .display-step-mark { background-color: var(--accent); box-shadow: none; }
+.display-step[data-step-state="blocked"] .display-step-mark { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.display-step[data-step-state="todo"] .display-step-label { color: var(--fg-secondary); }
+
+.display-step-label { flex: 1 1 auto; min-inline-size: 0; color: var(--fg-primary); }
+.display-step-detail,
+.display-step-at { color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
 
 .display-action,
 .display-option-chip {
@@ -2525,6 +2622,8 @@ body::after {
 }
 
 .display-list,
+.display-card,
+.display-steps,
 .display-table,
 .display-chat,
 .display-document,
@@ -3472,7 +3571,9 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-dock { transition: none !important; }
 
   .display-os[data-phase="speaking"] .display-os-mark,
-  .display-status .display-status-dot { animation: none !important; }
+  .display-status .display-status-dot,
+  .display-status[data-kind="working"]::after,
+  .display-step[data-step-state="running"] .display-step-mark { animation: none !important; }
 
   :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],
   .display-tile[data-rung="urgent"] {
@@ -3513,6 +3614,1690 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-scene:not(.display-columns *) .display-ornament > .inner { white-space: normal; }
 }
 """
+
+# `compose/catalog.json`, verbatim -- written by `scripts/display_sync.py`, never by hand
+# (GH #958). Read once, below, as `CATALOG`.
+CATALOG_JSON = r"""{
+  "version": 1,
+  "about": "The display's component catalogue: the one source of every component the screen defines (GH #958). compose.py carries it embedded and builds component.define and the typed door out of it; scripts/display_sync.py writes the copies. Edit this file, then run the sync.",
+  "curated": {
+    "context": {
+      "type": "text",
+      "required": false,
+      "describe": "The context the window belongs to (for example conversation or ambient)."
+    },
+    "relevance": {
+      "type": "text",
+      "required": false,
+      "describe": "How relevant the window is, 0 to 1, as text."
+    },
+    "class": {
+      "type": "text",
+      "required": false,
+      "describe": "The class of window the application says it is."
+    },
+    "pinned": {
+      "type": "boolean",
+      "required": false,
+      "describe": "Whether the window asks to stay on the screen."
+    },
+    "relevant_until": {
+      "type": "text",
+      "required": false,
+      "describe": "Epoch milliseconds after which the window stops being relevant, as text."
+    },
+    "touched": {
+      "type": "text",
+      "required": false,
+      "describe": "Epoch milliseconds of the application's last real change, as text."
+    },
+    "topic": {
+      "type": "text",
+      "required": false,
+      "describe": "The topic of the window, one word."
+    },
+    "layer": {
+      "type": "text",
+      "required": false,
+      "describe": "The plane the window asks for (canvas or above)."
+    },
+    "seat": {
+      "type": "text",
+      "required": false,
+      "describe": "The dock seat the window asks for."
+    },
+    "seat_ord": {
+      "type": "text",
+      "required": false,
+      "describe": "The order of the seat, as text."
+    },
+    "linger": {
+      "type": "text",
+      "required": false,
+      "describe": "How long the window lingers after it stops being relevant, as text."
+    },
+    "state": {
+      "type": "text",
+      "required": false,
+      "describe": "The application's word about the window (urgent or hidden)."
+    },
+    "turn_id": {
+      "type": "text",
+      "required": false,
+      "describe": "The conversation turn the window came out of."
+    },
+    "rung": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the curator: the presence rung of the window."
+    },
+    "level": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the curator: the drawing level of the window."
+    },
+    "front": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the curator: whether the window stands in front."
+    },
+    "age": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the screen: whether the window arrives, stands or leaves."
+    },
+    "led": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the curator: whether the window leads its region."
+    },
+    "since": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the curator: when the window reached its rung."
+    },
+    "score": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the curator: the window's score."
+    },
+    "region": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the screen: the region the window stands in."
+    },
+    "acted": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the screen: the stamp of the tap whose pass drew this."
+    }
+  },
+  "components": [
+    {
+      "name": "display-shell",
+      "role": "own",
+      "layer": "content",
+      "describe": "The root of the screen: the sheet, the ground and the output this tree renders.",
+      "props": {
+        "stylesheet": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the base stylesheet is linked."
+        },
+        "faces": {
+          "type": "html",
+          "required": false,
+          "describe": "The @font-face block, raw markup written by the screen."
+        },
+        "vocab": {
+          "type": "text",
+          "required": false,
+          "describe": "The fingerprint of the vocabulary the root was built against."
+        },
+        "due": {
+          "type": "text",
+          "required": false,
+          "describe": "The schedule the screen's clock holds."
+        },
+        "ground": {
+          "type": "text",
+          "required": false,
+          "describe": "The operator's ground, day or night."
+        },
+        "exit": {
+          "type": "text",
+          "required": false,
+          "describe": "Which output of the screen this tree renders."
+        },
+        "screen_name": {
+          "type": "text",
+          "required": false,
+          "describe": "The name of that output."
+        },
+        "inputs": {
+          "type": "text",
+          "required": false,
+          "describe": "The inputs that output has."
+        },
+        "scale": {
+          "type": "text",
+          "required": false,
+          "describe": "The one number every size derives from."
+        },
+        "default_screen": {
+          "type": "text",
+          "required": false,
+          "describe": "The default output."
+        },
+        "switch": {
+          "type": "text",
+          "required": false,
+          "describe": "Whether this root is the output switch."
+        },
+        "tap": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether a tap is bound on this output."
+        },
+        "input_line": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the input line is bound on this output."
+        },
+        "screens": {
+          "type": "text",
+          "required": false,
+          "describe": "The outputs as JSON."
+        },
+        "dock": {
+          "type": "text",
+          "required": false,
+          "describe": "Whether the dock is shown on this output."
+        },
+        "dock_max": {
+          "type": "int",
+          "required": false,
+          "describe": "How many tiles the dock carries here."
+        },
+        "client_js": {
+          "type": "html",
+          "required": false,
+          "describe": "The screen's own client code, raw markup written by the screen."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-shell",
+        "props": {
+          "ground": "day"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-region",
+      "role": "own",
+      "layer": "content",
+      "describe": "One region of the canvas, a column the windows stand in.",
+      "props": {
+        "region": {
+          "type": "text",
+          "required": false,
+          "describe": "The region's name."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-region",
+        "props": {
+          "region": "main"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-view-prose",
+      "role": "own",
+      "layer": "navigation",
+      "describe": "A window that shows a title and a text, written by the screen for a prose view.",
+      "curated": true,
+      "props": {
+        "view_id": {
+          "type": "text",
+          "required": false,
+          "describe": "The view's id."
+        },
+        "owner": {
+          "type": "text",
+          "required": false,
+          "describe": "The application that owns the view."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's title."
+        },
+        "body": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's text."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-view-prose",
+        "props": {
+          "title": "Note",
+          "body": "The meeting moved to three."
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-view-custom",
+      "role": "own",
+      "layer": "content",
+      "describe": "A bare wrapper around an application's own tree.",
+      "props": {
+        "view_id": {
+          "type": "text",
+          "required": false,
+          "describe": "The view's id."
+        },
+        "owner": {
+          "type": "text",
+          "required": false,
+          "describe": "The application that owns the view."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-view-custom",
+        "props": {
+          "view_id": "weather",
+          "owner": "ambient"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-os",
+      "role": "own",
+      "layer": "content",
+      "describe": "The mark of the screen: hold to talk, and a light for unseen windows.",
+      "props": {
+        "mount": {
+          "type": "text",
+          "required": false,
+          "describe": "The voice cell the mark speaks to."
+        },
+        "client_js": {
+          "type": "html",
+          "required": false,
+          "describe": "The mark's client code, raw markup written by the screen."
+        },
+        "unseen": {
+          "type": "text",
+          "required": false,
+          "describe": "How many present windows want attention and stand on no plane."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-os",
+        "props": {
+          "unseen": "0"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-pane",
+      "role": "window",
+      "layer": "navigation",
+      "describe": "A window of glass with a kicker, a title and a body of blocks.",
+      "curated": true,
+      "props": {
+        "pane_id": {
+          "type": "text",
+          "required": false,
+          "describe": "The element id of the window."
+        },
+        "kicker": {
+          "type": "text",
+          "required": false,
+          "describe": "A small line above the title."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's title."
+        },
+        "thin": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the window wears the thin glass."
+        },
+        "tone": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's tone (for example accent)."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-pane",
+        "props": {
+          "title": "Weather",
+          "kicker": "Today"
+        },
+        "children": [
+          {
+            "component": "display-text",
+            "props": {
+              "body": "Mild and dry."
+            }
+          }
+        ]
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-panel",
+      "role": "window",
+      "layer": "navigation",
+      "describe": "A window of glass with a title and a body that may scroll.",
+      "curated": true,
+      "props": {
+        "pane_id": {
+          "type": "text",
+          "required": false,
+          "describe": "The element id of the window."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The panel's title."
+        },
+        "scroll": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the panel's body scrolls."
+        },
+        "tone": {
+          "type": "text",
+          "required": false,
+          "describe": "The panel's tone."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-panel",
+        "props": {
+          "title": "Notes"
+        },
+        "children": [
+          {
+            "component": "display-text",
+            "props": {
+              "body": "Buy bread."
+            }
+          }
+        ]
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-overlay",
+      "role": "window",
+      "layer": "navigation",
+      "describe": "A window that stands above the others for a while and goes again.",
+      "curated": true,
+      "props": {
+        "pane_id": {
+          "type": "text",
+          "required": false,
+          "describe": "The element id of the window."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The overlay's title."
+        },
+        "body": {
+          "type": "text",
+          "required": false,
+          "describe": "The overlay's text."
+        },
+        "ttl_ms": {
+          "type": "int",
+          "required": false,
+          "describe": "How long the overlay stands, in milliseconds."
+        },
+        "position": {
+          "type": "text",
+          "required": false,
+          "describe": "Where the overlay stands."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-overlay",
+        "props": {
+          "title": "Timer done",
+          "body": "The tea is ready."
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-ornament",
+      "role": "window",
+      "layer": "navigation",
+      "describe": "A small glass strip an application hangs at the bottom edge of its view.",
+      "props": {
+        "text": {
+          "type": "text",
+          "required": false,
+          "describe": "The ornament's text."
+        },
+        "dot": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the ornament shows a dot."
+        },
+        "count": {
+          "type": "int",
+          "required": false,
+          "describe": "A count beside the text."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-ornament",
+        "props": {
+          "text": "Live",
+          "dot": true
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-value",
+      "role": "content",
+      "layer": "content",
+      "describe": "One number or short value with its unit and a label.",
+      "props": {
+        "value": {
+          "type": "text",
+          "required": false,
+          "describe": "The number or short value."
+        },
+        "unit": {
+          "type": "text",
+          "required": false,
+          "describe": "The unit riding small beside it."
+        },
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "What the value is."
+        },
+        "trend": {
+          "type": "text",
+          "required": false,
+          "describe": "The trend word (up, down, flat)."
+        },
+        "size": {
+          "type": "text",
+          "required": false,
+          "describe": "The size word (s or l)."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-value",
+        "props": {
+          "value": "21",
+          "unit": "°C",
+          "label": "Now"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-text",
+      "role": "content",
+      "layer": "content",
+      "describe": "A paragraph of text.",
+      "props": {
+        "body": {
+          "type": "text",
+          "required": false,
+          "describe": "The text."
+        },
+        "secondary": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the text is set in the secondary ink."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-text",
+        "props": {
+          "body": "Mild and dry all day."
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-voice",
+      "role": "content",
+      "layer": "content",
+      "describe": "One spoken sentence with one accent word.",
+      "props": {
+        "text": {
+          "type": "text",
+          "required": false,
+          "describe": "The spoken sentence."
+        },
+        "accent": {
+          "type": "text",
+          "required": false,
+          "describe": "The one accent word at its end."
+        },
+        "size": {
+          "type": "text",
+          "required": false,
+          "describe": "The size word (l)."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-voice",
+        "props": {
+          "text": "Good morning,",
+          "accent": "friend"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-kicker",
+      "role": "content",
+      "layer": "content",
+      "describe": "A small line of text above something else.",
+      "props": {
+        "text": {
+          "type": "text",
+          "required": false,
+          "describe": "The small line."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-kicker",
+        "props": {
+          "text": "Today"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-list",
+      "role": "content",
+      "layer": "content",
+      "describe": "A list of rows under a title.",
+      "props": {
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The list's title."
+        },
+        "plain": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the rows go without hairlines."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-list",
+        "props": {
+          "title": "Shopping"
+        },
+        "children": [
+          {
+            "component": "display-item",
+            "props": {
+              "k": "Bread",
+              "v": "1"
+            }
+          }
+        ]
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-item",
+      "role": "content",
+      "layer": "content",
+      "describe": "One row of a list: a key, a value and a marker.",
+      "props": {
+        "k": {
+          "type": "text",
+          "required": false,
+          "describe": "The row's key."
+        },
+        "v": {
+          "type": "text",
+          "required": false,
+          "describe": "The row's value."
+        },
+        "marker": {
+          "type": "text",
+          "required": false,
+          "describe": "A short marker before the row."
+        },
+        "accent": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the row is accented."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-item",
+        "props": {
+          "k": "Bread",
+          "v": "1"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-table",
+      "role": "content",
+      "layer": "content",
+      "describe": "A table with a caption, a header row and body rows.",
+      "props": {
+        "caption": {
+          "type": "text",
+          "required": false,
+          "describe": "The table's caption."
+        },
+        "head": {
+          "type": "html",
+          "required": false,
+          "describe": "The header row as table markup (sanitised)."
+        },
+        "rows": {
+          "type": "html",
+          "required": false,
+          "describe": "The body rows as table markup (sanitised)."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-table",
+        "props": {
+          "caption": "Week",
+          "head": "<tr><th>Day</th></tr>",
+          "rows": "<tr><td>Mon</td></tr>"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-weather",
+      "role": "content",
+      "layer": "content",
+      "describe": "The weather now: temperature, condition, high and low, and the place.",
+      "props": {
+        "temp": {
+          "type": "text",
+          "required": false,
+          "describe": "The current temperature."
+        },
+        "unit": {
+          "type": "text",
+          "required": false,
+          "describe": "The temperature unit."
+        },
+        "condition": {
+          "type": "text",
+          "required": false,
+          "describe": "The condition in words."
+        },
+        "glyph": {
+          "type": "text",
+          "required": false,
+          "describe": "A glyph for the condition."
+        },
+        "hi": {
+          "type": "text",
+          "required": false,
+          "describe": "Today's high."
+        },
+        "lo": {
+          "type": "text",
+          "required": false,
+          "describe": "Today's low."
+        },
+        "place": {
+          "type": "text",
+          "required": false,
+          "describe": "The place."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-weather",
+        "props": {
+          "temp": "21",
+          "unit": "°",
+          "condition": "Sunny",
+          "hi": "24",
+          "lo": "12",
+          "place": "Springfield"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-clock",
+      "role": "content",
+      "layer": "content",
+      "describe": "The time and the date.",
+      "props": {
+        "time": {
+          "type": "text",
+          "required": false,
+          "describe": "The time."
+        },
+        "date": {
+          "type": "text",
+          "required": false,
+          "describe": "The date."
+        },
+        "zone": {
+          "type": "text",
+          "required": false,
+          "describe": "The time zone."
+        },
+        "size": {
+          "type": "text",
+          "required": false,
+          "describe": "The size word (s or l)."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-clock",
+        "props": {
+          "time": "09:41",
+          "date": "Friday"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-timer",
+      "role": "content",
+      "layer": "content",
+      "describe": "A countdown with its remainder, a label and a bar.",
+      "props": {
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "What the timer is for."
+        },
+        "remaining": {
+          "type": "text",
+          "required": false,
+          "describe": "The remainder as text."
+        },
+        "end_at": {
+          "type": "int",
+          "required": false,
+          "describe": "Epoch milliseconds the timer ends at."
+        },
+        "total_ms": {
+          "type": "int",
+          "required": false,
+          "describe": "The span the timer was set for, in milliseconds."
+        },
+        "now": {
+          "type": "int",
+          "required": false,
+          "describe": "Epoch milliseconds the page was rendered at."
+        },
+        "done": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the timer has run out."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-timer",
+        "props": {
+          "label": "Tea",
+          "remaining": "3:00",
+          "end_at": 1790000180000,
+          "total_ms": 180000,
+          "now": 1790000000000
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-chat",
+      "role": "content",
+      "layer": "content",
+      "describe": "A conversation: lines under a title.",
+      "props": {
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The conversation's title."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-chat",
+        "props": {
+          "title": "Conversation"
+        },
+        "children": [
+          {
+            "component": "display-chat-line",
+            "props": {
+              "role": "user",
+              "text": "Hello"
+            }
+          }
+        ]
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-chat-line",
+      "role": "content",
+      "layer": "content",
+      "describe": "One line of a conversation, with who said it and when.",
+      "props": {
+        "role": {
+          "type": "text",
+          "required": false,
+          "describe": "Who spoke (user or assistant)."
+        },
+        "text": {
+          "type": "text",
+          "required": false,
+          "describe": "The line."
+        },
+        "channel": {
+          "type": "text",
+          "required": false,
+          "describe": "The channel the line came on."
+        },
+        "source": {
+          "type": "text",
+          "required": false,
+          "describe": "Where the line came from."
+        },
+        "at": {
+          "type": "int",
+          "required": false,
+          "describe": "Epoch milliseconds the line arrived at."
+        },
+        "partial": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the line is still being written."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-chat-line",
+        "props": {
+          "role": "assistant",
+          "text": "Hello there."
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-notification",
+      "role": "content",
+      "layer": "content",
+      "describe": "A notice: who sends it, a title, a text and actions.",
+      "props": {
+        "source": {
+          "type": "text",
+          "required": false,
+          "describe": "Who sends the notice."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The notice's title."
+        },
+        "body": {
+          "type": "text",
+          "required": false,
+          "describe": "The notice's text."
+        },
+        "time": {
+          "type": "text",
+          "required": false,
+          "describe": "When it happened."
+        },
+        "level": {
+          "type": "text",
+          "required": false,
+          "describe": "The notice's level (for example urgent)."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-notification",
+        "props": {
+          "source": "Calendar",
+          "title": "Meeting at three"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-media",
+      "role": "content",
+      "layer": "content",
+      "describe": "An image or an inline figure with a caption.",
+      "props": {
+        "src": {
+          "type": "text",
+          "required": false,
+          "describe": "The address of an image the screen can reach."
+        },
+        "alt": {
+          "type": "text",
+          "required": false,
+          "describe": "The image's text alternative."
+        },
+        "caption": {
+          "type": "text",
+          "required": false,
+          "describe": "The caption."
+        },
+        "figure": {
+          "type": "html",
+          "required": false,
+          "describe": "An inline figure as markup (sanitised)."
+        },
+        "ratio": {
+          "type": "text",
+          "required": false,
+          "describe": "The aspect ratio."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-media",
+        "props": {
+          "src": "picture.png",
+          "alt": "A picture",
+          "caption": "A picture"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-browser",
+      "role": "content",
+      "layer": "content",
+      "describe": "A live page drawn into a frame, with its title and address.",
+      "props": {
+        "page": {
+          "type": "text",
+          "required": false,
+          "describe": "The page's topic suffix."
+        },
+        "mount": {
+          "type": "text",
+          "required": false,
+          "describe": "Written by the screen: the browser cell the frames come from."
+        },
+        "url": {
+          "type": "text",
+          "required": false,
+          "describe": "The page's address."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The page's title."
+        },
+        "viewport": {
+          "type": "text",
+          "required": false,
+          "describe": "The page's size in CSS pixels."
+        },
+        "state": {
+          "type": "text",
+          "required": false,
+          "describe": "The page's state (loading, ready, error, suspended)."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-browser",
+        "props": {
+          "page": "p1",
+          "url": "https://example.org/",
+          "title": "Example"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-document",
+      "role": "content",
+      "layer": "content",
+      "describe": "A document: title, source, text and pages.",
+      "props": {
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The document's title."
+        },
+        "body": {
+          "type": "html",
+          "required": false,
+          "describe": "The document's text as markup (sanitised)."
+        },
+        "page": {
+          "type": "int",
+          "required": false,
+          "describe": "The page shown."
+        },
+        "pages": {
+          "type": "int",
+          "required": false,
+          "describe": "How many pages there are."
+        },
+        "source": {
+          "type": "text",
+          "required": false,
+          "describe": "Where the document comes from."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-document",
+        "props": {
+          "title": "Notes",
+          "body": "<p>The text.</p>",
+          "page": 1,
+          "pages": 2
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-status",
+      "role": "content",
+      "layer": "content",
+      "describe": "A status line with a dot; kind working says that something is on its way.",
+      "props": {
+        "kind": {
+          "type": "text",
+          "required": false,
+          "describe": "The state word (listening, speaking, thinking, offline, working)."
+        },
+        "text": {
+          "type": "text",
+          "required": false,
+          "describe": "The status line."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-status",
+        "props": {
+          "kind": "working",
+          "text": "Fetching the forecast"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-action",
+      "role": "content",
+      "layer": "content",
+      "describe": "A button that sends an event.",
+      "props": {
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "The button's label."
+        },
+        "event": {
+          "type": "text",
+          "required": false,
+          "describe": "The event a tap sends."
+        },
+        "primary": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether this is the primary action."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-action",
+        "props": {
+          "label": "Open",
+          "event": "open"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-choice",
+      "role": "content",
+      "layer": "content",
+      "describe": "A question with options to pick from.",
+      "props": {
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "The question."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-choice",
+        "props": {
+          "label": "Which one?"
+        },
+        "children": [
+          {
+            "component": "display-option",
+            "props": {
+              "label": "This one",
+              "event": "pick"
+            }
+          }
+        ]
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-option",
+      "role": "content",
+      "layer": "content",
+      "describe": "One option of a choice.",
+      "props": {
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "The option's label."
+        },
+        "event": {
+          "type": "text",
+          "required": false,
+          "describe": "The event a tap sends."
+        },
+        "selected": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the option is selected."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-option",
+        "props": {
+          "label": "This one",
+          "event": "pick"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-input",
+      "role": "content",
+      "layer": "content",
+      "describe": "A line a person types into.",
+      "props": {
+        "placeholder": {
+          "type": "text",
+          "required": false,
+          "describe": "The placeholder text."
+        },
+        "event": {
+          "type": "text",
+          "required": false,
+          "describe": "The event Enter sends."
+        },
+        "for": {
+          "type": "text",
+          "required": false,
+          "describe": "Written by the screen: the window the line belongs to."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-input",
+        "props": {
+          "placeholder": "Type here",
+          "event": "say"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-chart",
+      "role": "content",
+      "layer": "content",
+      "describe": "A chart as an inline figure with a caption.",
+      "props": {
+        "figure": {
+          "type": "html",
+          "required": false,
+          "describe": "The chart as inline markup (sanitised)."
+        },
+        "caption": {
+          "type": "text",
+          "required": false,
+          "describe": "The caption."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-chart",
+        "props": {
+          "figure": "<svg viewBox=\"0 0 10 10\"></svg>",
+          "caption": "Trend"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-stack",
+      "role": "content",
+      "layer": "content",
+      "describe": "A group of blocks in a column or a row.",
+      "props": {
+        "row": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the children stand in a row."
+        },
+        "gap": {
+          "type": "text",
+          "required": false,
+          "describe": "The gap word (s, m, l)."
+        },
+        "scene": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether the stack is a picture of a screen."
+        },
+        "ratio": {
+          "type": "text",
+          "required": false,
+          "describe": "The scene's aspect ratio."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-stack",
+        "props": {
+          "row": true,
+          "gap": "m"
+        },
+        "children": [
+          {
+            "component": "display-value",
+            "props": {
+              "value": "3"
+            }
+          }
+        ]
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-progress",
+      "role": "content",
+      "layer": "content",
+      "describe": "A progress bar with a label.",
+      "props": {
+        "value": {
+          "type": "int",
+          "required": false,
+          "describe": "The progress, 0 to 100."
+        },
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "What is progressing."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-progress",
+        "props": {
+          "value": 40,
+          "label": "Upload"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-dock",
+      "role": "content",
+      "layer": "content",
+      "describe": "The dock: one tile per present window.",
+      "props": {
+        "count": {
+          "type": "int",
+          "required": false,
+          "describe": "How many tiles the dock holds."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-dock",
+        "props": {
+          "count": 1
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-seat",
+      "role": "content",
+      "layer": "content",
+      "describe": "An empty seat in the dock.",
+      "props": {
+        "seat_ord": {
+          "type": "text",
+          "required": false,
+          "describe": "The order of the empty seat."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-seat",
+        "props": {
+          "seat_ord": "1"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-tile",
+      "role": "content",
+      "layer": "content",
+      "describe": "One tile of the dock: a glyph, a value and a line.",
+      "props": {
+        "glyph": {
+          "type": "text",
+          "required": false,
+          "describe": "The tile's glyph."
+        },
+        "line": {
+          "type": "text",
+          "required": false,
+          "describe": "The tile's line."
+        },
+        "value": {
+          "type": "text",
+          "required": false,
+          "describe": "The tile's value."
+        },
+        "topic": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's topic."
+        },
+        "for": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's element id."
+        },
+        "rung": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's presence rung."
+        },
+        "open": {
+          "type": "text",
+          "required": false,
+          "describe": "Whether the window is open."
+        },
+        "pinned": {
+          "type": "text",
+          "required": false,
+          "describe": "Whether the window is pinned."
+        },
+        "rank": {
+          "type": "text",
+          "required": false,
+          "describe": "The tile's rank."
+        },
+        "end_at": {
+          "type": "int",
+          "required": false,
+          "describe": "Epoch milliseconds the seconds run to."
+        },
+        "oid": {
+          "type": "text",
+          "required": false,
+          "describe": "The window's object id, the target of a tap."
+        },
+        "tap": {
+          "type": "boolean",
+          "required": false,
+          "describe": "Whether this output takes taps."
+        },
+        "seat": {
+          "type": "text",
+          "required": false,
+          "describe": "The seat the tile stands in."
+        },
+        "unit": {
+          "type": "text",
+          "required": false,
+          "describe": "The unit beside the value."
+        },
+        "unread": {
+          "type": "text",
+          "required": false,
+          "describe": "Whether the window holds something unread."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-tile",
+        "props": {
+          "glyph": "☀",
+          "value": "21",
+          "line": "Weather"
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-card",
+      "role": "content",
+      "layer": "content",
+      "describe": "A general card: kicker, title, a value with its unit and a text, with any blocks under it.",
+      "props": {
+        "kicker": {
+          "type": "text",
+          "required": false,
+          "describe": "A small line above the title."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The card's title."
+        },
+        "value": {
+          "type": "text",
+          "required": false,
+          "describe": "A number or short value."
+        },
+        "unit": {
+          "type": "text",
+          "required": false,
+          "describe": "The unit beside the value."
+        },
+        "body": {
+          "type": "text",
+          "required": false,
+          "describe": "A line of text."
+        }
+      },
+      "slots": "any",
+      "example": {
+        "component": "display-card",
+        "props": {
+          "kicker": "Today",
+          "title": "Weather",
+          "value": "21",
+          "unit": "°C",
+          "body": "Mild and dry."
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-steps",
+      "role": "content",
+      "layer": "content",
+      "describe": "A sequence of steps under a title, such as a path or a report of work.",
+      "props": {
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The title above the steps."
+        }
+      },
+      "slots": [
+        "display-step"
+      ],
+      "example": {
+        "component": "display-steps",
+        "props": {
+          "title": "Path"
+        },
+        "children": [
+          {
+            "component": "display-step",
+            "props": {
+              "label": "Plan",
+              "state": "done"
+            }
+          },
+          {
+            "component": "display-step",
+            "props": {
+              "label": "Build",
+              "state": "running"
+            }
+          }
+        ]
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-step",
+      "role": "content",
+      "layer": "content",
+      "describe": "One step: a label, its state, a detail and a time.",
+      "props": {
+        "label": {
+          "type": "text",
+          "required": true,
+          "describe": "What the step is."
+        },
+        "state": {
+          "type": "text",
+          "required": false,
+          "describe": "The step's state: done, running, todo, failed or blocked."
+        },
+        "detail": {
+          "type": "text",
+          "required": false,
+          "describe": "A detail under the label."
+        },
+        "at": {
+          "type": "text",
+          "required": false,
+          "describe": "When the step happened or is due."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-step",
+        "props": {
+          "label": "Build",
+          "state": "running",
+          "detail": "Second of three",
+          "at": "10:00"
+        }
+      },
+      "block": true,
+      "editable": []
+    }
+  ]
+}"""
+
 
 # One style block, in this order: the layout rules, the faces (a prop, raw,
 # empty unless the operator serves fonts), and the sheet LAST -- it
@@ -3930,6 +5715,42 @@ PROGRESS_TEMPLATE = (
     '<div class="display-progress" data-ratio="{{value}}" style="--value: {{value}}">'
     '<div class="display-progress-track"><span class="display-progress-fill"></span></div>'
     '{{#if label}}<p class="display-progress-label display-line">{{label}}</p>{{/if}}</div>'
+)
+
+# ---------------------------------------------------------------------------
+# New in the catalogue (GH #958). The general card -- the fallback block of every
+# topic -- and a sequence of steps, for a path or a report of work. Kicker, title
+# and value wear the classes the pane and the value already use, so the card reads
+# as the same family; the children slot is what lets a card carry a list or a chart.
+CARD_TEMPLATE = (
+    '<article class="display-card">'
+    '{{#if kicker}}<p class="display-card-kicker display-line">{{kicker}}</p>{{/if}}'
+    '{{#if title}}<h3 class="display-card-title display-lead">{{title}}</h3>{{/if}}'
+    '{{#if value}}<p class="display-card-value display-lead">{{value}}'
+    '{{#if unit}}<span class="display-card-unit">{{unit}}</span>{{/if}}</p>{{/if}}'
+    '{{#if body}}<p class="display-card-body display-line">{{body}}</p>{{/if}}'
+    '<div class="display-card-blocks">{{children}}</div></article>'
+)
+
+# `data-step-state` carries one of five words (done, running, todo, failed, blocked);
+# the sheet draws the mark from it. An unknown word has no rule and draws a plain mark.
+# NOT `data-state`: § 2 struck that word as the curator's, and the sheet may not select
+# on it (`708_the_sheet_reads_the_attrs_the_curator_writes`, as `data-page-state`).
+STEPS_TEMPLATE = (
+    '<div class="display-steps">'
+    '{{#if title}}<h3 class="display-steps-title display-lead">{{title}}</h3>{{/if}}'
+    '<ol class="display-steps-items">{{children}}</ol></div>'
+)
+
+# No `display-line`/`display-detail` on the row or its parts: both blockify what wears
+# them (`display: block`, later in the sheet and of equal weight), and a step is ONE
+# row -- mark, label, detail, time -- or its mark has no box to be drawn in.
+STEP_TEMPLATE = (
+    '<li class="display-step" data-step-state="{{state}}">'
+    '<span class="display-step-mark" aria-hidden="true"></span>'
+    '<span class="display-step-label">{{label}}</span>'
+    '{{#if detail}}<span class="display-step-detail">{{detail}}</span>{{/if}}'
+    '{{#if at}}<span class="display-step-at">{{at}}</span>{{/if}}</li>'
 )
 
 # The name of the `voice` cell this screen speaks to, from `params.voice_mount`.
@@ -5569,280 +7390,111 @@ SCENE_CLIENT_JS = (
 )
 
 
-def _c(name, template, props, layer="content"):
-    """One `component.define` argument bag of the catalogue.
+# ---------------------------------------------------------------------------
+# The catalogue (GH #958). `compose/catalog.json` is the one source of every
+# component this screen defines: its role, its layer, its props with their types,
+# which children it takes, a sentence of what it shows and one valid instance.
+# `CATALOG_JSON` is that file, embedded verbatim by `scripts/display_sync.py` (the
+# only writer, the way it writes `KIT_CSS`), because a cell carries its script
+# and nothing beside it. The templates stay here, as code: markup is what this
+# script renders, and the catalogue says what may be put into it.
+#
+# Before the catalogue the same facts stood in four Python lists and a block of
+# comments, and every reader -- the door, the vocabulary hash, the tests, an
+# application that wanted to know what a prop meant -- had to read the code.
+# `component.define` is generated from the catalogue and is byte-identical to
+# what the lists defined (`gh958_the_catalogue_is_the_one_source.rs`, pinned
+# against hashes taken before the change), so the `web` cell notices nothing.
 
-    `editable` is empty on every component of the catalogue: a prop a browser
-    may write is an authorisation, and nothing on these screens is dragged.
+CATALOG = json.loads(CATALOG_JSON)
+
+# What the curator writes on every window, and the hints an application may
+# send about one (GH #679, § 3). One group in the catalogue, named once by every
+# window that carries it (`"curated": true`), never copied into each. `since`,
+# `score` and `relevance` travel as TEXT: the template language reads an `int 0`
+# as empty, and `as_unit()` reads a number out of a string.
+CURATED = dict((k, v["type"]) for k, v in CATALOG["curated"].items())
+
+# The markup of each component, by name. A catalogue entry without a template
+# here is a load error, not a component that renders nothing.
+TEMPLATES = {
+    "display-shell": SHELL_TEMPLATE,
+    "display-region": REGION_TEMPLATE,
+    "display-view-prose": PROSE_TEMPLATE,
+    "display-view-custom": CUSTOM_TEMPLATE,
+    "display-os": OS_TEMPLATE,
+    "display-pane": PANE_TEMPLATE,
+    "display-panel": PANEL_TEMPLATE,
+    "display-overlay": OVERLAY_TEMPLATE,
+    "display-ornament": ORNAMENT_TEMPLATE,
+    "display-value": VALUE_TEMPLATE,
+    "display-text": TEXT_TEMPLATE,
+    "display-voice": VOICE_TEMPLATE,
+    "display-kicker": KICKER_TEMPLATE,
+    "display-list": LIST_TEMPLATE,
+    "display-item": ITEM_TEMPLATE,
+    "display-table": TABLE_TEMPLATE,
+    "display-weather": WEATHER_TEMPLATE,
+    "display-clock": CLOCK_TEMPLATE,
+    "display-timer": TIMER_TEMPLATE,
+    "display-chat": CHAT_TEMPLATE,
+    "display-chat-line": CHAT_LINE_TEMPLATE,
+    "display-notification": NOTIFICATION_TEMPLATE,
+    "display-media": MEDIA_TEMPLATE,
+    "display-browser": BROWSER_TEMPLATE,
+    "display-document": DOCUMENT_TEMPLATE,
+    "display-status": STATUS_TEMPLATE,
+    "display-action": ACTION_TEMPLATE,
+    "display-choice": CHOICE_TEMPLATE,
+    "display-option": OPTION_TEMPLATE,
+    "display-input": INPUT_TEMPLATE,
+    "display-chart": CHART_TEMPLATE,
+    "display-stack": STACK_TEMPLATE,
+    "display-progress": PROGRESS_TEMPLATE,
+    "display-dock": DOCK_TEMPLATE,
+    "display-seat": SEAT_TEMPLATE,
+    "display-tile": TILE_TEMPLATE,
+    "display-card": CARD_TEMPLATE,
+    "display-steps": STEPS_TEMPLATE,
+    "display-step": STEP_TEMPLATE,
+}
+
+# The catalogue by name, for the door.
+CATALOG_BY_NAME = dict((c["name"], c) for c in CATALOG["components"])
+
+
+def prop_types(entry):
+    """`{prop: type}` of one catalogue entry, the curated group folded in."""
+    schema = dict((k, p["type"]) for k, p in entry["props"].items())
+    if entry.get("curated"):
+        schema.update(CURATED)
+    return schema
+
+
+def define_of(entry):
+    """One `component.define` argument bag, generated from its catalogue entry.
+
+    `editable` is empty on every component of the catalogue: a prop a browser may
+    write is an authorisation, and nothing on these screens is dragged.
     """
     return {
-        "name": name,
-        "template": template,
-        "prop_schema": props,
-        "editable": [],
-        "layer": layer,
+        "name": entry["name"],
+        "template": TEMPLATES[entry["name"]],
+        "prop_schema": prop_types(entry),
+        "editable": list(entry.get("editable") or []),
+        "layer": entry["layer"],
     }
 
 
-# What the curator writes on every window, and the hints an application may
-# send about one (GH #679). `since`, `score` and `relevance` travel as text:
-# the template language reads an `int 0` as empty, and `as_unit()` reads a
-# number out of a string. The `web` cell refuses an undeclared prop, so a
-# hint has to stand here before an application may say it.
-CURATED = {
-    # The app's hints (§ 3): what an application may say about its own window. Numbers
-    # travel as TEXT, because the template language reads an `int 0` as empty and § 3.3
-    # says so in as many words; the `web` cell refuses an undeclared prop, so a hint has
-    # to stand here before an application may send it.
-    "context": "text", "relevance": "text", "class": "text", "pinned": "boolean",
-    "relevant_until": "text", "touched": "text", "topic": "text", "layer": "text",
-    "seat": "text", "seat_ord": "text", "linger": "text", "state": "text",
-    # § 8.3: the turn a window came out of. The chat closes on it (§ 4.13).
-    "turn_id": "text",
-    # The curator's rendering values (§ 3.1): systemwide, the same on every output.
-    # `level` is text for the same reason `since` is -- `data-level=""` matches no rule.
-    "rung": "text", "level": "text", "front": "text", "age": "text", "led": "text",
-    "since": "text", "score": "text", "region": "text",
-    # The stamp the client reads to tell a patch of its own tap's pass from a patch of
-    # one that started earlier (GH #744, § 5.7).
-    "acted": "text",
-}
-
-
-def windows():
-    """Catalogue A: the four glass components, all `layer: "navigation"`.
-
-    The ornament is a thing, not a place: a component an application hangs
-    into its view, which the sheet fixes to the bottom edge. The two regions
-    stay the only places on this screen.
-    """
-    return [
-        _c("display-pane", PANE_TEMPLATE, dict({
-            "pane_id": "text", "kicker": "text", "title": "text",
-            "thin": "boolean", "tone": "text",
-        }, **CURATED), "navigation"),
-        _c("display-panel", PANEL_TEMPLATE, dict({
-            "pane_id": "text", "title": "text", "scroll": "boolean", "tone": "text",
-        }, **CURATED), "navigation"),
-        _c("display-overlay", OVERLAY_TEMPLATE, dict({
-            "pane_id": "text", "title": "text",
-            "body": "text", "ttl_ms": "int", "position": "text",
-        }, **CURATED), "navigation"),
-        _c("display-ornament", ORNAMENT_TEMPLATE, {
-            "text": "text", "dot": "boolean", "count": "int",
-        }, "navigation"),
-    ]
-
-
-def contents():
-    """Catalogue B: the twenty-seven content components, all `layer: "content"`.
-
-    None of them writes glass: a content component sits on a window's
-    `.inner` fill, and the `web` cell refuses the material on this layer.
-    """
-    return [
-        _c("display-value", VALUE_TEMPLATE, {
-            "value": "text", "unit": "text", "label": "text",
-            "trend": "text", "size": "text"}),
-        _c("display-text", TEXT_TEMPLATE, {"body": "text", "secondary": "boolean"}),
-        _c("display-voice", VOICE_TEMPLATE, {
-            "text": "text", "accent": "text", "size": "text"}),
-        _c("display-kicker", KICKER_TEMPLATE, {"text": "text"}),
-        _c("display-list", LIST_TEMPLATE, {"title": "text", "plain": "boolean"}),
-        _c("display-item", ITEM_TEMPLATE, {
-            "k": "text", "v": "text", "marker": "text", "accent": "boolean"}),
-        _c("display-table", TABLE_TEMPLATE, {
-            "caption": "text", "head": "html", "rows": "html"}),
-        _c("display-weather", WEATHER_TEMPLATE, {
-            "temp": "text", "unit": "text", "condition": "text",
-            "glyph": "text", "hi": "text", "lo": "text", "place": "text"}),
-        _c("display-clock", CLOCK_TEMPLATE, {
-            "time": "text", "date": "text", "zone": "text", "size": "text"}),
-        _c("display-timer", TIMER_TEMPLATE, {
-            "label": "text", "remaining": "text", "end_at": "int",
-            "total_ms": "int", "now": "int", "done": "boolean"}),
-        _c("display-chat", CHAT_TEMPLATE, {"title": "text"}),
-        _c("display-chat-line", CHAT_LINE_TEMPLATE, {
-            "role": "text", "text": "text", "channel": "text", "source": "text",
-            "at": "int", "partial": "boolean"}),
-        _c("display-notification", NOTIFICATION_TEMPLATE, {
-            "source": "text", "title": "text", "body": "text",
-            "time": "text", "level": "text"}),
-        _c("display-media", MEDIA_TEMPLATE, {
-            "src": "text", "alt": "text", "caption": "text",
-            "figure": "html", "ratio": "text"}),
-        # New in 2.6.0: a live page, drawn into the canvas by the scene hook at
-        # the root (R-G8) rather than by a script of its own. `mount` is the one
-        # prop an application leaves empty -- the screen writes it in `add_tree`
-        # out of `params.browser_mount`, the way it writes `for` on a field.
-        _c("display-browser", BROWSER_TEMPLATE, {
-            "page": "text", "mount": "text", "url": "text",
-            "title": "text", "viewport": "text", "state": "text"}),
-        _c("display-document", DOCUMENT_TEMPLATE, {
-            "title": "text", "body": "html", "page": "int",
-            "pages": "int", "source": "text"}),
-        _c("display-status", STATUS_TEMPLATE, {"kind": "text", "text": "text"}),
-        _c("display-action", ACTION_TEMPLATE, {
-            "label": "text", "event": "text", "primary": "boolean"}),
-        _c("display-choice", CHOICE_TEMPLATE, {"label": "text"}),
-        _c("display-option", OPTION_TEMPLATE, {
-            "label": "text", "event": "text", "selected": "boolean"}),
-        _c("display-input", INPUT_TEMPLATE, {
-            "placeholder": "text", "event": "text", "for": "text"}),
-        _c("display-chart", CHART_TEMPLATE, {"figure": "html", "caption": "text"}),
-        _c("display-stack", STACK_TEMPLATE, {
-            "row": "boolean", "gap": "text", "scene": "boolean",
-            "ratio": "text"}),
-        _c("display-progress", PROGRESS_TEMPLATE, {
-            "value": "int", "label": "text"}),
-        _c("display-dock", DOCK_TEMPLATE, {"count": "int"}),
-        _c("display-seat", SEAT_TEMPLATE, {"seat_ord": "text"}),
-        _c("display-tile", TILE_TEMPLATE, {
-            "glyph": "text", "line": "text", "value": "text", "topic": "text",
-            "for": "text", "rung": "text", "open": "text",
-            "pinned": "text", "rank": "text", "end_at": "int",
-            # New in 2.4.0. `oid` is the OBJECT id of the window and the target of
-            # a tap (`for` stays the `pane_id`, which is what the client's
-            # zoom matches on -- two names, two jobs, and merging them would
-            # break one of them). `tap` says whether this exit has a finger at
-            # all (OR-F18); `seat` and `unread` are selectors for the sheet,
-            # and `unit` is the degree sign the weather sets beside its value.
-            "oid": "text", "tap": "boolean", "seat": "text",
-            "unit": "text", "unread": "text"}),
-    ]
-
-
 def components():
-    """The display's own components, in the order they are defined.
+    """The display's own components, in the catalogue's order.
 
-    First the five the screen is made of, then the catalogue: the windows and
-    the content an application may name without defining them. A component
-    has to exist before an object names it, and the legs of a bundle run in
-    call order.
-
-    None of them is `editable`. A prop a browser may write is an authorisation
-    an application grants over its OWN component; the frame around it is not a
-    thing anybody drags.
+    First the five the screen is made of (`role: own`), then the glass four
+    (`window`), then the content an application may name without defining it. A
+    component has to exist before an object names it, and the legs of a bundle
+    run in call order.
     """
-    return own() + windows() + contents()
-
-
-def own():
-    """The five the screen is made of: shell, regions, two wrappers, the OS mark."""
-    return [
-        {
-            # `faces` is typed `"html"` because that is what makes a prop RAW:
-            # an `@font-face` block rendered escaped is not an `@font-face`.
-            "name": "display-shell",
-            "template": SHELL_TEMPLATE,
-            # `vocab` is never rendered: the template does not name it. It is a
-            # note the root carries about which vocabulary it was built against
-            # (see VOCAB), so a later pass can read it back.
-            "prop_schema": {"stylesheet": "boolean", "faces": "html", "vocab": "text",
-                            # The screen's state (GH #679): the bar, the
-                            # per-context weights, when the judge last spoke,
-                            # and the schedule the clock holds. None rendered.
-                            "due": "text",
-                            # The operator's ground: `day` or `night`.
-                            "ground": "text",
-                            # The screen this tree is rendered for (§ 2.8):
-                            # which exit of the one screen state it is, which
-                            # kind of display, which inputs that display has,
-                            # and the one number every size derives from. The
-                            # floor computes them from the `screens` setting;
-                            # the sheet reads them off the root.
-                            "exit": "text", "screen_name": "text",
-                            "inputs": "text", "scale": "text",
-                            "default_screen": "text",
-                            # § 6.5: the root of `/<mount>/` is the switch and says
-                            # so; an explicit output carries an empty word. § 6.4:
-                            # whether a tap and the input line are bound here.
-                            "switch": "text", "tap": "boolean",
-                            "input_line": "boolean",
-                            # What did not fit in the dock, and the exits as
-                            # JSON: the sheet may read the first (since 2.4.0
-                            # the judge does not, R-23-6), and the floor
-                            # compares the second to know whether the routes
-                            # have to be written again.
-                            "screens": "text",
-                            # The exit's own dials (contract § 6): whether the
-                            # dock is shown at all on this kind of screen, how
-                            # many tiles it carries and how many windows may
-                            # stand on plane 1 here. One state, and each exit
-                            # renders as much of it as it can carry (R-23-6).
-                            "dock": "text", "dock_max": "int",
-                            # The screen's own motion, once the scene hook
-                            # ships; empty until then. `"html"` is what makes
-                            # a prop RAW, and a script rendered escaped is a
-                            # script that does nothing.
-                            "client_js": "html"},
-            "editable": [],
-            "layer": "content",
-        },
-        {
-            # One per entry in REGIONS, all of them direct children of the
-            # root. That USED to be impossible: a materialised page carried two
-            # statics whatever the child count, so the closing static landed
-            # between the first and the second child and everything from the
-            # second on rendered outside the element meant to contain it. GH
-            # #394 replaced that with n+1 statics for n slots, and the `web`
-            # README says so in as many words -- "a composition CHOICE now
-            # rather than a constraint". So the one-child rule is retracted
-            # here too, and the two regions stand side by side (GH #609).
-            "name": "display-region",
-            "template": REGION_TEMPLATE,
-            "prop_schema": {"region": "text"},
-            "editable": [],
-            "layer": "content",
-        },
-        {
-            # Navigation, because it writes `glass--thin`, and glass is a
-            # navigation-layer material. A `layer: "content"` component that
-            # names one of the three glass classes is refused by the `web` cell
-            # at `component.define`.
-            "name": "display-view-prose",
-            "template": PROSE_TEMPLATE,
-            # A prose view IS a window (§ 2 Window), so it declares the same contract as
-            # the other three: the hints of § 3 and the curator's rendering values. One
-            # list, one place -- a schema that drifted from `CURATED` refused exactly the
-            # props the pass had just written.
-            "prop_schema": dict({
-                "view_id": "text", "owner": "text", "title": "text", "body": "text",
-            }, **CURATED),
-            "editable": [],
-            "layer": "navigation",
-        },
-        {
-            # Content, and that is the load-bearing half: an application's own
-            # glass card sits INSIDE this wrapper, and glass on glass is refused
-            # where the edge is made. Glass on a content parent is allowed, so a
-            # content wrapper is what lets an app bring its own pane.
-            "name": "display-view-custom",
-            "template": CUSTOM_TEMPLATE,
-            "prop_schema": {"view_id": "text", "owner": "text"},
-            "editable": [],
-            "layer": "content",
-        },
-        {
-            # The OS mark (§ 2.6). `client_js` is typed `"html"` because that
-            # is what makes a prop RAW: a script rendered escaped is a script
-            # that does nothing. Everything else stays escaped, and `mount`
-            # with it -- a mount name is configuration and must not be able to
-            # close a tag. The name changed with 2.3.0 and the id with it; the
-            # HOOK kept its name, because the gesture is the same one.
-            "name": "display-os",
-            "template": OS_TEMPLATE,
-            "prop_schema": {"mount": "text", "client_js": "html",
-                            # The light on the mark (OR-F4): how many present
-                            # windows want attention and are not on a plane.
-                            # Text, because the template language reads an
-                            # `int 0` as empty and the sheet selects on the
-                            # value.
-                            "unseen": "text"},
-            "editable": [],
-            "layer": "content",
-        },
-    ]
+    return [define_of(c) for c in CATALOG["components"]]
 
 
 # The fingerprint of the vocabulary: `components()` as canonical JSON, hashed,
@@ -5854,6 +7506,90 @@ def own():
 VOCAB = hashlib.sha256(
     json.dumps(components(), sort_keys=True).encode("utf-8")
 ).hexdigest()[:12]
+
+
+# The typed door (GH #958). The `web` cell checks that a prop is DECLARED and
+# nothing more; what a prop holds was nobody's question, so a progress bar sent
+# `"abc"` rendered `--value: abc` and a step without a label rendered an empty
+# row. The door now asks the catalogue, before anything is written: the type of
+# every prop that is said, the props an entry requires, and the children an
+# entry takes. One reason per view, the first, in the form
+# `<component>.<prop>: <expected>`.
+#
+# Numbers may travel as digit text (§ 3.3: hints are text, because the template
+# language reads an `int 0` as empty), so `int` and `number` take both. `text`
+# takes any scalar, because a template renders a number as its digits and the
+# senders of today send both. `null` is "not said" for every type.
+INT_TEXT = re.compile(r"^-?[0-9]+$")
+NUMBER_TEXT = re.compile(r"^-?[0-9]+(\.[0-9]+)?$")
+
+
+def type_fits(kind, value):
+    """Whether `value` is a `kind` as the catalogue spells it."""
+    if value is None:
+        return True
+    if kind == "text":
+        return isinstance(value, (str, int, float, bool))
+    if kind == "html":
+        return isinstance(value, str)
+    if kind == "boolean":
+        return isinstance(value, bool) or value in ("true", "false")
+    if isinstance(value, bool):
+        return False
+    if kind == "int":
+        return (isinstance(value, int)
+                or (isinstance(value, float) and value.is_integer())
+                or (isinstance(value, str) and INT_TEXT.match(value) is not None))
+    if kind == "number":
+        return (isinstance(value, (int, float))
+                or (isinstance(value, str) and NUMBER_TEXT.match(value) is not None))
+    return False
+
+
+def typed_refusal(node, root=True):
+    """Why a component tree breaks the catalogue, or None.
+
+    Only catalogue components are judged; an application's own component (its
+    `<view_id>-` prefix) is checked by `check_components` and its children are
+    still walked. Shape errors are `check_node`'s and are not repeated here.
+
+    The hints of § 3.3 (`HINT_KEYS`) on a window -- or on the root, which
+    `hints_of_row` reads as the window when there is none -- are NOT judged
+    here: they are the one door's (`door_refusal`: `hint_shape`, then § 4.6),
+    which answers `view_refused`. Judging them first turned that receipt into
+    `invalid_view` (`707_the_door_takes_settings_and_profiles`, a list as
+    `context`, red in the cargo phase of GH #958).
+    """
+    if not isinstance(node, dict):
+        return None
+    name = str(node.get("component") or "")
+    props = node.get("props") if isinstance(node.get("props"), dict) else {}
+    kids = [k for k in (node.get("children") or []) if isinstance(k, dict)]
+    entry = CATALOG_BY_NAME.get(name)
+    if entry is not None:
+        types = prop_types(entry)
+        hints_here = root or entry.get("role") == "window"
+        for prop in sorted(props):
+            if hints_here and prop in HINT_KEYS:
+                continue
+            kind = types.get(prop)
+            if kind is not None and not type_fits(kind, props[prop]):
+                return "%s.%s: %s" % (name, prop, kind)
+        for prop, spec in sorted(entry["props"].items()):
+            if spec.get("required") and props.get(prop) in (None, ""):
+                return "%s.%s: required %s" % (name, prop, spec["type"])
+        slots = entry.get("slots")
+        if slots == "none" and kids:
+            return "%s.children: none" % (name,)
+        if isinstance(slots, list):
+            for kid in kids:
+                if kid.get("component") not in slots:
+                    return "%s.children: %s" % (name, "|".join(slots))
+    for kid in kids:
+        why = typed_refusal(kid, root=False)
+        if why:
+            return why
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -6636,7 +8372,7 @@ def validate(body, owner, withdraw):
             return None, "invalid_view", "a prose view brings no components"
         clean = []
     else:
-        why = check_node(content, 0)
+        why = check_node(content, 0) or typed_refusal(content)
         if why:
             return None, "invalid_view", why
         clean, code, detail = check_components(

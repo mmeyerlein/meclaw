@@ -1,4 +1,4 @@
-# `display@2.8.1`
+# `display@2.9.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -273,6 +273,22 @@ The proxy adds what is its own business (`default-src`, `object-src 'none'`, `fo
 `frame-ancestors`, a report endpoint). The cell sets no header of its own. The hashes change
 whenever a hook script changes, which is a new version of this template, so a proxy reads
 `csp.json` of the version it serves rather than copying the values once.
+
+## The catalogue
+
+`compose/catalog.json` is the one source of every component this screen defines. Each entry
+names its role (`own`, `window` or `content`), its layer, its props with a type (`text`,
+`int`, `number`, `boolean` or `html`), whether a prop is required and what it means, which
+children it takes (`any`, `none` or a list), a sentence of what it shows, one valid example,
+and whether an application may set it as a block (`block`). The compose cell carries the file
+and generates `component.define` out of it, and its door judges a view against it before
+anything is written: a prop of the wrong type, a missing required prop or a child the entry
+does not take is an `invalid_view` receipt whose detail reads `<component>.<prop>:
+<expected>`. Numbers may travel as digit text. `display-card` is the general card and the
+fallback block of a topic, `display-steps` holds `display-step` rows (`done`, `running`,
+`todo`, `failed`, `blocked`), and `display-status` with `kind: working` is the first answer
+of a window whose content is still on its way. `scripts/display_sync.py` writes every copy
+of the catalogue and `--check` exits non-zero when one has drifted.
 
 ## Apps
 

@@ -1,0 +1,36 @@
+{
+  "name": "presenter",
+  "version": "1.0.0",
+  "tags": [
+    "app"
+  ],
+  "app": {
+    "screen": {
+      "out": [
+        "view",
+        "withdraw"
+      ],
+      "back": [
+        "event",
+        "receipt"
+      ]
+    },
+    "listens": [
+      "turn",
+      "mutation_committed"
+    ],
+    "offers": [],
+    "drives": []
+  },
+  "description": {
+    "purpose": "When the decider is sure that something on the screen helps with what was just said, something is shown. Every turn with text becomes ONE call to a fast decider (`provider: decisions`) over the topics the installed apps declare -- no trigger words. A sure verdict opens the topic's window with a working hint and, in the same output, asks the app that owns the topic for its data; blocks then appear as their data arrives, each one bound by the topic's manifest and checked against the display catalogue. Unsure, nothing to show, an error or the deadline: the screen stays as it is and the answer stays text. Every turn that asked leaves one journal row (topic, confidence, lead, also, fallback, the three times, model, round) and never the turn's text.",
+    "use_when": "A member with a screen and at least one app that declares `shows` (its topics). Install it beside them; the order of installation does not matter, because every committed mutation asks the apps for their topics again.",
+    "not_in_scope": "It draws no picture of its own: every block is a catalogue component bound from the app's data sets, with no code per topic. It decides no size and no focus (the screen's curator does), sends the decider no data and no memory, and gates every set and row by the screen's round (`screen_audience`, fail-closed). It owns no port and no channel.",
+    "examples": [
+      "\"what is the weather like today\" -> the decider is sure about `weather`, lead `today`: a window with a working hint, then the hourly list as the data arrives",
+      "\"thanks, that's all\" -> the decider answers `none`: nothing on the screen, one journal row `no_topic`",
+      "the lead's data carries only rows of another round: the topic's standard block stands instead, journal `invalid`"
+    ]
+  },
+  "author": "meclaw"
+}

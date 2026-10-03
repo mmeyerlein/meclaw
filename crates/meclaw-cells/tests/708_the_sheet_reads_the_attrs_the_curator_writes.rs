@@ -124,6 +124,11 @@ const ALLOWED: &[(&str, &str)] = &[
         "a page's own state: loading | ready | error | suspended (§ 7.9). \
          NOT `data-state` -- that word is the curator's and is struck",
     ),
+    (
+        "data-step-state",
+        "a step's own state: done | running | todo | failed | blocked (GH #958). \
+         NOT `data-state` -- that word is the curator's and is struck",
+    ),
     // The client's own press ring, for the length of one movement (§ 5.7).
     ("data-zoomed", "the pressed tile, drawn by the scene hook"),
     // The hook's word about its OWN channel, and the reason it puts beside the

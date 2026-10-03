@@ -1,0 +1,90 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "shows": {
+        "topic": "text",
+        "owner_app": "text",
+        "show_at": "text",
+        "manifest": "json",
+        "at": "int"
+      },
+      "pending": {
+        "turn_id": "text",
+        "value": "json",
+        "at": "int"
+      },
+      "journal": {
+        "turn_id": "text",
+        "topic": "text",
+        "p": "json",
+        "lead": "text",
+        "also": "text",
+        "fallback": "text",
+        "late": "int",
+        "t_verdict_ms": "int",
+        "t_window_ms": "int",
+        "t_content_ms": "int",
+        "model": "text",
+        "at": "int",
+        "audience_set": "text"
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Three tables: `shows` (one row per accepted topic: the owning app and its manifest), `pending` (one row per turn in flight, the stage's state written through) and `journal` (one row per turn that asked the decider: topic, confidence, lead, also, fallback, late, the three times, model, round -- never the turn's text).",
+    "use_when": "Inside the presenter only, written by `stage` alone.",
+    "not_in_scope": "It deletes no journal row and expires nothing: the hit rate is read from the journal later. One row per key is kept by hand, as a delete followed by an insert in one bundle."
+  }
+}

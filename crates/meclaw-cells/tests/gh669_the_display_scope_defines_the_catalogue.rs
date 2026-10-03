@@ -3,8 +3,8 @@
 //! A screen that ships a design language ships the components the language is
 //! written against, or the language styles nothing. The compose cell's
 //! `components()` is where the display's own components are defined, and this
-//! file pins what that list says: the four GLASS components and the twenty-seven
-//! content components of the kit, under the screen's own prefix, on the layer the
+//! file pins what that list says: the four GLASS components and the content
+//! components of the catalogue (`catalog.json`, GH #958), under the screen's own prefix, on the layer the
 //! `web` cell would demand of them, and none of them editable.
 //!
 //! Glass is not the same set as the windows. A WINDOW is what a view's root may
@@ -29,6 +29,7 @@ fn repo(rel: &str) -> std::path::PathBuf {
 }
 
 const COMPOSE: &str = "templates/display/compose/compose.py";
+const CATALOG: &str = "templates/display/compose/catalog.json";
 
 /// The five the screen is made of, before the catalogue begins.
 const OWN: [&str; 5] = [
@@ -50,43 +51,26 @@ const GLASS: [&str; 4] = [
     "display-ornament",
 ];
 
-/// The twenty-seven content components, in the kit's own order.
-const CONTENT: [&str; 27] = [
-    "display-value",
-    "display-text",
-    "display-voice",
-    "display-kicker",
-    "display-list",
-    "display-item",
-    "display-table",
-    "display-weather",
-    "display-clock",
-    "display-timer",
-    "display-chat",
-    "display-chat-line",
-    "display-notification",
-    "display-media",
-    // A live page inside a window (display-hive.md § 7.9, display 2.6.0). It stands
-    // beside `display-media` because it is the same furniture -- a frame with a
-    // caption -- and it is CONTENT: a page is a `display-pane` with this child, never
-    // a fifth window object.
-    "display-browser",
-    "display-document",
-    "display-status",
-    "display-action",
-    "display-choice",
-    "display-option",
-    "display-input",
-    "display-chart",
-    "display-stack",
-    "display-progress",
-    "display-dock",
-    // The empty seat in the dock (display-hive.md § 4.29): empty SPACE and not a
-    // placeholder, so it is an object of its own and therefore a component of its own.
-    // It joined the catalogue with display 2.4.0 and is why every count here moved by one.
-    "display-seat",
-    "display-tile",
-];
+/// The content components, read from the catalogue (GH #958): `catalog.json` is the one
+/// source, so a literal list here would be a second one. Its order is the kit's, and the
+/// definition order below is measured against it. Twenty-seven before the catalogue; the
+/// card and the steps joined with it.
+fn content() -> Vec<String> {
+    let cat: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(repo(CATALOG)).expect("catalog.json ships"),
+    )
+    .expect("catalog.json parses");
+    cat["components"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter(|c| c["role"] == "content")
+        .map(|c| c["name"].as_str().expect("a name").to_string())
+        .collect()
+}
+
+/// The blocks the catalogue added (GH #958); they stand among the content components.
+const NEW_BLOCKS: [&str; 3] = ["display-card", "display-steps", "display-step"];
 
 fn library_ships() -> bool {
     repo("templates/display/template.json").is_file()
@@ -176,9 +160,10 @@ fn the_scope_defines_the_four_glass_components() {
     assert_eq!(&names[5..9], &GLASS, "then the four glass components");
 }
 
-/// Five of the screen's own, four glass components, twenty-seven content components.
+/// Five of the screen's own, four glass components, and the content components of the
+/// catalogue -- thirty-six before GH #958, thirty-nine with the card and the steps.
 #[test]
-fn the_scope_defines_thirty_six_components() {
+fn the_scope_defines_every_component_of_the_catalogue() {
     if !library_ships() {
         return;
     }
@@ -186,28 +171,48 @@ fn the_scope_defines_thirty_six_components() {
         return;
     };
     let names: Vec<&str> = all.iter().map(name).collect();
-    assert_eq!(all.len(), 36, "{names:?}");
+    let content = content();
+    assert_eq!(all.len(), 5 + 4 + content.len(), "{names:?}");
+    assert!(
+        content.len() >= 30,
+        "twenty-seven and the three new blocks: {content:?}"
+    );
+    for block in NEW_BLOCKS {
+        assert!(
+            content.iter().any(|c| c == block),
+            "`{block}` is not in the catalogue"
+        );
+    }
 }
 
-/// The catalogue is these thirty-one names and no others, held as a sorted
-/// constant: a typo in one name is a red test here and not a component an
-/// application names in vain.
+/// The catalogue is the glass four and the content components and no others: a typo in
+/// one name is a red test here and not a component an application names in vain.
 #[test]
-fn the_catalogue_names_are_exactly_the_thirty_one() {
+fn the_catalogue_names_are_exactly_the_catalogues() {
     if !library_ships() {
         return;
     }
     let Some(all) = components() else {
         return;
     };
-    let mut expected: Vec<&str> = GLASS.iter().chain(CONTENT.iter()).copied().collect();
+    let content = content();
+    let mut expected: Vec<&str> = GLASS
+        .iter()
+        .copied()
+        .chain(content.iter().map(String::as_str))
+        .collect();
     expected.sort_unstable();
     let mut catalogue: Vec<&str> = all.iter().map(name).filter(|n| !OWN.contains(n)).collect();
     catalogue.sort_unstable();
     assert_eq!(catalogue, expected);
-    // And the twenty-seven stand in the kit's order, after the glass.
+    // And the content components stand in the catalogue's order, after the glass.
     let names: Vec<&str> = all.iter().map(name).collect();
-    assert_eq!(&names[9..], &CONTENT, "the content components, in order");
+    let content: Vec<&str> = content.iter().map(String::as_str).collect();
+    assert_eq!(
+        &names[9..],
+        content.as_slice(),
+        "the content components, in order"
+    );
 }
 
 /// The rule the `web` cell enforces at `component.define`, asked of every
@@ -327,8 +332,8 @@ fn the_catalogue_and_the_faces_agree_with_the_contract() {
     let catalogue: Vec<&str> = all.iter().map(name).filter(|n| !OWN.contains(n)).collect();
     assert_eq!(
         catalogue.len(),
-        31,
-        "thirty-one beyond the screen's own: {catalogue:?}"
+        GLASS.len() + content().len(),
+        "the glass four and the content components beyond the screen's own: {catalogue:?}"
     );
     let mut sorted = catalogue.clone();
     sorted.sort_unstable();

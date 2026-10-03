@@ -32,6 +32,8 @@ const SHEET: &str = "templates/display/compose/display-dna.css";
 const COMPOSE: &str = "templates/display/compose/compose.py";
 const CONFIG: &str = "templates/display/compose/config.json";
 const STRIP: &str = "scripts/display_sheet_strip.py";
+const CATALOG: &str = "templates/display/compose/catalog.json";
+const SYNC: &str = "scripts/display_sync.py";
 
 /// The sentence the sheet says about itself, once. The gallery that drew the
 /// sheet's ancestors carries a different one, and a sheet that reaches a
@@ -322,6 +324,60 @@ fn the_design_language_is_the_same_sheet_in_three_places() {
 /// change is argued, and the argument has to be IN it -- a sheet whose comments
 /// thinned out to nothing would pass the drift check above and still have lost the
 /// thing OR-G0.1 was meant to protect.
+/// The catalogue travels the same way the sheet does (GH #958): `catalog.json` is the
+/// source, `compose.py` carries it verbatim as `CATALOG_JSON`, `config.json` carries
+/// `compose.py`, and every block-copy target of `display_sync.BLOCK_COPIES` carries the
+/// `block: true` subset. All of them, asked here, so a hand edit of any copy is red.
+#[test]
+fn the_catalogue_is_the_same_in_every_copy() {
+    if !library_ships() {
+        return;
+    }
+    let source = read(CATALOG);
+    let source = source.trim_end_matches('\n');
+    let in_compose = extract_constant(&read(COMPOSE), "CATALOG_JSON")
+        .expect("compose.py carries no extractable CATALOG_JSON");
+    assert_eq!(
+        in_compose, source,
+        "compose.py's CATALOG_JSON has drifted from catalog.json (run scripts/display_sync.py)"
+    );
+    let cfg: Value = meclaw_core::serde_json::from_str(&read(CONFIG))
+        .unwrap_or_else(|e| panic!("{CONFIG}: {e}"));
+    let shipped = extract_constant(
+        cfg["params"]["script_inline"].as_str().expect("a string"),
+        "CATALOG_JSON",
+    )
+    .expect("the shipped script_inline carries no CATALOG_JSON");
+    assert_eq!(shipped, in_compose, "config.json ships another catalogue");
+    // The block copies, by the sync's own comparison: one rule, asked, not restated.
+    let Ok(out) = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import importlib.util, json, sys\n\
+             spec = importlib.util.spec_from_file_location('display_sync', sys.argv[1])\n\
+             m = importlib.util.module_from_spec(spec)\n\
+             spec.loader.exec_module(m)\n\
+             print(json.dumps(m.check_copies()))",
+        )
+        .arg(repo(SYNC))
+        .output()
+    else {
+        return;
+    };
+    assert!(
+        out.status.success(),
+        "{SYNC} did not answer:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let drift: Value =
+        meclaw_core::serde_json::from_slice(&out.stdout).expect("check_copies() is JSON");
+    assert_eq!(
+        drift,
+        json!([]),
+        "a copy of the catalogue or the sheet has drifted (run scripts/display_sync.py)"
+    );
+}
+
 #[test]
 fn the_source_keeps_the_reasons_the_copies_drop() {
     if !library_ships() {

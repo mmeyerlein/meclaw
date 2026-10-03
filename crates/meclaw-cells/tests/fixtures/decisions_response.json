@@ -1,0 +1,21 @@
+{
+  "model": "vendor/decider-1",
+  "answers": {
+    "topic": {
+      "type": "choice",
+      "choice": "weather",
+      "probabilities": {"calendar": 0.04, "none": 0.01, "weather": 0.95},
+      "confidence": 0.9
+    },
+    "wants_screen": {"type": "noul", "noul": 0.81},
+    "urgency": {
+      "type": "score",
+      "score": 0.15,
+      "legend": {"0": "low", "1": "medium", "2": "high"},
+      "probabilities": {"0": 0.86, "1": 0.14, "2": 0},
+      "confidence": 0.77
+    }
+  },
+  "usage": {"input_tokens": 405, "output_tokens": 71, "cost": 0.00001701},
+  "id": "gen-dec-fixture-1"
+}

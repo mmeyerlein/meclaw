@@ -4,3 +4,4 @@
 # Git only runs a driver the clone itself configures -- see the script's head
 # for the two `git config` lines.
 templates/display/compose/config.json merge=display-sync
+templates/presenter/stage/config.json merge=display-sync

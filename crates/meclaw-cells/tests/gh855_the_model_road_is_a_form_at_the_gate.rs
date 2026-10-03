@@ -749,3 +749,62 @@ fn a_brain_left_out_is_named_with_its_real_cause() {
         );
     }
 }
+
+/// GH #957, OR-DP-59 (review I-2 of strand E): an announced brain may name
+/// its protocol. `"decisions"` -- an llm cell born with `provider:
+/// "decisions"` -- may be announced on an empty start model, because the
+/// registry fills it from its own protocol's rows; every other entry still
+/// needs a start model, and a protocol outside the registry's list is no
+/// announcement the gate lets through.
+#[test]
+fn a_decisions_brain_may_be_announced_on_an_empty_start_model() {
+    if !shipped() {
+        return;
+    }
+    let with_entry = |entry: Value| {
+        let mut m = grown();
+        let edges = m[1]["diff"]["add_edges"].as_array_mut().expect("edges");
+        let a = edges.iter_mut().find(|e| e["to"] == ".").expect("announce");
+        a["modifier"]["set_context"]["model_announced"] = json!(format!("'[{entry}]'"));
+        m
+    };
+    let brain = format!("{GEN}/presenter/decide");
+    for (what, entry) in [
+        (
+            "a decisions brain on an empty start model",
+            json!({"cell_path": brain, "start_model": "", "protocol": "decisions"}),
+        ),
+        (
+            "a decisions brain with a start model",
+            json!({"cell_path": brain, "start_model": "vendor/decider", "protocol": "decisions"}),
+        ),
+        (
+            "a chat brain naming the chat protocol",
+            json!({"cell_path": brain, "start_model": "vendor/chat", "protocol": ""}),
+        ),
+    ] {
+        let out = submit(&with_entry(entry), AGENT);
+        assert!(parked_and_asked(&out), "{what} passes: {out:?}");
+    }
+    for (what, entry) in [
+        (
+            "an empty start model without a protocol",
+            json!({"cell_path": brain, "start_model": ""}),
+        ),
+        (
+            "an empty start model on the chat protocol",
+            json!({"cell_path": brain, "start_model": "", "protocol": ""}),
+        ),
+        (
+            "a protocol outside the registry's list",
+            json!({"cell_path": brain, "start_model": "x", "protocol": "telepathy"}),
+        ),
+        (
+            "a protocol that is no string",
+            json!({"cell_path": brain, "start_model": "x", "protocol": 1}),
+        ),
+    ] {
+        let out = submit(&with_entry(entry), AGENT);
+        assert_eq!(refused(&out), "model_announcement_form", "{what}: {out:?}");
+    }
+}

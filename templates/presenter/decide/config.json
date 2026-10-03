@@ -1,0 +1,136 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 14000
+  },
+  "params": {
+    "provider": "decisions",
+    "requirement": "Answers a fixed set of typed choices about one short spoken or typed request: which topic it belongs to, if any, and which block would show it best. It needs a fast, cheap decider that returns a calibrated probability per answer, never generated text. It runs on every turn while the person waits for the screen, so an answer must come back within a few hundred milliseconds and cost next to nothing.",
+    "model": "${PRESENTER_DECIDE_MODEL:-}",
+    "api_key": "${PRESENTER_DECIDE_API_KEY:-}",
+    "base_url": "${PRESENTER_DECIDE_BASE_URL:-}",
+    "external_timeout_ms": 3000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The decider's model id (`PRESENTER_DECIDE_MODEL`). Empty as shipped: a presenter without a decider shows nothing, and every turn's journal row says `no_selector`. Changed at runtime by the model registry's overlay."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "description": "The decider's key (`PRESENTER_DECIDE_API_KEY`), or a `credential_grant_id` in its place."
+      },
+      "base_url": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The decider's endpoint (`PRESENTER_DECIDE_BASE_URL`); the template README names an example."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "decision": {
+          "type": "object",
+          "required": false
+        },
+        "decide": {
+          "type": "object",
+          "required": false
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "latency_ms": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cached": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "cost": {
+          "type": "number",
+          "required": false
+        },
+        "cache_expires_at": {
+          "type": "string",
+          "required": false
+        },
+        "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "refused_subscriber": {
+          "type": "string",
+          "required": false
+        },
+        "refused_model": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "decide": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The decider: ONE call per turn over a fixed set of questions (the topic, and per topic the lead and the second block), answered as one `decision` with a confidence per answer.",
+    "use_when": "Always, as part of the presenter; born with `provider: decisions`, which never changes after spawn.",
+    "not_in_scope": "It sees the turn's text and the descriptions of topics and candidates -- never fetched data and never memory. No tools, no chat model: the registry never hands this cell one."
+  }
+}

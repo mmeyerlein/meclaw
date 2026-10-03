@@ -1,4 +1,4 @@
-# `submit@2.3.5`
+# `submit@2.4.0`
 
 Two occupants behind one door, and the only reach onto the mutation door in the
 whole tree. It asks who may submit — and, when the diff itself asks for it, whether
@@ -411,8 +411,12 @@ be one of the three forms the builder renders, byte for byte:
   brains -- every one inside that generation, every path and start value a plain
   literal -- on `context.model_announced`. An announced brain carries
   `cell_path` and `start_model`, and since 2.3.3 may carry `requirement` -- the
-  prose its template cell states, a non-empty string of at most 2 KiB -- and no
-  other key. Violation → `model_announcement_form`.
+  prose its template cell states, a non-empty string of at most 2 KiB -- and, since
+  [#957](https://github.com/mmeyerlein/meclaw/issues/957), may carry `protocol`:
+  `""` (the chat wire) or `"decisions"` (an llm cell born with `provider:
+  "decisions"`), the registry's own list. Only a `decisions` brain may be announced
+  on an empty `start_model` -- the registry fills it from its protocol's rows --
+  and no other key is allowed. Violation → `model_announcement_form`.
 - **way back** (since 2.3.4, [#863](https://github.com/mmeyerlein/meclaw/issues/863)): `from` is one node under the declaration's own
   scope whose path is a plain CEL literal, `to` is `.` itself, the condition is
   exactly `has(hop.route) && hop.route == 'model_refused'`, and there is **no

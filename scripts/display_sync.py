@@ -25,6 +25,13 @@ strand gate no longer goes red because another session moved the description whi
 gate ran -- six full strand gates and 5589 gate seconds went that way in one evening
 (`plans/welle-p-2026-09-19/befund/01-zeit.md` section 3.2).
 
+Since GH #958 `compose/catalog.json` is the one source of the components the screen
+defines. `compose.py` carries it as `CATALOG_JSON` (verbatim), and every
+target in `BLOCK_COPIES` carries the BLOCK copy: the components with `block: true`,
+each as `name`, `props`, `slots` and `describe` -- what an application or the
+presenter may set as a block, and nothing it may not. `--check` compares every copy
+with its source and exits 1 on drift, without cargo.
+
 The last two steps -- what `script_inline` holds and how `config.json` is written back
 -- live in `set_script_inline` and `dump_config` because the merge driver
 `git_merge_display_sync.py` needs the same rule after a merge and must not spell it a
@@ -47,6 +54,12 @@ HIVE_DEFAULT = "~/projeks/MeClaw/meclaw-next/23-display"
 # The copy's name in the template on the left, the model's name on the right: the
 # template already owns a `run_display_scenarios.py`, so the model's runner travels
 # under a name that says whose runner it is.
+# Where the block copy of the catalogue goes: (template-relative config path, the
+# key path inside it). The presenter's stage enters itself here (GH #959).
+BLOCK_COPIES = [("presenter/stage/config.json", ("params", "catalog"))]
+# The fields a block copy carries of each component -- the reader's subset.
+BLOCK_FIELDS = ("name", "props", "slots", "describe")
+TEMPLATES_ROOT = pathlib.Path(__file__).resolve().parents[1] / "templates"
 COPIES = {
     "scenarios.json": "scenarios.json",
     "pass.py": "pass.py",
@@ -174,6 +187,101 @@ def embed_sheet(py: str, travelling_sheet: str) -> str:
     )
 
 
+def catalog_blob(catalog_text: str) -> str:
+    """The one spelling of the catalogue inside `compose.py`: the file, verbatim.
+
+    Verbatim and not compacted, so a change to one component is a change to its
+    lines in `compose.py` too -- two branches that each add a component merge there
+    the way they merge in `catalog.json`, instead of colliding on one long line."""
+    json.loads(catalog_text)  # a catalogue that does not parse does not travel
+    blob = catalog_text.rstrip("\n")
+    if '"""' in blob or blob.endswith("\\"):
+        raise ValueError("the catalogue cannot travel inside a raw triple-quoted string")
+    return blob
+
+
+def embed_catalog(py: str, blob: str) -> str:
+    """Put the catalogue into `compose.py`'s `CATALOG_JSON` literal."""
+    return re.sub(
+        r'CATALOG_JSON = r"""(.*?)"""',
+        lambda m: 'CATALOG_JSON = r"""' + blob + '"""',
+        py,
+        count=1,
+        flags=re.S,
+    )
+
+
+def embedded(py: str, name: str):
+    """The text of one raw triple-quoted constant of `compose.py`, or None."""
+    found = re.search(name + r' = r"""(.*?)"""', py, flags=re.S)
+    return found.group(1) if found else None
+
+
+def block_copy(catalog: dict) -> list:
+    """The catalogue as a block reader sees it: `block: true` only, four fields each."""
+    return [dict((k, c[k]) for k in BLOCK_FIELDS if k in c)
+            for c in catalog["components"] if c.get("block")]
+
+
+def get_path(cfg: dict, keys):
+    for key in keys:
+        if not isinstance(cfg, dict) or key not in cfg:
+            return None
+        cfg = cfg[key]
+    return cfg
+
+
+def set_path(cfg: dict, keys, value) -> dict:
+    here = cfg
+    for key in keys[:-1]:
+        here = here.setdefault(key, {})
+    here[keys[-1]] = value
+    return cfg
+
+
+def write_block_copies(catalog: dict, targets=None, root=None) -> int:
+    """Write the block copy into every target; the number written."""
+    blocks = block_copy(catalog)
+    written = 0
+    for rel, keys in (BLOCK_COPIES if targets is None else targets):
+        path = (root or TEMPLATES_ROOT) / rel
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(dump_config(set_path(cfg, list(keys), blocks)), encoding="utf-8")
+        written += 1
+    return written
+
+
+def check_copies(root: pathlib.Path = COMPOSE_ROOT, targets=None, templates=None) -> list:
+    """Every copy against its source: a list of drift lines, empty when they agree.
+
+    The sheet in `KIT_CSS`, the catalogue in `CATALOG_JSON`, `compose.py` in
+    `script_inline`, and the block copy in every `BLOCK_COPIES` target. Unlike
+    `--check-source` this is a verdict: nothing here can move under a gate, because
+    every source and every copy is in this repository."""
+    drift = []
+    py = (root / "compose.py").read_text(encoding="utf-8")
+    sheet = strip((root / "display-dna.css").read_text(encoding="utf-8"))
+    if embedded(py, "KIT_CSS") != sheet:
+        drift.append("compose.py KIT_CSS differs from display-dna.css")
+    catalog_text = (root / "catalog.json").read_text(encoding="utf-8")
+    if embedded(py, "CATALOG_JSON") != catalog_blob(catalog_text):
+        drift.append("compose.py CATALOG_JSON differs from catalog.json")
+    cfg = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    if cfg.get("params", {}).get("script_inline") != py:
+        drift.append("config.json script_inline differs from compose.py")
+    blocks = block_copy(json.loads(catalog_text))
+    for rel, keys in (BLOCK_COPIES if targets is None else targets):
+        path = (templates or TEMPLATES_ROOT) / rel
+        try:
+            have = get_path(json.loads(path.read_text(encoding="utf-8")), list(keys))
+        except (OSError, ValueError):
+            have = None
+        if have != blocks:
+            drift.append("%s %s differs from the block copy of catalog.json"
+                         % (rel, ".".join(keys)))
+    return drift
+
+
 def set_script_inline(cfg: dict, compose_py: str) -> dict:
     """`config.json` carries the whole of `compose.py`, verbatim, as one string."""
     cfg["params"]["script_inline"] = compose_py
@@ -193,14 +301,16 @@ def main(root: pathlib.Path = COMPOSE_ROOT) -> None:
     travels = strip(sheet)
     py_path = root / "compose.py"
     py = py_path.read_text(encoding="utf-8")
-    new_py = embed_sheet(py, travels)
+    catalog_text = (root / "catalog.json").read_text(encoding="utf-8")
+    new_py = embed_catalog(embed_sheet(py, travels), catalog_blob(catalog_text))
     if new_py != py:
         py_path.write_text(new_py, encoding="utf-8")
     cfg_path = root / "config.json"
     cfg = set_script_inline(json.loads(cfg_path.read_text(encoding="utf-8")), new_py)
     cfg_path.write_text(dump_config(cfg), encoding="utf-8")
-    print("synced: sheet %d B, travelling %d B, script %d B"
-          % (len(sheet), len(travels), len(new_py)))
+    copies = write_block_copies(json.loads(catalog_text)) if root == COMPOSE_ROOT else 0
+    print("synced: sheet %d B, travelling %d B, script %d B, %d block copies"
+          % (len(sheet), len(travels), len(new_py), copies))
 
 
 def check_cli(dest):
@@ -214,8 +324,20 @@ def check_cli(dest):
     return 0
 
 
+def check_copies_cli():
+    """`--check`: print every drift and exit 1 on any, 0 when the copies agree."""
+    drift = check_copies()
+    for line in drift:
+        print("DRIFT: %s" % line)
+    if drift:
+        print("run `python3 scripts/display_sync.py` and commit the copies", file=sys.stderr)
+        return 1
+    print("copies: the sheet, the catalogue and the script agree with their sources")
+    return 0
+
+
 def cli(argv):
-    """`display_sync.py` syncs; `display_sync.py --check-source [dir]` asks.
+    """`display_sync.py` syncs; `--check-source [dir]` asks; `--check` judges.
 
     Anything else is a usage error and exits 2 -- it does NOT fall through to
     the sync. Measured reason (wave P, fix round 1): while `--check-source` was
@@ -225,10 +347,13 @@ def cli(argv):
     if not argv:
         main()
         return 0
+    if argv == ["--check"]:
+        return check_copies_cli()
     if argv[0] == "--check-source" and len(argv) <= 2:
         return check_cli(pathlib.Path(argv[1]) if len(argv) == 2
                          else COMPOSE_ROOT / "scenarios")
-    print("usage: display_sync.py [--check-source [<scenarios dir>]]", file=sys.stderr)
+    print("usage: display_sync.py [--check | --check-source [<scenarios dir>]]",
+          file=sys.stderr)
     return 2
 
 

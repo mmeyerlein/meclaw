@@ -1,0 +1,651 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "resident",
+    "max_concurrency": 1,
+    "external_timeout_ms": 10000,
+    "script_inline": "\"\"\"The `stage` cell of the presenter: every turn asks the decider once, a sure verdict opens a window.\n\nTHIS FILE IS THE SOURCE. `config.json` beside it carries a byte-identical copy in\n`params.script_inline`; `check_stage.py --sync` writes it and `check_stage.py` refuses a\ntree in which the two have drifted apart.\n\n# The rule (one sentence)\n\nWhen the decider is sure that something on the screen helps with what was just said,\nsomething is shown -- and only then. No trigger words: every turn with text goes to\n`./decide` as ONE call (the topic choice over every known topic plus `none`, and per topic\na `lead` and an `also` choice over its candidates), and the state of that call is the\nturn's text and nothing else -- no fetched data, no memory.\n\nA sure verdict (`topic` is not `none` and its confidence reaches the topic's threshold)\nleaves in ONE output: the window `show-<topic>` with a working hint, AND the data request\n`in_show {op: \"data\"}` to the app that owns the topic. Blocks then appear as their data\narrives, each one fully bound and checked against the catalogue copy in `params.catalog`.\nUnsure, `none`, an error or the deadline: nothing on the screen, the answer stays text, and\none journal row says why. A verdict that comes after the deadline changes nothing.\n\n# State\n\nThe cell is `resident` (one child, strict FIFO): the order of events is the truth. RAM is a\ncache of the store beside it and never its truth -- every change is written through as one\nstore bundle in the same output, and a cold child (first message, or a child that was\nkilled) reads the `shows` and `pending` tables back before it handles anything; the event\nthat woke it waits in RAM until the read is back.\n\n# Pure functions\n\nEverything that decides -- the questions, the threshold, the binding, the audience gate,\nthe fallback -- is a pure function of its arguments. `check_stage.py` drives them as\ntables, without a colony.\n\"\"\"\n\nimport json\nimport sys\nimport time\nimport uuid\n\n# ---------------------------------------------------------------------------\n# Names\n\nT_SHOWS = \"shows\"\nT_PENDING = \"pending\"\nT_JOURNAL = \"journal\"\nSHOWS_COLUMNS = [\"topic\", \"owner_app\", \"show_at\", \"manifest\", \"at\"]\nPENDING_COLUMNS = [\"turn_id\", \"value\", \"at\"]\n\nPHASE_BOOT = \"boot\"\nPHASE_WRITE = \"write\"\n\nFALLBACKS = (\"none\", \"unsure\", \"no_topic\", \"timeout\", \"error\", \"no_selector\",\n             \"invalid\", \"no_data\")\n\n# The decider's call carries 1 + 2*N questions; the decider takes at most 64 (E.2).\nMAX_TOPICS = 31\nMAX_CANDIDATES = 5\nNONE = \"none\"\nNONE_TOPIC = \"nothing on the screen helps with this request\"\nNONE_ALSO = \"no second block\"\n\nDEFAULTS = {\n    \"budget_ms\": 1000,\n    \"threshold\": 0.7,\n    \"data_wait_ms\": 4000,\n    \"also_threshold\": 0.5,\n    \"work_hint\": \"Working on it…\",\n}\n\nPANE = \"display-pane\"\nSTACK = \"display-stack\"\nSTATUS = \"display-status\"\nTILE = \"display-tile\"\nLAYER_CANVAS = \"canvas\"\nCONTEXT = \"conversation\"\nRELEVANCE = \"0.8\"\nTILE_CHARS = 24\n\n# A done turn is kept this long, so a late verdict can still be told from a stray one.\nKEEP_DONE_MS = 60000\n\nDEADLINE = \"deadline\"\nDUE_NAMESPACE = uuid.UUID(\"6f1c2a52-9f4e-4c1b-8d55-3c0b6e5a9d01\")\n\nTYPES = (\"text\", \"int\", \"number\", \"boolean\", \"html\")\n\n\n# ---------------------------------------------------------------------------\n# Wire helpers\n\n\ndef now_ms():\n    held = globals().get(\"_TEST_NOW\")\n    if isinstance(held, int):\n        return held\n    return int(time.time() * 1000)\n\n\ndef emission(route, body, **header):\n    head = {\"route\": route}\n    head.update(header)\n    out = {\"header\": head}\n    out.update(body)\n    if \"messages\" not in out:\n        out[\"messages\"] = []\n    return out\n\n\ndef tool_call(args, tid):\n    return {\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": tid,\n            \"text\": json.dumps(args, sort_keys=True)}\n\n\ndef error(code, detail):\n    return emission(\"error\", {\"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                                            \"text\": detail}], \"detail\": detail},\n                    error_code=code, detail=detail)\n\n\ndef bundle(phase, legs):\n    return emission(\"store\", {\"messages\": legs}, phase=phase)\n\n\ndef iso_z(ms):\n    ms = int(ms)\n    t = time.gmtime(ms // 1000)\n    return \"%04d-%02d-%02dT%02d:%02d:%02d.%03dZ\" % (\n        t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, ms % 1000)\n\n\ndef knob(params, key):\n    v = params.get(key)\n    d = DEFAULTS.get(key)\n    if isinstance(d, float):\n        try:\n            f = float(v)\n        except (TypeError, ValueError):\n            return d\n        return f if 0 < f <= 1 else d\n    if isinstance(d, int):\n        try:\n            i = int(v)\n        except (TypeError, ValueError):\n            return d\n        return i if i >= 1 else d\n    return v if isinstance(v, str) and v else d\n\n\n# ---------------------------------------------------------------------------\n# Audience (R-DP-b, OR-DP-4): the substrate's `covers`, fail-closed\n\n\ndef as_round(value):\n    \"\"\"A round as a list of strings, or None where it is no round at all.\n\n    Accepts a list or its canonical JSON text. Anything else -- None, a number, text that\n    is no JSON list, a list with a non-string in it -- is None, and None covers nothing.\n    \"\"\"\n    if isinstance(value, str):\n        try:\n            value = json.loads(value)\n        except ValueError:\n            return None\n    if not isinstance(value, list):\n        return None\n    if not all(isinstance(x, str) for x in value):\n        return None\n    return value\n\n\ndef covers(audience_set, screen_round):\n    \"\"\"True exactly when `audience_set` may be seen by the screen's round.\n\n    The rule of the substrate predicate `Covers` (store/query/mod.rs): the set is a\n    non-empty list that holds `*` or every member of the round. A screen with no round\n    (empty or missing `screen_audience`) sees `*` data only. Missing, empty or malformed\n    sets are false -- never an error, never a pass.\n    \"\"\"\n    have = as_round(audience_set)\n    if not have:\n        return False\n    if \"*\" in have:\n        return True\n    want = as_round(screen_round) or []\n    if not want:\n        return False\n    return all(m in have for m in want)\n\n\ndef filter_set(data_set, screen_round):\n    \"\"\"One data set after the audience gate, or None where nothing of it may be shown.\n\n    The set's own `audience_set` must cover the round, or the whole set is gone, marked\n    rows included (fail-closed: a set without a round shows nothing). A row with its OWN\n    `audience_set` is gated by it alone; a row without one inherits the set's round,\n    because the set's stamp is the app's statement about all of its rows (OR-DP-56: the\n    weather app sends public sets `[\"*\"]` with unmarked rows). `value` stays as it came,\n    because an app derives a value from rows under the intersection of their rounds\n    (OR-DP-10).\n    \"\"\"\n    if not isinstance(data_set, dict):\n        return None\n    if not covers(data_set.get(\"audience_set\"), screen_round):\n        return None\n    out = {}\n    if isinstance(data_set.get(\"value\"), dict):\n        out[\"value\"] = data_set[\"value\"]\n    rows = data_set.get(\"rows\")\n    if isinstance(rows, list):\n        out[\"rows\"] = [r for r in rows if isinstance(r, dict)\n                       and (\"audience_set\" not in r\n                            or covers(r.get(\"audience_set\"), screen_round))]\n    return out\n\n\n# ---------------------------------------------------------------------------\n# The catalogue copy\n\n\ndef catalogue(params):\n    \"\"\"`params.catalog` as `{name: entry}`. A list of entries or a map both read.\"\"\"\n    raw = params.get(\"catalog\")\n    if isinstance(raw, dict) and isinstance(raw.get(\"components\"), list):\n        raw = raw[\"components\"]\n    out = {}\n    if isinstance(raw, list):\n        for entry in raw:\n            if isinstance(entry, dict) and isinstance(entry.get(\"name\"), str):\n                out[entry[\"name\"]] = entry\n    elif isinstance(raw, dict):\n        for name, entry in raw.items():\n            if isinstance(entry, dict):\n                e = dict(entry)\n                e.setdefault(\"name\", name)\n                out[name] = e\n    return out\n\n\ndef props_of(entry):\n    props = entry.get(\"props\") if isinstance(entry, dict) else None\n    out = {}\n    if isinstance(props, dict):\n        for name, spec in props.items():\n            if isinstance(spec, dict):\n                out[name] = spec\n            elif isinstance(spec, str):\n                out[name] = {\"type\": spec}\n    return out\n\n\ndef slot_allows(entry, child):\n    slots = entry.get(\"slots\") if isinstance(entry, dict) else None\n    if slots == \"any\":\n        return True\n    if slots in (None, \"none\"):\n        return False\n    return isinstance(slots, list) and child in slots\n\n\ndef is_block(entry):\n    \"\"\"A block of the copy. `scripts/display_sync.py` writes ONLY the blocks, each as\n    `name, props, slots, describe` -- no `block` key -- so presence in the copy is the\n    mark; an entry that says `block: false` (a hand-written copy) is still refused.\"\"\"\n    return isinstance(entry, dict) and entry.get(\"block\", True) is True\n\n\n# ---------------------------------------------------------------------------\n# The manifest (README § 2): checked once, when an app says its topics\n\n\ndef word_ok(text):\n    return isinstance(text, str) and 0 < len(text) <= 64 and \\\n        all(c in \"abcdefghijklmnopqrstuvwxyz0123456789_-\" for c in text)\n\n\ndef children_of(candidate):\n    \"\"\"The `each` specs of a candidate: the list under `children` (OR-DP-53), else\n    `[]`; anything that is not a list is None, which the manifest check refuses.\"\"\"\n    kids = candidate.get(\"children\")\n    if kids is None:\n        return []\n    return kids if isinstance(kids, list) else None\n\n\ndef scalar_bind(bind):\n    if not isinstance(bind, dict):\n        return {}\n    return dict(bind)\n\n\ndef check_bind_spec(bind, entry, row_scope, own_set):\n    \"\"\"None when every bound prop is a catalogue prop of the block and every source is of\n    the closed vocabulary; else the reason. `html` props only from a set's `value`\n    (OR-DP-10): never from a row, never as a literal. A `<set>.<field>` source names the\n    candidate's OWN set: a foreign set may be one nobody asked for (an `on_choice` set of\n    a candidate not chosen), and an optional prop would then drop silently (review P,\n    minor 1).\"\"\"\n    props = props_of(entry)\n    for prop, src in scalar_bind(bind).items():\n        if prop not in props:\n            return \"prop %s is not in the catalogue of %s\" % (prop, entry.get(\"name\"))\n        if not isinstance(src, str) or not src:\n            return \"prop %s has no source\" % prop\n        raw = props[prop].get(\"type\") == \"html\"\n        if src.startswith(\"=\"):\n            if raw:\n                return \"raw prop %s cannot be a literal\" % prop\n            continue\n        if src.startswith(\"$.\"):\n            if not row_scope:\n                return \"prop %s reads a row outside of each\" % prop\n            if raw:\n                return \"raw prop %s cannot come from a row\" % prop\n            if len(src) <= 2:\n                return \"prop %s names no row field\" % prop\n            continue\n        head, dot, field = src.partition(\".\")\n        if not dot or not head or not field:\n            return \"prop %s source %r is not <set>.<field>\" % (prop, src)\n        if head != own_set:\n            return \"prop %s reads set %s, not its own set %s\" % (prop, head, own_set)\n    return None\n\n\ndef check_candidate(cand, cat):\n    if not isinstance(cand, dict):\n        return \"a candidate is not an object\"\n    if not word_ok(cand.get(\"key\")) or \".\" in cand.get(\"key\", \"\"):\n        return \"candidate key %r\" % cand.get(\"key\")\n    if not isinstance(cand.get(\"describe\"), str) or not cand[\"describe\"].strip():\n        return \"candidate %s has no describe\" % cand.get(\"key\")\n    block = cand.get(\"block\")\n    entry = cat.get(block) if isinstance(block, str) else None\n    if not is_block(entry):\n        return \"candidate %s: %r is no block of the catalogue\" % (cand.get(\"key\"), block)\n    if not isinstance(cand.get(\"set\"), str) or not cand[\"set\"]:\n        return \"candidate %s names no set\" % cand.get(\"key\")\n    if \"on_choice\" in cand and not isinstance(cand[\"on_choice\"], (str, bool, list)):\n        return \"candidate %s: on_choice\" % cand.get(\"key\")\n    why = check_bind_spec(cand.get(\"bind\") or {}, entry, False, cand[\"set\"])\n    if why:\n        return \"candidate %s: %s\" % (cand.get(\"key\"), why)\n    kids = children_of(cand)\n    if kids is None:\n        return \"candidate %s: children\" % cand.get(\"key\")\n    for kid in kids:\n        if not isinstance(kid, dict) or not isinstance(kid.get(\"each\"), str):\n            return \"candidate %s: a child is not {each, block, bind}\" % cand.get(\"key\")\n        if kid[\"each\"] != cand[\"set\"]:\n            return \"candidate %s: each runs over %s, not its own set\" % (\n                cand.get(\"key\"), kid[\"each\"])\n        kentry = cat.get(kid.get(\"block\")) if isinstance(kid.get(\"block\"), str) else None\n        if kentry is None:\n            return \"candidate %s: child %r is not in the catalogue\" % (\n                cand.get(\"key\"), kid.get(\"block\"))\n        if not slot_allows(entry, kid[\"block\"]):\n            return \"candidate %s: %s takes no %s\" % (cand.get(\"key\"), block, kid[\"block\"])\n        why = check_bind_spec(kid.get(\"bind\") or {}, kentry, True, cand[\"set\"])\n        if why:\n            return \"candidate %s: %s\" % (cand.get(\"key\"), why)\n    return None\n\n\ndef check_topic(topic, cat):\n    \"\"\"None when the manifest entry of one topic is well formed; else the reason.\"\"\"\n    if not isinstance(topic, dict):\n        return \"a topic is not an object\"\n    name = topic.get(\"topic\")\n    if not word_ok(name) or \".\" in name:\n        return \"topic name %r\" % name\n    if not isinstance(topic.get(\"describe\"), str) or not topic[\"describe\"].strip():\n        return \"topic %s has no describe\" % name\n    if not isinstance(topic.get(\"title\"), str) or not topic[\"title\"].strip():\n        return \"topic %s has no title\" % name\n    if \"threshold\" in topic:\n        t = topic[\"threshold\"]\n        if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 < t <= 1:\n            return \"topic %s: threshold must lie in (0, 1]\" % name\n    if \"data_wait_ms\" in topic:\n        w = topic[\"data_wait_ms\"]\n        if isinstance(w, bool) or not isinstance(w, int) or w < 1:\n            return \"topic %s: data_wait_ms\" % name\n    cands = topic.get(\"candidates\")\n    if not isinstance(cands, list) or not cands:\n        return \"topic %s has no candidates\" % name\n    if len(cands) > MAX_CANDIDATES:\n        return \"topic %s has more than %d candidates\" % (name, MAX_CANDIDATES)\n    keys = []\n    for cand in cands:\n        why = check_candidate(cand, cat)\n        if why:\n            return \"topic %s: %s\" % (name, why)\n        if cand[\"key\"] == NONE or cand[\"key\"] in keys:\n            return \"topic %s: candidate key %s twice or reserved\" % (name, cand[\"key\"])\n        keys.append(cand[\"key\"])\n    if topic.get(\"standard\") not in keys:\n        return \"topic %s: the standard is not one of its candidates\" % name\n    return None\n\n\ndef accept_topics(known, owner, topics, cat):\n    \"\"\"The `shows` table after one app said its topics.\n\n    `known` is `{topic: {owner, manifest, at}}`. The app's own earlier rows are replaced\n    as a whole; a topic another app already holds stays with that app (`duplicate`); a\n    malformed one gets no row; topics past the call's ceiling, alphabetically last,\n    `overflow`. Returns `(new_known, refusals)`; a refusal is `(topic, reason)`.\n    \"\"\"\n    out = {t: dict(v) for t, v in known.items() if v.get(\"owner\") != owner}\n    refused = []\n    fresh = []\n    seen = set()\n    for topic in topics if isinstance(topics, list) else []:\n        name = topic.get(\"topic\") if isinstance(topic, dict) else None\n        why = check_topic(topic, cat)\n        if why:\n            refused.append((str(name or \"?\"), \"invalid: \" + why))\n            continue\n        if name in seen:\n            refused.append((name, \"duplicate\"))\n            continue\n        seen.add(name)\n        if name in out:\n            refused.append((name, \"duplicate\"))\n            continue\n        fresh.append(topic)\n    room = MAX_TOPICS - len(out)\n    fresh.sort(key=lambda t: t[\"topic\"])\n    for i, topic in enumerate(fresh):\n        if i >= room:\n            refused.append((topic[\"topic\"], \"overflow\"))\n            continue\n        out[topic[\"topic\"]] = {\"owner\": owner, \"manifest\": topic, \"at\": now_ms()}\n    return out, refused\n\n\n# ---------------------------------------------------------------------------\n# The one call (R-29-6, OR-DP-3)\n\n\ndef questions(known):\n    \"\"\"`topic` over every topic plus `none`; per topic `<t>.lead` and `<t>.also`.\"\"\"\n    topic_opts = {}\n    qs = {}\n    for name in sorted(known):\n        m = known[name][\"manifest\"]\n        topic_opts[name] = \"%s: %s\" % (m[\"title\"], m[\"describe\"])\n        cands = {c[\"key\"]: c[\"describe\"] for c in m[\"candidates\"]}\n        qs[name + \".lead\"] = {\n            \"kind\": \"choice\",\n            \"instructions\": \"Which block shows best what the request asks about %s?\" % m[\"title\"],\n            \"options\": dict(cands)}\n        also = dict(cands)\n        also[NONE] = NONE_ALSO\n        qs[name + \".also\"] = {\n            \"kind\": \"choice\",\n            \"instructions\": \"Which second block helps beside the first one, if any?\",\n            \"options\": also}\n    topic_opts[NONE] = NONE_TOPIC\n    qs[\"topic\"] = {\"kind\": \"choice\",\n                   \"instructions\": \"Which of these would help on a screen beside the answer to this request?\",\n                   \"options\": topic_opts}\n    return qs\n\n\ndef decide_call(text, known, show_id):\n    \"\"\"The emission to `./decide`: the turn's text as the state, nothing else (R-DP-a).\"\"\"\n    return emission(\"decide\", {\"messages\": [],\n                               \"decide\": {\"state\": text, \"questions\": questions(known)}},\n                    show_id=show_id)\n\n\ndef answer_of(answers, key):\n    \"\"\"`(choice, p)` of one choice answer; `(None, 0.0)` where it is missing or malformed.\n\n    `p` is read the forgiving way, because the decider's answer is the one thing in here\n    that comes from outside: a map of choice -> probability, a bare number, or a\n    `confidence` beside the choice.\n    \"\"\"\n    a = answers.get(key) if isinstance(answers, dict) else None\n    if not isinstance(a, dict):\n        return None, 0.0\n    choice = a.get(\"choice\")\n    if not isinstance(choice, str):\n        return None, 0.0\n    p = a.get(\"p\")\n    if isinstance(p, dict):\n        p = p.get(choice)\n    if p is None:\n        p = a.get(\"confidence\")\n    if isinstance(p, bool) or not isinstance(p, (int, float)):\n        return choice, 0.0\n    return choice, float(p)\n\n\ndef read_verdict(body, known):\n    \"\"\"The decision, as `{topic, p, lead, lead_p, also, also_p, model}`.\n\n    A topic the decider made up, or a candidate key the topic does not carry, reads as no\n    choice: the decider chooses among what it was offered or it chose nothing.\n    \"\"\"\n    d = body.get(\"decision\") if isinstance(body.get(\"decision\"), dict) else body\n    answers = d.get(\"answers\") if isinstance(d, dict) else None\n    model = str((d or {}).get(\"model\") or body.get(\"model\") or \"\")\n    topic, p = answer_of(answers, \"topic\")\n    v = {\"topic\": topic, \"p\": p, \"lead\": None, \"lead_p\": 0.0, \"also\": None,\n         \"also_p\": 0.0, \"model\": model}\n    if topic == NONE or topic is None:\n        v[\"topic\"] = NONE if topic == NONE else None\n        return v\n    if topic not in known:\n        v[\"topic\"] = None\n        return v\n    keys = [c[\"key\"] for c in known[topic][\"manifest\"][\"candidates\"]]\n    lead, lp = answer_of(answers, topic + \".lead\")\n    also, ap = answer_of(answers, topic + \".also\")\n    v[\"lead\"] = lead if lead in keys else None\n    v[\"lead_p\"] = lp\n    v[\"also\"] = also if also in keys else None\n    v[\"also_p\"] = ap\n    return v\n\n\ndef threshold_of(manifest, params):\n    t = manifest.get(\"threshold\")\n    if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t <= 1:\n        return float(t)\n    return knob(params, \"threshold\")\n\n\ndef judge(v, known, params):\n    \"\"\"`None` for a sure verdict, else the journal's fallback word.\"\"\"\n    if v[\"topic\"] == NONE:\n        return \"no_topic\"\n    if v[\"topic\"] is None:\n        return \"unsure\"\n    if v[\"p\"] < threshold_of(known[v[\"topic\"]][\"manifest\"], params):\n        return \"unsure\"\n    return None\n\n\ndef chosen(v, manifest, params):\n    \"\"\"The keys to place, in order: the lead (or, without one, the standard), then the\n    also where it is a different block and sure enough.\"\"\"\n    first = v[\"lead\"] or manifest[\"standard\"]\n    out = [first]\n    if v[\"also\"] and v[\"also\"] != first and v[\"also_p\"] >= knob(params, \"also_threshold\"):\n        out.append(v[\"also\"])\n    return out\n\n\ndef wanted_sets(manifest, keys):\n    \"\"\"Every set without `on_choice`, plus the sets of the chosen candidates (R-29-2).\"\"\"\n    want = []\n    cands = {c[\"key\"]: c for c in manifest[\"candidates\"]}\n    for c in manifest[\"candidates\"]:\n        if not c.get(\"on_choice\") and c[\"set\"] not in want:\n            want.append(c[\"set\"])\n    for k in keys + [manifest[\"standard\"]]:\n        c = cands.get(k)\n        if c and c[\"set\"] not in want:\n            want.append(c[\"set\"])\n    return want\n\n\n# ---------------------------------------------------------------------------\n# Binding (README § 2 bind) and the catalogue check\n\n\ndef lookup(obj, path):\n    cur = obj\n    for part in path.split(\".\"):\n        if not isinstance(cur, dict) or part not in cur:\n            return None\n        cur = cur[part]\n    return cur\n\n\ndef coerce(value, ty):\n    \"\"\"A bound value in the catalogue's type, or None where it is not one.\"\"\"\n    if value is None:\n        return None\n    if ty in (\"text\", \"html\"):\n        if isinstance(value, (dict, list)):\n            return None\n        if isinstance(value, bool):\n            return \"true\" if value else \"false\"\n        if isinstance(value, float) and value.is_integer():\n            value = int(value)\n        return str(value)\n    if ty == \"int\":\n        if isinstance(value, bool):\n            return None\n        if isinstance(value, int):\n            return value\n        if isinstance(value, float) and value.is_integer():\n            return int(value)\n        if isinstance(value, str):\n            try:\n                return int(value.strip())\n            except ValueError:\n                return None\n        return None\n    if ty == \"number\":\n        if isinstance(value, bool):\n            return None\n        if isinstance(value, (int, float)):\n            return value\n        if isinstance(value, str):\n            try:\n                return float(value.strip())\n            except ValueError:\n                return None\n        return None\n    if ty == \"boolean\":\n        if isinstance(value, bool):\n            return value\n        if value in (\"true\", \"1\", 1):\n            return True\n        if value in (\"false\", \"0\", 0, \"\"):\n            return False\n        return None\n    return None\n\n\ndef bind_props(bind, entry, sets, row):\n    \"\"\"The props of one block, or None where a required prop stays empty or a value does\n    not fit its type.\"\"\"\n    props = props_of(entry)\n    out = {}\n    for prop, src in scalar_bind(bind).items():\n        if src.startswith(\"=\"):\n            raw = src[1:]\n        elif src.startswith(\"$.\"):\n            raw = lookup(row, src[2:]) if isinstance(row, dict) else None\n        else:\n            head, _, field = src.partition(\".\")\n            data = sets.get(head)\n            raw = lookup(data.get(\"value\"), field) if isinstance(data, dict) else None\n        value = coerce(raw, props[prop].get(\"type\", \"text\"))\n        if value is None:\n            if raw is not None:\n                return None\n            continue\n        out[prop] = value\n    for prop, spec in props.items():\n        if spec.get(\"required\") and prop not in out:\n            return None\n    return out\n\n\ndef place(topic, cand, sets, cat):\n    \"\"\"One fully bound block, or None where it cannot be placed (P.6 (ii)-(iv)).\n\n    `sets` holds the sets that arrived, already through the audience gate. A candidate\n    whose own set is missing, whose `each` has no row left, or whose tree does not stand\n    against the catalogue is not placeable -- and is never placed half.\n    \"\"\"\n    data = sets.get(cand[\"set\"])\n    if not isinstance(data, dict):\n        return None\n    entry = cat.get(cand[\"block\"])\n    if not is_block(entry):\n        return None\n    if not data.get(\"value\") and not data.get(\"rows\"):\n        return None\n    props = bind_props(cand.get(\"bind\") or {}, entry, sets, None)\n    if props is None:\n        return None\n    key = \"show-%s-%s\" % (topic, cand[\"key\"])\n    node = {\"component\": cand[\"block\"], \"props\": props, \"key\": key}\n    kids = []\n    for spec in children_of(cand) or []:\n        src = sets.get(spec[\"each\"])\n        rows = src.get(\"rows\") if isinstance(src, dict) else None\n        if not rows:\n            return None\n        kentry = cat.get(spec[\"block\"])\n        for i, row in enumerate(rows):\n            kp = bind_props(spec.get(\"bind\") or {}, kentry, sets, row)\n            if kp is None:\n                return None\n            kids.append({\"component\": spec[\"block\"], \"props\": kp,\n                         \"key\": \"%s-%d\" % (key, len(kids))})\n    if children_of(cand) and not kids:\n        return None\n    if kids:\n        node[\"children\"] = kids\n    return node\n\n\n# ---------------------------------------------------------------------------\n# The window\n\n\ndef shorten(text):\n    text = \" \".join(str(text or \"\").split())\n    return text if len(text) <= TILE_CHARS else text[:TILE_CHARS - 1] + \"…\"\n\n\ndef window(topic, manifest, turn_id, blocks, hint, touched):\n    \"\"\"The view `show-<topic>`: a pane on the canvas, its tile, and either the working\n    hint or the blocks placed so far. `touched` is said once, by the write that opens\n    the window; a write that only adds a block leaves it out, and a key left out stands\n    (§ 4.8): a block is no new touch.\"\"\"\n    vid = \"show-\" + topic\n    props = {\"pane_id\": vid, \"kicker\": manifest[\"title\"], \"title\": \"\",\n             \"context\": CONTEXT, \"relevance\": RELEVANCE, \"topic\": \"show:\" + topic,\n             \"layer\": LAYER_CANVAS}\n    if turn_id:\n        props[\"turn_id\"] = turn_id\n    if touched:\n        props[\"touched\"] = str(int(touched))\n    tile = {\"component\": TILE, \"key\": \"tile\",\n            \"props\": {\"glyph\": str(manifest.get(\"glyph\") or \"\"),\n                      \"line\": shorten(manifest[\"title\"]), \"value\": \"\"}}\n    if blocks:\n        inner = list(blocks)\n    else:\n        inner = [{\"component\": STATUS, \"key\": vid + \"-hint\",\n                  \"props\": {\"kind\": \"working\", \"text\": hint}}]\n    stack = {\"component\": STACK, \"props\": {\"gap\": \"s\"}, \"key\": vid + \"-stack\",\n             \"children\": inner}\n    return {\"component\": PANE, \"props\": props, \"key\": \"show.\" + topic,\n            \"children\": [tile, stack]}\n\n\ndef a_view(topic, tree):\n    return emission(\"view\", {\"messages\": [], \"view_id\": \"show-\" + topic,\n                             \"kind\": \"component\", \"content\": tree, \"components\": []})\n\n\ndef withdraw(topic):\n    return emission(\"withdraw\", {\"messages\": [], \"view_id\": \"show-\" + topic})\n\n\n# ---------------------------------------------------------------------------\n# One turn's record, and the decisions over it (pure)\n\n\ndef fresh_turn(turn_id, arrived, budget, audience_set):\n    return {\"turn_id\": turn_id, \"arrived\": arrived, \"deadline\": arrived + budget,\n            \"state\": \"asking\", \"topic\": None, \"p\": 0.0, \"lead\": None, \"also\": None,\n            \"keys\": [], \"model\": \"\", \"t_verdict\": None, \"t_window\": None,\n            \"t_content\": None, \"data_deadline\": None, \"sets\": {}, \"placed\": [],\n            \"first\": \"open\", \"fallback\": None, \"late\": False,\n            \"audience_set\": audience_set, \"owner\": None, \"done_at\": None}\n\n\ndef resolve(rec, manifest, cat):\n    \"\"\"The blocks a turn can place now, in order, and the fallback word they mean.\n\n    Order is the lead, then the also. The first slot resolves when the lead is placeable\n    (`none`) or, its set being there and the lead not placeable, when the standard is\n    (`invalid`). An also waits for the first slot; a block once placed stays.\n    Returns `(new_blocks, fallback_or_None)`.\n    \"\"\"\n    cands = {c[\"key\"]: c for c in manifest[\"candidates\"]}\n    topic = rec[\"topic\"]\n    new = []\n    fallback = None\n    if rec[\"first\"] == \"open\":\n        lead = cands.get(rec[\"keys\"][0])\n        node = place(topic, lead, rec[\"sets\"], cat) if lead else None\n        if node is not None:\n            rec[\"first\"] = \"lead\"\n            fallback = \"none\" if rec[\"lead\"] else \"invalid\"\n            new.append((lead[\"key\"], node))\n        elif lead and lead[\"set\"] in rec[\"sets\"]:\n            std = cands.get(manifest[\"standard\"])\n            if std is not None and std[\"key\"] != lead[\"key\"]:\n                snode = place(topic, std, rec[\"sets\"], cat)\n                if snode is not None:\n                    rec[\"first\"] = \"standard\"\n                    fallback = \"invalid\"\n                    new.append((std[\"key\"], snode))\n                elif std[\"set\"] in rec[\"sets\"]:\n                    rec[\"first\"] = \"failed\"\n            else:\n                rec[\"first\"] = \"failed\"\n    if rec[\"first\"] != \"open\":\n        for k in rec[\"keys\"][1:]:\n            if k in rec[\"placed\"] or any(k == n for n, _ in new):\n                continue\n            c = cands.get(k)\n            node = place(topic, c, rec[\"sets\"], cat) if c else None\n            if node is not None:\n                new.append((k, node))\n                if fallback is None and not rec[\"placed\"]:\n                    fallback = \"invalid\"\n    return new, fallback\n\n\ndef journal_row(rec, at):\n    def ms(v):\n        return None if v is None else int(v)\n    return {\"turn_id\": rec[\"turn_id\"], \"topic\": rec[\"topic\"] or \"\",\n            \"p\": float(rec[\"p\"] or 0.0), \"lead\": rec[\"lead\"] or \"\",\n            \"also\": rec[\"also\"] or \"\", \"fallback\": rec[\"fallback\"] or \"\",\n            \"late\": 1 if rec[\"late\"] else 0, \"t_verdict_ms\": ms(rec[\"t_verdict\"]),\n            \"t_window_ms\": ms(rec[\"t_window\"]), \"t_content_ms\": ms(rec[\"t_content\"]),\n            \"model\": rec[\"model\"] or \"\", \"at\": int(at),\n            \"audience_set\": json.dumps(rec[\"audience_set\"]) if rec[\"audience_set\"] is not None else \"\"}\n\n\n# ---------------------------------------------------------------------------\n# RAM, written through\n\n\nRAM_V = 1\n\n\ndef ram():\n    held = globals().get(\"_RAM\")\n    if isinstance(held, dict) and held.get(\"v\") == RAM_V:\n        return held\n    held = {\"v\": RAM_V, \"phase\": \"cold\", \"queue\": [], \"shows\": {}, \"pending\": {},\n            \"due\": None}\n    globals()[\"_RAM\"] = held\n    return held\n\n\ndef w_pending(rec):\n    tid = rec[\"turn_id\"]\n    return [tool_call({\"operation\": \"delete\", \"table\": T_PENDING,\n                       \"where\": {\"turn_id\": tid}}, \"p-del-\" + tid),\n            tool_call({\"operation\": \"insert\", \"table\": T_PENDING,\n                       \"row\": {\"turn_id\": tid, \"value\": rec, \"at\": now_ms()}},\n                      \"p-ins-\" + tid)]\n\n\ndef w_pending_gone(tid):\n    return [tool_call({\"operation\": \"delete\", \"table\": T_PENDING,\n                       \"where\": {\"turn_id\": tid}}, \"p-gone-\" + tid)]\n\n\ndef w_journal(rec):\n    tid = rec[\"turn_id\"]\n    return [tool_call({\"operation\": \"delete\", \"table\": T_JOURNAL,\n                       \"where\": {\"turn_id\": tid}}, \"j-del-\" + tid),\n            tool_call({\"operation\": \"insert\", \"table\": T_JOURNAL,\n                       \"row\": journal_row(rec, now_ms())}, \"j-ins-\" + tid)]\n\n\ndef w_shows(owner, known):\n    legs = [tool_call({\"operation\": \"delete\", \"table\": T_SHOWS,\n                       \"where\": {\"owner_app\": owner}}, \"s-del\")]\n    for name in sorted(known):\n        v = known[name]\n        if v[\"owner\"] != owner:\n            continue\n        legs.append(tool_call({\"operation\": \"insert\", \"table\": T_SHOWS,\n                               \"row\": {\"topic\": name, \"owner_app\": owner,\n                                       \"show_at\": v.get(\"show_at\") or \"\",\n                                       \"manifest\": v[\"manifest\"], \"at\": v[\"at\"]}},\n                              \"s-ins-\" + name))\n    return legs\n\n\ndef boot_read():\n    return bundle(PHASE_BOOT, [\n        tool_call({\"operation\": \"select\", \"table\": T_SHOWS, \"columns\": SHOWS_COLUMNS},\n                  \"b-shows\"),\n        tool_call({\"operation\": \"select\", \"table\": T_PENDING, \"columns\": PENDING_COLUMNS},\n                  \"b-pending\")])\n\n\ndef rows_of(body, tid):\n    for m in body.get(\"messages\") or []:\n        if isinstance(m, dict) and str(m.get(\"id\") or \"\") == tid:\n            try:\n                rows = json.loads(str(m.get(\"text\") or \"\"))\n            except (TypeError, ValueError):\n                return []\n            return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []\n    return []\n\n\ndef as_json(value):\n    if isinstance(value, str):\n        try:\n            return json.loads(value)\n        except ValueError:\n            return None\n    return value\n\n\ndef store_failed(body, hop):\n    if hop.get(\"error_code\"):\n        return str(hop[\"error_code\"])\n    for entry in body.get(\"results\") or []:\n        if isinstance(entry, dict) and entry.get(\"error_code\"):\n            return \"%s on %s\" % (entry[\"error_code\"], entry.get(\"operation\") or \"?\")\n    return None\n\n\n# ---------------------------------------------------------------------------\n# The clock: one one-shot for the earliest moment anything is due\n\n\ndef next_due(r):\n    at = None\n    for rec in r[\"pending\"].values():\n        if rec[\"state\"] == \"asking\":\n            t = rec[\"deadline\"]\n        elif rec[\"state\"] == \"showing\":\n            # A shown turn waits for its data deadline too: it closes there (review I1),\n            # with or without a block.\n            t = rec[\"data_deadline\"]\n        else:\n            continue\n        if t is not None and (at is None or t < at):\n            at = t\n    return at\n\n\ndef clock_ops(r, now, struck=\"\"):\n    \"\"\"Zero, one or two orders: remove the standing one, add the next (GH #553: no poll).\"\"\"\n    at = next_due(r)\n    old = r.get(\"due\") or {}\n    if old.get(\"sid\") == struck:\n        old = {}\n    ops = []\n    if at is None:\n        if old:\n            ops.append(emission(\"clock\", {\"op\": \"remove\", \"schedule_id\": old[\"sid\"]}))\n        r[\"due\"] = None\n        return ops\n    at = max(int(at), now + 50)\n    if old.get(\"at\") == at:\n        return ops\n    sid = str(uuid.uuid5(DUE_NAMESPACE, \"deadline:%d\" % at))\n    if old:\n        ops.append(emission(\"clock\", {\"op\": \"remove\", \"schedule_id\": old[\"sid\"]}))\n    ops.append(emission(\"clock\", {\"op\": \"add\", \"schedule_id\": sid,\n                                  \"schedule_name\": DEADLINE, \"at\": iso_z(at),\n                                  \"emit_to\": \".\", \"emit_body\": {\"messages\": []}}))\n    r[\"due\"] = {\"sid\": sid, \"at\": at}\n    return ops\n\n\n# ---------------------------------------------------------------------------\n# Lanes\n\n\ndef text_of(body):\n    said = []\n    for m in body.get(\"messages\") or []:\n        if isinstance(m, dict) and m.get(\"type\", \"text\") == \"text\" \\\n                and isinstance(m.get(\"text\"), str):\n            said.append(m[\"text\"])\n    return \" \".join(s for s in said if s.strip()).strip()\n\n\ndef lane_topics():\n    \"\"\"Every committed mutation asks every app with `shows` for its topics (P.3).\"\"\"\n    return [emission(\"in_show\", {\"messages\": [], \"op\": \"topics\"})]\n\n\ndef lane_show_topics(body, hop, ctx, params):\n    \"\"\"An app said its topics. The owner is `hop.show_app`, stamped by the edge that\n    carried the answer (OR-DP-54) -- never the body. An answer with an EMPTY `show_app` is\n    the default edge of a presenter with no app at all: a sentinel, no row, no refusal.\"\"\"\n    r = ram()\n    owner = str(hop.get(\"show_app\") or ctx.get(\"show_app\") or \"\")\n    if not owner:\n        return []\n    at = str(hop.get(\"show_at\") or \"\")\n    known, refused = accept_topics(r[\"shows\"], owner, body.get(\"topics\"),\n                                   catalogue(params))\n    for v in known.values():\n        if v[\"owner\"] == owner and at:\n            v[\"show_at\"] = at\n    r[\"shows\"] = known\n    out = [bundle(PHASE_WRITE, w_shows(owner, known))]\n    for topic, reason in refused:\n        out.append(emission(\"in_show\", {\"messages\": [], \"op\": \"refused\", \"topic\": topic,\n                                        \"reason\": reason}, **app_head(owner, at)))\n    return out\n\n\ndef app_head(owner, at):\n    \"\"\"The hop keys that address one app: `show_app`, and `show_at` where the edge said\n    it (OR-DP-54).\"\"\"\n    head = {\"show_app\": owner}\n    if at:\n        head[\"show_at\"] = at\n    return head\n\n\ndef prune(r, now):\n    legs = []\n    for tid in list(r[\"pending\"]):\n        rec = r[\"pending\"][tid]\n        if rec[\"state\"] == \"done\" and now - int(rec.get(\"done_at\") or now) > KEEP_DONE_MS:\n            del r[\"pending\"][tid]\n            legs += w_pending_gone(tid)\n    return legs\n\n\ndef lane_turn(body, hop, ctx, params, now):\n    r = ram()\n    text = text_of(body)\n    if not text or not r[\"shows\"]:\n        return []\n    turn_id = str(hop.get(\"turn_id\") or ctx.get(\"turn_id\") or \"\")\n    if not turn_id:\n        turn_id = \"t-%d\" % now\n    if turn_id in r[\"pending\"]:\n        return []\n    rec = fresh_turn(turn_id, now, knob(params, \"budget_ms\"),\n                     as_round(ctx.get(\"audience_set\")))\n    # The request travels to the owning app after a sure verdict (it needs the words:\n    # \"the weather in <place>\"); it never reaches the journal and leaves the pending row\n    # when the turn is done.\n    rec[\"text\"] = text\n    r[\"pending\"][turn_id] = rec\n    legs = prune(r, now) + w_pending(rec)\n    return [decide_call(text, r[\"shows\"], turn_id), bundle(PHASE_WRITE, legs)] + \\\n        clock_ops(r, now)\n\n\ndef close(rec, now):\n    \"\"\"The turn is done: the request text, the data sets and the bound blocks leave the\n    pending row (OR-DP.P.4 -- the words are transient, review I1). The journal row is\n    the one written before; nothing on the screen changes.\"\"\"\n    rec[\"state\"] = \"done\"\n    rec[\"done_at\"] = now\n    rec[\"sets\"] = {}\n    rec[\"_nodes\"] = []\n    rec[\"text\"] = \"\"\n    return w_pending(rec)\n\n\ndef finish(rec, fallback, now):\n    rec[\"fallback\"] = fallback\n    close(rec, now)\n    return w_pending(rec) + w_journal(rec)\n\n\ndef settled(rec, manifest):\n    \"\"\"True when nothing more can be placed: the first slot is decided and every chosen\n    also is placed or its set already came (a set never changes once there, and a block\n    binds only its own set).\"\"\"\n    if rec[\"first\"] == \"open\":\n        return False\n    cands = {c[\"key\"]: c for c in manifest[\"candidates\"]}\n    for k in rec[\"keys\"][1:]:\n        c = cands.get(k)\n        if k not in rec[\"placed\"] and c is not None and c[\"set\"] not in rec[\"sets\"]:\n            return False\n    return True\n\n\ndef supersede(r, rec, now):\n    \"\"\"One window per topic (P § 5): a newer turn of the topic replaces the older one.\n    Returns `(legs, stale)` -- the writes that close every older open turn of the topic,\n    and whether `rec` itself is older than a turn that already opened the window (then\n    it opens nothing). A closed turn's deadline and late data never reach the newer\n    window (review I2); an older turn without a block journals `no_data`.\"\"\"\n    legs = []\n    stale = False\n    for other in r[\"pending\"].values():\n        if other is rec or other.get(\"topic\") != rec[\"topic\"]:\n            continue\n        if other[\"arrived\"] > rec[\"arrived\"] and other.get(\"t_window\") is not None:\n            stale = True\n        elif other[\"arrived\"] <= rec[\"arrived\"] and other[\"state\"] == \"showing\":\n            legs += close(other, now) if other[\"placed\"] else finish(other, \"no_data\", now)\n    return legs, stale\n\n\ndef lane_decision(body, hop, params, now):\n    r = ram()\n    tid = str(hop.get(\"show_id\") or \"\")\n    rec = r[\"pending\"].get(tid)\n    if rec is None:\n        return []\n    failed = hop.get(\"finish_reason\") == \"error\" or bool(hop.get(\"error_code\"))\n    if rec[\"state\"] != \"asking\":\n        if rec[\"state\"] == \"done\" and rec[\"fallback\"] == \"timeout\" and not rec[\"late\"]:\n            # A late verdict changes nothing on the screen; the journal says it came.\n            rec[\"late\"] = True\n            if not failed:\n                v = read_verdict(body, r[\"shows\"])\n                rec[\"topic\"], rec[\"p\"], rec[\"model\"] = v[\"topic\"], v[\"p\"], v[\"model\"]\n            return [bundle(PHASE_WRITE, w_pending(rec) + w_journal(rec))]\n        return []\n    rec[\"t_verdict\"] = now - rec[\"arrived\"]\n    if failed:\n        code = str(hop.get(\"error_code\") or \"\")\n        fb = \"no_selector\" if code == \"decisions_unconfigured\" else \"error\"\n        return [bundle(PHASE_WRITE, finish(rec, fb, now))] + clock_ops(r, now)\n    v = read_verdict(body, r[\"shows\"])\n    rec[\"topic\"], rec[\"p\"], rec[\"model\"] = v[\"topic\"], v[\"p\"], v[\"model\"]\n    rec[\"lead\"], rec[\"also\"] = v[\"lead\"], v[\"also\"] if v[\"also\"] != NONE else None\n    why = judge(v, r[\"shows\"], params)\n    if why:\n        return [bundle(PHASE_WRITE, finish(rec, why, now))] + clock_ops(r, now)\n    older, stale = supersede(r, rec, now)\n    if stale:\n        return [bundle(PHASE_WRITE, older + finish(rec, \"no_data\", now))] + clock_ops(r, now)\n    show = r[\"shows\"][v[\"topic\"]]\n    manifest = show[\"manifest\"]\n    rec[\"keys\"] = chosen(v, manifest, params)\n    rec[\"state\"] = \"showing\"\n    rec[\"owner\"] = show[\"owner\"]\n    wait = manifest.get(\"data_wait_ms\") or knob(params, \"data_wait_ms\")\n    rec[\"data_deadline\"] = now + int(wait)\n    rec[\"t_window\"] = now - rec[\"arrived\"]\n    tree = window(v[\"topic\"], manifest, tid, [], knob(params, \"work_hint\"), now)\n    ask = emission(\"in_show\", {\"messages\": [], \"op\": \"data\", \"topic\": v[\"topic\"],\n                               \"request\": rec.get(\"text\") or \"\",\n                               \"lead\": rec[\"keys\"][0], \"also\": rec[\"keys\"][1:],\n                               \"turn_id\": tid,\n                               \"sets\": wanted_sets(manifest, rec[\"keys\"])},\n                   **app_head(show[\"owner\"], show.get(\"show_at\") or \"\"))\n    return [a_view(v[\"topic\"], tree), ask, bundle(PHASE_WRITE, older + w_pending(rec))] + \\\n        clock_ops(r, now)\n\n\ndef lane_show_data(body, hop, ctx, params, now):\n    r = ram()\n    tid = str(body.get(\"turn_id\") or hop.get(\"turn_id\") or \"\")\n    rec = r[\"pending\"].get(tid)\n    if rec is None or rec[\"state\"] != \"showing\" or rec[\"topic\"] != body.get(\"topic\"):\n        return []\n    show = r[\"shows\"].get(rec[\"topic\"])\n    if show is None:\n        return []\n    sender = str(hop.get(\"show_app\") or ctx.get(\"show_app\") or \"\")\n    if sender != rec[\"owner\"]:\n        # The edge stamps `show_app` (OR-DP-54); only the topic's owner fills its window\n        # (review I3). Said out loud, never placed.\n        return [error(\"foreign_data\", \"show_data for topic %s from %r; its owner is %s\"\n                      % (rec[\"topic\"], sender, rec[\"owner\"]))]\n    manifest = show[\"manifest\"]\n    screen = params.get(\"screen_audience\")\n    sets = body.get(\"sets\") if isinstance(body.get(\"sets\"), dict) else {}\n    for name, data in sets.items():\n        kept = filter_set(data, screen)\n        if kept is not None and name not in rec[\"sets\"]:\n            rec[\"sets\"][name] = kept\n        elif kept is None and name not in rec[\"sets\"]:\n            # A set the screen may not see arrived: it counts as there and empty, so a\n            # lead waiting on it falls to the standard rather than to the clock.\n            rec[\"sets\"][name] = {}\n    new, fallback = resolve(rec, manifest, catalogue(params))\n    if not new:\n        if rec[\"placed\"] and settled(rec, manifest):\n            return [bundle(PHASE_WRITE, close(rec, now))] + clock_ops(r, now)\n        return [bundle(PHASE_WRITE, w_pending(rec))]\n    first = not rec[\"placed\"]\n    rec[\"placed\"] += [k for k, _ in new]\n    blocks = [node for _, node in rec.get(\"_nodes\", [])] + [n for _, n in new]\n    rec[\"_nodes\"] = rec.get(\"_nodes\", []) + new\n    tree = window(rec[\"topic\"], manifest, tid, blocks, \"\", None)\n    out = [a_view(rec[\"topic\"], tree)]\n    legs = []\n    if first:\n        rec[\"t_content\"] = now - rec[\"arrived\"]\n        rec[\"fallback\"] = fallback or \"none\"\n        legs += w_journal(rec)\n    # Every chosen block placed or final: the turn closes now, not at data_wait_ms.\n    legs += close(rec, now) if settled(rec, manifest) else w_pending(rec)\n    out.append(bundle(PHASE_WRITE, legs))\n    return out + clock_ops(r, now)\n\n\ndef lane_tick(hop, now):\n    r = ram()\n    struck = str(hop.get(\"schedule_id\") or \"\")\n    out = []\n    legs = []\n    for tid in sorted(r[\"pending\"]):\n        rec = r[\"pending\"][tid]\n        if rec[\"state\"] == \"asking\" and now >= rec[\"deadline\"]:\n            legs += finish(rec, \"timeout\", now)\n        elif rec[\"state\"] == \"showing\" and \\\n                rec[\"data_deadline\"] is not None and now >= rec[\"data_deadline\"]:\n            if rec[\"placed\"]:\n                # The blocks stay; the turn closes and its words leave (review I1).\n                legs += close(rec, now)\n            else:\n                out.append(withdraw(rec[\"topic\"]))\n                legs += finish(rec, \"no_data\", now)\n    if legs:\n        out.append(bundle(PHASE_WRITE, legs))\n    return out + clock_ops(r, now, struck)\n\n\n# ---------------------------------------------------------------------------\n# The store's answers\n\n\ndef pass_store(body, hop, ctx):\n    phase = str(ctx.get(\"show_phase\") or \"?\")\n    failed = store_failed(body, hop)\n    if phase != PHASE_BOOT:\n        if failed:\n            return [error(\"store_failed\", \"the %s bundle failed: %s\" % (phase, failed))]\n        return []\n    r = ram()\n    out = []\n    if failed:\n        out.append(error(\"store_failed\", \"the boot read failed: %s\" % failed))\n    else:\n        for row in rows_of(body, \"b-shows\"):\n            m = as_json(row.get(\"manifest\"))\n            if isinstance(m, dict) and isinstance(row.get(\"topic\"), str):\n                r[\"shows\"][row[\"topic\"]] = {\"owner\": str(row.get(\"owner_app\") or \"\"),\n                                            \"show_at\": str(row.get(\"show_at\") or \"\"),\n                                            \"manifest\": m, \"at\": int(row.get(\"at\") or 0)}\n        for row in rows_of(body, \"b-pending\"):\n            rec = as_json(row.get(\"value\"))\n            if isinstance(rec, dict) and rec.get(\"turn_id\"):\n                r[\"pending\"][rec[\"turn_id\"]] = rec\n    r[\"phase\"] = \"live\"\n    queue, r[\"queue\"] = r[\"queue\"], []\n    for doc in queue:\n        out += handle(doc)\n    return out\n\n\n# ---------------------------------------------------------------------------\n# The dispatcher\n\n\ndef handle(doc):\n    body = doc.get(\"body\") or {}\n    params = doc.get(\"params\") or {}\n    env = doc.get(\"envelope\") or {}\n    header = env.get(\"header\") or {}\n    hop = header.get(\"hop\") or {}\n    ctx = header.get(\"context\") or {}\n    origin = str(ctx.get(\"show_origin\") or \"\")\n    route = str(hop.get(\"route\") or \"\")\n    now = now_ms()\n    r = ram()\n\n    if origin == \"store\":\n        return pass_store(body, hop, ctx)\n    if route == \"mutation_committed\":\n        return lane_topics()\n    if route in (\"event\", \"receipt\"):\n        return []\n    if r[\"phase\"] != \"live\":\n        # Cold: this event waits for the read of the two tables (RAM is a cache).\n        doc = dict(doc)\n        doc[\"_at\"] = now\n        r[\"queue\"].append(doc)\n        if r[\"phase\"] == \"cold\":\n            r[\"phase\"] = \"booting\"\n            return [boot_read()]\n        return []\n    if \"_at\" in doc:\n        now = int(doc[\"_at\"])\n    # The decider's answer: the edge back from `./decide` deletes the inner context\n    # (no marker leaves the hive, gh494) and restamps the hop `in_decision` with the\n    # turn's `show_id` -- a colony run read `context {}` on that hop and dropped every\n    # verdict as routeless. Only that edge sets the route: the door from `.` passes a\n    # fixed list of routes that does not include it.\n    if origin == \"decide\" or route == \"in_decision\":\n        return lane_decision(body, hop, params, now)\n    if route == \"in_tick\":\n        return lane_tick(hop, now)\n    if route == \"in_tick_error\":\n        return [error(\"clock_refused\", str(body.get(\"detail\") or hop.get(\"error_code\")\n                                             or \"the clock refused an order\"))]\n    if route == \"show_topics\":\n        return lane_show_topics(body, hop, ctx, params)\n    if route == \"show_data\":\n        return lane_show_data(body, hop, ctx, params, now)\n    if route == \"turn\":\n        return lane_turn(body, hop, ctx, params, now)\n    return []\n\n\ndef main():\n    return handle(json.load(sys.stdin))\n\n\nif __name__ == \"__main__\":\n    out = main()\n    sys.stdout.write(json.dumps(out[0] if len(out) == 1 else out))\n",
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "budget_ms": 1000,
+    "threshold": 0.7,
+    "data_wait_ms": 4000,
+    "also_threshold": 0.5,
+    "screen_audience": [],
+    "work_hint": "Working on it…",
+    "catalog": [
+      {
+        "name": "display-value",
+        "props": {
+          "value": {
+            "type": "text",
+            "required": false,
+            "describe": "The number or short value."
+          },
+          "unit": {
+            "type": "text",
+            "required": false,
+            "describe": "The unit riding small beside it."
+          },
+          "label": {
+            "type": "text",
+            "required": false,
+            "describe": "What the value is."
+          },
+          "trend": {
+            "type": "text",
+            "required": false,
+            "describe": "The trend word (up, down, flat)."
+          },
+          "size": {
+            "type": "text",
+            "required": false,
+            "describe": "The size word (s or l)."
+          }
+        },
+        "slots": "none",
+        "describe": "One number or short value with its unit and a label."
+      },
+      {
+        "name": "display-text",
+        "props": {
+          "body": {
+            "type": "text",
+            "required": false,
+            "describe": "The text."
+          },
+          "secondary": {
+            "type": "boolean",
+            "required": false,
+            "describe": "Whether the text is set in the secondary ink."
+          }
+        },
+        "slots": "none",
+        "describe": "A paragraph of text."
+      },
+      {
+        "name": "display-list",
+        "props": {
+          "title": {
+            "type": "text",
+            "required": false,
+            "describe": "The list's title."
+          },
+          "plain": {
+            "type": "boolean",
+            "required": false,
+            "describe": "Whether the rows go without hairlines."
+          }
+        },
+        "slots": "any",
+        "describe": "A list of rows under a title."
+      },
+      {
+        "name": "display-item",
+        "props": {
+          "k": {
+            "type": "text",
+            "required": false,
+            "describe": "The row's key."
+          },
+          "v": {
+            "type": "text",
+            "required": false,
+            "describe": "The row's value."
+          },
+          "marker": {
+            "type": "text",
+            "required": false,
+            "describe": "A short marker before the row."
+          },
+          "accent": {
+            "type": "boolean",
+            "required": false,
+            "describe": "Whether the row is accented."
+          }
+        },
+        "slots": "none",
+        "describe": "One row of a list: a key, a value and a marker."
+      },
+      {
+        "name": "display-table",
+        "props": {
+          "caption": {
+            "type": "text",
+            "required": false,
+            "describe": "The table's caption."
+          },
+          "head": {
+            "type": "html",
+            "required": false,
+            "describe": "The header row as table markup (sanitised)."
+          },
+          "rows": {
+            "type": "html",
+            "required": false,
+            "describe": "The body rows as table markup (sanitised)."
+          }
+        },
+        "slots": "none",
+        "describe": "A table with a caption, a header row and body rows."
+      },
+      {
+        "name": "display-weather",
+        "props": {
+          "temp": {
+            "type": "text",
+            "required": false,
+            "describe": "The current temperature."
+          },
+          "unit": {
+            "type": "text",
+            "required": false,
+            "describe": "The temperature unit."
+          },
+          "condition": {
+            "type": "text",
+            "required": false,
+            "describe": "The condition in words."
+          },
+          "glyph": {
+            "type": "text",
+            "required": false,
+            "describe": "A glyph for the condition."
+          },
+          "hi": {
+            "type": "text",
+            "required": false,
+            "describe": "Today's high."
+          },
+          "lo": {
+            "type": "text",
+            "required": false,
+            "describe": "Today's low."
+          },
+          "place": {
+            "type": "text",
+            "required": false,
+            "describe": "The place."
+          }
+        },
+        "slots": "any",
+        "describe": "The weather now: temperature, condition, high and low, and the place."
+      },
+      {
+        "name": "display-timer",
+        "props": {
+          "label": {
+            "type": "text",
+            "required": false,
+            "describe": "What the timer is for."
+          },
+          "remaining": {
+            "type": "text",
+            "required": false,
+            "describe": "The remainder as text."
+          },
+          "end_at": {
+            "type": "int",
+            "required": false,
+            "describe": "Epoch milliseconds the timer ends at."
+          },
+          "total_ms": {
+            "type": "int",
+            "required": false,
+            "describe": "The span the timer was set for, in milliseconds."
+          },
+          "now": {
+            "type": "int",
+            "required": false,
+            "describe": "Epoch milliseconds the page was rendered at."
+          },
+          "done": {
+            "type": "boolean",
+            "required": false,
+            "describe": "Whether the timer has run out."
+          }
+        },
+        "slots": "none",
+        "describe": "A countdown with its remainder, a label and a bar."
+      },
+      {
+        "name": "display-notification",
+        "props": {
+          "source": {
+            "type": "text",
+            "required": false,
+            "describe": "Who sends the notice."
+          },
+          "title": {
+            "type": "text",
+            "required": false,
+            "describe": "The notice's title."
+          },
+          "body": {
+            "type": "text",
+            "required": false,
+            "describe": "The notice's text."
+          },
+          "time": {
+            "type": "text",
+            "required": false,
+            "describe": "When it happened."
+          },
+          "level": {
+            "type": "text",
+            "required": false,
+            "describe": "The notice's level (for example urgent)."
+          }
+        },
+        "slots": "any",
+        "describe": "A notice: who sends it, a title, a text and actions."
+      },
+      {
+        "name": "display-media",
+        "props": {
+          "src": {
+            "type": "text",
+            "required": false,
+            "describe": "The address of an image the screen can reach."
+          },
+          "alt": {
+            "type": "text",
+            "required": false,
+            "describe": "The image's text alternative."
+          },
+          "caption": {
+            "type": "text",
+            "required": false,
+            "describe": "The caption."
+          },
+          "figure": {
+            "type": "html",
+            "required": false,
+            "describe": "An inline figure as markup (sanitised)."
+          },
+          "ratio": {
+            "type": "text",
+            "required": false,
+            "describe": "The aspect ratio."
+          }
+        },
+        "slots": "none",
+        "describe": "An image or an inline figure with a caption."
+      },
+      {
+        "name": "display-document",
+        "props": {
+          "title": {
+            "type": "text",
+            "required": false,
+            "describe": "The document's title."
+          },
+          "body": {
+            "type": "html",
+            "required": false,
+            "describe": "The document's text as markup (sanitised)."
+          },
+          "page": {
+            "type": "int",
+            "required": false,
+            "describe": "The page shown."
+          },
+          "pages": {
+            "type": "int",
+            "required": false,
+            "describe": "How many pages there are."
+          },
+          "source": {
+            "type": "text",
+            "required": false,
+            "describe": "Where the document comes from."
+          }
+        },
+        "slots": "none",
+        "describe": "A document: title, source, text and pages."
+      },
+      {
+        "name": "display-status",
+        "props": {
+          "kind": {
+            "type": "text",
+            "required": false,
+            "describe": "The state word (listening, speaking, thinking, offline, working)."
+          },
+          "text": {
+            "type": "text",
+            "required": false,
+            "describe": "The status line."
+          }
+        },
+        "slots": "none",
+        "describe": "A status line with a dot; kind working says that something is on its way."
+      },
+      {
+        "name": "display-chart",
+        "props": {
+          "figure": {
+            "type": "html",
+            "required": false,
+            "describe": "The chart as inline markup (sanitised)."
+          },
+          "caption": {
+            "type": "text",
+            "required": false,
+            "describe": "The caption."
+          }
+        },
+        "slots": "none",
+        "describe": "A chart as an inline figure with a caption."
+      },
+      {
+        "name": "display-stack",
+        "props": {
+          "row": {
+            "type": "boolean",
+            "required": false,
+            "describe": "Whether the children stand in a row."
+          },
+          "gap": {
+            "type": "text",
+            "required": false,
+            "describe": "The gap word (s, m, l)."
+          },
+          "scene": {
+            "type": "boolean",
+            "required": false,
+            "describe": "Whether the stack is a picture of a screen."
+          },
+          "ratio": {
+            "type": "text",
+            "required": false,
+            "describe": "The scene's aspect ratio."
+          }
+        },
+        "slots": "any",
+        "describe": "A group of blocks in a column or a row."
+      },
+      {
+        "name": "display-progress",
+        "props": {
+          "value": {
+            "type": "int",
+            "required": false,
+            "describe": "The progress, 0 to 100."
+          },
+          "label": {
+            "type": "text",
+            "required": false,
+            "describe": "What is progressing."
+          }
+        },
+        "slots": "none",
+        "describe": "A progress bar with a label."
+      },
+      {
+        "name": "display-card",
+        "props": {
+          "kicker": {
+            "type": "text",
+            "required": false,
+            "describe": "A small line above the title."
+          },
+          "title": {
+            "type": "text",
+            "required": false,
+            "describe": "The card's title."
+          },
+          "value": {
+            "type": "text",
+            "required": false,
+            "describe": "A number or short value."
+          },
+          "unit": {
+            "type": "text",
+            "required": false,
+            "describe": "The unit beside the value."
+          },
+          "body": {
+            "type": "text",
+            "required": false,
+            "describe": "A line of text."
+          }
+        },
+        "slots": "any",
+        "describe": "A general card: kicker, title, a value with its unit and a text, with any blocks under it."
+      },
+      {
+        "name": "display-steps",
+        "props": {
+          "title": {
+            "type": "text",
+            "required": false,
+            "describe": "The title above the steps."
+          }
+        },
+        "slots": [
+          "display-step"
+        ],
+        "describe": "A sequence of steps under a title, such as a path or a report of work."
+      },
+      {
+        "name": "display-step",
+        "props": {
+          "label": {
+            "type": "text",
+            "required": true,
+            "describe": "What the step is."
+          },
+          "state": {
+            "type": "text",
+            "required": false,
+            "describe": "The step's state: done, running, todo, failed or blocked."
+          },
+          "detail": {
+            "type": "text",
+            "required": false,
+            "describe": "A detail under the label."
+          },
+          "at": {
+            "type": "text",
+            "required": false,
+            "describe": "When the step happened or is due."
+          }
+        },
+        "slots": "none",
+        "describe": "One step: a label, its state, a detail and a time."
+      }
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "budget_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 1000,
+        "description": "How long the verdict may take, in milliseconds from the turn's arrival. A verdict after it changes nothing on the screen; the journal marks it `late`."
+      },
+      "threshold": {
+        "type": "number",
+        "secret": false,
+        "default": 0.7,
+        "description": "The confidence a topic needs before its window opens, in (0, 1]. A topic's manifest may set its own `threshold`, which wins."
+      },
+      "data_wait_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 4000,
+        "description": "How long an open window waits for a placeable block before it is withdrawn (journal `no_data`). A topic's manifest may set its own."
+      },
+      "also_threshold": {
+        "type": "number",
+        "secret": false,
+        "default": 0.5,
+        "description": "The confidence the second block (`also`) needs to be placed beside the first."
+      },
+      "screen_audience": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "The round of the screen, as a canonical list. A data set or row is shown only when its own `audience_set` covers it (`*`, or every member of this round); empty means the screen shows `*` data only."
+      },
+      "work_hint": {
+        "type": "string",
+        "secret": false,
+        "default": "Working on it…",
+        "description": "The text of the working hint a window carries until its first block stands."
+      },
+      "catalog": {
+        "type": "array",
+        "secret": false,
+        "description": "The block copy of the display catalogue: every block, as `name, props, slots, describe`. Written by `scripts/display_sync.py` and by nothing else, so it declares no default of its own -- the copy in `params` is generated."
+      }
+    },
+    "multi_send_capable": true,
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "decide": {
+          "type": "object",
+          "required": false
+        },
+        "view_id": {
+          "type": "string",
+          "required": false
+        },
+        "kind": {
+          "type": "string",
+          "required": false
+        },
+        "content": {
+          "type": "object",
+          "required": false
+        },
+        "components": {
+          "type": "array",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "topic": {
+          "type": "string",
+          "required": false
+        },
+        "request": {
+          "type": "string",
+          "required": false
+        },
+        "lead": {
+          "type": "string",
+          "required": false
+        },
+        "also": {
+          "type": "array",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "sets": {
+          "type": "array",
+          "required": false
+        },
+        "reason": {
+          "type": "string",
+          "required": false
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": false
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": false
+        },
+        "at": {
+          "type": "string",
+          "required": false
+        },
+        "emit_to": {
+          "type": "string",
+          "required": false
+        },
+        "emit_body": {
+          "type": "object",
+          "required": false
+        },
+        "detail": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "decide",
+            "store",
+            "clock",
+            "view",
+            "withdraw",
+            "in_show",
+            "error"
+          ],
+          "required": true
+        },
+        "show_id": {
+          "type": "string",
+          "required": false
+        },
+        "show_app": {
+          "type": "string",
+          "required": false
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "detail": {
+          "type": "string",
+          "required": false
+        },
+        "show_at": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The presenter's one decision maker: every turn with text becomes ONE call to `./decide`, a sure verdict opens the topic's window with a working hint and asks the owning app for its data in the same output, and blocks are placed as their data arrives -- each one fully bound and checked against the catalogue copy.",
+    "use_when": "Always, as part of the presenter. It is resident with one child because the order of events is the truth: a turn, its verdict, its data and its deadline are handled one after the other.",
+    "not_in_scope": "It holds nothing that is not in the store beside it: RAM is a cache, and a killed child reads `shows` and `pending` back before it handles the event that woke it. It decides nothing about size or focus -- that is the screen's curator -- and it never sends fetched data or memory to the decider."
+  }
+}

@@ -361,6 +361,125 @@ async fn handle_capturing_connection(
     write_response(&mut stream, &response).await
 }
 
+/// One request the held server took and did not answer yet (see
+/// [`start_mock_server_held`]).
+///
+/// The connection stays open until [`HeldRequest::release`] writes the response the
+/// test chose. Dropping it unanswered closes the connection without a response.
+pub struct HeldRequest {
+    /// The request as it arrived (headers lowercased, body read fully).
+    pub request: CapturedRequest,
+    answer: tokio::sync::oneshot::Sender<MockResponse>,
+}
+
+impl HeldRequest {
+    /// Answer the held request with `response`, now.
+    pub fn release(self, response: MockResponse) {
+        let _ = self.answer.send(response);
+    }
+
+    /// The request body as JSON, or `Value::Null` where it is none.
+    pub fn json(&self) -> meclaw_core::serde_json::Value {
+        meclaw_core::serde_json::from_slice(&self.request.body)
+            .unwrap_or(meclaw_core::serde_json::Value::Null)
+    }
+}
+
+/// Spawns a mock HTTP server on `127.0.0.1:0` that HOLDS every request until the test
+/// releases it.
+///
+/// Each request arrives on the returned channel as a [`HeldRequest`]; the server
+/// writes nothing until the test calls `release(response)` on it. This is the
+/// deterministic counterpart of `MockResponse::with_delay`: a delay is a fixed window,
+/// and a test that waits on a window races the scheduler, whereas a held request is
+/// answered after an event the test has OBSERVED (a row, a patch, a journal line).
+///
+/// A failed bind is returned, not unwrapped: this is library code (unwrap budget).
+pub async fn start_mock_server_held() -> std::io::Result<(
+    SocketAddr,
+    JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedReceiver<HeldRequest>,
+)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let join = tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let _ = handle_held_connection(stream, tx).await;
+            });
+        }
+    });
+    Ok((addr, join, rx))
+}
+
+async fn handle_held_connection(
+    mut stream: TcpStream,
+    tx: tokio::sync::mpsc::UnboundedSender<HeldRequest>,
+) -> std::io::Result<()> {
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 1024];
+    let header_end = loop {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = find_header_end(&buf) {
+            break pos;
+        }
+    };
+    let header_str = String::from_utf8_lossy(&buf[..header_end]).to_string();
+    let mut lines = header_str.split("\r\n");
+    let mut parts = lines.next().unwrap_or("").split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let mut headers: HashMap<String, String> = HashMap::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        }
+    }
+    let content_length: usize = headers
+        .get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut body = buf
+        .get(header_end + 4..)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
+    while body.len() < content_length {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+    body.truncate(content_length);
+    let (answer, released) = tokio::sync::oneshot::channel();
+    let held = HeldRequest {
+        request: CapturedRequest {
+            method,
+            path,
+            headers,
+            body,
+        },
+        answer,
+    };
+    if tx.send(held).is_err() {
+        return Ok(());
+    }
+    match released.await {
+        Ok(response) => write_response(&mut stream, &response).await,
+        Err(_) => Ok(()),
+    }
+}
+
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
@@ -461,6 +580,39 @@ mod tests {
         assert!(resp.starts_with("HTTP/1.1 200"));
         assert!(resp.contains("Content-Type: application/json"));
         assert!(resp.ends_with(r#"{"x":1}"#));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn held_request_is_answered_only_on_release() {
+        let (addr, _join, mut held) = start_mock_server_held().await.expect("bind");
+        let client = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"POST /d HTTP/1.1\r\nHost: x\r\nContent-Length: 7\r\n\r\n{\"a\":1}")
+                .await
+                .unwrap();
+            let mut buf = Vec::new();
+            stream.read_to_end(&mut buf).await.unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        });
+        let req = tokio::time::timeout(Duration::from_secs(30), held.recv())
+            .await
+            .expect("the request arrives")
+            .expect("the channel stands");
+        assert_eq!(req.request.path, "/d");
+        assert_eq!(req.json(), meclaw_core::serde_json::json!({"a": 1}));
+        // Nothing has been written yet: the client is still reading.
+        assert!(
+            !client.is_finished(),
+            "the response left before the release"
+        );
+        req.release(MockResponse::ok_json(br#"{"ok":true}"#));
+        let resp = tokio::time::timeout(Duration::from_secs(30), client)
+            .await
+            .expect("the client finishes")
+            .unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        assert!(resp.ends_with(r#"{"ok":true}"#), "{resp}");
     }
 
     // ---------- T9: CapturedRequest + start_mock_server_capturing + with_delay ----------

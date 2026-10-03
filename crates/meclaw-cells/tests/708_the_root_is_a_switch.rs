@@ -30,6 +30,7 @@ fn repo(rel: &str) -> std::path::PathBuf {
 }
 
 const COMPOSE: &str = "templates/display/compose/compose.py";
+const CATALOG: &str = "templates/display/compose/catalog.json";
 
 fn library_ships() -> bool {
     repo("templates/display/template.json").is_file()
@@ -67,12 +68,21 @@ fn the_root_carries_what_the_switch_needs() {
              page is the switch, where it leads, and which exits exist"
         );
     }
-    let compose = read(COMPOSE);
-    for prop in ["\"switch\": \"text\"", "\"default_screen\": \"text\""] {
-        assert!(
-            compose.contains(prop),
-            "the root component does not declare {prop}: a prop no schema \
-             knows is a prop no patch carries"
+    // Since GH #958 the prop schemas are generated from the catalogue, so the
+    // declaration is read there, not grepped out of `compose.py`.
+    let catalog: meclaw_core::serde_json::Value =
+        meclaw_core::serde_json::from_str(&read(CATALOG)).expect("catalog.json parses");
+    let shell = catalog["components"]
+        .as_array()
+        .expect("components is a list")
+        .iter()
+        .find(|c| c["name"] == "display-shell")
+        .expect("the catalogue names the shell");
+    for prop in ["switch", "default_screen"] {
+        assert_eq!(
+            shell["props"][prop]["type"], "text",
+            "the root component does not declare \"{prop}\": \"text\": a prop no \
+             schema knows is a prop no patch carries"
         );
     }
 }

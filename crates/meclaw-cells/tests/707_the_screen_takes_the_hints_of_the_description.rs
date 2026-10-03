@@ -13,12 +13,20 @@ fn repo(rel: &str) -> std::path::PathBuf {
         .join(rel)
 }
 
-/// The body of the `CURATED` map of `compose.py`: the props every window declares.
+/// The curated group of the catalogue: the props every window declares. Since GH #958 it
+/// stands once in `compose/catalog.json` (`curated`), and `compose.py` folds it into every
+/// window that names it; this returns the group as text, one `"<prop>":` per key.
 fn curated() -> String {
-    let src = fs::read_to_string(repo("templates/display/compose/compose.py")).unwrap();
-    let start = src.find("\nCURATED = {").expect("the CURATED map") + 1;
-    let stop = src[start..].find("\n}\n").expect("its end") + start;
-    src[start..stop].to_string()
+    let src = fs::read_to_string(repo("templates/display/compose/catalog.json")).unwrap();
+    let cat: meclaw_core::serde_json::Value =
+        meclaw_core::serde_json::from_str(&src).expect("catalog.json parses");
+    cat["curated"]
+        .as_object()
+        .expect("the curated group")
+        .keys()
+        .map(|k| format!("\"{k}\":"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn declares(body: &str, key: &str) -> bool {

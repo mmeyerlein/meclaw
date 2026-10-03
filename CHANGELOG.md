@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-10-03
+
+### Added
+
+- **The registry keeps chat and decisions models apart** ([#957](https://github.com/mmeyerlein/meclaw/issues/957)). `llm-registry@2.5.0` serves a row whose `wire_dialect` is `decisions` only to a subscriber that states `"protocol": "decisions"` and skips a row of the other protocol in every resolution, and `submit@2.4.0` lets a model announcement carry that protocol.
+- **The screen's catalogue is one file the door checks** ([#958](https://github.com/mmeyerlein/meclaw/issues/958)). `display@2.9.0` generates its component definitions and vocabulary from `compose/catalog.json`, refuses a view whose props or children break their entry with `invalid_view`, and adds `display-card`, `display-steps` with `display-step` and a working status.
+- **A presenter shows something only when a fast decider is sure it helps** ([#959](https://github.com/mmeyerlein/meclaw/issues/959)). The new app `presenter@1.0.0` asks a decisions model on every turn over the topics the installed apps declare, opens a window with a working status on a sure verdict and fills it with the data the owning app sends.
+- **An app can answer the presenter** ([#960](https://github.com/mmeyerlein/meclaw/issues/960)). `builder@1.23.0` takes `shows` in `install_app`, so an app answers the presenter's topic and data questions through its rim, and installing the presenter draws its half of that road.
+
 ## [0.57.0] — 2026-10-02
 
 ### Added

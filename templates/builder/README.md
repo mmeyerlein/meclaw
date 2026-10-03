@@ -1,4 +1,4 @@
-# `builder@1.22.0`
+# `builder@1.23.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -464,7 +464,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.8.1",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.9.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.4"}], "…": "…"}}]}
@@ -1128,7 +1128,26 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 | `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |
 | `candidates` | ONE edge from the named cell straight onto the generation, `candidate` restamped `in_candidate` (GH #949, the push-candidate twin of `pins`; the body is the curator's `in_candidate` contract); the generation hands it to the curator of each of its brains. Names a cell `./<name>` inside the app, needs the generation like `pins`, and a `candidate` of an app that declares none stays unrouted |
 | `reads` | FOUR edges: from the named cell onto the generation, `read` restamped `in_read` for the one brain `hop.organ` names (`talky`, `talky-chat` or `cogny`; none or another and no edge carries it), and the answer `read` back to that cell alone, bound to `context.read_caller` (GH #949). The question edge stamps the member's round (see below), so the curator reads only rows that round may see. |
+| `shows` | `{"at": "./<cell>"}` (GH #960): the question off the container into the app's RIM, `in_show` naming no app (the topics call every such app hears) or naming this one in `hop.show_app` (the data call); and the answer `show_topics` / `show_data` from the rim onto the container, stamped `show_app` with the app and `show_at` with `at` over whatever the app wrote. The app routes its rim to `at` and back in its own graph, so a sealed app keeps its seal. No generation, no round: the round of a topic lies in its data. The presenter's half comes with the presenter (below) |
 | `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
+
+**The presenter is known by its name, and a presenter alone stays quiet.**
+An app with `shows` answers the presenter, an ordinary app installed as
+`./apps/presenter` (an instance is named after its template); the recipe reads
+no tree, so that name is how it tells the asker from the apps it asks. Installing
+the presenter draws its half of the road whatever its block says: `in_show` off
+its rim onto the container, `show_topics` and `show_data` off the container
+back to it, and one DEFAULT edge for an `in_show` that names no app. Both halves
+meet at the container, so presenter and apps install in either order and
+neither installation names the other; an app with `shows` and no presenter
+hears nothing, because only the presenter asks. The presenter asks for topics at
+every `mutation_committed`, its own installation's too, and in a member with no
+app behind the container that question would end as `hive_no_route`; the
+default edge is consulted only when no app's edge matched, and hands it back as
+an answer of nobody — `show_topics` with an empty `show_app` and the question's
+own body, which carries no topics. A data call names its app and never takes
+it. The presenter itself may not declare `shows`: its question would come back
+to it.
 
 **Why the observers carry no guard, and why the channel-less exit rides with
 them.** An app of a person hears the person's answers whatever carried them —
