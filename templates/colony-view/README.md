@@ -1,4 +1,4 @@
-# `colony-view@1.1.4`
+# `colony-view@1.2.0`
 
 The colony, drawn. A committed mutation takes a topology snapshot, a `code` cell
 turns it into one view, and a display holds it and serves the page. The browser
@@ -362,7 +362,9 @@ inside it; a caller names the hive and a lane on `hop.route`.
 |---|---|---|
 | `mutation_committed` | in | the graph moved -- draw it again. The mutation door leaves this receipt at the hive `colony.json` names, and the levels between carry it down (GH #553) |
 | `in_refresh` | in | take the topology snapshot now, by hand: the operator gesture |
+| `in_read` | in | a read of the colony's counts (`hop.op` = `stats`, `op_id` mirrored, GH #965): answered on `answer` out of the last snapshot -- `{ok, scope, cells, hives, edges, kinds: [{kind, n}]}`, counts and never content -- or `not_ready` while the probe holds none (it asks the colony in the same run). The probe runs `resident` for this: the colony's reply carries no context, so the counts are kept between messages and the read is answered in its asker's run. The presenter reads it through the builder's `reads_residents` |
 | `view` | out | the whole picture, ready to be laid on a surface |
+| `answer` | out | the one answer to an `in_read` |
 
 Nothing is drawn until somebody is wired to hold it. One edge does that, from
 this hive to a display, renaming the lane on the way:

@@ -12,6 +12,23 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.59.0] — 2026-10-03
+
+### Added
+
+- **Tool calls and results become screen data** ([#963](https://github.com/mmeyerlein/meclaw/issues/963)). `presenter@1.1.0` keeps what it observes of a turn's tool calls and results as data for the topics `search` and `work`; only a sure verdict opens a window.
+- **The screen draws a map** ([#964](https://github.com/mmeyerlein/meclaw/issues/964)). `display@2.10.0` adds `display-map` with its tile child `display-map-tile`, the tiles coming from the `map_tiles` param.
+- **Built-in topics read the member's own holders** ([#965](https://github.com/mmeyerlein/meclaw/issues/965)). `builder@1.24.0` takes `reads_residents` in `install_app`, so the presenter reads a member's memory, files, catalogue, objects, people and colony counts through a read stamped with the member's round; `affinity@3.9.0` answers a `list` of the people whose disclosure covers that round and `colony-view@1.2.0` answers `stats`.
+
+### Changed
+
+- **A verdict with missing answers still decides** ([#977](https://github.com/mmeyerlein/meclaw/issues/977)). The decider returns the answers it has with the ids of the missing ones; the presenter treats a missing topic answer as no choice and journals `decision_incomplete`, and only a missing topic question or a fully missing verdict is an error.
+- **Blocks move by their target state** ([#961](https://github.com/mmeyerlein/meclaw/issues/961), with [#969](https://github.com/mmeyerlein/meclaw/issues/969), [#912](https://github.com/mmeyerlein/meclaw/issues/912) and [#911](https://github.com/mmeyerlein/meclaw/issues/911)). `display@2.10.0` adds `display-field` and `display-mark`, slides a block in from its target state, keeps the dock from restarting its blocks, and times a press from its events, so a hold behind a stalled page stays a hold and a tap stays a tap.
+
+### Fixed
+
+- **Follow-up repairs after the screen work** ([#966](https://github.com/mmeyerlein/meclaw/issues/966)). The build kit hands out a named build lane and gives each lane worktree its browser lab, an observer of named tools now hears real tool results (`tools@1.4.5`, `memory-hive@3.8.1`), and the presenter treats a data set the screen may not see exactly like a set that never came.
+
 ## [0.58.0] — 2026-10-03
 
 ### Added

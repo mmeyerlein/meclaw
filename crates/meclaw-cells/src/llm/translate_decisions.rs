@@ -11,9 +11,11 @@
 //! exist on this wire.
 //!
 //! Both directions are pure functions. The answer is normalized per asked key
-//! into `{choice, p}`, `{yes}` or `{value, p}`, and it is WHOLE or it is an
-//! error: a missing answer, or a choice that was not asked, is
-//! `decision_incomplete` -- never half a decision.
+//! into `{choice, p}`, `{yes}` or `{value, p}`. A question the service left
+//! unanswered is named in `missing` and the other answers stand (GH #977: one
+//! omitted answer of a display's 1 + 2·N questions had tipped every topic's
+//! verdict); a call with no answer at all, or a malformed answer -- a choice
+//! that was not asked, a missing probability -- is `decision_incomplete`.
 
 use meclaw_core::serde_json::{Map, Value, json};
 
@@ -63,8 +65,10 @@ pub(crate) struct Asked {
 /// One normalized answer of the service, plus what the hop header carries.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Decided {
-    /// `{<key>: {choice, p} | {yes} | {value, p}}`, one entry per asked key.
+    /// `{<key>: {choice, p} | {yes} | {value, p}}`, one entry per answered key.
     pub(crate) answers: Map<String, Value>,
+    /// The asked keys the service left unanswered, sorted (GH #977).
+    pub(crate) missing: Vec<String>,
     /// The model the service says it ran, when it says so.
     pub(crate) model: Option<String>,
     /// The service's id of the call, when it gives one.
@@ -276,18 +280,23 @@ fn scale_p(a: &Map<String, Value>, levels: &[String], key: &str) -> Result<Value
 }
 
 /// Read the service's answer against what was asked. `Err` is the detail of
-/// a `decision_incomplete` failure.
+/// a `decision_incomplete` failure: no answer at all, or a malformed one. An
+/// asked key without an answer lands in `missing` (GH #977).
 pub(crate) fn parse_response(resp: &Value, asked: &Asked) -> Result<Decided, String> {
     let answers = resp
         .get("answers")
         .and_then(Value::as_object)
         .ok_or("the answer carries no 'answers' object")?;
     let mut out = Map::new();
+    let mut missing = Vec::new();
     for (key, kind) in &asked.kinds {
-        let a = answers
-            .get(key)
-            .and_then(Value::as_object)
-            .ok_or_else(|| format!("question '{key}' was not answered"))?;
+        let Some(a) = answers.get(key).filter(|v| !v.is_null()) else {
+            missing.push(key.clone());
+            continue;
+        };
+        let a = a
+            .as_object()
+            .ok_or_else(|| format!("answer '{key}' is no object"))?;
         let normalized = match kind {
             Kind::Choice(names) => {
                 let choice = a
@@ -319,10 +328,15 @@ pub(crate) fn parse_response(resp: &Value, asked: &Asked) -> Result<Decided, Str
         };
         out.insert(key.clone(), normalized);
     }
+    if out.is_empty() {
+        return Err("no question was answered".into());
+    }
+    missing.sort();
     let usage = resp.get("usage");
     let count = |k: &str| usage.and_then(|u| u.get(k)).and_then(Value::as_u64);
     Ok(Decided {
         answers: out,
+        missing,
         model: resp
             .get("model")
             .and_then(Value::as_str)
@@ -459,15 +473,38 @@ mod tests {
         assert_eq!(d.cost, Some(0.00001));
     }
 
+    /// GH #977: an omitted answer is named in `missing`, the rest stands.
     #[test]
-    fn a_missing_answer_or_an_unasked_choice_is_no_decision() {
+    fn a_missing_answer_is_named_and_the_rest_stands() {
         let asked = parse_decide(Some(&three())).unwrap();
-        let missing = json!({"answers": {"wants": {"noul": 0.5}}});
+        let part = json!({"answers": {"wants": {"noul": 0.5}}});
+        let d = parse_response(&part, &asked).unwrap();
+        assert_eq!(Value::Object(d.answers), json!({"wants": {"yes": 0.5}}));
+        assert_eq!(d.missing, vec!["topic".to_string(), "urgency".to_string()]);
+        let whole = json!({"answers": {
+            "topic": {"choice": "none", "probabilities": {"none": 1}},
+            "wants": {"noul": 0.5},
+            "urgency": {"score": 1, "probabilities": {"1": 1}}}});
+        assert!(parse_response(&whole, &asked).unwrap().missing.is_empty());
+    }
+
+    /// GH #977: without a single answer there is no decision.
+    #[test]
+    fn no_answer_at_all_is_no_decision() {
+        let asked = parse_decide(Some(&three())).unwrap();
         assert!(
-            parse_response(&missing, &asked)
+            parse_response(&json!({"answers": {}}), &asked)
                 .unwrap_err()
-                .contains("not answered")
+                .contains("no question was answered")
         );
+        // An answer under a key nobody asked is no answer to anything asked.
+        let stray = json!({"answers": {"other": {"noul": 0.5}}});
+        assert!(parse_response(&stray, &asked).is_err());
+    }
+
+    #[test]
+    fn an_unasked_choice_is_no_decision() {
+        let asked = parse_decide(Some(&three())).unwrap();
         let unasked = json!({"answers": {
             "topic": {"choice": "sport", "probabilities": {"sport": 1}},
             "wants": {"noul": 0.5},

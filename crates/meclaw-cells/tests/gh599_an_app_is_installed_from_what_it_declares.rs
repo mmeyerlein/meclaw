@@ -188,6 +188,9 @@ fn install_params(name: &str, entry: &Value, declaration: &Value) -> Value {
     if let Some(g) = entry.get("generation") {
         p["generation"] = g.clone();
     }
+    if let Some(c) = entry.get("ctx") {
+        p["ctx"] = c.clone();
+    }
     p
 }
 
@@ -381,8 +384,25 @@ fn a_declaration_that_offers_needs_a_generation() {
             .expect("json");
     assert_eq!(payload["missing"], json!(["generation"]), "{payload}");
 
+    // GH #965 (OR-DP.M.18): a tool offer answers in its member's round, so the
+    // switch asks for the person once the generation is named.
     let mut with = base.clone();
     with["generation"] = json!("sam");
+    let out = classify(with.clone());
+    assert_eq!(
+        out["header"]["error_code"],
+        json!("wish_incomplete"),
+        "{out}"
+    );
+    let payload: Value =
+        serde_json::from_str(out["messages"][0]["text"].as_str().expect("a payload"))
+            .expect("json");
+    assert_eq!(
+        payload["missing"],
+        json!(["ctx.member_person"]),
+        "{payload}"
+    );
+    with["ctx"] = json!({"member_person": "alex"});
     let out = classify(with);
     assert_eq!(out["header"]["route"], json!("recipe"), "{out}");
     assert_eq!(out["header"]["recipe"], json!("install_app"), "{out}");

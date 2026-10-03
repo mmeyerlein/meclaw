@@ -1521,8 +1521,12 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
             m["note"].as_str().is_some_and(|n| n.contains("2026-")),
             "a row says when it was read: {m}"
         );
-        assert!(
-            !m["base_url"].as_str().unwrap_or_default().is_empty(),
+        // GH #965 (OR-DP.M.21): a chat row names its endpoint; a decisions row
+        // names none -- the decider keeps the endpoint its set gives it, so a
+        // push never moves it outside its (empty) `base_url_allow`.
+        assert_eq!(
+            m["base_url"].as_str().unwrap_or_default().is_empty(),
+            m["wire_dialect"] == "decisions",
             "{m}"
         );
         match m["status"].as_str() {

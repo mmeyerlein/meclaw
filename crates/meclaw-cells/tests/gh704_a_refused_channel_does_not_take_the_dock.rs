@@ -175,8 +175,10 @@ fn the_refusal_is_a_flag_of_the_hook_and_never_the_buttons_own_property() {
         refuse.contains("phase(\"error\")") && refuse.contains("say(refusal)"),
         "a hold with no channel refuses in the open: {refuse}"
     );
+    // Counted from the press like the take's clock (GH #966, B review nit).
     assert!(
-        src.contains("holdTimer = setTimeout(refuse, HOLD_MS)"),
+        src.contains("var noWay = HOLD_MS - (performance.now() - pressAt);")
+            && src.contains("atThreshold(refuse, noWay)"),
         "and it refuses at the same threshold a take would have begun at"
     );
 }

@@ -1,4 +1,4 @@
-# `assistant@3.6.0`
+# `assistant@3.6.1`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and ninety-seven edges.
@@ -739,7 +739,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.1",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

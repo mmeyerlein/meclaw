@@ -1,4 +1,4 @@
-# `display@2.9.0`
+# `display@2.10.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -128,6 +128,8 @@ A word the door does not know is refused: a `state` other than the two, a `seat`
 | `screens.<name>` | none | one output per entry, with its profile |
 | `default_screen` | none | mandatory, and it names an entry of `screens` |
 | `browser_mount` | `browser` | the browser cell a page is streamed from; the screen writes it on every page it draws |
+| `map_tiles` | empty | the tile address pattern of `display-map`, `https://<host>/{z}/{x}/{y}.png`; empty means no tile and no fetch |
+| `map_attribution` | empty | the credit line the tile service asks for, drawn under every tiled map |
 | `code_views` | `["colony-view"]` | the views whose own components may bring script, style and raw props; every other application's component is text in a frame |
 | `params.mount` of the cell `web` | `display` | the path prefix of every output |
 
@@ -290,6 +292,22 @@ fallback block of a topic, `display-steps` holds `display-step` rows (`done`, `r
 of a window whose content is still on its way. `scripts/display_sync.py` writes every copy
 of the catalogue and `--check` exits non-zero when one has drifted.
 
+**The map.** `display-map` shows a place: `lat` and `lon` in decimal degrees (as text,
+-90..90 and -180..180), `zoom` 3..17 (12 when not said), a size `w` x `h` of one to four
+tiles (two by two when not said) and a `label`. An application names the place and nothing
+else; the screen works out the tiles around the point, writes them as `display-map-tile`
+children whose addresses come from the setting `map_tiles` and three integers, and draws a
+pin, the coordinates and the `map_attribution` line. A tile an application sends is refused
+(`display-map-tile: written by the screen`), and so is a coordinate that is not a number in
+range. With `map_tiles` empty, the shipped default, the map is its name and its coordinates
+and nothing is fetched. The tile host also needs its line in the proxy in front of the
+listener, beside the policy `csp.json` publishes, which stays `img-src 'self' data:`:
+`img-src 'self' data: https://<tile host>`. Without it the proxy blocks the tiles and the
+name and the coordinates still read.
+Every tile a page loads tells the tile host the place and the zoom of the map on the screen
+(the tile indices are the place), from the viewer's browser: an operator who sets
+`map_tiles` picks a host they are willing to tell that.
+
 ## Apps
 
 An app is a view. It sends exactly one window, one of `display-pane`, `display-panel`,
@@ -304,6 +322,15 @@ owner's name; no value.
 An app may put a `display-input` into its window, one field and no form. Enter sends the
 app's own event with the text and the screen clears the field. Whether the field appears on
 an output is that profile's `inputs`.
+
+Motion is a target, never a frame. Every block glides in when it is inserted (a CSS
+animation of `--enter-ms`; an update of the same block does not restart it, and reduced
+motion turns it off). A `display-field` is a coordinate space of `w` x `h`; a
+`display-mark` stands at `x`/`y` in the space of its parent field, and so does a nested
+field. An app moves a mark by writing its view again with new `x`/`y`: the pass sends one
+`object.update` of two props per changed mark, all of them in one patch, and the device
+moves them over `--move-ms`. A nested field carries its marks with it, so moving a group
+is one target, not one per member.
 
 `linger` is a request with a cap, and the app does not learn whether it was capped.
 `pinned` pins the tile and never the window; whoever wants the window in front holds it

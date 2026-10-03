@@ -60,7 +60,8 @@
 #   GATE-SUMMARY <mode> <rev> <green>/<total> <secs>s <GREEN|RED|ASK>
 #
 # Verdicts: GREEN the station passed. RED it failed. SKIP it could not run
-# (missing tool, or planned elsewhere) -- never a failure. NOTE a finding to
+# (missing tool, or planned elsewhere) -- never a failure; a browser station
+# that cannot drive a browser here still counts in the total (`browser_short`). NOTE a finding to
 # read, not a judgement on the commit (advisories, tree-sync, lock-wait, and
 # `corpus-committed` in `strand`: there the committed corpus is allowed to be
 # behind the sources of a commit that has not been written yet). ASK a
@@ -90,6 +91,8 @@
 # SKIP, NOTE and ASK appear in neither half -- they are on their own GATE line
 # and in the receipt, but a run with three notes is not a run with three
 # failures, and an open question is no judgement on the commit either way.
+# One exception: a browser station whose tree has no playwright counts in the
+# total (not in green), so the summary shows the missing proof (`13/14`).
 #
 # It runs each station ONCE and it does NOT restart the chain because one
 # finding was fixed -- fix everything it lists, then run it again as a whole
@@ -961,7 +964,9 @@ PY
     cp -f "$receipt" "$gate_dir/last-$mode.json"
 }
 
-# `green`/`total` count JUDGEMENTS, so only GREEN and RED are in either half.
+# `green`/`total` count JUDGEMENTS, so only GREEN and RED are in either half --
+# and a browser station without playwright, which is in the total (see the
+# header): a proof that could not run is not hidden from the summary.
 # A NOTE is a finding to read and a SKIP is a station that ran elsewhere or had
 # no tool; counting them in the denominator made a clean run report 9/12 and
 # read like three failures. Every station is still on its own GATE line and in
@@ -1292,6 +1297,25 @@ ASK
 }
 
 # --- run --------------------------------------------------------------------
+# A browser station whose proofs cannot drive a browser here: no `node`, or no
+# `playwright` beside the drivers (`workshop/tools/node_modules`, the one npm
+# install of the tree, which a fresh lane worktree does not have). Its Rust
+# locks would SKIP inside and the station would read GREEN -- measured
+# 03.10. (OR-DP-83): `14/14 GREEN` on a lane, every browser proof skipped.
+# So it is reported as a SKIP that COUNTS in the total: no judgement on the
+# commit, but a summary that cannot read whole while a proof did not run.
+browser_short() {   # station -> reason, or empty
+    case "$1" in
+        browser:*) ;;
+        *) return 0 ;;
+    esac
+    if ! command -v node >/dev/null 2>&1; then
+        echo "no-node: the browser proofs did not run (counted)"
+    elif [ ! -d "$root/workshop/tools/node_modules/playwright" ]; then
+        echo "no-playwright: workshop/tools/node_modules is missing, the browser proofs did not run (counted)"
+    fi
+}
+
 missing_tool() {   # station -> reason, or empty when everything is there
     case "$1" in
         shellcheck)
@@ -1385,6 +1409,12 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
 
     why=$(missing_tool "$name")
     if [ -n "$why" ]; then
+        report "$name" "$scope" 0 SKIP "" "$why"
+        continue
+    fi
+    why=$(browser_short "$name")
+    if [ -n "$why" ]; then
+        total=$((total + 1))
         report "$name" "$scope" 0 SKIP "" "$why"
         continue
     fi

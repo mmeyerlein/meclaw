@@ -1675,6 +1675,205 @@
       },
       "block": true,
       "editable": []
+    },
+    {
+      "name": "display-map",
+      "role": "content",
+      "layer": "content",
+      "describe": "A place on a map: tiles around a point, a pin on it, its name and its coordinates. Send the place (lat, lon, zoom, label, w, h) and, if anything should stand on it, display-mark children placed in thousandths of the map (x and y from 0 to 1000, 500/500 is the middle): the tiles, attribution, pin_x and pin_y are written by the screen, from the tile host its operator set; without one the map shows its name and its coordinates.",
+      "props": {
+        "lat": {
+          "type": "text",
+          "required": true,
+          "describe": "Latitude in decimal degrees, -90 to 90, as text."
+        },
+        "lon": {
+          "type": "text",
+          "required": true,
+          "describe": "Longitude in decimal degrees, -180 to 180, as text."
+        },
+        "zoom": {
+          "type": "int",
+          "required": false,
+          "describe": "The zoom level, 3 (a continent) to 17 (a street); 12 when not said."
+        },
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "The name of the place."
+        },
+        "w": {
+          "type": "int",
+          "required": false,
+          "describe": "How many tiles wide, 1 to 4; 2 when not said."
+        },
+        "h": {
+          "type": "int",
+          "required": false,
+          "describe": "How many tiles high, 1 to 4; 2 when not said."
+        },
+        "attribution": {
+          "type": "text",
+          "required": false,
+          "describe": "Written by the screen: the credit line the tile service asks for."
+        },
+        "pin_x": {
+          "type": "int",
+          "required": false,
+          "describe": "Written by the screen: where the point lies across the tiles, in thousandths."
+        },
+        "pin_y": {
+          "type": "int",
+          "required": false,
+          "describe": "Written by the screen: where the point lies down the tiles, in thousandths."
+        }
+      },
+      "slots": [
+        "display-map-tile",
+        "display-mark"
+      ],
+      "example": {
+        "component": "display-map",
+        "props": {
+          "lat": "52.52",
+          "lon": "13.405",
+          "zoom": 12,
+          "label": "Springfield"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-map-tile",
+      "role": "content",
+      "layer": "content",
+      "describe": "Written by the screen: one tile of a map, fetched from the host its operator set. An application never sends one.",
+      "props": {
+        "src": {
+          "type": "text",
+          "required": false,
+          "describe": "The tile's address, built by the screen from the operator's setting."
+        },
+        "col": {
+          "type": "int",
+          "required": false,
+          "describe": "The tile's column, from 1."
+        },
+        "row": {
+          "type": "int",
+          "required": false,
+          "describe": "The tile's row, from 1."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-map-tile",
+        "props": {
+          "src": "https://tiles.example.org/12/2200/1343.png",
+          "col": 1,
+          "row": 1
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-field",
+      "role": "content",
+      "layer": "content",
+      "describe": "A coordinate space whose marks and nested fields move to new targets on the device.",
+      "props": {
+        "w": {
+          "type": "int",
+          "required": true,
+          "describe": "Width of the coordinate space, in the application's units; greater than 0."
+        },
+        "h": {
+          "type": "int",
+          "required": true,
+          "describe": "Height of the coordinate space, in the application's units; greater than 0."
+        },
+        "x": {
+          "type": "int",
+          "required": false,
+          "describe": "Left edge in the parent field's space; only read when the field is nested."
+        },
+        "y": {
+          "type": "int",
+          "required": false,
+          "describe": "Top edge in the parent field's space; only read when the field is nested."
+        }
+      },
+      "slots": [
+        "display-mark",
+        "display-field"
+      ],
+      "example": {
+        "component": "display-field",
+        "props": {
+          "w": 100,
+          "h": 100
+        },
+        "children": [
+          {
+            "component": "display-mark",
+            "props": {
+              "x": 50,
+              "y": 50,
+              "glyph": "*",
+              "label": "here"
+            }
+          }
+        ]
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-mark",
+      "role": "content",
+      "layer": "content",
+      "describe": "A point in a field or on a map; a new x/y moves it there.",
+      "props": {
+        "x": {
+          "type": "int",
+          "required": true,
+          "describe": "Position in the parent field's space; on a map, thousandths of the map (0 to 1000)."
+        },
+        "y": {
+          "type": "int",
+          "required": true,
+          "describe": "Position in the parent field's space; on a map, thousandths of the map (0 to 1000)."
+        },
+        "glyph": {
+          "type": "text",
+          "required": false,
+          "describe": "A short sign drawn at the point."
+        },
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "A word under the sign."
+        },
+        "tone": {
+          "type": "text",
+          "required": false,
+          "describe": "accent, or nothing."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-mark",
+        "props": {
+          "x": 50,
+          "y": 50,
+          "glyph": "*",
+          "label": "here"
+        }
+      },
+      "block": true,
+      "editable": []
     }
   ]
 }

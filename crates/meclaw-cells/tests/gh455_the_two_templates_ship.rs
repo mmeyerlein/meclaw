@@ -162,7 +162,7 @@ fn the_screen_is_sealed_and_states_five_lanes() {
 }
 
 #[test]
-fn the_app_is_sealed_and_states_two_lanes() {
+fn the_app_is_sealed_and_states_its_lanes() {
     let Some(root) = shipped_colony_view() else {
         return;
     };
@@ -173,10 +173,12 @@ fn the_app_is_sealed_and_states_two_lanes() {
     // Two ways in since GH #553, and they are not the same statement: the app
     // is ASKED to redraw (`in_refresh`, an operator gesture), or it HEARS that
     // the graph moved (`mutation_committed`, the receipt that replaced the
-    // one-minute poll). One way out, unchanged.
+    // one-minute poll). Since GH #965 a third: a resident READ (`in_read`), the
+    // presenter's built-in `colony` topic asking for the counts, answered on its
+    // own lane (`answer`) beside the snapshot (`view`).
     let (accepts, emits) = lanes(&cfg);
-    assert_eq!(accepts, vec!["in_refresh", "mutation_committed"]);
-    assert_eq!(emits, vec!["view"]);
+    assert_eq!(accepts, vec!["in_refresh", "mutation_committed", "in_read"]);
+    assert_eq!(emits, vec!["view", "answer"]);
 }
 
 /// The one absolute lane, and the condition that is not optional.

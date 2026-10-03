@@ -125,7 +125,7 @@ fn a_short_press_without_a_microphone_is_still_the_dock() {
     // The refusal runs off the same threshold clock as everything else on this
     // mark, or a tap on a screen with no microphone would open the chat.
     assert!(
-        os.contains("setTimeout(refuseMic,"),
+        os.contains("atThreshold(refuseMic,"),
         "the refused-device path does not wait for the threshold: a 120 ms tap \
          would become a hold"
     );

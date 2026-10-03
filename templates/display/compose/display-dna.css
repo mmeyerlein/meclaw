@@ -165,6 +165,11 @@
   --t-leave: 240ms;
   --t-enter: 360ms;
   --t-focus: 420ms;
+  /* Motion by target state (GH #961): how long a block takes to glide in when it
+   * is inserted, and how long a mark or a field takes to reach a new target. The
+   * device moves; the wire carries the target only. */
+  --enter-ms: 320ms;
+  --move-ms: 640ms;
 
   /* The hold threshold (§ 5.5: "a token, 250 ms"). Under it a press on the
    * mark is a press -- dock open or closed; over it, a hold. 250 ms is what
@@ -1129,10 +1134,16 @@ body::after {
   overflow: hidden;
 }
 
-/* The dot is a box of its own: `.display-status` wears `display-lead`, which
- * blockifies it, and an inline span takes no inline-size -- measured in both
- * engines while the working hint was built, every status dot drew nothing. */
-.display-status-dot { display: inline-block; vertical-align: middle; margin-inline-end: 8px; }
+/* The working hint's dot is a box of its own: `.display-status` wears
+ * `display-lead`, which blockifies it, and an inline span takes no inline-size
+ * -- measured in both engines while the working hint was built, every status
+ * dot drew nothing. Only here: the standing states keep the look they shipped
+ * with (GH #966, K review M5), a change to them is a decision of its own. */
+.display-status[data-kind="working"] .display-status-dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-inline-end: 8px;
+}
 
 .display-status[data-kind="working"] .display-status-dot {
   background-color: var(--accent-soft);
@@ -1231,6 +1242,64 @@ body::after {
 .display-step-detail,
 .display-step-at { color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
 
+/* display-map / display-map-tile — a place (GH #964). The SCREEN writes the grid:
+ * `--map-w`/`--map-h` tiles, each tile placed by its column and row, the pin at
+ * `--pin-x`/`--pin-y` thousandths of the grid. The sheet keeps the tiles square, so
+ * the grid's ratio is the tiles' and nothing is stretched. A map without tiles (no
+ * `map_tiles` on this screen) has an empty sheet, and an empty sheet takes no room:
+ * the name and the coordinates are the map then. */
+.display-map {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.display-map-sheet {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--map-w, 2), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--map-h, 2), minmax(0, 1fr));
+  aspect-ratio: var(--map-w, 2) / var(--map-h, 2);
+  overflow: hidden;
+  border-radius: var(--r-inner);
+  background-color: var(--inner-fill-strong);
+}
+
+.display-map-sheet:not(:has(.display-map-tile)) { display: none; }
+
+.display-map-tile {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  user-select: none;
+}
+
+.display-map-pin {
+  position: absolute;
+  inset-inline-start: calc(var(--pin-x, 500) * 0.1%);
+  inset-block-start: calc(var(--pin-y, 500) * 0.1%);
+  inline-size: 14px;
+  block-size: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.display-map-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.display-map-label { color: var(--fg-primary); }
+.display-map-where { color: var(--fg-secondary); font-variant-numeric: tabular-nums; }
+.display-map-attribution { flex-basis: 100%; font-size: var(--t-caption); color: var(--fg-tertiary); }
+
 /* display-action / display-option — controls: control radius, rim without the cast
  * shadow (they sit on a pane, they do not float above one). Hover is a
  * brightening, never an outline. */
@@ -1315,6 +1384,7 @@ body::after {
 .display-chat,
 .display-document,
 .display-media,
+.display-map,
 .display-chart,
 .display-choice,
 .display-progress,
@@ -2742,6 +2812,141 @@ body:has([data-exit="tv"])::after { display: none; }
   }
 
   .display-overlay::after { animation-duration: calc(var(--ttl, 0) * 1ms) !important; }
+}
+
+/* ── 14b. Motion by target state (GH #961) ──────────────────────────────
+ * The screen draws states; the device draws the frames between them.
+ *
+ * ENTER. Every block of the catalogue (`block: true`) glides in when it is
+ * inserted into the DOM: a CSS animation starts when the node first gets its
+ * style, so no script is needed, and a later update of the same node starts
+ * none (the animation name does not change, so nothing restarts). Slide and
+ * fade use `translate` and `opacity`, never `transform`: a mark and a nested
+ * field are PLACED with `transform`, and an animation of it would throw them to
+ * the origin for as long as it runs. `:where()` keeps the rule at zero
+ * specificity, so a block that already runs an animation of its own (an urgent
+ * notification breathes) keeps it. The list is the catalogue's block set; the
+ * catalogue lock (gh669) holds the two side by side. A stack that is a scene is
+ * a picture of a whole screen, not a block, and does not glide. */
+:where(.display-value, .display-text, .display-list, .display-item,
+  .display-table, .display-chart, .display-weather, .display-timer,
+  .display-progress, .display-status, .display-media, .display-document,
+  .display-notification, .display-stack:not(.display-scene), .display-card,
+  .display-steps, .display-step, .display-map, .display-field, .display-mark) {
+  /* `backwards`, not `both`: once it has run, the animation has no effect left
+   * and leaves `getAnimations()` -- a filled-forward effect would stay on every
+   * block for ever (200 marks, 200 effects held for nothing), and an update
+   * would be indistinguishable from a fresh entry. No delay, so no flash. */
+  animation: display-block-enter var(--enter-ms) var(--ease) backwards;
+}
+
+@keyframes display-block-enter {
+  from { opacity: 0; translate: 0 8px; }
+}
+
+/* Nothing INSIDE the dock glides in (GH #969). An animation restarts whenever its
+ * element goes from `display: none` to shown, and a closed dock is `display: none`:
+ * every tap that opened it restarted the entry on every block of every window in it
+ * at once. Measured under the same synthetic load on one build host, six runs per
+ * tree: the hold after such a tap (B-33, WebKit, phone) missed its threshold in 3 of
+ * 6 with the glide in the dock, 0 of 6 on the tree before the glide, 0 of 3 with this
+ * rule. The dock moves as a whole (its own
+ * `@starting-style`). Zero specificity like the enter rule, and later in the sheet,
+ * so a block's own animation (an urgent notification breathes) still wins. */
+:where(.display-dock) :where(.display-value, .display-text, .display-list, .display-item,
+  .display-table, .display-chart, .display-weather, .display-timer,
+  .display-progress, .display-status, .display-media, .display-document,
+  .display-notification, .display-stack:not(.display-scene), .display-card,
+  .display-steps, .display-step, .display-map, .display-field, .display-mark) {
+  animation: none;
+}
+
+/* FIELD and MARK. A field is a coordinate space `--fw` x `--fh` (its inner box,
+ * a size container); a mark is a point in it. The point is a box of no size at
+ * the space's origin, moved by `transform` to `--x / --fw` of the space's width
+ * and `--y / --fh` of its height -- `cqw`/`cqh` resolve against the space, so
+ * the numbers stay in the application's units and the sheet does the pixels.
+ * The mark's body is centred on the point. A new target is a new value of two
+ * custom properties; the computed `transform` changes and the transition runs
+ * on the device (`--move-ms`). `transform` only: WebKit transitions a
+ * discrete property differently (GH #912), and a transform is the one property
+ * every engine moves on the compositor.
+ *
+ * A top-level field fills its row and keeps the aspect of its space. A field
+ * inside a field is placed like a mark, sized `--sw` x `--sh` in the PARENT's
+ * units -- so its own marks move with it when only its target changes.
+ * `max(…, 1)` in every divisor: a space of 0 is read as 1, never as a
+ * division by zero that would drop the whole `transform`. */
+.display-field {
+  position: relative;
+  inline-size: 100%;
+  aspect-ratio: var(--sw) / var(--sh);
+}
+
+.display-field-space {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+}
+
+.display-field-space > :is(.display-mark, .display-field) {
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0;
+  transform: translate(calc(var(--x) / max(var(--fw), 1) * 100cqw),
+                       calc(var(--y) / max(var(--fh), 1) * 100cqh));
+  transition: transform var(--move-ms) var(--ease);
+}
+
+.display-field-space > .display-field {
+  inline-size: calc(var(--sw) / max(var(--fw), 1) * 100cqw);
+  block-size: calc(var(--sh) / max(var(--fh), 1) * 100cqh);
+  aspect-ratio: auto;
+}
+
+.display-mark {
+  inline-size: 0;
+  block-size: 0;
+  overflow: visible;
+}
+
+.display-mark-body {
+  position: absolute;
+  translate: -50% -50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.display-mark-glyph { font-size: var(--t-body); line-height: 1; }
+.display-mark-label { font-size: var(--t-caption); color: var(--fg-secondary); }
+.display-mark[data-tone="accent"] .display-mark-glyph { color: var(--accent); }
+
+/* A mark on a map (OR-DP-71): the map's sheet is its space, in thousandths of the
+ * tile grid -- the unit the screen writes the pin in -- so a mark at 500/500 stands
+ * in the middle of the tiles. Placed by its insets rather than a transform (the
+ * sheet is a grid, not a size container), and a new x/y glides there all the same. */
+.display-map-sheet > .display-mark {
+  position: absolute;
+  inset-inline-start: calc(clamp(0, var(--x), 1000) * 0.1%);
+  inset-block-start: calc(clamp(0, var(--y), 1000) * 0.1%);
+  transition: inset-inline-start var(--move-ms) var(--ease),
+              inset-block-start var(--move-ms) var(--ease);
+}
+
+/* Reduced motion: a block is there, and a mark is somewhere else next frame. */
+@media (prefers-reduced-motion: reduce) {
+  :where(.display-value, .display-text, .display-list, .display-item,
+    .display-table, .display-chart, .display-weather, .display-timer,
+    .display-progress, .display-status, .display-media, .display-document,
+    .display-notification, .display-stack:not(.display-scene), .display-card,
+    .display-steps, .display-step, .display-map, .display-field, .display-mark) {
+    animation-name: none;
+  }
+  .display-field-space > :is(.display-mark, .display-field),
+  .display-map-sheet > .display-mark { transition: none !important; }
 }
 
 /* ── 15. Screen sizes — the GALLERY only ─────────────────────────────────

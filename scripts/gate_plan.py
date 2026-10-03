@@ -143,7 +143,9 @@ STATIONS (S strand, I integration, R release, C ci)
                     lock (GH #867): one colony, one page under a strict
                     policy in Chromium, ~30 s, `#[ignore]`d so the `tests`
                     station never builds a browser run into its own budget
-                    (the lesson of GH #763). The colony half was release-only
+                    (the lesson of GH #763), and the motion lock (GH #961):
+                    one colony, three pages per engine, the same reasons.
+                    The colony half was release-only
                     until 0.39.0, and the first gate that ever ran it found it
                     red on three proofs (GH #746): a proof only the release
                     night reaches is a proof nobody sees, and the pass that
@@ -502,6 +504,8 @@ BROWSER_LOCKS = frozenset({
     "crates/meclaw-cells/tests/710_the_sheet_holds_in_both_engines_browser.rs",
     "crates/meclaw-cells/tests/710_the_colony_holds_in_both_engines_browser.rs",
     "crates/meclaw-cells/tests/gh867_a_display_runs_under_a_strict_csp_browser.rs",
+    # GH #961: motion by target state, one colony, three pages per engine.
+    "crates/meclaw-cells/tests/gh961_motion_by_target_state_browser.rs",
 })
 
 # The CSP lock's command. `#[ignore]`d in the tree, like the colony half, so the
@@ -510,6 +514,13 @@ BROWSER_LOCKS = frozenset({
 CSP_LOCK_CMD = ["scripts/test-tier.sh", "filter",
                 "binary(/gh867_a_display_runs_under_a_strict_csp/)",
                 "--run-ignored", "all"]
+
+# The motion lock's command (GH #961): blocks glide in, 200 marks move in one diff,
+# in Chromium and WebKit. `#[ignore]`d like the CSP lock and nearly as cheap -- one boot,
+# three pages per engine -- so every mode that plans the station runs it.
+MOTION_LOCK_CMD = ["scripts/test-tier.sh", "filter",
+                   "binary(/gh961_motion_by_target_state/)",
+                   "--run-ignored", "all"]
 
 # The empty-diff floor. `plan()` turns it into `scripts/test-tier.sh t0`
 # rather than a `filter` run: the tier passes `--lib --bins` and builds only the
@@ -1557,6 +1568,7 @@ def plan(paths, mode, repo=None):
             cmds.append(["scripts/test-tier.sh", "filter",
                          "binary(/710_the_colony_holds/)", "--run-ignored", "all"])
         cmds.append(list(CSP_LOCK_CMD))
+        cmds.append(list(MOTION_LOCK_CMD))
         out["browser:display"] = station(
             "browser:display", "sheet+colony" if colony else "sheet", True, cmds)
 

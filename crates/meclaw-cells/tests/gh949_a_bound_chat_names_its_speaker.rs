@@ -427,7 +427,8 @@ fn the_speaker_reaches_the_tool_edge() {
     let install = declaration(
         "install_app",
         json!({"scope": MEMBER, "app": "probe-app", "template": "probe-app@1.0.0",
-               "screen": "display", "generation": "sam", "declaration": {
+               "screen": "display", "generation": "sam",
+               "ctx": {"member_person": "alex"}, "declaration": {
                    "offers": [{"kind": "tool", "at": "./sink", "tools": ["probe_tool"]}],
                    "observes_tool_calls": {"at": "./watch", "tools": ["probe_tool"]}}}),
     );

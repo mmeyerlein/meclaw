@@ -29,7 +29,21 @@
         "t_content_ms": "int",
         "model": "text",
         "at": "int",
-        "audience_set": "text"
+        "audience_set": "text",
+        "missing": "text"
+      },
+      "work": {
+        "seq": "int",
+        "session": "text",
+        "turn_id": "text",
+        "tool": "text",
+        "call_id": "text",
+        "state": "text",
+        "summary": "text",
+        "path": "text",
+        "exit_code": "int",
+        "audience_set": "text",
+        "at": "int"
       }
     }
   },

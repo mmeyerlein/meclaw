@@ -456,6 +456,9 @@ fn install_edges(agent: &str, app: &str, screen: &str) -> Vec<Value> {
                                          "params": {"scope": MEMBER, "app": app,
                                                     "template": "showcase@1.0.0",
                                                     "screen": screen, "generation": agent,
+                                                    // GH #965: a tool offer answers in its
+                                                    // member's round, named by the person.
+                                                    "ctx": {"member_person": "alex"},
                                                     "declaration": app_declaration()}})
                                       .to_string()}],
         }),

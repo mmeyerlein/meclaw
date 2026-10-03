@@ -9,6 +9,7 @@
     "model": "${PRESENTER_DECIDE_MODEL:-}",
     "api_key": "${PRESENTER_DECIDE_API_KEY:-}",
     "base_url": "${PRESENTER_DECIDE_BASE_URL:-}",
+    "base_url_allow": [],
     "external_timeout_ms": 3000
   },
   "contract": {
@@ -31,6 +32,12 @@
         "secret": false,
         "default": "",
         "description": "The decider's endpoint (`PRESENTER_DECIDE_BASE_URL`); the template README names an example."
+      },
+      "base_url_allow": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "The origins (`scheme://host[:port]`) a push of the model registry may move `base_url` to. Empty as shipped -- the template names no provider -- so a push that carries an endpoint is refused (`model_refused`) until the set that installs the presenter lists the endpoint of its decisions rows here (`override_params`). Immutable at run time, like every allow list of the llm cell."
       }
     },
     "emits": {

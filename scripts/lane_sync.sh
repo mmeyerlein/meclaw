@@ -3,7 +3,7 @@
 #
 #     scripts/lane_sync.sh files                          what the overlay sends (NUL-separated)
 #     scripts/lane_sync.sh digest                         the overlay hash of this tree
-#     scripts/lane_sync.sh push <ssh-target> <strand>     commit + overlay onto the host, prints `<rev> <hash>`
+#     scripts/lane_sync.sh push <ssh-target> <strand>     commit + overlay onto the host, prints `<rev> <hash> <browser>`
 #     scripts/lane_sync.sh run <ssh-target> <strand> <mode> <base> [gate.sh options]
 #     scripts/lane_sync.sh fetch <ssh-target> <strand> <dir>
 #     scripts/lane_sync.sh test <ssh-target> <strand> <filterset> [nextest args]
@@ -22,6 +22,8 @@
 #     wt/<strand>       one worktree per strand, checked out detached
 #     target/           ONE cargo target directory for all strands of the host
 #     runs/<strand>     receipt and station logs of the last run
+#     cache/workshop-tools/node_modules
+#                       the browser drivers' npm install, shared by every tree
 #
 # WHAT TRAVELS: exactly the tree a local gate would see. The commit travels
 # by `git push` -- the history the host needs for the merge base comes with
@@ -56,7 +58,14 @@
 #   * the refs `github-main` and `master`, when this clone has them: the
 #     export audit diffs against the first and a release exports the second;
 #   * the URL of `origin` for the export audit's drift check, but only a plain
-#     `https://` URL without credentials -- anything else stays here.
+#     `https://` URL without credentials -- anything else stays here;
+#   * `workshop/tools/node_modules`, the browser drivers' one npm install
+#     (playwright): a link to the lane's cache, which the first tree of the
+#     host that has a real install seeds. Measured 03.10. (OR-DP-83): the
+#     install lived in one strand's tree, every other tree was fresh, and the
+#     browser proofs there skipped without a word. The third word of `push`
+#     says what the tree got -- `own` (its own install), `linked`, `none` (no
+#     install on the host: the kit says so) or `n/a` (no drivers in the tree).
 #
 # THE OVERLAY HASH. After the overlay, both sides hash the same list -- HEAD,
 # then per path its sha256 or `absent` -- and the push is refused when the
@@ -130,6 +139,32 @@ done; } | sha256sum | cut -c1-16'
 digest_list() {   # the list both sides hash
     { overlay_files; deleted_files; } | sort -z -u
 }
+
+# The browser drivers of a tree on the host, run THERE by `bash -c` with the
+# tree and the lane root as arguments; prints own|linked|none|n/a.
+# shellcheck disable=SC2016
+BROWSER_DEPS='wt=$1; root=$2
+nm="$wt/workshop/tools/node_modules"; cache="$root/cache/workshop-tools/node_modules"
+[ -d "$wt/workshop/tools" ] || { echo n/a; exit 0; }
+if [ -d "$nm/playwright" ] && [ ! -L "$nm" ]; then echo own; exit 0; fi
+if [ ! -d "$cache/playwright" ]; then
+    for seed in "$root"/wt/*/workshop/tools/node_modules; do
+        if [ -d "$seed/playwright" ] && [ ! -L "$seed" ]; then
+            # A copy of its own, moved in only while the cache is still absent: two
+            # pushes on one host at once would otherwise move one copy INTO the other.
+            tmp="$cache.tmp.$$"
+            mkdir -p "${cache%/*}" && rm -rf "$tmp" && cp -a "$seed" "$tmp" \
+                && { [ -d "$cache" ] || mv -T "$tmp" "$cache"; }; rm -rf "$tmp"
+            break
+        fi
+    done
+fi
+if [ -d "$cache/playwright" ]; then
+    [ -L "$nm" ] || rm -rf "$nm"
+    ln -sfn "$cache" "$nm" && echo linked
+else
+    echo none
+fi'
 
 remote() {   # target, command string
     local target="$1"; shift
@@ -214,6 +249,10 @@ cmd_push() {
     # name says secret, so it is in neither list on either side.
     remote "$target" "cd $(q "$wt") && python3 scripts/gate_plan.py --print lane-env >.env" \
         || { rm -f "$list"; die "the lane env on $target failed"; }
+    # The browser drivers (OR-DP-83). Ignored by git, so in neither hash list.
+    local browser
+    browser=$(remote "$target" "bash -c $(q "$BROWSER_DEPS") _ $(q "$wt") $(q "$ROOT")") \
+        || { rm -f "$list"; die "the browser drivers on $target failed"; }
     # The same tree on both sides, or no remote gate (exit 5).
     local here there
     digest_list >"$list"
@@ -225,7 +264,7 @@ cmd_push() {
         echo "lane_sync: refused -- the overlay on $target is not this tree (here ${here:-?}, there ${there:-?})" >&2
         exit 5
     fi
-    printf '%s %s\n' "$sha" "$here"
+    printf '%s %s %s\n' "$sha" "$here" "${browser:-none}"
 }
 
 cmd_run() {

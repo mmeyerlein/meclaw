@@ -410,7 +410,7 @@ class Classify(unittest.TestCase):
         self.assertEqual(
             st["browser:display"].cmds,
             [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"],
-             gp.CSP_LOCK_CMD])
+             gp.CSP_LOCK_CMD, gp.MOTION_LOCK_CMD])
 
         # So does a diff on the display template itself -- the sheet is what it measures.
         self.assertIn("browser:display",
@@ -428,7 +428,7 @@ class Classify(unittest.TestCase):
         both = [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"],
                 ["scripts/test-tier.sh", "filter", "binary(/710_the_colony_holds/)",
                  "--run-ignored", "all"],
-                gp.CSP_LOCK_CMD]
+                gp.CSP_LOCK_CMD, gp.MOTION_LOCK_CMD]
         for mode in ("integration", "release"):
             st_ir = by_name(gp.plan(["docs/x.md"], mode, repo=None))
             self.assertEqual(st_ir["browser:display"].scope, "sheet+colony", mode)
@@ -473,6 +473,30 @@ class Classify(unittest.TestCase):
                 st = by_name(gp.plan(diff, mode, repo=None))
                 self.assertIn(gp.CSP_LOCK_CMD, st["browser:display"].cmds)
         # ci never plans the station: workshop/ does not travel.
+        self.assertNotIn("browser:display",
+                         {s.name for s in gp.plan([lock], "ci", repo=None)})
+
+    def test_the_motion_lock_rides_the_browser_station(self):
+        """GH #961: the motion lock is a browser lock and runs where browser locks run.
+
+        Like the CSP lock: `#[ignore]`d in the tree, named by the station with
+        `--run-ignored` in every mode that plans it, and planned by a diff on its own
+        driver. One boot and three pages per engine, so a strand pays for it.
+        """
+        lock = ("crates/meclaw-cells/tests/"
+                "gh961_motion_by_target_state_browser.rs")
+        driver = "workshop/tools/display-motion-browser.mjs"
+        self.assertIn(lock, gp.BROWSER_LOCKS)
+        self.assertIn("display_browser", gp.classify([lock]))
+        self.assertIn("display_browser", gp.classify([driver]))
+        self.assertEqual(gp.MOTION_LOCK_CMD[-2:], ["--run-ignored", "all"])
+        self.assertIn("gh961_motion_by_target_state", gp.MOTION_LOCK_CMD[2])
+        for diff, mode in (([driver], "strand"), ([lock], "strand"),
+                           (["templates/display/compose/display-dna.css"], "strand"),
+                           (["docs/x.md"], "integration"), (["docs/x.md"], "release")):
+            with self.subTest(diff=diff, mode=mode):
+                st = by_name(gp.plan(diff, mode, repo=None))
+                self.assertIn(gp.MOTION_LOCK_CMD, st["browser:display"].cmds)
         self.assertNotIn("browser:display",
                          {s.name for s in gp.plan([lock], "ci", repo=None)})
 

@@ -34,10 +34,12 @@ the fallback -- is a pure function of its arguments. `check_stage.py` drives the
 tables, without a colony.
 """
 
+import html
 import json
 import sys
 import time
 import uuid
+from urllib.parse import urlsplit
 
 # ---------------------------------------------------------------------------
 # Names
@@ -45,8 +47,11 @@ import uuid
 T_SHOWS = "shows"
 T_PENDING = "pending"
 T_JOURNAL = "journal"
+T_WORK = "work"
 SHOWS_COLUMNS = ["topic", "owner_app", "show_at", "manifest", "at"]
 PENDING_COLUMNS = ["turn_id", "value", "at"]
+WORK_COLUMNS = ["seq", "session", "turn_id", "tool", "call_id", "state", "summary", "path",
+                "exit_code", "audience_set", "at"]
 
 PHASE_BOOT = "boot"
 PHASE_WRITE = "write"
@@ -85,6 +90,89 @@ DEADLINE = "deadline"
 DUE_NAMESPACE = uuid.UUID("6f1c2a52-9f4e-4c1b-8d55-3c0b6e5a9d01")
 
 TYPES = ("text", "int", "number", "boolean", "html")
+
+# ---------------------------------------------------------------------------
+# GH #963: what the presenter observes, and its own topics
+
+# The tools whose CALLS the app block observes (`observes_tool_calls`), exactly the
+# occupants of a generation's own `./tools` hive (tools@1.4.5): their results are what the
+# string-form result observer hears from that hive. The file tool is `file` (op read,
+# write, list, stat), not `file_*`; the member's file space answers on its own road, which
+# no observer leg reaches (OR-DP.Q.1). A longer list is a pin change of the presenter.
+OBSERVED_TOOLS = ("web_search", "web_fetch", "bash", "file", "edit")
+
+# The rolling work view: at most this many rows per session in the store (a view with a
+# ceiling; the colony log stays the record), and this many steps on the screen.
+WORK_ROWS = 50
+WORK_SHOWN = 12
+SEARCH_HITS = 6
+SNIPPET_CHARS = 200
+SUMMARY_CHARS = 64
+
+# A bash command is a test run when one of these is in it (lower case, plain substring:
+# deterministic, no model). `params.test_patterns` replaces the list.
+DEFAULT_TEST_PATTERNS = ["cargo test", "cargo nextest", "pytest", "npm test", "npm run test",
+                         "yarn test", "pnpm test", "go test", "make test", "make check",
+                         "unittest", "test.sh", "test-tier.sh", "gate.sh"]
+
+# A declared source (Q.4, the seam with the residents' road, OR-DP.M.1):
+# `{read, hop, body, rows?, value?}`, closed. `read` is one of the residents the builder's
+# `reads_residents` reaches; `hop` may set only the keys a resident's read lane takes
+# (closed, so `contract.emits` can name them); a string value that is exactly `$request`
+# becomes the turn's text.
+SOURCE_KEYS = ("read", "hop", "body", "rows", "value")
+RESIDENTS = ("memory-hive", "file-space", "graph-space", "objects", "librarian", "affinity",
+             "colony-view")
+SOURCE_HOP_KEYS = ("op", "recall_query", "memory_tier")
+SOURCE_MAX_BYTES = 4096
+REQUEST = "$request"
+# The keys a candidate may carry, closed (OR-DP-68, OR-DP-77): a key the presenter does not
+# read is a manifest it would misread, so it is refused, never ignored. Measured 03.10.:
+# every manifest of the library, the residents' topics and the apps beside it uses only
+# these eight.
+CANDIDATE_KEYS = ("key", "block", "describe", "set", "bind", "children", "on_choice", "source")
+
+# The presenter's own topics, fed by what it observes rather than by an app. Each is
+# switched on by name in `params.observed_topics`; an app may not hold their names.
+BUILTIN = {
+    "search": {
+        "topic": "search", "title": "Web search", "glyph": "\u2315", "standard": "results",
+        "describe": "results of a web search the assistant ran for this request",
+        "data_wait_ms": 15000,
+        "candidates": [
+            {"key": "results", "block": "display-list", "set": "hits",
+             "describe": "the hits as a list: title and site",
+             "bind": {"title": "=Results"},
+             "children": [{"each": "hits", "block": "display-item",
+                           "bind": {"k": "$.title", "v": "$.host"}}]},
+            {"key": "top", "block": "display-card", "set": "top",
+             "describe": "the first hit as a card: site, title and its snippet",
+             "bind": {"kicker": "top.host", "title": "top.title", "body": "top.snippet"}},
+            {"key": "sources", "block": "display-table", "set": "sources",
+             "describe": "which sites the hits came from, with a count each",
+             "bind": {"caption": "sources.caption", "head": "sources.head",
+                      "rows": "sources.rows"}}]},
+    "work": {
+        "topic": "work", "title": "Work report", "glyph": "\u2699", "standard": "steps",
+        "describe": "what the assistant is working on right now: its steps, the files it "
+                    "touched, whether tests passed",
+        "data_wait_ms": 15000,
+        "candidates": [
+            {"key": "steps", "block": "display-steps", "set": "steps",
+             "describe": "the steps taken so far, each with its state",
+             "bind": {"title": "=Steps"},
+             "children": [{"each": "steps", "block": "display-step",
+                           "bind": {"label": "$.label", "state": "$.state",
+                                    "detail": "$.detail"}}]},
+            {"key": "files", "block": "display-list", "set": "files",
+             "describe": "the files touched so far",
+             "bind": {"title": "=Files"},
+             "children": [{"each": "files", "block": "display-item",
+                           "bind": {"k": "$.path"}}]},
+            {"key": "tests", "block": "display-card", "set": "tests",
+             "describe": "whether the last test run passed",
+             "bind": {"kicker": "=Tests", "title": "tests.verdict", "body": "tests.detail"}}]},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +300,12 @@ def filter_set(data_set, screen_round):
         out["rows"] = [r for r in rows if isinstance(r, dict)
                        and ("audience_set" not in r
                             or covers(r.get("audience_set"), screen_round))]
+    if not out.get("rows") and "value" not in out:
+        # Nothing of it may be shown: the set is not there. Kept as an empty set it
+        # could stand as an empty block and tell the screen that rows of other rounds
+        # exist (R fix round 2: rows `[member, Y]` and `[X, Z]`, the set their union,
+        # the screen `[member, X]`). A set that never came reads the same.
+        return None
     return out
 
 
@@ -324,9 +418,42 @@ def check_bind_spec(bind, entry, row_scope, own_set):
     return None
 
 
-def check_candidate(cand, cat):
+def check_source(src):
+    """None when a declared source is `{read, hop, body, rows?, value?}` in the closed form
+    of OR-DP.M.1; else the reason. `rows`/`value` are dotted paths into the answer."""
+    if not isinstance(src, dict):
+        return "source is not an object"
+    for k in src:
+        if k not in SOURCE_KEYS:
+            return "source key %r" % k
+    if src.get("read") not in RESIDENTS:
+        return "source names no resident the presenter reads"
+    hop = src.get("hop", {})
+    if not isinstance(hop, dict):
+        return "source hop is not an object"
+    for k, v in hop.items():
+        if k not in SOURCE_HOP_KEYS:
+            return "source hop key %r" % k
+        if isinstance(v, bool) or not isinstance(v, (str, int)):
+            return "source hop %s is no plain value" % k
+    if not isinstance(src.get("body", {}), dict):
+        return "source body is not an object"
+    for k in ("rows", "value"):
+        if k in src and not isinstance(src[k], str):
+            return "source %s is not a path" % k
+    if "rows" not in src and "value" not in src:
+        return "source reads neither rows nor a value"
+    if len(json.dumps(src)) > SOURCE_MAX_BYTES:
+        return "source exceeds %d bytes" % SOURCE_MAX_BYTES
+    return None
+
+
+def check_candidate(cand, cat, own=False):
     if not isinstance(cand, dict):
         return "a candidate is not an object"
+    extra = sorted(k for k in cand if k not in CANDIDATE_KEYS)
+    if extra:
+        return "candidate %s: unknown key %s" % (cand.get("key"), ", ".join(map(repr, extra)))
     if not word_ok(cand.get("key")) or "." in cand.get("key", ""):
         return "candidate key %r" % cand.get("key")
     if not isinstance(cand.get("describe"), str) or not cand["describe"].strip():
@@ -339,6 +466,14 @@ def check_candidate(cand, cat):
         return "candidate %s names no set" % cand.get("key")
     if "on_choice" in cand and not isinstance(cand["on_choice"], (str, bool, list)):
         return "candidate %s: on_choice" % cand.get("key")
+    if "source" in cand:
+        # Only the presenter's own topics read a resident (Q.4): an app that named one
+        # would have the presenter read for it, in the screen's round.
+        if not own:
+            return "candidate %s: a source is for the presenter's own topics" % cand.get("key")
+        why = check_source(cand["source"])
+        if why:
+            return "candidate %s: %s" % (cand.get("key"), why)
     why = check_bind_spec(cand.get("bind") or {}, entry, False, cand["set"])
     if why:
         return "candidate %s: %s" % (cand.get("key"), why)
@@ -363,8 +498,9 @@ def check_candidate(cand, cat):
     return None
 
 
-def check_topic(topic, cat):
-    """None when the manifest entry of one topic is well formed; else the reason."""
+def check_topic(topic, cat, own=False):
+    """None when the manifest entry of one topic is well formed; else the reason. `own`
+    is true for the presenter's own topics, the only ones that may declare a source."""
     if not isinstance(topic, dict):
         return "a topic is not an object"
     name = topic.get("topic")
@@ -389,7 +525,7 @@ def check_topic(topic, cat):
         return "topic %s has more than %d candidates" % (name, MAX_CANDIDATES)
     keys = []
     for cand in cands:
-        why = check_candidate(cand, cat)
+        why = check_candidate(cand, cat, own)
         if why:
             return "topic %s: %s" % (name, why)
         if cand["key"] == NONE or cand["key"] in keys:
@@ -400,12 +536,13 @@ def check_topic(topic, cat):
     return None
 
 
-def accept_topics(known, owner, topics, cat):
+def accept_topics(known, owner, topics, cat, reserved=(), taken=0):
     """The `shows` table after one app said its topics.
 
     `known` is `{topic: {owner, manifest, at}}`. The app's own earlier rows are replaced
     as a whole; a topic another app already holds stays with that app (`duplicate`); a
-    malformed one gets no row; topics past the call's ceiling, alphabetically last,
+    malformed one gets no row; a name of the presenter's own topics `reserved`; topics
+    past the call's ceiling (`taken` places held by the presenter's own), alphabetically last,
     `overflow`. Returns `(new_known, refusals)`; a refusal is `(topic, reason)`.
     """
     out = {t: dict(v) for t, v in known.items() if v.get("owner") != owner}
@@ -418,6 +555,9 @@ def accept_topics(known, owner, topics, cat):
         if why:
             refused.append((str(name or "?"), "invalid: " + why))
             continue
+        if name in reserved:
+            refused.append((name, "reserved"))
+            continue
         if name in seen:
             refused.append((name, "duplicate"))
             continue
@@ -426,7 +566,7 @@ def accept_topics(known, owner, topics, cat):
             refused.append((name, "duplicate"))
             continue
         fresh.append(topic)
-    room = MAX_TOPICS - len(out)
+    room = MAX_TOPICS - len(out) - taken
     fresh.sort(key=lambda t: t["topic"])
     for i, topic in enumerate(fresh):
         if i >= room:
@@ -434,6 +574,36 @@ def accept_topics(known, owner, topics, cat):
             continue
         out[topic["topic"]] = {"owner": owner, "manifest": topic, "at": now_ms()}
     return out, refused
+
+
+def builtin_topics(params):
+    """The presenter's own topics, `{topic: {owner: "", manifest, at, kind}}`: the observed
+    ones switched on in `params.observed_topics` (Q.2/Q.3), then the declared-source ones
+    of `params.builtin_topics` (Q.4, written by the strand that ships them). A built-in
+    topic that does not stand against the catalogue copy is left out, never offered half."""
+    cat = catalogue(params)
+    out = {}
+    names = params.get("observed_topics")
+    for name in names if isinstance(names, list) else []:
+        if name in BUILTIN and name not in out:
+            out[name] = {"owner": "", "manifest": BUILTIN[name], "at": 0, "kind": "observed"}
+    extra = params.get("builtin_topics")
+    for m in extra if isinstance(extra, list) else []:
+        name = m.get("topic") if isinstance(m, dict) else None
+        if name in out or name in BUILTIN or len(out) >= MAX_TOPICS \
+                or check_topic(m, cat, own=True) is not None:
+            continue
+        out[name] = {"owner": "", "manifest": m, "at": 0, "kind": "source"}
+    return out
+
+
+def all_topics(r, params):
+    """Every topic the decider is asked about: the presenter's own first, then the apps'."""
+    out = builtin_topics(params)
+    for name, v in r["shows"].items():
+        if name not in out:
+            out[name] = v
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -448,10 +618,17 @@ def questions(known):
         m = known[name]["manifest"]
         topic_opts[name] = "%s: %s" % (m["title"], m["describe"])
         cands = {c["key"]: c["describe"] for c in m["candidates"]}
-        qs[name + ".lead"] = {
-            "kind": "choice",
-            "instructions": "Which block shows best what the request asks about %s?" % m["title"],
-            "options": dict(cands)}
+        # A choice needs two options (the decisions wire refuses one with `decide_invalid`,
+        # MIN_OPTIONS in translate_decisions.rs -- and with it the WHOLE call, every topic's
+        # verdict; measured 03.10. on the first colony run of a one-candidate topic). A
+        # topic with one candidate has nothing to choose: no lead question, the standard
+        # (its one candidate) leads.
+        if len(cands) > 1:
+            qs[name + ".lead"] = {
+                "kind": "choice",
+                "instructions": "Which block shows best what the request asks about %s?"
+                                % m["title"],
+                "options": dict(cands)}
         also = dict(cands)
         also[NONE] = NONE_ALSO
         qs[name + ".also"] = {
@@ -521,6 +698,35 @@ def read_verdict(body, known):
     v["also"] = also if also in keys else None
     v["also_p"] = ap
     return v
+
+
+def missing_of(body, asked=None):
+    """The question keys the decider left unanswered (GH #977), sorted, keys only.
+
+    The `decisions` cell emits a decision with the answers it got and `missing` beside
+    them; only a call with no answer at all is still `decision_incomplete`. What it says is
+    read as a list of strings and nothing more -- and, given the keys of the questions
+    that were `asked`, only those: a foreign body would otherwise carry any text into the
+    journal's column (E2 review m-3).
+    """
+    d = body.get("decision") if isinstance(body.get("decision"), dict) else body
+    m = d.get("missing") if isinstance(d, dict) else None
+    if not isinstance(m, list):
+        return []
+    keys = {k for k in m if isinstance(k, str) and k}
+    if asked is not None:
+        keys &= set(asked)
+    return sorted(keys)
+
+
+def topic_missing(body):
+    """True when the verdict carries no answer to `topic` at all: without it no topic is
+    chosen, and the turn is an `error` as before (fail-closed, GH #977). A topic whose own
+    questions are missing merely loses its lead (the standard leads) or its also."""
+    d = body.get("decision") if isinstance(body.get("decision"), dict) else body
+    answers = d.get("answers") if isinstance(d, dict) else None
+    return not isinstance(answers, dict) or "topic" not in answers \
+        or "topic" in missing_of(body)
 
 
 def threshold_of(manifest, params):
@@ -740,13 +946,13 @@ def withdraw(topic):
 # One turn's record, and the decisions over it (pure)
 
 
-def fresh_turn(turn_id, arrived, budget, audience_set):
-    return {"turn_id": turn_id, "arrived": arrived, "deadline": arrived + budget,
+def fresh_turn(turn_id, arrived, budget, audience_set, seq=0):
+    return {"turn_id": turn_id, "arrived": arrived, "seq": seq, "deadline": arrived + budget,
             "state": "asking", "topic": None, "p": 0.0, "lead": None, "also": None,
             "keys": [], "model": "", "t_verdict": None, "t_window": None,
             "t_content": None, "data_deadline": None, "sets": {}, "placed": [],
-            "first": "open", "fallback": None, "late": False,
-            "audience_set": audience_set, "owner": None, "done_at": None}
+            "first": "open", "fallback": None, "late": False, "missing": [],
+            "audience_set": audience_set, "owner": None, "done_at": None, "observed": {}}
 
 
 def resolve(rec, manifest, cat):
@@ -766,7 +972,9 @@ def resolve(rec, manifest, cat):
         node = place(topic, lead, rec["sets"], cat) if lead else None
         if node is not None:
             rec["first"] = "lead"
-            fallback = "none" if rec["lead"] else "invalid"
+            # A topic with one candidate is asked no lead question: its standard leads
+            # by plan, and nothing was invalid (Q review N-2).
+            fallback = "none" if rec["lead"] or len(cands) == 1 else "invalid"
             new.append((lead["key"], node))
         elif lead and lead["set"] in rec["sets"]:
             std = cands.get(manifest["standard"])
@@ -802,6 +1010,7 @@ def journal_row(rec, at):
             "late": 1 if rec["late"] else 0, "t_verdict_ms": ms(rec["t_verdict"]),
             "t_window_ms": ms(rec["t_window"]), "t_content_ms": ms(rec["t_content"]),
             "model": rec["model"] or "", "at": int(at),
+            "missing": json.dumps(rec.get("missing") or []),
             "audience_set": json.dumps(rec["audience_set"]) if rec["audience_set"] is not None else ""}
 
 
@@ -817,7 +1026,7 @@ def ram():
     if isinstance(held, dict) and held.get("v") == RAM_V:
         return held
     held = {"v": RAM_V, "phase": "cold", "queue": [], "shows": {}, "pending": {},
-            "due": None}
+            "due": None, "work": [], "seq": 0}
     globals()["_RAM"] = held
     return held
 
@@ -864,7 +1073,9 @@ def boot_read():
         tool_call({"operation": "select", "table": T_SHOWS, "columns": SHOWS_COLUMNS},
                   "b-shows"),
         tool_call({"operation": "select", "table": T_PENDING, "columns": PENDING_COLUMNS},
-                  "b-pending")])
+                  "b-pending"),
+        tool_call({"operation": "select", "table": T_WORK, "columns": WORK_COLUMNS},
+                  "b-work")])
 
 
 def rows_of(body, tid):
@@ -968,8 +1179,9 @@ def lane_show_topics(body, hop, ctx, params):
     if not owner:
         return []
     at = str(hop.get("show_at") or "")
+    own = builtin_topics(params)
     known, refused = accept_topics(r["shows"], owner, body.get("topics"),
-                                   catalogue(params))
+                                   catalogue(params), set(BUILTIN) | set(own), len(own))
     for v in known.values():
         if v["owner"] == owner and at:
             v["show_at"] = at
@@ -1003,22 +1215,26 @@ def prune(r, now):
 def lane_turn(body, hop, ctx, params, now):
     r = ram()
     text = text_of(body)
-    if not text or not r["shows"]:
+    topics = all_topics(r, params)
+    if not text or not topics:
         return []
     turn_id = str(hop.get("turn_id") or ctx.get("turn_id") or "")
     if not turn_id:
         turn_id = "t-%d" % now
     if turn_id in r["pending"]:
         return []
+    # `seq` orders turns of the same millisecond by their arrival (P review): one more
+    # than any pending turn's, so it survives a restart with the pending rows.
+    seq = 1 + max([0] + [int(p.get("seq") or 0) for p in r["pending"].values()])
     rec = fresh_turn(turn_id, now, knob(params, "budget_ms"),
-                     as_round(ctx.get("audience_set")))
+                     as_round(ctx.get("audience_set")), seq)
     # The request travels to the owning app after a sure verdict (it needs the words:
     # "the weather in <place>"); it never reaches the journal and leaves the pending row
     # when the turn is done.
     rec["text"] = text
     r["pending"][turn_id] = rec
     legs = prune(r, now) + w_pending(rec)
-    return [decide_call(text, r["shows"], turn_id), bundle(PHASE_WRITE, legs)] + \
+    return [decide_call(text, topics, turn_id), bundle(PHASE_WRITE, legs)] + \
         clock_ops(r, now)
 
 
@@ -1031,6 +1247,7 @@ def close(rec, now):
     rec["sets"] = {}
     rec["_nodes"] = []
     rec["text"] = ""
+    rec["observed"] = {}
     return w_pending(rec)
 
 
@@ -1062,12 +1279,16 @@ def supersede(r, rec, now):
     window (review I2); an older turn without a block journals `no_data`."""
     legs = []
     stale = False
+    # Older/newer is (arrival ms, arrival order): two turns of one millisecond were
+    # decided by whichever verdict came last (P review); now the later turn is newer.
+    def age(x):
+        return (x["arrived"], int(x.get("seq") or 0))
     for other in r["pending"].values():
         if other is rec or other.get("topic") != rec["topic"]:
             continue
-        if other["arrived"] > rec["arrived"] and other.get("t_window") is not None:
+        if age(other) > age(rec) and other.get("t_window") is not None:
             stale = True
-        elif other["arrived"] <= rec["arrived"] and other["state"] == "showing":
+        elif age(other) < age(rec) and other["state"] == "showing":
             legs += close(other, now) if other["placed"] else finish(other, "no_data", now)
     return legs, stale
 
@@ -1075,16 +1296,30 @@ def supersede(r, rec, now):
 def lane_decision(body, hop, params, now):
     r = ram()
     tid = str(hop.get("show_id") or "")
+    failed = hop.get("finish_reason") == "error" or bool(hop.get("error_code"))
+    if not tid:
+        # `./decide` answered something that was no turn's call -- a params push it
+        # refused without naming itself (not the registry's: that one leaves as
+        # `model_refused`). It ended in the hive as `no_route` (P review); it leaves
+        # here, out loud. Anything else without a turn is nobody's.
+        if not failed:
+            return []
+        return [error("decide_refused", clip(
+            "the decider refused a message that was no turn's call: %s: %s"
+            % (str(hop.get("error_code") or "error"), text_of(body) or str(body.get("detail") or "")),
+            300))]
     rec = r["pending"].get(tid)
     if rec is None:
         return []
-    failed = hop.get("finish_reason") == "error" or bool(hop.get("error_code"))
+    topics = all_topics(r, params)
+    asked = set(questions(topics))
     if rec["state"] != "asking":
         if rec["state"] == "done" and rec["fallback"] == "timeout" and not rec["late"]:
             # A late verdict changes nothing on the screen; the journal says it came.
             rec["late"] = True
             if not failed:
-                v = read_verdict(body, r["shows"])
+                rec["missing"] = missing_of(body, asked)
+                v = read_verdict(body, topics)
                 rec["topic"], rec["p"], rec["model"] = v["topic"], v["p"], v["model"]
             return [bundle(PHASE_WRITE, w_pending(rec) + w_journal(rec))]
         return []
@@ -1093,16 +1328,20 @@ def lane_decision(body, hop, params, now):
         code = str(hop.get("error_code") or "")
         fb = "no_selector" if code == "decisions_unconfigured" else "error"
         return [bundle(PHASE_WRITE, finish(rec, fb, now))] + clock_ops(r, now)
-    v = read_verdict(body, r["shows"])
+    rec["missing"] = missing_of(body, asked)
+    if topic_missing(body):
+        # No topic answer, no topic: nothing opens (GH #977, OR-DP-84 b).
+        return [bundle(PHASE_WRITE, finish(rec, "error", now))] + clock_ops(r, now)
+    v = read_verdict(body, topics)
     rec["topic"], rec["p"], rec["model"] = v["topic"], v["p"], v["model"]
     rec["lead"], rec["also"] = v["lead"], v["also"] if v["also"] != NONE else None
-    why = judge(v, r["shows"], params)
+    why = judge(v, topics, params)
     if why:
         return [bundle(PHASE_WRITE, finish(rec, why, now))] + clock_ops(r, now)
     older, stale = supersede(r, rec, now)
     if stale:
         return [bundle(PHASE_WRITE, older + finish(rec, "no_data", now))] + clock_ops(r, now)
-    show = r["shows"][v["topic"]]
+    show = topics[v["topic"]]
     manifest = show["manifest"]
     rec["keys"] = chosen(v, manifest, params)
     rec["state"] = "showing"
@@ -1111,14 +1350,29 @@ def lane_decision(body, hop, params, now):
     rec["data_deadline"] = now + int(wait)
     rec["t_window"] = now - rec["arrived"]
     tree = window(v["topic"], manifest, tid, [], knob(params, "work_hint"), now)
-    ask = emission("in_show", {"messages": [], "op": "data", "topic": v["topic"],
-                               "request": rec.get("text") or "",
-                               "lead": rec["keys"][0], "also": rec["keys"][1:],
-                               "turn_id": tid,
-                               "sets": wanted_sets(manifest, rec["keys"])},
-                   **app_head(show["owner"], show.get("show_at") or ""))
-    return [a_view(v["topic"], tree), ask, bundle(PHASE_WRITE, older + w_pending(rec))] + \
-        clock_ops(r, now)
+    if show["owner"]:
+        ask = [emission("in_show", {"messages": [], "op": "data", "topic": v["topic"],
+                                    "request": rec.get("text") or "",
+                                    "lead": rec["keys"][0], "also": rec["keys"][1:],
+                                    "turn_id": tid,
+                                    "sets": wanted_sets(manifest, rec["keys"]),
+                                    # OR-DP-82: the screen's round rides with the question,
+                                    # so an app that picks between rows of different rounds
+                                    # picks only among rows this screen may see.
+                                    "screen_audience": sorted(set(
+                                        as_round(params.get("screen_audience")) or []))},
+                        **app_head(show["owner"], show.get("show_at") or ""))]
+    else:
+        # The presenter's own topic (GH #963): no app to ask. A declared source is read
+        # now; an observed topic takes what was observed so far, and every later
+        # observation of its kind is fed on arrival (`refill`).
+        ask = source_reads(rec, manifest, params)
+    out = [a_view(v["topic"], tree)] + ask + [bundle(PHASE_WRITE, older + w_pending(rec))]
+    if not show["owner"]:
+        sets = own_sets(r, rec, v["topic"], params) if show.get("kind") == "observed" else {}
+        if sets or rec["sets"]:
+            out += feed(r, rec, manifest, sets, params, now)
+    return out + clock_ops(r, now)
 
 
 def lane_show_data(body, hop, ctx, params, now):
@@ -1131,22 +1385,31 @@ def lane_show_data(body, hop, ctx, params, now):
     if show is None:
         return []
     sender = str(hop.get("show_app") or ctx.get("show_app") or "")
-    if sender != rec["owner"]:
+    if not sender or sender != rec["owner"]:
         # The edge stamps `show_app` (OR-DP-54); only the topic's owner fills its window
         # (review I3). Said out loud, never placed.
         return [error("foreign_data", "show_data for topic %s from %r; its owner is %s"
                       % (rec["topic"], sender, rec["owner"]))]
-    manifest = show["manifest"]
-    screen = params.get("screen_audience")
     sets = body.get("sets") if isinstance(body.get("sets"), dict) else {}
+    return feed(r, rec, show["manifest"], sets, params, now)
+
+
+def feed(r, rec, manifest, sets, params, now):
+    """Data sets for a shown turn, from its app (`show_data`), a resident (`resident_answer`)
+    or the presenter's own observations: gated by the screen's round, then every block
+    that can stand now is placed (P.6), the first one journaled."""
+    tid = rec["turn_id"]
+    screen = params.get("screen_audience")
     for name, data in sets.items():
         kept = filter_set(data, screen)
         if kept is not None and name not in rec["sets"]:
             rec["sets"][name] = kept
-        elif kept is None and name not in rec["sets"]:
-            # A set the screen may not see arrived: it counts as there and empty, so a
-            # lead waiting on it falls to the standard rather than to the clock.
-            rec["sets"][name] = {}
+        # A set the screen may not see -- its own round does not cover the screen, or no
+        # row and no `value` of it may be shown -- is not kept at all (GH #966, N review
+        # I-1 and its side note): stored as empty, its lead fell to the standard at once,
+        # while a set that never came waits for the clock and is withdrawn -- the
+        # difference would tell the screen that a set or rows of other rounds exist. Not
+        # kept, it is the set that never came, in every step that follows.
     new, fallback = resolve(rec, manifest, catalogue(params))
     if not new:
         if rec["placed"] and settled(rec, manifest):
@@ -1192,6 +1455,410 @@ def lane_tick(hop, now):
 
 
 # ---------------------------------------------------------------------------
+# GH #963: observed tool calls and results are DATA (R-29-6, OR-DP-30)
+#
+# A tool call or result never opens a window and never asks the decider: only a sure
+# verdict over a turn does. The presenter keeps what it observes as rows of `work` (one
+# per call, its state filled in by the result) and, for a web search, as the hits of the
+# turn that caused it. Whether the window `search` or `work` opens is the verdict's alone.
+
+
+def round_key(value):
+    """A round in one canonical spelling, or None where there is none."""
+    r = as_round(value)
+    return json.dumps(sorted(r)) if r else None
+
+
+def meet(rounds):
+    """The intersection of rounds, for a value derived from several rows (OR-DP-10): `*`
+    stands back for any concrete round; no common member is the empty round (shows
+    nothing)."""
+    out = None
+    for r in rounds:
+        r = as_round(r) or []
+        if out is None:
+            out = list(r)
+        elif "*" in out:
+            out = list(r)
+        elif "*" not in r:
+            out = [m for m in out if m in r]
+    return sorted(set(out or []))
+
+
+def turn_text(body, kind):
+    """The id and text of the one `tool_call` / `tool_result` turn of a body."""
+    for m in body.get("messages") or []:
+        if isinstance(m, dict) and m.get("type") == kind:
+            return str(m.get("id") or ""), str(m.get("text") or "")
+    return "", ""
+
+
+def call_args(body):
+    _, text = turn_text(body, "tool_call")
+    try:
+        args = json.loads(text)
+    except (TypeError, ValueError):
+        args = None
+    if not isinstance(args, dict):
+        args = body.get("arguments") if isinstance(body.get("arguments"), dict) else {}
+    return args
+
+
+def is_test(command, patterns):
+    low = str(command or "").lower()
+    return any(isinstance(p, str) and p and p.lower() in low for p in patterns or [])
+
+
+def test_patterns(params):
+    p = params.get("test_patterns")
+    return p if isinstance(p, list) and p else DEFAULT_TEST_PATTERNS
+
+
+def clip(text, n):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def host_of(url):
+    try:
+        return (urlsplit(url).hostname or "")
+    except ValueError:
+        return ""
+
+
+def safe_link(url):
+    """A link only where it is http(s) (#868); anything else is no link at all."""
+    url = str(url or "").strip()
+    return url if url.lower().startswith(("https://", "http://")) and host_of(url) else ""
+
+
+def summarise(tool, args, patterns):
+    """`(summary, path)` of one call: what it did, never what it read or printed. A shell
+    command is named only as a test run or a shell command -- its line can carry a secret,
+    and its output is never kept."""
+    if tool == "web_search":
+        return clip("search: %s" % (args.get("query") or ""), SUMMARY_CHARS), ""
+    if tool == "web_fetch":
+        return clip("fetch %s" % host_of(safe_link(args.get("url"))), SUMMARY_CHARS), ""
+    if tool == "bash":
+        return ("test run" if is_test(args.get("command"), patterns) else "shell command"), ""
+    path = clip(args.get("path") or args.get("file") or "", SUMMARY_CHARS)
+    if tool == "edit":
+        return clip("edit %s" % path, SUMMARY_CHARS), path
+    return clip("%s %s" % (args.get("op") or "file", path), SUMMARY_CHARS), path
+
+
+def turn_for(r, hop, ctx, key):
+    """The open turn a call belongs to: the one its `turn_id` names, else the newest open
+    turn of the same round (the order of arrival, never a time window -- OR-DP.Q.2). A
+    call without a round belongs to no turn."""
+    tid = str(hop.get("turn_id") or ctx.get("turn_id") or "")
+    rec = r["pending"].get(tid)
+    if rec is not None and rec["state"] in ("asking", "showing"):
+        return tid
+    if key is None:
+        return ""
+    best = None
+    for rec in r["pending"].values():
+        if rec["state"] in ("asking", "showing") and round_key(rec.get("audience_set")) == key \
+                and (best is None or rec["arrived"] > best["arrived"]):
+            best = rec
+    return best["turn_id"] if best else ""
+
+
+def w_work_row(row):
+    return [tool_call({"operation": "delete", "table": T_WORK,
+                       "where": {"call_id": row["call_id"]}}, "w-del-" + row["call_id"]),
+            tool_call({"operation": "insert", "table": T_WORK, "row": row},
+                      "w-ins-" + row["call_id"])]
+
+
+def parse_hits(text, round_):
+    """The hits of one `web_search` result (`[{title, url, snippet}]` or `{results: [...]}`),
+    each stamped with the round of the result. Links only http(s)."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return []
+    if isinstance(data, dict):
+        data = data.get("results")
+    out = []
+    for h in data if isinstance(data, list) else []:
+        if not isinstance(h, dict):
+            continue
+        url = safe_link(h.get("url"))
+        title = clip(h.get("title") or "", SUMMARY_CHARS)
+        if not title and not url:
+            continue
+        out.append({"title": title or host_of(url), "url": url, "host": host_of(url),
+                    "snippet": clip(h.get("snippet") or "", SNIPPET_CHARS),
+                    "audience_set": as_round(round_) or []})
+    return out
+
+
+def search_sets(hits, screen):
+    """The sets of `search`: the hits the screen may see, the first as `top`, the sites as
+    one table value. The values are derived from the visible hits only and carry the
+    intersection of their rounds (OR-DP-10)."""
+    seen = [h for h in hits if covers(h.get("audience_set"), screen)][:SEARCH_HITS]
+    if not seen:
+        return {}
+    round_ = meet(h["audience_set"] for h in seen)
+    counts = {}
+    for h in seen:
+        if h["host"]:
+            counts[h["host"]] = counts.get(h["host"], 0) + 1
+    rows = "".join("<tr><td>%s</td><td>%d</td></tr>" % (html.escape(k), n)
+                   for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    top = seen[0]
+    return {"hits": {"rows": seen, "audience_set": round_},
+            "top": {"value": {"title": top["title"], "host": top["host"],
+                              "snippet": top["snippet"]}, "audience_set": round_},
+            "sources": {"value": {"caption": "Sources",
+                                  "head": "<tr><th>Site</th><th>Hits</th></tr>",
+                                  "rows": rows} if rows else {}, "audience_set": round_}}
+
+
+def session_of(rows, rec):
+    """The session a `work` window of turn `rec` shows: the one its own rows belong to,
+    else the newest session in the turn's round -- never another conversation's work
+    (review Q M-4). Without a turn (a table), the newest session at all."""
+    if rec is None:
+        pool = rows
+    else:
+        pool = [w for w in rows if w.get("turn_id") == rec.get("turn_id")] or \
+            [w for w in rows if w.get("audience_set")
+             and w.get("audience_set") == round_key(rec.get("audience_set"))]
+    if not pool:
+        return None
+    return max(pool, key=lambda w: int(w.get("seq") or 0)).get("session")
+
+
+def work_sets(rows, screen, params, rec=None):
+    """The sets of `work`: the steps of the session of the turn (`session_of`) as far as
+    the screen may see them, the files it touched, and the verdict of its last test run.
+    Only states and names -- never a file's content, never a command's output."""
+    seen = [w for w in rows if covers(w.get("audience_set"), screen)]
+    session = session_of(seen, rec)
+    if session is None:
+        return {}
+    mine = sorted((w for w in seen if w.get("session") == session),
+                  key=lambda w: int(w.get("seq") or 0))
+    round_ = meet(w["audience_set"] for w in mine)
+    steps = [{"label": w["summary"] or w["tool"], "state": w["state"],
+              "detail": w["tool"] if w.get("exit_code") in (None, "") else
+              "%s, exit %s" % (w["tool"], w["exit_code"])}
+             for w in mine[-WORK_SHOWN:]]
+    files = []
+    for w in mine:
+        if w.get("path") and w["path"] not in [f["path"] for f in files]:
+            files.append({"path": w["path"]})
+    tests = [w for w in mine if w["tool"] == "bash" and w["summary"] == "test run"
+             and w["state"] in ("done", "failed")]
+    value = {}
+    if tests:
+        last = tests[-1]
+        value = {"verdict": "passed" if last["state"] == "done" else "failed",
+                 "detail": "%d test run%s, the last exit %s" % (
+                     len(tests), "" if len(tests) == 1 else "s", last.get("exit_code"))}
+    return {"steps": {"rows": steps, "audience_set": round_},
+            "files": {"rows": files, "audience_set": round_},
+            "tests": {"value": value, "audience_set": round_}}
+
+
+def observed_on(params):
+    names = params.get("observed_topics")
+    return isinstance(names, list) and any(n in BUILTIN for n in names)
+
+
+def lane_tool_call(body, hop, ctx, params, now):
+    """An observed call (`in_tool_call`, the builder's tap): one `work` row, `running`."""
+    r = ram()
+    tool = str(hop.get("tool_name") or "")
+    cid = str(hop.get("tool_call_id") or "") or turn_text(body, "tool_call")[0]
+    if tool not in OBSERVED_TOOLS or not cid or not observed_on(params):
+        return []
+    key = round_key(ctx.get("audience_set"))
+    summary, path = summarise(tool, call_args(body), test_patterns(params))
+    r["seq"] = int(r.get("seq") or 0) + 1
+    row = {"seq": r["seq"], "session": str(ctx.get("session_id") or key or ""),
+           "turn_id": turn_for(r, hop, ctx, key), "tool": tool, "call_id": cid,
+           "state": "running", "summary": summary, "path": path, "exit_code": None,
+           "audience_set": key or "", "at": now}
+    r["work"] = [w for w in r["work"] if w["call_id"] != cid] + [row]
+    legs = w_work_row(row)
+    mine = [w for w in r["work"] if w["session"] == row["session"]]
+    for old in sorted(mine, key=lambda w: w["seq"])[:max(0, len(mine) - WORK_ROWS)]:
+        r["work"].remove(old)
+        legs.append(tool_call({"operation": "delete", "table": T_WORK,
+                               "where": {"seq": old["seq"]}}, "w-cap-%d" % old["seq"]))
+    return [bundle(PHASE_WRITE, legs)] + refill(r, "work", params, now)
+
+
+def lane_tool_result(body, hop, ctx, params, now):
+    """An observed result (`tool_result`): its call's row gets its state; a web search
+    gives its turn hits. A result whose call this presenter did not observe is not ours."""
+    r = ram()
+    cid, text = turn_text(body, "tool_result")
+    row = next((w for w in r["work"] if w["call_id"] == cid), None) if cid else None
+    if row is None or row["state"] != "running":
+        return []
+    failed = bool(hop.get("error_code")) or hop.get("finish_reason") == "error"
+    code = hop.get("exit_code")
+    if isinstance(code, bool) or not isinstance(code, int):
+        code = None
+    row["exit_code"] = code
+    row["state"] = "failed" if failed or (code is not None and code != 0) else "done"
+    legs = w_work_row(row)
+    out = []
+    rec = r["pending"].get(row["turn_id"])
+    if row["tool"] == "web_search" and not failed and rec is not None \
+            and rec["state"] in ("asking", "showing"):
+        # The round of the hits is the round the RESULT carries (the generation's own
+        # producers stamp it, OR-DP.Q.3); without one, the hits show nowhere (fail-closed).
+        hits = parse_hits(text, ctx.get("audience_set"))
+        obs = rec.setdefault("observed", {})
+        obs["hits"] = (obs.get("hits") or []) + hits
+        legs += w_pending(rec)
+    out.append(bundle(PHASE_WRITE, legs))
+    return out + refill(r, "search", params, now) + refill(r, "work", params, now)
+
+
+def own_sets(r, rec, topic, params):
+    if topic == "search":
+        return search_sets((rec.get("observed") or {}).get("hits") or [],
+                           params.get("screen_audience"))
+    if topic == "work":
+        return work_sets(r["work"], params.get("screen_audience"), params, rec)
+    return {}
+
+
+def refill(r, topic, params, now):
+    """Feed every open window of an observed topic whose first block is still missing."""
+    out = []
+    topics = all_topics(r, params)
+    show = topics.get(topic)
+    if show is None or show.get("kind") != "observed":
+        return out
+    for rec in sorted(r["pending"].values(), key=lambda x: x["arrived"]):
+        if rec["state"] == "showing" and rec["topic"] == topic and rec["first"] == "open":
+            sets = own_sets(r, rec, topic, params)
+            if sets:
+                out += feed(r, rec, show["manifest"], sets, params, now)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# GH #963: declared sources (Q.4) -- read after the verdict, in the screen's round
+
+
+def fill(value, text):
+    """`value` with every string that is exactly `$request` replaced by the turn's text
+    (equality only, never a part of a string)."""
+    if value == REQUEST:
+        return text
+    if isinstance(value, dict):
+        return {k: fill(v, text) for k, v in value.items()}
+    if isinstance(value, list):
+        return [fill(v, text) for v in value]
+    return value
+
+
+def at_path(body, path):
+    """The part of an answer a dotted path names: digits index a list, a string met in the
+    middle of the path is read as JSON first, `""` is the whole body. None where it is not."""
+    cur = body
+    if path == "":
+        return cur
+    for part in path.split("."):
+        if isinstance(cur, str):
+            try:
+                cur = json.loads(cur)
+            except ValueError:
+                return None
+        if isinstance(cur, list) and part.isdigit():
+            i = int(part)
+            cur = cur[i] if i < len(cur) else None
+        elif isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+        if cur is None:
+            return None
+    return cur
+
+
+def source_of(manifest, name):
+    return next((c["source"] for c in manifest["candidates"]
+                 if c["set"] == name and isinstance(c.get("source"), dict)), None)
+
+
+def source_reads(rec, manifest, params):
+    """The reads of a sure verdict on a topic with declared sources: one `resident_read`
+    per wanted set that names one, `op_id` = `<turn_id>/<set>`. The round is not the
+    presenter's to say: the builder's edge stamps the member's round on the way out, and
+    the answer's `resident_round` is the set's only round (OR-DP.M.1)."""
+    out = []
+    text = rec.get("text") or ""
+    for name in wanted_sets(manifest, rec["keys"]):
+        src = source_of(manifest, name)
+        if src is None:
+            continue
+        body = fill(dict(src.get("body") or {}), text)
+        body.setdefault("messages", [])
+        head = fill(dict(src.get("hop") or {}), text)
+        head.update({"resident": src["read"], "op_id": "%s/%s" % (rec["turn_id"], name)})
+        out.append(emission("resident_read", body, **head))
+    return out
+
+
+def lane_resident_answer(body, hop, ctx, params, now):
+    """A resident answered (`resident_answer`, restamped by the builder's edge): the paths of
+    the source pick rows and value; the set's round is `hop.resident_round` alone, never
+    the body's -- without it the set shows nothing. A refusal or an error is a set without
+    data, so the standard or the clock decides."""
+    r = ram()
+    tid, _, name = str(hop.get("op_id") or "").rpartition("/")
+    rec = r["pending"].get(tid)
+    if rec is None or rec["state"] != "showing" or rec.get("owner"):
+        return []
+    show = all_topics(r, params).get(rec["topic"])
+    if show is None or show.get("kind") != "source":
+        return []
+    src = source_of(show["manifest"], name)
+    # The builder's edge stamps `hop.resident` on every answer (OR-DP.M.1); an answer
+    # without it is not one this presenter asked for (review Q M-3).
+    if src is None or hop.get("resident") != src["read"]:
+        return []
+    data = {}
+    failed = str(hop.get("resident_status") or "") in ("reject", "error") \
+        or bool(hop.get("error_code")) or body.get("ok") is False
+    round_ = as_round(hop.get("resident_round"))
+    if failed:
+        # The presenter's own read was refused: nothing of another round reaches it, so
+        # the set came empty and the standard may stand (only an app's set that the
+        # screen may not see is a set that never came, `feed`).
+        rec["sets"].setdefault(name, {})
+    else:
+        if "rows" in src and isinstance(at_path(body, src["rows"]), list):
+            data["rows"] = at_path(body, src["rows"])
+        if "value" in src and isinstance(at_path(body, src["value"]), dict):
+            data["value"] = at_path(body, src["value"])
+        if round_ is not None:
+            data["audience_set"] = round_
+    return feed(r, rec, show["manifest"], {name: data}, params, now)
+
+
+def registry_entry(presenter, requirement):
+    """PE-DP-11: what the presenter's decider is announced to the model registry as -- a
+    subscriber speaking the `decisions` protocol, born without a model (the registry fills
+    it from its decisions rows), with the need its template states. The recipe that draws
+    the road writes exactly this entry."""
+    return {"cell_path": presenter.rstrip("/") + "/decide", "start_model": "",
+            "requirement": requirement, "protocol": "decisions"}
+
+
+# ---------------------------------------------------------------------------
 # The store's answers
 
 
@@ -1217,6 +1884,10 @@ def pass_store(body, hop, ctx):
             rec = as_json(row.get("value"))
             if isinstance(rec, dict) and rec.get("turn_id"):
                 r["pending"][rec["turn_id"]] = rec
+        for row in rows_of(body, "b-work"):
+            if row.get("call_id"):
+                r["work"].append(row)
+                r["seq"] = max(int(r["seq"]), int(row.get("seq") or 0))
     r["phase"] = "live"
     queue, r["queue"] = r["queue"], []
     for doc in queue:
@@ -1275,6 +1946,15 @@ def handle(doc):
         return lane_show_data(body, hop, ctx, params, now)
     if route == "turn":
         return lane_turn(body, hop, ctx, params, now)
+    # GH #963: the taps of the builder's `observes_tool_calls` (restamped `in_tool_call`)
+    # and of the string-form `observes_tool_results` (the producer's lane, unstamped), and
+    # a resident's answer to a declared source. None of them is answered.
+    if route == "in_tool_call":
+        return lane_tool_call(body, hop, ctx, params, now)
+    if route == "tool_result":
+        return lane_tool_result(body, hop, ctx, params, now)
+    if route == "resident_answer":
+        return lane_resident_answer(body, hop, ctx, params, now)
     return []
 
 

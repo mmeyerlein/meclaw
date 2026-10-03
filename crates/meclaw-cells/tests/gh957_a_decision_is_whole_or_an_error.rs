@@ -1,7 +1,8 @@
 //! GH #957 -- a decision is whole or it is an error.
 //!
 //! Each way a call can fail -- an HTTP 400, the operation timeout, a body
-//! that is no JSON, an answer missing a question, a choice nobody asked
+//! that is no JSON, an answer to no question at all (GH #977: one omitted
+//! answer is a partial decision, not an error), a choice nobody asked
 //! for -- is exactly ONE emission on the error path (`finish_reason`
 //! `error`, a named `error_code`, `meta.provider` = `decisions`) and never a
 //! `decision`. A body without a valid `decide` slot is `decide_invalid`, and
@@ -127,11 +128,11 @@ async fn a_body_that_is_no_json_is_one_error() {
     assert_eq!(the_one_error(&ems), "provider_error");
 }
 
+/// GH #977 loosened this one place of the contract: an omitted answer no
+/// longer tips the whole decision; only a call without any answer does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_missing_answer_is_no_decision() {
-    let missing = answer(json!({"answers": {
-        "topic": {"choice": "weather", "probabilities": {"weather": 1, "none": 0}}}}));
-    let (_, ems) = one_call(vec![missing], 30_000, decide_body()).await;
+async fn no_answer_at_all_is_no_decision() {
+    let (_, ems) = one_call(vec![answer(json!({"answers": {}}))], 30_000, decide_body()).await;
     assert_eq!(the_one_error(&ems), "decision_incomplete");
 }
 
@@ -193,4 +194,45 @@ async fn a_failed_call_hands_its_request_to_a_failover_cell() {
         "{}",
         ems[0].content
     );
+}
+
+/// GH #966 (E review M-3): in the `decisions` mode the body's `system` slot
+/// (its `tools.*` included) and `tool_scope` were passed over without a
+/// word -- the provider fork lies before the system handling. Like
+/// `attachments`, a slot the provider cannot use is refused out loud, and
+/// nothing is sent. An EMPTY `system` is the registry's push form and says
+/// nothing; it is no refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_or_tool_scope_slot_is_refused_out_loud() {
+    for (slot, value) in [
+        (
+            "system",
+            json!({"facts": {"f": {"text": "the user likes rain"}}}),
+        ),
+        (
+            "system",
+            json!({"tools": {"web_search": {"type": "function"}}}),
+        ),
+        ("tool_scope", json!({"allow": ["web_search"]})),
+    ] {
+        let mut body = decide_body();
+        body[slot] = value.clone();
+        let (sent, ems) = one_call(vec![], 30_000, body).await;
+        assert_eq!(sent, 0, "no request with {slot} = {value}");
+        assert_eq!(
+            the_one_error(&ems),
+            "decisions_unsupported_param",
+            "{slot} = {value}"
+        );
+        let detail = ems[0].content.to_string();
+        assert!(detail.contains(slot), "the refusal names {slot}: {detail}");
+    }
+    let ok = answer(json!({"answers": {
+        "topic": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
+        "wants": {"noul": 0.8}}}));
+    let mut body = decide_body();
+    body["system"] = json!({});
+    let (sent, ems) = one_call(vec![ok], 30_000, body).await;
+    assert_eq!(sent, 1, "an empty system slot asks as before");
+    assert_eq!(ems[0].content["header"]["finish_reason"], "stop");
 }

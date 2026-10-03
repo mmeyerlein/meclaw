@@ -93,7 +93,8 @@
           "condition": "has(hop.operation) && hop.operation == 'bash'",
           "modifier": {
             "set_hop": {
-              "route": "'tool_result'"
+              "route": "'tool_result'",
+              "tool_name": "'bash'"
             }
           }
         },
@@ -103,7 +104,8 @@
           "condition": "has(hop.operation) && hop.operation == 'web_fetch'",
           "modifier": {
             "set_hop": {
-              "route": "'tool_result'"
+              "route": "'tool_result'",
+              "tool_name": "'web_fetch'"
             }
           }
         },
@@ -113,7 +115,8 @@
           "condition": "has(hop.operation) && hop.operation == 'web_search'",
           "modifier": {
             "set_hop": {
-              "route": "'tool_result'"
+              "route": "'tool_result'",
+              "tool_name": "'web_search'"
             }
           }
         },
@@ -133,7 +136,8 @@
           "condition": "has(hop.operation) && (hop.operation == 'read' || hop.operation == 'write' || hop.operation == 'list' || hop.operation == 'stat' || hop.operation == 'unknown')",
           "modifier": {
             "set_hop": {
-              "route": "'tool_result'"
+              "route": "'tool_result'",
+              "tool_name": "'file'"
             }
           }
         },
@@ -143,7 +147,8 @@
           "condition": "has(hop.operation) && (hop.operation == 'find_replace' || hop.operation == 'insert_at_line' || hop.operation == 'unknown')",
           "modifier": {
             "set_hop": {
-              "route": "'tool_result'"
+              "route": "'tool_result'",
+              "tool_name": "'edit'"
             }
           }
         },
@@ -207,7 +212,8 @@
           "condition": "has(hop.operation) && hop.operation == 'build'",
           "modifier": {
             "set_hop": {
-              "route": "'tool_result'"
+              "route": "'tool_result'",
+              "tool_name": "'build_topology'"
             }
           }
         },
@@ -217,7 +223,8 @@
           "condition": "has(hop.operation) && hop.operation == 'apply'",
           "modifier": {
             "set_hop": {
-              "route": "'tool_result'"
+              "route": "'tool_result'",
+              "tool_name": "'apply_manifest'"
             }
           }
         },
@@ -244,6 +251,6 @@
     "use_when": "Instantiate once per assistant and draw ONE edge to the hive path, stamping `hop.route = 'tool_call'`, plus one back off it on `tool_result`. Adding, removing or replacing a tool is a change INSIDE this hive; the caller's edges do not move. `params.ports` is empty, so no edge from outside reaches a cell in here -- a caller names the hive and the lane.",
     "not_in_scope": "No judgement about which tool to call, or whether it should have been called at all -- that decision was made before the message arrived, and a hive that second-guessed it would be a second brain with no conversation in front of it. No per-tool credentials: a cell that needs one binds it itself. And no record of who asked for which schemas: what a cell uses is declared in that cell's own template, and a subscriber table here would be a second copy of it.",
     "contract_in": "Two lanes, at the hive path. tool_call -- run this call; which cell serves it is this hive's business. in_schemas -- name the tools you use and take their declarations back.",
-    "contract_out": "Two lanes, out of the hive path. tool_result -- what the tool answered, whatever the tool was. tool_schemas -- the declarations that were asked for, plus the names the hive does not have."
+    "contract_out": "Two lanes, out of the hive path. tool_result -- what the tool answered, whatever the tool was, with `hop.tool_name` naming the tool the call came in under (GH #937 -- an observer of named tools filters on it, and a tool cell's own result carries no name). tool_schemas -- the declarations that were asked for, plus the names the hive does not have."
   }
 }

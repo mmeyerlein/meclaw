@@ -303,6 +303,20 @@ class TheFilterGrammar(unittest.TestCase):
                     if "gh643_audio_in_the_display_window_browser" in entry["filter"]:
                         self.assertEqual(entry.get("retries", 0), 0, entry)
 
+    def test_the_colony_browser_proof_carries_no_retry(self):
+        """GH #911 is closed with its measurement, and its entry went with it (rule 3).
+
+        WPE WebKit's compositor segfaulted at 4K in the colony proof; after GH #912
+        settled the dock it was 0 of 6 colony runs on the browser lane and 1 of 9
+        isolated runs overall, and the issue closed on that count. So no override
+        may buy this test a retry again; a new crash is a new issue with its own
+        measurement, not this entry back."""
+        for profile in ("default", "ci"):
+            for entry in self.config["profile"][profile].get("overrides", []):
+                with self.subTest(profile=profile, filter=entry["filter"]):
+                    if "710_the_colony_holds_in_both_engines_browser" in entry["filter"]:
+                        self.assertEqual(entry.get("retries", 0), 0, entry)
+
     def test_the_proofs_that_may_skip_print_their_line_when_green(self):
         """LOUD WHEN GREEN: a proof that returns early on a host that cannot run it
         prints its SKIP or its measurement, and the gate log has to carry that line.

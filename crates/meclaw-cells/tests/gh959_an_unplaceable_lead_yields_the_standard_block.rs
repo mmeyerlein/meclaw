@@ -1,8 +1,10 @@
 //! GH #959 -- an unplaceable lead yields the standard block, and a row of a foreign round
 //! never reaches the screen.
 //!
-//! The screen's round is `["a"]`. The lead `rows` whose rows all belong to `["b"]` leaves
-//! nothing to place, so the standard `brief` stands (journal `invalid`). A second turn's
+//! The screen's round is `["a"]`. The lead `rows` came, visible, with a `value` and no
+//! rows: nothing to place, so the standard `brief` stands (journal `invalid`). (A lead
+//! set whose rows ALL belong to other rounds is not this case since GH #966 N review I-1:
+//! it is a set that never came -- `gh966_a_set_of_other_rounds_is_no_set`.) A second turn's
 //! rows `["a"]`, `["a","b"]`, `["b"]`, none, `["*"]` in a set of `["*"]` -> all but the
 //! third at web: a row without its own round inherits the set's (OR-DP-56), a row with one
 //! is gated alone. The decider never sees a data value: its requests carry `state` and
@@ -40,10 +42,14 @@ async fn an_unplaceable_lead_yields_the_standard_block() {
     let body1 = ask1.json();
     ask1.release(sure());
     s.out("in_show").await;
-    s.data("p1", json!({
-        "rows": {"audience_set": ["*"], "rows": [{"name": "foreign-row", "audience_set": ["b"]}]},
-        "brief": {"audience_set": ["*"], "value": {"title": "the brief"}}
-    })).await;
+    s.data(
+        "p1",
+        json!({
+            "rows": {"audience_set": ["*"], "value": {"n": 1}},
+            "brief": {"audience_set": ["*"], "value": {"title": "the brief"}}
+        }),
+    )
+    .await;
     s.wait_drawn("show-sample-brief").await;
     assert_eq!(s.journal_of("p1").await["fallback"], json!("invalid"));
 

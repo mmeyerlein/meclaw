@@ -781,6 +781,35 @@ impl LlmCell {
             .await;
             return;
         }
+        // GH #966 (E review M-3): the chat slots a decision cannot use are
+        // refused like `attachments`, never passed over -- a sender that put
+        // facts or tools into `system`, or a `tool_scope`, believed they
+        // shaped the answer. An empty `system` is the registry's push form.
+        let unused = [
+            content_obj
+                .get("system")
+                .filter(|v| !v.is_null() && v.as_object().is_none_or(|o| !o.is_empty()))
+                .map(|_| "system"),
+            content_obj
+                .get("tool_scope")
+                .filter(|v| !v.is_null())
+                .map(|_| "tool_scope"),
+        ];
+        if let Some(slot) = unused.into_iter().flatten().next() {
+            decisions_error(
+                sink,
+                reply_target,
+                &request,
+                "decisions_unsupported_param",
+                &format!("provider 'decisions' takes no {slot} slot"),
+                "parse",
+                started_at_unix_ms,
+                0,
+                None,
+            )
+            .await;
+            return;
+        }
         let asked = match translate_decisions::parse_decide(content_obj.get("decide")) {
             Ok(a) => a,
             Err(detail) => {
@@ -909,6 +938,7 @@ impl LlmCell {
             sink,
             reply_target,
             decided.answers,
+            &decided.missing,
             usage,
             &model,
             decided.response_id.as_deref().unwrap_or_default(),

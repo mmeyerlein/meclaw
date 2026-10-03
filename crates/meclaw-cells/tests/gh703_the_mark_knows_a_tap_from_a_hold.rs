@@ -50,7 +50,10 @@ fn the_threshold_is_read_and_the_press_opens_a_clock() {
         "the threshold comes out of the sheet (§ 5.5, § 2)"
     );
     for needle in [
-        "holdTimer = setTimeout(begin, wait)",
+        // Through `atThreshold`, which also notes WHAT the clock runs (GH #969).
+        "atThreshold(begin, wait)",
+        // The clock wraps `fn` since GH #966 (a late clock gives way once).
+        "holdTimer = setTimeout(function () {",
         "function begin()",
         ", gesture = ",
     ] {
@@ -59,6 +62,109 @@ fn the_threshold_is_read_and_the_press_opens_a_clock() {
             "the press opens a clock instead of a take: {needle}"
         );
     }
+}
+
+/// GH #969: a timer is a floor, never a promise. Under load a page ran its timers more
+/// than 3 s late (measured on a build host, both engines' pages, before and after GH
+/// #961), and a finger that came up past the threshold before the clock struck got
+/// nothing -- no hold, no dock, no refusal. The release does what the threshold would
+/// have done, and it does it BEFORE the press is closed, because every threshold action
+/// (`begin`, `refuse`, `refuseMic`) refuses a finger that is already up. The behaviour
+/// is proven in a real engine by B-33's third press (`display-layout-browser.mjs`).
+#[test]
+fn a_press_past_the_threshold_is_a_hold_even_when_the_clock_is_late() {
+    if !library_ships() {
+        return;
+    }
+    let src = script();
+    let up = src
+        .split("function up(e) {")
+        .nth(1)
+        .expect("the hook has an `up`")
+        .split("if (!holding) {")
+        .next()
+        .unwrap();
+    let due = up
+        .find("var due = holdTimer ? holdDue : null;")
+        .unwrap_or_else(|| panic!("the release reads what the clock was to run: {up}"));
+    let clear = up
+        .find("clearTimeout(holdTimer)")
+        .expect("and stops the clock");
+    let late = up
+        .find("if (due && was && held >= HOLD_MS) due();")
+        .unwrap_or_else(|| panic!("a press past the threshold runs it now: {up}"));
+    let closed = up
+        .find("pressed = false; ready = false;")
+        .expect("and then closes the press");
+    assert!(
+        due < clear && clear < late && late < closed,
+        "read before the clock is stopped, run before the press is closed: {up}"
+    );
+}
+
+/// GH #969, review I1: the length of a press is the distance between its two EVENTS,
+/// not between the two moments a handler got round to them. A busy page runs its
+/// handlers seconds late as it runs its timers (gaps of more than 3 s measured on a
+/// build host), and a 300 ms tap timed by `Date.now()` in the handler read as a hold
+/// and opened a take nobody asked for. Every way in hands its event over (pointer and
+/// space key alike); what has no event falls back to the same clock as the stamps.
+/// The behaviour is proven in a real engine by B-33's fourth press.
+#[test]
+fn the_press_is_timed_by_its_events_not_by_its_handlers() {
+    if !library_ships() {
+        return;
+    }
+    let src = script();
+    for needle in [
+        "function stamp(e) {",
+        "var now = performance.now(), t = e && e.timeStamp;",
+        "return t > 0 && t <= now ? t : now;",
+        "pressed = true; pressAt = stamp(e); ready = false;",
+        "function up(e) {",
+        "var was = pressed, held = pressAt ? stamp(e) - pressAt : 0;",
+        "e.preventDefault(); down(e); }",
+        "e.preventDefault(); up(e); }",
+        "btn.addEventListener(\"pointerup\", up)",
+    ] {
+        assert!(
+            src.contains(needle),
+            "the press is timed by its events: {needle}"
+        );
+    }
+    assert!(
+        !src.contains("Date.now() - pressAt"),
+        "no press length is read off the wall clock at handler time"
+    );
+}
+
+/// GH #966, B review I1 rest: a stall that swallowed the threshold may have swallowed
+/// the lift as well, and then the overdue clock and the waiting `pointerup` race; struck
+/// first, the clock turned a 300 ms tap into a hold. The clock measures its own lateness
+/// and gives way exactly once, so the lift is heard first. The refusal clock counts from
+/// the press like the others. Proven in a real engine by B-33's fifth press (red in
+/// Chromium on the hook before this, `queued {taps 1, fired 1}`).
+#[test]
+fn a_late_threshold_clock_gives_way_to_a_waiting_lift() {
+    if !library_ships() {
+        return;
+    }
+    let src = script();
+    for needle in [
+        "var LATE_MS = 250;",
+        "var at = performance.now() + ms;",
+        "if (performance.now() - at > LATE_MS) { holdTimer = setTimeout(fn, 0); return; }",
+        "var noWay = HOLD_MS - (performance.now() - pressAt);",
+        "if (noWay > 0) { atThreshold(refuse, noWay); return; }",
+    ] {
+        assert!(
+            src.contains(needle),
+            "a late clock gives way once: {needle}"
+        );
+    }
+    assert!(
+        !src.contains("atThreshold(refuse, HOLD_MS)"),
+        "the refusal clock counts from the press, not from the handler"
+    );
 }
 
 #[test]
@@ -126,7 +232,7 @@ fn a_hold_says_so_to_both_halves_of_the_system() {
         .split("function begin() {")
         .nth(1)
         .expect("the hook has a `begin`")
-        .split("function up()")
+        .split("function up(e)")
         .next()
         .unwrap();
     assert!(
@@ -160,7 +266,7 @@ fn losing_the_page_switches_nothing() {
     // occurred in the Python source at all, and the "slice" was the whole
     // rest of the file -- 131355 characters, in which every needle holds.
     let up = src
-        .split("function up() {")
+        .split("function up(e) {")
         .nth(1)
         .expect("the hook has an `up`")
         .split("holding = false;")

@@ -102,6 +102,7 @@ import hashlib
 import html
 import html.parser
 import json
+import math
 import re
 import sys
 import time
@@ -1692,6 +1693,9 @@ KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
   --t-enter: 360ms;
   --t-focus: 420ms;
 
+  --enter-ms: 320ms;
+  --move-ms: 640ms;
+
   --hold-ms: 250ms;
 
   --ground: #f7efe6;
@@ -2470,7 +2474,11 @@ body::after {
   overflow: hidden;
 }
 
-.display-status-dot { display: inline-block; vertical-align: middle; margin-inline-end: 8px; }
+.display-status[data-kind="working"] .display-status-dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-inline-end: 8px;
+}
 
 .display-status[data-kind="working"] .display-status-dot {
   background-color: var(--accent-soft);
@@ -2563,6 +2571,58 @@ body::after {
 .display-step-detail,
 .display-step-at { color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
 
+.display-map {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.display-map-sheet {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--map-w, 2), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--map-h, 2), minmax(0, 1fr));
+  aspect-ratio: var(--map-w, 2) / var(--map-h, 2);
+  overflow: hidden;
+  border-radius: var(--r-inner);
+  background-color: var(--inner-fill-strong);
+}
+
+.display-map-sheet:not(:has(.display-map-tile)) { display: none; }
+
+.display-map-tile {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  user-select: none;
+}
+
+.display-map-pin {
+  position: absolute;
+  inset-inline-start: calc(var(--pin-x, 500) * 0.1%);
+  inset-block-start: calc(var(--pin-y, 500) * 0.1%);
+  inline-size: 14px;
+  block-size: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.display-map-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.display-map-label { color: var(--fg-primary); }
+.display-map-where { color: var(--fg-secondary); font-variant-numeric: tabular-nums; }
+.display-map-attribution { flex-basis: 100%; font-size: var(--t-caption); color: var(--fg-tertiary); }
+
 .display-action,
 .display-option-chip {
   display: inline-flex;
@@ -2628,6 +2688,7 @@ body::after {
 .display-chat,
 .display-document,
 .display-media,
+.display-map,
 .display-chart,
 .display-choice,
 .display-progress,
@@ -3592,6 +3653,94 @@ body:has([data-exit="tv"])::after { display: none; }
   }
 
   .display-overlay::after { animation-duration: calc(var(--ttl, 0) * 1ms) !important; }
+}
+
+:where(.display-value, .display-text, .display-list, .display-item,
+  .display-table, .display-chart, .display-weather, .display-timer,
+  .display-progress, .display-status, .display-media, .display-document,
+  .display-notification, .display-stack:not(.display-scene), .display-card,
+  .display-steps, .display-step, .display-map, .display-field, .display-mark) {
+
+  animation: display-block-enter var(--enter-ms) var(--ease) backwards;
+}
+
+@keyframes display-block-enter {
+  from { opacity: 0; translate: 0 8px; }
+}
+
+:where(.display-dock) :where(.display-value, .display-text, .display-list, .display-item,
+  .display-table, .display-chart, .display-weather, .display-timer,
+  .display-progress, .display-status, .display-media, .display-document,
+  .display-notification, .display-stack:not(.display-scene), .display-card,
+  .display-steps, .display-step, .display-map, .display-field, .display-mark) {
+  animation: none;
+}
+
+.display-field {
+  position: relative;
+  inline-size: 100%;
+  aspect-ratio: var(--sw) / var(--sh);
+}
+
+.display-field-space {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+}
+
+.display-field-space > :is(.display-mark, .display-field) {
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0;
+  transform: translate(calc(var(--x) / max(var(--fw), 1) * 100cqw),
+                       calc(var(--y) / max(var(--fh), 1) * 100cqh));
+  transition: transform var(--move-ms) var(--ease);
+}
+
+.display-field-space > .display-field {
+  inline-size: calc(var(--sw) / max(var(--fw), 1) * 100cqw);
+  block-size: calc(var(--sh) / max(var(--fh), 1) * 100cqh);
+  aspect-ratio: auto;
+}
+
+.display-mark {
+  inline-size: 0;
+  block-size: 0;
+  overflow: visible;
+}
+
+.display-mark-body {
+  position: absolute;
+  translate: -50% -50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.display-mark-glyph { font-size: var(--t-body); line-height: 1; }
+.display-mark-label { font-size: var(--t-caption); color: var(--fg-secondary); }
+.display-mark[data-tone="accent"] .display-mark-glyph { color: var(--accent); }
+
+.display-map-sheet > .display-mark {
+  position: absolute;
+  inset-inline-start: calc(clamp(0, var(--x), 1000) * 0.1%);
+  inset-block-start: calc(clamp(0, var(--y), 1000) * 0.1%);
+  transition: inset-inline-start var(--move-ms) var(--ease),
+              inset-block-start var(--move-ms) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(.display-value, .display-text, .display-list, .display-item,
+    .display-table, .display-chart, .display-weather, .display-timer,
+    .display-progress, .display-status, .display-media, .display-document,
+    .display-notification, .display-stack:not(.display-scene), .display-card,
+    .display-steps, .display-step, .display-map, .display-field, .display-mark) {
+    animation-name: none;
+  }
+  .display-field-space > :is(.display-mark, .display-field),
+  .display-map-sheet > .display-mark { transition: none !important; }
 }
 
 @media (max-width: 80rem) {
@@ -5294,6 +5443,205 @@ CATALOG_JSON = r"""{
       },
       "block": true,
       "editable": []
+    },
+    {
+      "name": "display-map",
+      "role": "content",
+      "layer": "content",
+      "describe": "A place on a map: tiles around a point, a pin on it, its name and its coordinates. Send the place (lat, lon, zoom, label, w, h) and, if anything should stand on it, display-mark children placed in thousandths of the map (x and y from 0 to 1000, 500/500 is the middle): the tiles, attribution, pin_x and pin_y are written by the screen, from the tile host its operator set; without one the map shows its name and its coordinates.",
+      "props": {
+        "lat": {
+          "type": "text",
+          "required": true,
+          "describe": "Latitude in decimal degrees, -90 to 90, as text."
+        },
+        "lon": {
+          "type": "text",
+          "required": true,
+          "describe": "Longitude in decimal degrees, -180 to 180, as text."
+        },
+        "zoom": {
+          "type": "int",
+          "required": false,
+          "describe": "The zoom level, 3 (a continent) to 17 (a street); 12 when not said."
+        },
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "The name of the place."
+        },
+        "w": {
+          "type": "int",
+          "required": false,
+          "describe": "How many tiles wide, 1 to 4; 2 when not said."
+        },
+        "h": {
+          "type": "int",
+          "required": false,
+          "describe": "How many tiles high, 1 to 4; 2 when not said."
+        },
+        "attribution": {
+          "type": "text",
+          "required": false,
+          "describe": "Written by the screen: the credit line the tile service asks for."
+        },
+        "pin_x": {
+          "type": "int",
+          "required": false,
+          "describe": "Written by the screen: where the point lies across the tiles, in thousandths."
+        },
+        "pin_y": {
+          "type": "int",
+          "required": false,
+          "describe": "Written by the screen: where the point lies down the tiles, in thousandths."
+        }
+      },
+      "slots": [
+        "display-map-tile",
+        "display-mark"
+      ],
+      "example": {
+        "component": "display-map",
+        "props": {
+          "lat": "52.52",
+          "lon": "13.405",
+          "zoom": 12,
+          "label": "Springfield"
+        }
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-map-tile",
+      "role": "content",
+      "layer": "content",
+      "describe": "Written by the screen: one tile of a map, fetched from the host its operator set. An application never sends one.",
+      "props": {
+        "src": {
+          "type": "text",
+          "required": false,
+          "describe": "The tile's address, built by the screen from the operator's setting."
+        },
+        "col": {
+          "type": "int",
+          "required": false,
+          "describe": "The tile's column, from 1."
+        },
+        "row": {
+          "type": "int",
+          "required": false,
+          "describe": "The tile's row, from 1."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-map-tile",
+        "props": {
+          "src": "https://tiles.example.org/12/2200/1343.png",
+          "col": 1,
+          "row": 1
+        }
+      },
+      "block": false,
+      "editable": []
+    },
+    {
+      "name": "display-field",
+      "role": "content",
+      "layer": "content",
+      "describe": "A coordinate space whose marks and nested fields move to new targets on the device.",
+      "props": {
+        "w": {
+          "type": "int",
+          "required": true,
+          "describe": "Width of the coordinate space, in the application's units; greater than 0."
+        },
+        "h": {
+          "type": "int",
+          "required": true,
+          "describe": "Height of the coordinate space, in the application's units; greater than 0."
+        },
+        "x": {
+          "type": "int",
+          "required": false,
+          "describe": "Left edge in the parent field's space; only read when the field is nested."
+        },
+        "y": {
+          "type": "int",
+          "required": false,
+          "describe": "Top edge in the parent field's space; only read when the field is nested."
+        }
+      },
+      "slots": [
+        "display-mark",
+        "display-field"
+      ],
+      "example": {
+        "component": "display-field",
+        "props": {
+          "w": 100,
+          "h": 100
+        },
+        "children": [
+          {
+            "component": "display-mark",
+            "props": {
+              "x": 50,
+              "y": 50,
+              "glyph": "*",
+              "label": "here"
+            }
+          }
+        ]
+      },
+      "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-mark",
+      "role": "content",
+      "layer": "content",
+      "describe": "A point in a field or on a map; a new x/y moves it there.",
+      "props": {
+        "x": {
+          "type": "int",
+          "required": true,
+          "describe": "Position in the parent field's space; on a map, thousandths of the map (0 to 1000)."
+        },
+        "y": {
+          "type": "int",
+          "required": true,
+          "describe": "Position in the parent field's space; on a map, thousandths of the map (0 to 1000)."
+        },
+        "glyph": {
+          "type": "text",
+          "required": false,
+          "describe": "A short sign drawn at the point."
+        },
+        "label": {
+          "type": "text",
+          "required": false,
+          "describe": "A word under the sign."
+        },
+        "tone": {
+          "type": "text",
+          "required": false,
+          "describe": "accent, or nothing."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-mark",
+        "props": {
+          "x": 50,
+          "y": 50,
+          "glyph": "*",
+          "label": "here"
+        }
+      },
+      "block": true,
+      "editable": []
     }
   ]
 }"""
@@ -5753,6 +6101,60 @@ STEP_TEMPLATE = (
     '{{#if at}}<span class="display-step-at">{{at}}</span>{{/if}}</li>'
 )
 
+# A place on a map (GH #964). The template does no arithmetic and the `web` cell
+# renders what it is given, so everything numeric here was worked out by the SCREEN
+# in `add_tree` (`map_props`): `w`/`h` are the grid in tiles, `pin_x`/`pin_y` where
+# the point lies across it in thousandths -- never 0 on a tiled map, so `{{#if pin_x}}`
+# is "the map has tiles" -- and the tiles are `display-map-tile` children addressed
+# from the operator's `map_tiles`. Without that setting there is no child and no pin,
+# the sheet has nothing in it and the sheet hides it; name and coordinates stay.
+# The credit line is the tile service's condition of use and comes from the operator
+# (`map_attribution`), so it is drawn only where tiles are.
+MAP_TEMPLATE = (
+    '<figure class="display-map" aria-label="{{label}}" style="--map-w: {{w}}; --map-h: {{h}}">'
+    '<div class="display-map-sheet">{{children}}'
+    '{{#if pin_x}}<span class="display-map-pin" aria-hidden="true"'
+    ' style="--pin-x: {{pin_x}}; --pin-y: {{pin_y}}"></span>{{/if}}</div>'
+    '<figcaption class="display-map-caption">'
+    '{{#if label}}<span class="display-map-label display-lead">{{label}}</span>{{/if}}'
+    '<span class="display-map-where display-detail">{{lat}}, {{lon}}</span>'
+    '{{#if attribution}}<span class="display-map-attribution">{{attribution}}</span>{{/if}}'
+    "</figcaption></figure>"
+)
+
+# One tile, written by the screen only (`SCREEN_COMPONENTS`): its address is the
+# operator's pattern with three integers in it, its place in the grid two more, from 1.
+MAP_TILE_TEMPLATE = (
+    '<img class="display-map-tile" src="{{src}}" alt="" draggable="false"'
+    ' style="grid-column: {{col}}; grid-row: {{row}}">'
+)
+# --- Motion by target state (GH #961) -------------------------------------------------
+# A field is a coordinate space of `w` x `h`; a mark stands at `x`/`y` in the space of its
+# parent field, and so does a nested field (display-hive § 1.5: relative position). The
+# screen writes the target as two custom properties out of the typed int props and
+# nothing else -- the door types them (K), the renderer writes an int or nothing, and no
+# free text ever stands in a `style`. The sheet turns `--x`/`--y` into a `transform`
+# with `transition: transform var(--move-ms)`, so a new target is one `object.update` of
+# two props and the device moves; no frame travels the wire and no server ticks. A
+# nested field's marks move with it, because they sit inside its transformed box.
+# Two boxes, because a field is both: the outer one is placed in the PARENT's space
+# (`--x`/`--y`, its size `--sw`/`--sh` in the parent's units, read against the parent's
+# `--fw`/`--fh`), the inner one IS the space its children read (`--fw`/`--fh`, a size
+# container their `cqw`/`cqh` resolve against).
+FIELD_TEMPLATE = (
+    '<div class="display-field" style="--x: {{x}}; --y: {{y}}; --sw: {{w}}; --sh: {{h}}">'
+    '<div class="display-field-space" style="--fw: {{w}}; --fh: {{h}}">{{children}}</div></div>'
+)
+
+MARK_TEMPLATE = (
+    '<div class="display-mark" data-tone="{{tone}}" style="--x: {{x}}; --y: {{y}}">'
+    '<span class="display-mark-body">'
+    '{{#if glyph}}<span class="display-mark-glyph" aria-hidden="true">{{glyph}}</span>{{/if}}'
+    '{{#if label}}<span class="display-mark-label display-line">{{label}}</span>{{/if}}'
+    '</span></div>'
+)
+# --- end motion by target state -------------------------------------------------------
+
 # The name of the `voice` cell this screen speaks to, from `params.voice_mount`.
 # A module-level default, so a caller that says nothing gets the shipped name;
 # the dispatcher below replaces it with what this cell was configured with, once
@@ -5814,6 +6216,125 @@ def faces(font_base):
         ' font-variation-settings: "SOFT" 55, "WONK" 0;'
         ' src: url("%sfraunces.woff2") format("woff2"); }'
     ) % (font_base, font_base)
+
+
+# ---------------------------------------------------------------------------
+# The map (GH #964). An application names a place -- `lat`, `lon`, `zoom`, a size in
+# tiles -- and the SCREEN turns it into tiles, because the template language does no
+# arithmetic and because an address is not the application's to give: a tile URL is
+# built from the operator's pattern `params.map_tiles` and integers, nothing else
+# (G.3). Empty is the shipped default and means no tile and no fetch at all; the map
+# then shows its name and its coordinates. The tile host also needs its `img-src`
+# line in the proxy in front of the listener (`csp.json` stays `'self' data:`, the
+# README names the line) -- without it the proxy blocks the tiles and the name and
+# the coordinates still read.
+MAP_TILES = ""
+# The tile service's credit line, from `params.map_attribution`: free tile services
+# make it the condition of use, so the operator who picks the service writes it.
+MAP_ATTRIBUTION = ""
+
+# The pattern: `https://` (display-hive.md § 6.18), a host, the three placeholders,
+# and none of the characters that could leave an attribute or start another URL in it.
+MAP_PATTERN = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/%{}=&?+,;:@-]*$")
+MAP_PLACEHOLDERS = ("{z}", "{x}", "{y}")
+# The ranges of § G.1 and their defaults. Latitude is clamped to the Mercator edge
+# for the arithmetic only: the door takes the whole of -90..90, the projection
+# ends at about 85.05 degrees.
+MAP_ZOOM = (3, 17, 12)
+MAP_SIZE = (1, 4, 2)
+MERCATOR_EDGE = 85.0511287798
+MAP_TILE_KEY = "map-%d-%d"
+
+
+def map_setting(value):
+    """The operator's tile pattern, or "" when it is not a clean one.
+
+    A half-right pattern is no setting rather than a guess: a tile URL the screen
+    builds must be an address the operator meant, or no request goes out at all.
+    """
+    if not isinstance(value, str) or not MAP_PATTERN.match(value):
+        return ""
+    if any(value.count(p) != 1 for p in MAP_PLACEHOLDERS):
+        return ""
+    return value
+
+
+def tile_url(pattern, z, x, y):
+    """One tile's address: the pattern with three integers put in."""
+    return (pattern.replace("{z}", str(int(z))).replace("{x}", str(int(x)))
+            .replace("{y}", str(int(y))))
+
+
+def map_tiles_of(lat, lon, zoom, w, h):
+    """The tiles of a `w` x `h` grid centred on a point, and where the point lies.
+
+    `{"tiles": [{"x", "y", "col", "row"}], "pin_x", "pin_y"}`. The slippy-map
+    scheme: `x` from the longitude, `y` from the Mercator latitude, `2**zoom` tiles a
+    side. The grid starts at `floor(x - w/2)`, `floor(y - h/2)`, so the point stands
+    as near the middle as whole tiles allow. Columns wrap round the world; a row
+    above the top or below the bottom of the world has no tile and stays empty.
+    `col`/`row` count from 1 (an `int 0` reads as empty in the template language),
+    the pin is in thousandths of the grid, kept inside 1..999 for the same reason.
+    """
+    n = 1 << int(zoom)
+    phi = math.radians(max(-MERCATOR_EDGE, min(MERCATOR_EDGE, float(lat))))
+    fx = (float(lon) + 180.0) / 360.0 * n
+    fy = (1.0 - math.log(math.tan(phi) + 1.0 / math.cos(phi)) / math.pi) / 2.0 * n
+    col0 = int(math.floor(fx - w / 2.0))
+    row0 = int(math.floor(fy - h / 2.0))
+    tiles = []
+    for row in range(int(h)):
+        ty = row0 + row
+        if ty < 0 or ty >= n:
+            continue
+        for col in range(int(w)):
+            tiles.append({"x": (col0 + col) % n, "y": ty, "col": col + 1, "row": row + 1})
+
+    def thousandths(v):
+        return max(1, min(999, int(math.floor(v * 1000.0 + 0.5))))
+
+    return {
+        "tiles": tiles,
+        "pin_x": thousandths((fx - col0) / float(w)),
+        "pin_y": thousandths((fy - row0) / float(h)),
+    }
+
+
+def map_props(props):
+    """A `display-map`'s props as the screen draws them, and its tile nodes.
+
+    The door has checked the ranges; a value missing is the default. What the screen
+    owns is written on EVERY pass and not only into an empty slot: `object.update`
+    merges per key, so a credit line or a pin an application once claimed would
+    otherwise stand for ever (the same reason `add_tree` writes `mount`).
+    """
+    zoom = as_int(props.get("zoom"), MAP_ZOOM[2])
+    if not MAP_ZOOM[0] <= zoom <= MAP_ZOOM[1]:
+        zoom = MAP_ZOOM[2]
+    size = []
+    for key in ("w", "h"):
+        v = as_int(props.get(key), MAP_SIZE[2])
+        size.append(v if MAP_SIZE[0] <= v <= MAP_SIZE[1] else MAP_SIZE[2])
+    props["zoom"], props["w"], props["h"] = zoom, size[0], size[1]
+    props["attribution"], props["pin_x"], props["pin_y"] = "", 0, 0
+    try:
+        lat, lon = float(props.get("lat")), float(props.get("lon"))
+    except (TypeError, ValueError):
+        return []
+    if not MAP_TILES or not (math.isfinite(lat) and math.isfinite(lon)):
+        return []
+    grid = map_tiles_of(lat, lon, zoom, size[0], size[1])
+    props["attribution"] = MAP_ATTRIBUTION
+    props["pin_x"], props["pin_y"] = grid["pin_x"], grid["pin_y"]
+    return [
+        {
+            "component": "display-map-tile",
+            "key": MAP_TILE_KEY % (t["col"], t["row"]),
+            "props": {"src": tile_url(MAP_TILES, zoom, t["x"], t["y"]),
+                      "col": t["col"], "row": t["row"]},
+        }
+        for t in grid["tiles"]
+    ]
 
 # The OS mark (§ 2.6, D-2/D-3). A ring that opens to the right, and a
 # stylised S standing in that opening with its outer edge exactly on the ring's
@@ -6146,7 +6667,39 @@ OS_CLIENT_JS = (
     "      // opens a window instead: the worklet is told to flush, whatever arrives\n"
     "      // for the next `drainMs` still goes out, and `release` is sent last.\n"
     "      var FLUSH_MIN = 120, FLUSH_MAX = 600;\n"
-    "      var pressAt = 0, byPointer = false, holdTimer = null, ready = false;\n"
+    "      var pressAt = 0, byPointer = false, holdTimer = null, holdDue = null, ready = false;\n"
+    "      // The threshold clock and what it runs when it strikes. `up()` reads the\n"
+    "      // second half: a timer is a floor, never a promise (GH #969).\n"
+    "      // A clock that strikes late gives way once (GH #966, B review I1 rest):\n"
+    "      // a stall that swallowed the threshold may have swallowed the lift as\n"
+    "      // well, and then both wait -- the clock and the `pointerup` behind it.\n"
+    "      // Struck first, the clock turned a 300 ms tap into a hold (B-33,\n"
+    "      // measured in Chromium after a 3.5 s stall). Late by more than\n"
+    "      // `LATE_MS`, it re-queues itself behind what waits, so the lift is\n"
+    "      // heard first and `up()` decides by the events; on time it costs\n"
+    "      // nothing. Once only: a second lateness is a page that never breathes.\n"
+    "      var LATE_MS = 250;\n"
+    "      function atThreshold(fn, ms) {\n"
+    "        var at = performance.now() + ms;\n"
+    "        holdDue = fn;\n"
+    "        holdTimer = setTimeout(function () {\n"
+    "          if (performance.now() - at > LATE_MS) { holdTimer = setTimeout(fn, 0); return; }\n"
+    "          fn();\n"
+    "        }, ms);\n"
+    "      }\n"
+    "      // When the finger moved, not when the handler ran (GH #969, review I1).\n"
+    "      // A busy page runs its handlers seconds late as it runs its timers (gaps\n"
+    "      // of more than 3 s measured on a build host), so `Date.now()` in a\n"
+    "      // handler measures the page's backlog: a 300 ms tap that waited behind\n"
+    "      // a stall read as a hold and opened a take nobody asked for. The event\n"
+    "      // carries the moment the browser took it in (`timeStamp`, on the clock\n"
+    "      // of `performance.now()`); what has no event -- `blur`, a hidden page,\n"
+    "      // a driver calling the handle -- and an engine whose stamp is on\n"
+    "      // another clock fall back to now.\n"
+    "      function stamp(e) {\n"
+    "        var now = performance.now(), t = e && e.timeStamp;\n"
+    "        return t > 0 && t <= now ? t : now;\n"
+    "      }\n"
     "      // The ring behind the threshold (E-3, OR-F25). 100 frames of 20 ms =\n"
     "      // 2 s, which covers the whole setup ever measured here (0,3 to 2 s on\n"
     "      // a phone: permission, device, worklet). It fills from the first\n"
@@ -6209,7 +6762,7 @@ OS_CLIENT_JS = (
     "        // `hold` while one is open and refuses it (`already_holding`).\n"
     "        if (draining) endDrain();\n"
     "        if (holding) return;\n"
-    "        pressed = true; pressAt = Date.now(); ready = false;\n"
+    "        pressed = true; pressAt = stamp(e); ready = false;\n"
     "        // A new gesture: whatever the last one ended with is spent.\n"
     "        gesture = \"\";\n"
     "        // Only a finger or a mouse can mean the dock. The space key is the\n"
@@ -6244,8 +6797,11 @@ OS_CLIENT_JS = (
     "        // a person can read -- a mark that goes quiet is the one failure\n"
     "        // nobody can tell from a broken screen.\n"
     "        if (refused) {\n"
+    "          // From the press, not from this line, like the two clocks below.\n"
+    "          var noWay = HOLD_MS - (performance.now() - pressAt);\n"
     "          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
-    "          holdTimer = setTimeout(refuse, HOLD_MS);\n"
+    "          if (noWay > 0) { atThreshold(refuse, noWay); return; }\n"
+    "          refuse();\n"
     "          return;\n"
     "        }\n"
     "        // A press with no touch in front of it -- the space key, or a driver\n"
@@ -6264,9 +6820,9 @@ OS_CLIENT_JS = (
     "          // runs off the SAME threshold clock as a take, so a tap stays a tap\n"
     "          // and the dock keeps answering it -- only a real hold opens the chat\n"
     "          // with no voice behind it.\n"
-    "          var noMic = HOLD_MS - (Date.now() - pressAt);\n"
+    "          var noMic = HOLD_MS - (performance.now() - pressAt);\n"
     "          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
-    "          if (noMic > 0) { holdTimer = setTimeout(refuseMic, noMic); return; }\n"
+    "          if (noMic > 0) { atThreshold(refuseMic, noMic); return; }\n"
     "          refuseMic();\n"
     "          return;\n"
     "        }\n"
@@ -6281,9 +6837,9 @@ OS_CLIENT_JS = (
     "        ready = true;\n"
     "        // Everything is open; what is left is the threshold. A finger that\n"
     "        // has already been down that long starts its take in this turn.\n"
-    "        var wait = HOLD_MS - (Date.now() - pressAt);\n"
+    "        var wait = HOLD_MS - (performance.now() - pressAt);\n"
     "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
-    "        if (wait > 0) { holdTimer = setTimeout(begin, wait); return; }\n"
+    "        if (wait > 0) { atThreshold(begin, wait); return; }\n"
     "        begin();\n"
     "      }\n"
     "      // What `begin` is for a screen that can speak. It runs off the same\n"
@@ -6329,7 +6885,7 @@ OS_CLIENT_JS = (
     "        // be ignored, which makes sending it a promise about the wrong\n"
     "        // thing. The counter keeps its old name; what the wire says is\n"
     "        // `hold`, and `touch` is the curator's word for the effect (§ 2).\n"
-    "        st.holdMs = Date.now() - pressAt;\n"
+    "        st.holdMs = Math.round(performance.now() - pressAt);\n"
     # § 5.6: the event is `hold` and it carries NOTHING. Which window a hold reaches
     # is the SCREEN's knowledge, not the browser's (§ 5.4, § 8.5); a `topic` a client
     # sent with it would not be read (S-088).
@@ -6344,9 +6900,19 @@ OS_CLIENT_JS = (
     "        while (pre.length) sendAudio(pre.shift());\n"
     "        disarm();\n"
     "      }\n"
-    "      function up() {\n"
+    "      function up(e) {\n"
+    "        var due = holdTimer ? holdDue : null;\n"
     "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
-    "        var was = pressed, held = pressAt ? Date.now() - pressAt : 0;\n"
+    "        var was = pressed, held = pressAt ? stamp(e) - pressAt : 0;\n"
+    "        // The finger stayed past the threshold, but the clock that was to\n"
+    "        // strike there has not: a busy page runs its timers late (GH #969,\n"
+    "        // measured on a build host under load: gaps of more than 3 s without\n"
+    "        // one 20 ms tick). The press was a hold all the same, so what the\n"
+    "        // threshold would have done happens now, before the release below --\n"
+    "        // otherwise a person who held the mark gets nothing at all: no hold,\n"
+    "        // no dock, no refusal. A take begun here ends in the same turn and\n"
+    "        // still carries what the ring heard.\n"
+    "        if (due && was && held >= HOLD_MS) due();\n"
     "        // The gesture ended HERE, whether it spoke or not: a `click` that\n"
     "        // follows belongs to it and switches nothing.\n"
     "        if (was && byPointer) gesture = \"pointer\";\n"
@@ -6390,8 +6956,8 @@ OS_CLIENT_JS = (
     "        var tag = (t.tagName || \"\").toLowerCase();\n"
     "        return tag === \"input\" || tag === \"textarea\" || tag === \"select\" || t.isContentEditable === true;\n"
     "      }\n"
-    "      function keydown(e) { if (e.code !== \"Space\" || e.repeat || typing(e)) return; e.preventDefault(); down(); }\n"
-    "      function keyup(e) { if (e.code !== \"Space\" || typing(e)) return; e.preventDefault(); up(); }\n"
+    "      function keydown(e) { if (e.code !== \"Space\" || e.repeat || typing(e)) return; e.preventDefault(); down(e); }\n"
+    "      function keyup(e) { if (e.code !== \"Space\" || typing(e)) return; e.preventDefault(); up(e); }\n"
     "      // A hold ends when the page does: a key held while switching windows\n"
     "      // would otherwise keep the microphone open with nothing left to release it.\n"
     "      function onBlur() { up(); }\n"
@@ -7457,6 +8023,10 @@ TEMPLATES = {
     "display-card": CARD_TEMPLATE,
     "display-steps": STEPS_TEMPLATE,
     "display-step": STEP_TEMPLATE,
+    "display-map": MAP_TEMPLATE,
+    "display-map-tile": MAP_TILE_TEMPLATE,
+    "display-field": FIELD_TEMPLATE,
+    "display-mark": MARK_TEMPLATE,
 }
 
 # The catalogue by name, for the door.
@@ -7546,6 +8116,45 @@ def type_fits(kind, value):
     return False
 
 
+# Components only the screen writes (GH #964). A map's tiles are addressed from the
+# operator's setting; an application that names one would be naming an address, so
+# the door refuses the whole view rather than drop the child quietly.
+SCREEN_COMPONENTS = ("display-map-tile",)
+
+# Props whose catalogue type is wider than what they may hold (GH #964, OR-DP-71: no
+# new prop type in this wave). A coordinate travels as `text` -- the catalogue's
+# types are text, int, boolean and html -- but holds a number in a range, and an
+# address in `lat` is exactly what the door is there to stop. `(kind, low, high)`;
+# `number` takes a JSON number or decimal digits as text (`NUMBER_TEXT`), `int` what
+# `type_fits` takes for an int. The reason reads `<component>.<prop>: <kind> <low>..<high>`.
+PROP_RANGES = {
+    ("display-map", "lat"): ("number", -90, 90),
+    ("display-map", "lon"): ("number", -180, 180),
+    ("display-map", "zoom"): ("int", MAP_ZOOM[0], MAP_ZOOM[1]),
+    ("display-map", "w"): ("int", MAP_SIZE[0], MAP_SIZE[1]),
+    ("display-map", "h"): ("int", MAP_SIZE[0], MAP_SIZE[1]),
+}
+
+
+def in_range(spec, value):
+    """Whether a prop that is said holds a value of `spec` (`PROP_RANGES`)."""
+    kind, low, high = spec
+    if not type_fits(kind, value) or isinstance(value, bool):
+        return False
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return False
+    return low <= n <= high
+# Props whose catalogue line says "greater than 0" and that have no upper bound,
+# so they are not a `PROP_RANGES` line (GH #964): their value is what the sheet
+# divides by: a field's `w` and `h` are the denominators of every mark's place
+# (`--x / --fw`). The sheet reads 0 as 1 (`max(var(--fw), 1)`, review D1 M3) so a
+# zero never voids a `transform`, but a space of 0 or less has no place to give
+# its marks -- the door says so instead of drawing them at the origin.
+POSITIVE_PROPS = {"display-field": ("w", "h")}
+
+
 def typed_refusal(node, root=True):
     """Why a component tree breaks the catalogue, or None.
 
@@ -7566,6 +8175,8 @@ def typed_refusal(node, root=True):
     props = node.get("props") if isinstance(node.get("props"), dict) else {}
     kids = [k for k in (node.get("children") or []) if isinstance(k, dict)]
     entry = CATALOG_BY_NAME.get(name)
+    if name in SCREEN_COMPONENTS:
+        return "%s: written by the screen" % (name,)
     if entry is not None:
         types = prop_types(entry)
         hints_here = root or entry.get("role") == "window"
@@ -7575,6 +8186,12 @@ def typed_refusal(node, root=True):
             kind = types.get(prop)
             if kind is not None and not type_fits(kind, props[prop]):
                 return "%s.%s: %s" % (name, prop, kind)
+            spec = PROP_RANGES.get((name, prop))
+            if spec and props[prop] not in (None, "") and not in_range(spec, props[prop]):
+                return "%s.%s: %s %s..%s" % (name, prop, spec[0], spec[1], spec[2])
+            if (prop in POSITIVE_PROPS.get(name, ()) and props[prop] not in (None, "")
+                    and float(props[prop]) <= 0):
+                return "%s.%s: %s > 0" % (name, prop, kind)
         for prop, spec in sorted(entry["props"].items()):
             if spec.get("required") and props.get(prop) in (None, ""):
                 return "%s.%s: required %s" % (name, prop, spec["type"])
@@ -9036,6 +9653,11 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
     # there.
     if component == "display-browser":
         props["mount"] = BROWSER_MOUNT
+    # And the screen draws a map's tiles (GH #964): out of the place the application
+    # named and the operator's `map_tiles`, never out of anything the application sent
+    # as an address. The door refuses a tile an application names; one that got here
+    # anyway is not drawn.
+    map_tiles = map_props(props) if component == "display-map" else None
     want[oid] = {
         "component": component,
         "parent": parent,
@@ -9044,6 +9666,9 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
         "keep": [k for k in (node.get("keep") or []) if isinstance(k, str)],
     }
     kids = [k for k in (node.get("children") or []) if isinstance(k, dict)]
+    if map_tiles is not None:
+        kids = map_tiles + [k for k in kids
+                            if str(k.get("component") or "") not in SCREEN_COMPONENTS]
     # The tile is TAKEN OUT (R-D1): a window's child keyed `tile` is what the
     # application says about itself in one line, and it belongs in the dock,
     # not a second time inside the big window. Exactly one per window; a
@@ -10705,7 +11330,7 @@ def read_knobs(params):
 
 
 def main():
-    global VOICE_MOUNT, FONT_BASE, BROWSER_MOUNT, CODE_VIEWS
+    global VOICE_MOUNT, FONT_BASE, BROWSER_MOUNT, CODE_VIEWS, MAP_TILES, MAP_ATTRIBUTION
     doc = json.load(sys.stdin)
     # The four params this cell reads by name. `voice_mount` names the `voice`
     # cell the screen's microphone joins, so one screen can be pointed at a
@@ -10720,6 +11345,10 @@ def main():
         VOICE_MOUNT = str(params.get("voice_mount") or "voice")
         BROWSER_MOUNT = str(params.get("browser_mount") or "browser")
         FONT_BASE = str(params.get("font_base") or "")
+        # `map_tiles`/`map_attribution` (GH #964): the tile host of `display-map` and
+        # its credit line. A pattern that is not a clean one is no setting at all.
+        MAP_TILES = map_setting(params.get("map_tiles"))
+        MAP_ATTRIBUTION = str(params.get("map_attribution") or "")
         # `code_views` (GH #868): absent is the shipped default, a list is the
         # operator's, `[]` included.
         views = params.get("code_views")

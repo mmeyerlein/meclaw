@@ -152,7 +152,24 @@ fn every_entry_describes_itself_and_its_example_passes_the_door() {
     else {
         return;
     };
+    // A component only the screen writes (GH #964, `SCREEN_COMPONENTS`: a map's tile)
+    // has an example of what the screen writes, and the door refuses it from anybody
+    // else -- that refusal is its whole point.
+    let Some(screen_only) = ask("list(m.SCREEN_COMPONENTS)") else {
+        return;
+    };
     for (name, why) in refusals.as_object().expect("a map") {
+        if screen_only
+            .as_array()
+            .is_some_and(|s| s.iter().any(|n| n == name))
+        {
+            assert_eq!(
+                why.as_str(),
+                Some(format!("{name}: written by the screen").as_str()),
+                "the door lets an application send `{name}`"
+            );
+            continue;
+        }
         assert!(
             why.is_null(),
             "the door refuses the example of `{name}`: {why}"

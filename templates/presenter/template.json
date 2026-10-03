@@ -1,6 +1,6 @@
 {
   "name": "presenter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "tags": [
     "app"
   ],
@@ -20,10 +20,30 @@
       "mutation_committed"
     ],
     "offers": [],
+    "observes_tool_calls": {
+      "at": "./stage",
+      "tools": [
+        "web_search",
+        "web_fetch",
+        "bash",
+        "file",
+        "edit"
+      ]
+    },
+    "observes_tool_results": "./stage",
+    "reads_residents": [
+      "memory-hive",
+      "file-space",
+      "graph-space",
+      "objects",
+      "librarian",
+      "affinity",
+      "colony-view"
+    ],
     "drives": []
   },
   "description": {
-    "purpose": "When the decider is sure that something on the screen helps with what was just said, something is shown. Every turn with text becomes ONE call to a fast decider (`provider: decisions`) over the topics the installed apps declare -- no trigger words. A sure verdict opens the topic's window with a working hint and, in the same output, asks the app that owns the topic for its data; blocks then appear as their data arrives, each one bound by the topic's manifest and checked against the display catalogue. Unsure, nothing to show, an error or the deadline: the screen stays as it is and the answer stays text. Every turn that asked leaves one journal row (topic, confidence, lead, also, fallback, the three times, model, round) and never the turn's text.",
+    "purpose": "When the decider is sure that something on the screen helps with what was just said, something is shown. Every turn with text becomes ONE call to a fast decider (`provider: decisions`) over the topics the installed apps declare -- no trigger words. A sure verdict opens the topic's window with a working hint and, in the same output, asks the app that owns the topic for its data; blocks then appear as their data arrives, each one bound by the topic's manifest and checked against the display catalogue. Unsure, nothing to show, an error or the deadline: the screen stays as it is and the answer stays text. Every turn that asked leaves one journal row (topic, confidence, lead, also, fallback, the three times, model, round) and never the turn's text. Since 1.1.0 ([#963](https://github.com/mmeyerlein/meclaw/issues/963), [#965](https://github.com/mmeyerlein/meclaw/issues/965), [#977](https://github.com/mmeyerlein/meclaw/issues/977), [#966](https://github.com/mmeyerlein/meclaw/issues/966)) observed tool calls and results are data for the topics `search` and `work`, the member's residents answer built-in topics (`builtin_topics`) through a read stamped with the member's round, a verdict with missing answers still decides over the answers it has and journals `decision_incomplete`, and a set the screen may not see is exactly a set that never came. A caller can rely on what was never promised before, so it is the second digit.",
     "use_when": "A member with a screen and at least one app that declares `shows` (its topics). Install it beside them; the order of installation does not matter, because every committed mutation asks the apps for their topics again.",
     "not_in_scope": "It draws no picture of its own: every block is a catalogue component bound from the app's data sets, with no code per topic. It decides no size and no focus (the screen's curator does), sends the decider no data and no memory, and gates every set and row by the screen's round (`screen_audience`, fail-closed). It owns no port and no channel.",
     "examples": [

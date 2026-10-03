@@ -64,7 +64,7 @@
 #
 #     token init [--max N] [--ttl MIN] [--force]   arm the host (refuses over a queue)
 #     token init --lanes a,b,c [--ttl MIN]         arm one named token per build lane
-#     token take [--strand S]                      hold a token or join the queue
+#     token take [--strand S] [--lane NAME]        hold a token (that lane) or join the queue
 #     token release [--strand S]                   give it back, name the next
 #     token who                                    holders, queue, last events
 #     token check [--pid P]                        what the gate and the tier call
@@ -90,7 +90,11 @@
 # differed by 2 % (measured 2026-10-01). So a lane is a NAMED token, one per
 # build host: `token init --lanes a,b,c` arms one token per name, `take`
 # hands out the first free name in that order (the spare host stands last)
-# and prints `lane <name>` on stdout, `who` shows who holds which. `--lanes`
+# and prints `lane <name>` on stdout, `who` shows who holds which. `take
+# --lane <name>` takes THAT lane or waits in the queue for it -- a strand whose
+# station needs one host (a browser lab set up on one lane only) must not be
+# handed the first free one; a named waiter keeps its lane against a later
+# take, and a lane nobody ahead wants still goes to the next. `--lanes`
 # and `--max` exclude each other (exit 2); queue, TTL and exit 3 are the
 # cargo token's, unchanged.
 #
@@ -463,10 +467,19 @@ lane_target() {
     awk -v n="$1" '{ sub(/#.*/, "") } $1 == n && NF >= 2 { print $2; exit }' "$file"
 }
 
+# The lane's word on the browser drivers of the tree (`lane_sync.sh push`, third
+# word): a tree with drivers but no playwright on the host runs its browser
+# proofs as SKIPs (OR-DP-83), and that is said before the run, not found after.
+browser_note() {   # lane, own|linked|none|n/a
+    [ "$2" = none ] || return 0
+    printf 'strand: lane %s has no playwright for this tree -- its browser proofs SKIP' "$1"
+    printf ' (an npm install in workshop/tools of one tree on the lane seeds its cache)\n'
+}
+
 # `gate_on_host <mode> <lane> <strand> <archive-root> <runner> [gate options]`
 gate_on_host() {
     local mode="$1" lane="$2" name="$3" archive_root="$4" gate="$5"; shift 5
-    local target sync base sha digest out errf prc runlog rc lrc=0 envs="" summary lsum="" pass=()
+    local target sync base sha digest browser out errf prc runlog rc lrc=0 envs="" summary lsum="" pass=()
     target=$(lane_target "$lane")
     [ -n "$target" ] || die "no lane $lane in the host file $(lanes_file)"
     sync="$(dirname -- "$gate")/lane_sync.sh"
@@ -508,7 +521,8 @@ gate_on_host() {
         return 2
     fi
     rm -f "$errf"
-    read -r sha digest <<<"$out"
+    read -r sha digest browser <<<"$out"
+    browser_note "$lane" "$browser"
 
     open_run_dir "$archive_root"
     runlog="$RUN_DIR/run.log"
@@ -725,7 +739,7 @@ cmd_test() {
     done
     [ -n "$expr" ] || die "test: expected a nextest filterset, e.g. 'binary(~gh123)'"
 
-    local root plans wdir name archive_root target sync gate errf out prc sha digest
+    local root plans wdir name archive_root target sync gate errf out prc sha digest browser
     root=$(main_root) || exit 2
     plans="$root/plans"
     wdir=$(wave_dir "$plans" "$wave_in") || exit 2
@@ -772,7 +786,8 @@ cmd_test() {
         return 2
     fi
     rm -f "$errf"
-    read -r sha digest <<<"$out"
+    read -r sha digest browser <<<"$out"
+    browser_note "$host" "$browser"
 
     # Its own directory, NOT a gate run: `test-` keeps it out of `latest` and
     # out of the run-id glob `report` falls back on.
@@ -1278,10 +1293,19 @@ def host_lanes():
     return names
 
 
-def free_lane(st):
-    """The first lane in the order of `init --lanes` nobody holds."""
+def lanes_left(st, ahead):
+    """The free lanes in the order of `init --lanes`, minus what the waiters
+    `ahead` of the caller get first: a waiter that named a lane reserves it
+    when it is free, one without a wish the first free lane (FIFO)."""
     held = {h.get("lane") for h in st["holders"]}
-    return next((n for n in st["lanes"] if n not in held), None)
+    left = [n for n in st["lanes"] if n not in held]
+    for w in ahead:
+        if w.get("lane"):
+            if w["lane"] in left:
+                left.remove(w["lane"])
+        elif left:
+            left.pop(0)
+    return left
 
 
 def refuse_over_a_queue(st, way_out):
@@ -1388,7 +1412,9 @@ with open(path + ".lock", "a") as guard:
                     note = "  waiting beyond the ttl"
                 else:
                     note = ""
-                print("  #%d %s  waiting %d min%s" % (n, w["strand"], mins(w["since"]), note))
+                print("  #%d %s%s  waiting %d min%s"
+                      % (n, w["strand"], ("  for lane " + w["lane"]) if w.get("lane") else "",
+                         mins(w["since"]), note))
         else:
             print("queue: empty")
         try:
@@ -1470,7 +1496,26 @@ with open(path + ".lock", "a") as guard:
             say("%s left the queue%s" % (key, by))
             sys.exit(0)
         log("release" if not by else "release-by", key, "held %d min" % mins(mine["since"]))
-        if st["waiting"]:
+        if st["waiting"] and st.get("lanes") and mine.get("lane"):
+            # With lanes the head of the queue may wait for a lane that stays held:
+            # name the waiter the freed lane goes to, read the way `take` reads it
+            # (`lanes_left` over the waiters ahead) -- naming the head woke a strand
+            # that gets nothing, and the one that would got no word (N review I-2).
+            freed = mine["lane"]
+            nxt = None
+            for i, w in enumerate(st["waiting"]):
+                left = lanes_left(st, st["waiting"][:i])
+                got = w["lane"] if w.get("lane") else (left[0] if left else None)
+                if got == freed and freed in left:
+                    nxt = w
+                    break
+            if nxt:
+                tail = "next in the queue: %s (lane %s, waiting %d min)" % (
+                    nxt["strand"], freed, mins(nxt["since"]))
+            else:
+                tail = "no waiter takes lane %s (%d in the queue, each for a held lane)" % (
+                    freed, len(st["waiting"]))
+        elif st["waiting"]:
             nxt = st["waiting"][0]
             tail = "next in the queue: %s (waiting %d min)" % (nxt["strand"], mins(nxt["since"]))
         else:
@@ -1496,7 +1541,16 @@ with open(path + ".lock", "a") as guard:
             log("stale-wait", w["strand"], why)
             say("dropped %s from the queue -- %s (ttl %d min)"
                 % (w["strand"], why, st["ttl_min"]))
+    want = os.environ["MECLAW_T_LANE"]
+    if want and not st.get("lanes"):
+        fail("token take: --lane %s, but this host is not armed with lanes" % want)
+    if want and want not in st["lanes"]:
+        fail("token take: no lane %s among the armed lanes (%s)"
+             % (want, " ".join(st["lanes"])))
     mine = holder(st, key)
+    if mine and want and mine.get("lane") != want:
+        fail("%s holds lane %s, not %s -- release it first, then take %s"
+             % (key, mine.get("lane") or "-", want, want))
     if mine:
         mine["seen"] = now
         write(st)
@@ -1508,12 +1562,20 @@ with open(path + ".lock", "a") as guard:
     pos = names.index(key) if key in names else len(names)
     free = st["max"] - len(st["holders"])
     # FIFO: a token goes to the head of the queue -- a strand that just
-    # finished writing does not overtake one that has been waiting.
-    if pos < free:
+    # finished writing does not overtake one that has been waiting. On lanes
+    # the queue is read per lane: what the waiters ahead get first is gone,
+    # and a named lane is only ever that lane.
+    lane = None
+    if st.get("lanes"):
+        left = lanes_left(st, st["waiting"][:pos])
+        lane = want if want in left else (None if want else (left[0] if left else None))
+        granted = lane is not None
+    else:
+        granted = pos < free
+    if granted:
         st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
         entry = {"strand": key, "since": now, "seen": now,
                  "pids": [], "tree": mine_tree}
-        lane = free_lane(st) if st.get("lanes") else None
         if lane:
             entry["lane"] = lane
         st["holders"].append(entry)
@@ -1525,8 +1587,14 @@ with open(path + ".lock", "a") as guard:
             print("lane %s" % lane)
         sys.exit(0)
     if key not in names:
-        st["waiting"].append({"strand": key, "since": now, "tree": mine_tree})
-        log("wait", key)
+        entry = {"strand": key, "since": now, "tree": mine_tree}
+        if want:
+            entry["lane"] = want
+        st["waiting"].append(entry)
+        log("wait", key, ("lane " + want) if want else "")
+    elif want:
+        # A second take may name the lane the first one did not.
+        st["waiting"][pos]["lane"] = want
     write(st)
     held = ", ".join("%s %d min" % (h["strand"], mins(h["since"])) for h in st["holders"])
     if free <= 0:
@@ -1534,6 +1602,10 @@ with open(path + ".lock", "a") as guard:
     else:
         head = ("%d of %d cargo tokens are held (%s) and the queue goes first"
                 % (len(st["holders"]), st["max"], held or "none"))
+    if want:
+        by = next((h["strand"] for h in st["holders"] if h.get("lane") == want), "")
+        head = ("lane %s is held by %s" % (want, by)) if by else \
+            ("lane %s goes to a strand ahead in the queue" % want)
     say("%s -- %s is #%d in the queue. End your turn; you are woken when a "
         "token is free." % (head, key, pos + 1))
     sys.exit(3)

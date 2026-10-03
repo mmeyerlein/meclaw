@@ -1,4 +1,4 @@
-# `llm-registry@2.5.0`
+# `llm-registry@2.5.1`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a

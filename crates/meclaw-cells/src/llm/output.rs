@@ -230,6 +230,7 @@ pub(crate) async fn emit_decision(
     sink: &OutputSink,
     target: Path,
     answers: Map<String, Value>,
+    missing: &[String],
     usage: HopUsage,
     model: &str,
     response_id: &str,
@@ -244,6 +245,14 @@ pub(crate) async fn emit_decision(
 
     let mut decision = Map::new();
     decision.insert("answers".into(), Value::Object(answers));
+    // GH #977: a partial decision names what the service left out; a whole one
+    // keeps the shape it always had.
+    if !missing.is_empty() {
+        decision.insert(
+            "missing".into(),
+            Value::Array(missing.iter().cloned().map(Value::String).collect()),
+        );
+    }
     decision.insert("model".into(), Value::String(model.to_string()));
     decision.insert("ms".into(), Value::from(latency_ms));
 
@@ -738,6 +747,7 @@ mod tests {
             &sink,
             Path::new("/sink"),
             Map::new(),
+            &[],
             full,
             "vendor/decider",
             "id-1",
@@ -813,7 +823,8 @@ mod tests {
         emit_decision(
             &sink,
             Path::new("/sink"),
-            answers,
+            answers.clone(),
+            &[],
             HopUsage::default(),
             "vendor/decider",
             "id-1",
@@ -826,6 +837,23 @@ mod tests {
             em["decision"],
             json!({"answers": {"wants": {"yes": 0.8}}, "model": "vendor/decider", "ms": 42})
         );
+        // GH #977: a partial decision names its omitted keys beside the answers;
+        // a whole one carries no `missing` at all (shape above unchanged).
+        emit_decision(
+            &sink,
+            Path::new("/sink"),
+            answers,
+            &["a.lead".to_string(), "topic".to_string()],
+            HopUsage::default(),
+            "vendor/decider",
+            "id-2",
+            7,
+            42,
+        )
+        .await;
+        let part = rx.recv().await.unwrap().content;
+        assert_eq!(part["decision"]["missing"], json!(["a.lead", "topic"]));
+        assert_eq!(part["header"]["finish_reason"], "stop");
         assert_eq!(em["messages"], json!([]));
         assert_eq!(em["meta"]["provider"], "decisions");
         assert_eq!(em["header"]["finish_reason"], "stop");

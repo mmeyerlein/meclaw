@@ -1386,6 +1386,104 @@ class TestTokenLanes(TokenTestCase):
         self.assertNotIn("lane", self.state()["holders"][0])
         self.assertNotIn("lanes", self.state())
 
+    def take_lane(self, strand, lane, minutes=0):
+        return self.token("take", "--strand", strand, "--lane", lane, minutes=minutes)
+
+    def test_take_with_a_lane_takes_that_lane(self):
+        # A strand that needs one host (a browser lab lives on one lane only)
+        # names it; the first free lane is not that host (OR-DP-83).
+        self.arm("--lanes", "south,north")
+        res = self.take_lane("welle-x/a", "north")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane north", res.stdout.strip())
+        self.assertIn("lane north", self.log())
+        res = self.take("welle-x/b")
+        self.assertEqual("lane south", res.stdout.strip())
+
+    def test_a_named_lane_that_is_held_queues(self):
+        self.arm("--lanes", "south,north")
+        self.take("welle-x/a")
+        res = self.take_lane("welle-x/b", "south")
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("lane south is held by welle-x/a", res.stderr)
+        self.assertIn("welle-x/b is #1 in the queue", res.stderr)
+        self.assertEqual("south", self.state()["waiting"][0]["lane"])
+        # the free lane is not handed out instead
+        self.assertEqual(["welle-x/a"], self.holders())
+
+    def test_release_names_the_waiter_the_freed_lane_goes_to(self):
+        # N review I-2: the head of the queue waits for a lane that stays held; the
+        # waiter behind it without a wish is the one the freed lane goes to, so it is
+        # the one `release` names -- naming the head woke a strand that gets nothing.
+        self.arm("--lanes", "south,north")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        self.assertEqual(3, self.take_lane("welle-x/c", "south").returncode)
+        self.assertEqual(3, self.take("welle-x/d").returncode)
+        res = self.token("release", "--strand", "welle-x/b")
+        self.assertIn("next in the queue: welle-x/d (lane north", res.stderr)
+        self.assertNotIn("next in the queue: welle-x/c", res.stderr)
+        res = self.take("welle-x/d")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane north", res.stdout.strip())
+
+    def test_release_with_no_waiter_for_the_freed_lane_says_so(self):
+        self.arm("--lanes", "south,north")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        self.assertEqual(3, self.take_lane("welle-x/c", "south").returncode)
+        res = self.token("release", "--strand", "welle-x/b")
+        self.assertIn("no waiter takes lane north", res.stderr)
+        self.assertNotIn("next in the queue: welle-x/c", res.stderr)
+
+    def test_a_named_waiter_keeps_its_lane_against_a_later_take(self):
+        self.arm("--lanes", "south,north")
+        self.take("welle-x/a")
+        self.take("welle-x/b")
+        self.assertEqual(3, self.take_lane("welle-x/c", "south").returncode)
+        self.token("release", "--strand", "welle-x/a")
+        # a strand without a wish that came later does not overtake c on south
+        res = self.take("welle-x/d")
+        self.assertEqual(3, res.returncode, res.stderr)
+        res = self.take_lane("welle-x/c", "south")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane south", res.stdout.strip())
+
+    def test_a_named_waiter_does_not_block_another_lane(self):
+        self.arm("--lanes", "south,north")
+        self.take("welle-x/a")
+        self.assertEqual(3, self.take_lane("welle-x/b", "south").returncode)
+        # north is free and nobody ahead wants it
+        res = self.take("welle-x/c")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane north", res.stdout.strip())
+
+    def test_who_names_the_wanted_lane_of_a_waiter(self):
+        self.arm("--lanes", "south")
+        self.take("welle-x/a")
+        self.take_lane("welle-x/b", "south")
+        self.assertRegex(self.token("who").stdout, r"#1 welle-x/b\s+for lane south")
+
+    def test_an_unknown_lane_to_take_refuses(self):
+        self.arm("--lanes", "south,north")
+        res = self.take_lane("welle-x/a", "west")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("no lane west", res.stderr)
+        self.assertEqual([], self.holders())
+
+    def test_a_held_other_lane_is_not_swapped(self):
+        self.arm("--lanes", "south,north")
+        self.take("welle-x/a")
+        res = self.take_lane("welle-x/a", "north")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("holds lane south, not north", res.stderr)
+
+    def test_a_lane_without_lanes_armed_refuses(self):
+        self.arm("--max", "2")
+        res = self.take_lane("welle-x/a", "north")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("not armed with lanes", res.stderr)
+
     def test_check_with_a_lane_wants_exactly_that_lane(self):
         self.arm("--lanes", "north,south")
         self.take("welle-x/a")
@@ -1744,6 +1842,52 @@ class TestGateHost(TokenTestCase):
         self.assertRegex(last, r"^TEST \[binary\(~gh1_x\)\] 3/3 \d+s GREEN$")
         # A test run is no gate run: `latest` is not moved.
         self.assertFalse((self.receipts() / "latest").exists())
+
+    def test_a_lane_tree_gets_the_browser_drivers_of_the_lane(self):
+        # OR-DP-83: the browser lab of a lane lived in ONE worktree; every
+        # other strand's fresh tree had no `workshop/tools/node_modules`, and
+        # its browser proofs skipped. The first tree that has it seeds a lane
+        # cache, every tree of the lane links it.
+        env = self.fake_cargo()
+        self.commit({"workshop/tools/driver.mjs": "// a driver\n"})
+        seed = self.remote / "wt" / "lab" / "workshop" / "tools" / "node_modules"
+        (seed / "playwright").mkdir(parents=True)
+        (seed / "playwright" / "index.js").write_text("// the package\n")
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        nm = self.wt() / "workshop" / "tools" / "node_modules"
+        self.assertTrue(nm.is_symlink(), res.stdout + res.stderr)
+        self.assertEqual("// the package\n", (nm / "playwright" / "index.js").read_text())
+        self.assertNotIn("no playwright", res.stdout + res.stderr)
+        # the cache stands on its own: the seed may go, a second run links again
+        shutil.rmtree(self.remote / "wt" / "lab")
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue((nm / "playwright" / "index.js").is_file())
+
+    def test_a_seed_never_lands_inside_a_cache_that_stands(self):
+        # N review m-2: two pushes on one host may both find the cache absent and
+        # both copy the seed; the second `mv` into the cache the first one moved in
+        # put the copy INSIDE it. The second push meets a cache that stands here.
+        env = self.fake_cargo()
+        self.commit({"workshop/tools/driver.mjs": "// a driver\n"})
+        seed = self.remote / "wt" / "lab" / "workshop" / "tools" / "node_modules"
+        (seed / "playwright").mkdir(parents=True)
+        cache = self.remote / "cache" / "workshop-tools" / "node_modules"
+        cache.mkdir(parents=True)
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([], sorted(p.name for p in cache.iterdir()))
+        self.assertEqual([], [p.name for p in cache.parent.iterdir() if p.name != "node_modules"])
+
+    def test_a_lane_without_browser_drivers_says_so(self):
+        env = self.fake_cargo()
+        self.commit({"workshop/tools/driver.mjs": "// a driver\n"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("lane north has no playwright for this tree", res.stdout)
+        # the verdict stays the last line
+        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[")
 
     def test_strand_test_passes_the_remote_exit_through(self):
         env = self.fake_cargo()

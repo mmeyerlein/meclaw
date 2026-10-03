@@ -35,14 +35,69 @@ acknowledgement to recognise: the loop that has to be guarded against elsewhere
 ([#161](https://github.com/mmeyerlein/meclaw/issues/161), one tick becoming two
 becoming four) cannot form here, because the reply flows on to the display
 instead of back.
+
+# The counts, read on request (GH #965)
+
+The one request this cell answers is a read of the colony's COUNTS on `in_read`
+(`{op: "stats"}`): how many cells, how many of them hives, how many edges, and
+the cells per kind. Counts and never content, the same line `/colony/ledger`
+draws (GH #267). It is answered out of the last snapshot this cell passed on,
+held in the runner's namespace (`runner_mode: resident`, one child): the colony's
+reply carries no context, so a read cannot wait for a fresh one and still know
+who asked, while the read itself arrives WITH its asker's context and the answer
+leaves in the same run. The boot receipt is the first snapshot; a child that was
+replaced has none yet, answers `not_ready` and asks the colony again in the same
+run, so the next read is answered.
 """
 import json
 import sys
+
+# The last snapshot's counts, kept between messages (resident runner). A cache of
+# the colony's own answer, never its truth: a fresh child starts without it.
+_COUNTS = "_colony_view_counts"
+
+
+def counts_of(reply):
+    """The counts of one graph reply: cells, hives, edges and cells per kind."""
+    nodes = [n for n in (reply.get("nodes") or []) if isinstance(n, dict)]
+    edges = reply.get("edges") or []
+    kinds = {}
+    for n in nodes:
+        kind = str(n.get("cell_type") or "unknown")
+        kinds[kind] = kinds.get(kind, 0) + 1
+    return {
+        "scope": reply.get("scope") or "/",
+        "cells": len(nodes),
+        "hives": kinds.get("hive", 0),
+        "edges": len(edges) if isinstance(edges, list) else 0,
+        "kinds": [{"kind": k, "n": kinds[k]}
+                  for k in sorted(kinds, key=lambda k: (-kinds[k], k))],
+    }
+
+
+def read(hop, held):
+    """The answer to one `in_read`: exactly one `answer`, mirroring `op` and `op_id`."""
+    op = str(hop.get("op") or "")
+    head = {"route": "answer", "op": op, "op_id": str(hop.get("op_id") or "")}
+    if op != "stats":
+        return [{"header": head, "messages": [], "ok": False, "op": op,
+                 "error": {"code": "unknown_op", "message": "this cell reads `stats` only"}}]
+    if not isinstance(held, dict):
+        return [{"header": head, "messages": [], "ok": False, "op": op,
+                 "error": {"code": "not_ready",
+                           "message": "no snapshot yet; the colony has been asked"}},
+                {"header": {"route": "ask_colony"}, "messages": [], "query": {"scope": "/"}}]
+    return [{"header": head, "messages": [], "ok": True, "op": op, **held}]
 
 
 def main():
     doc = json.load(sys.stdin)
     body = doc.get("body") or {}
+    hop = ((doc.get("envelope") or {}).get("header") or {}).get("hop") or {}
+
+    # ---- a read of the counts (GH #965): answered here, in the asker's run.
+    if hop.get("route") == "in_read":
+        return read(hop, globals().get(_COUNTS))
 
     # ---- pass 2: the colony's graph reply nests its answer under a `graph` slot
     # -- verified against a live reply, because the first version of this cell
@@ -54,6 +109,7 @@ def main():
     # is nothing else to look at.
     reply = body.get("graph")
     if isinstance(reply, dict) and isinstance(reply.get("nodes"), list):
+        globals()[_COUNTS] = counts_of(reply)
         return [{
             "header": {"route": "snapshot"},
             "messages": [],

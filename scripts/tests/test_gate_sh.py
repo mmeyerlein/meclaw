@@ -1205,6 +1205,36 @@ class TestSummaryCounts(GateShTestCase):
         self.assertEqual(["ok", "deny", "tree-sync", "build"],
                          [s["name"] for s in doc["stations"]])
 
+    def _browser_run(self):
+        plan = ("ok\tscope\t0\ttrue\t\n"
+                "browser:display\tsheet\t0\ttrue\t\n")
+        res = run_gate(self.repo, "strand", plan=self.plan_file(plan), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        summary = [m.groupdict() for m in
+                   (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines()) if m][0]
+        return res, rows, summary
+
+    @unittest.skipUnless(shutil.which("node"), "the browser station wants node")
+    def test_a_browser_station_without_playwright_shows_in_the_summary(self):
+        # OR-DP-83: on a lane tree without `workshop/tools/node_modules` every
+        # browser proof SKIPped inside a GREEN station, and the summary read
+        # 14/14 -- a browser proof that never ran looked like one that held.
+        # The SKIP stays a SKIP (the commit is not judged), but it counts in
+        # the total, so the summary cannot read whole.
+        res, rows, summary = self._browser_run()
+        self.assertEqual("SKIP", rows["browser:display"]["verdict"], res.stdout)
+        self.assertIn("no-playwright", rows["browser:display"]["reason"], res.stdout)
+        self.assertEqual(("1", "2", "GREEN"),
+                         (summary["green"], summary["total"], summary["verdict"]))
+        self.assertEqual(0, res.returncode)
+
+    @unittest.skipUnless(shutil.which("node"), "the browser station wants node")
+    def test_a_browser_station_with_playwright_runs(self):
+        (self.repo / "workshop" / "tools" / "node_modules" / "playwright").mkdir(parents=True)
+        res, rows, summary = self._browser_run()
+        self.assertEqual("GREEN", rows["browser:display"]["verdict"], res.stdout)
+        self.assertEqual(("2", "2"), (summary["green"], summary["total"]))
+
 
 class TestCargoLockFd(GateShTestCase):
     """The lock lives on the runner's own fd, never in the station's argv.

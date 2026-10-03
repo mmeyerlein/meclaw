@@ -8,7 +8,8 @@
 //! measured by `workshop/tools/display-blocks-browser.mjs`: every block has a
 //! box, its text is readable, no two blocks and no two steps overlap, every step
 //! wears its state and draws its mark beside its label, and the running step
-//! and the working stroke animate.
+//! and the working stroke animate; a standing `listening` status keeps the dot
+//! it shipped with (GH #966).
 //!
 //! **Why a new file and not a section of the sheet lock** (OR-DP.K.3): the
 //! sheet lock drives the B-sentences of display-hive.md on a stage of windows
@@ -120,6 +121,14 @@ fn blocks(all: &[Value]) -> String {
             all,
             "display-status",
             json!({"kind": "working", "text": "Fetching the forecast"}),
+            &[],
+        ),
+        // GH #966 (K review M5): a standing status beside it, whose dot keeps the
+        // look it shipped with -- the working hint's box rule does not reach it.
+        render(
+            all,
+            "display-status",
+            json!({"kind": "listening", "text": "Listening"}),
             &[],
         ),
     ]

@@ -390,3 +390,192 @@ fn the_sheet_carries_all_five_fallback_blocks() {
         );
     }
 }
+
+const CATALOG: &str = "templates/display/compose/catalog.json";
+
+/// The catalogue's own entries, with `role` and `block`, which `components()` does not
+/// carry.
+fn catalog_entries() -> Vec<Value> {
+    let cat: Value =
+        meclaw_core::serde_json::from_str(&read(CATALOG)).expect("catalog.json parses");
+    cat["components"].as_array().expect("a list").clone()
+}
+
+/// The selector of the one rule that runs `display-block-enter` (GH #961): the text
+/// between the closing brace before that declaration's block and its opening brace.
+fn enter_selector(sheet: &str) -> String {
+    let at = sheet
+        .find("animation: display-block-enter")
+        .expect("the sheet has no rule that lets a block glide in (GH #961)");
+    let open = sheet[..at]
+        .rfind('{')
+        .expect("the declaration sits in a block");
+    let start = sheet[..open].rfind('}').map_or(0, |c| c + 1);
+    sheet[start..open].to_string()
+}
+
+/// GH #961: every block of the catalogue (`block: true`) glides in when it is mounted,
+/// and nothing else does. The sheet names the set in one `:where()` list and the
+/// catalogue names it with a flag -- two lists of one thing, and this pin holds them side
+/// by side: a new block without the rule would appear without moving, a stale name in
+/// the rule would let a non-block (a window, a scene) glide. The class a block is known
+/// by is the first class its template writes, the root.
+#[test]
+fn every_block_glides_in_and_nothing_else_does() {
+    if !library_ships() {
+        return;
+    }
+    let Some(all) = components() else {
+        return;
+    };
+    let selector = enter_selector(&without_comments(&read(SHEET)));
+    let root = |name: &str| -> String {
+        let c = all
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("components() defines no {name}"));
+        class_tokens(c["template"].as_str().expect("a template"))
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("{name} writes no class"))
+    };
+    let blocks: Vec<String> = catalog_entries()
+        .iter()
+        .filter(|e| e["block"] == true)
+        .map(|e| e["name"].as_str().expect("a name").to_string())
+        .collect();
+    assert!(blocks.len() >= 19, "the block set shrank: {blocks:?}");
+    let roots: BTreeSet<String> = blocks.iter().map(|b| root(b)).collect();
+    for r in &roots {
+        assert!(
+            has_rule(&selector, r),
+            "block root `.{r}` is not in the enter rule `{selector}`"
+        );
+    }
+    // And back: every class the rule names is a block's root (`display-scene` stands
+    // only inside `:not()`, which is how a scene is kept from gliding).
+    let named: BTreeSet<String> = selector
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .filter_map(|t| t.strip_prefix('.'))
+        .map(str::to_string)
+        .filter(|t| t != "display-scene")
+        .collect();
+    assert_eq!(named, roots, "the enter rule and the catalogue's block set");
+}
+
+/// The class names a selector list writes, `display-scene` left out (it only ever
+/// stands inside `:not()`).
+fn named_classes(selector: &str) -> BTreeSet<String> {
+    selector
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .filter_map(|t| t.strip_prefix('.'))
+        .map(str::to_string)
+        .filter(|t| t != "display-scene")
+        .collect()
+}
+
+/// GH #961 / GH #969: no block INSIDE the dock glides in. A CSS animation restarts
+/// whenever its element goes from `display: none` to shown, and the dock is exactly
+/// that: closed is `display: none`, a tap opens it. Without this rule every tap on the
+/// phone line restarted the entry animation on every block of every window in the dock
+/// at once, and the hold that follows the tap lost its threshold. Measured on one build
+/// host under the same synthetic load (12 busy loops, 12 cores), six runs of
+/// `710_the_sheet_holds` per tree: the branch red in 3 of 6 on B-33 (WebKit, phone
+/// 393x852, "5078 ms over a 3000 ms threshold did not enter the hold"), master red in
+/// 0 of 6, the branch with this rule 0 of 3. The dock moves as a whole (its own `@starting-style`), so nothing in it
+/// needs a glide of its own.
+#[test]
+fn nothing_inside_the_dock_glides_in() {
+    if !library_ships() {
+        return;
+    }
+    let sheet = without_comments(&read(SHEET));
+    let enter = named_classes(&enter_selector(&sheet));
+    let at = sheet
+        .find(":where(.display-dock) :where(")
+        .expect("the sheet does not keep the dock's blocks from gliding in (GH #969)");
+    let open = at + sheet[at..].find('{').expect("the selector opens a block");
+    let close = open + sheet[open..].find('}').expect("the block closes");
+    let selector = &sheet[at..open];
+    let body = &sheet[open..close];
+    assert!(
+        body.contains("animation: none") || body.contains("animation-name: none"),
+        "the dock rule does not stop the entry animation: `{body}`"
+    );
+    let mut inside = named_classes(selector);
+    assert!(
+        inside.remove("display-dock"),
+        "the rule is not scoped to the dock"
+    );
+    assert_eq!(
+        inside, enter,
+        "the dock rule and the enter rule name the same blocks"
+    );
+}
+
+/// The non-int props a template may write inside a `style` attribute: each is written
+/// by the SCREEN (the scale from the operator's profile, the window id from the curator),
+/// never by an application, and none of them is on the content layer.
+const SCREEN_STYLE_PROPS: [(&str, &str); 4] = [
+    ("display-shell", "scale"),
+    ("display-pane", "pane_id"),
+    ("display-panel", "pane_id"),
+    ("display-overlay", "pane_id"),
+];
+
+/// GH #961 (review I2): every `{{prop}}` inside a `style="…"` of a catalogue template is
+/// an `int` in the catalogue -- the door types it (GH #958) and the renderer writes an
+/// integer or nothing, so no free text an application sends can stand in a declaration.
+/// A field and a mark carry their target this way (`--x`/`--y`); the pin is generic over
+/// every template, so the next one that writes a style is held to the same rule. The
+/// only exceptions are named, screen-written and off the content layer.
+#[test]
+fn every_prop_in_a_style_is_an_int() {
+    if !library_ships() {
+        return;
+    }
+    let Some(all) = components() else {
+        return;
+    };
+    let entries = catalog_entries();
+    let mut seen = 0usize;
+    for c in &all {
+        let name = c["name"].as_str().expect("a name");
+        let template = c["template"].as_str().expect("a template");
+        let mut rest = template;
+        while let Some(at) = rest.find("style=\"") {
+            let body = &rest[at + "style=\"".len()..];
+            let end = body.find('"').expect("the style attribute closes");
+            let mut style = &body[..end];
+            while let Some(open) = style.find("{{") {
+                let close = style[open..].find("}}").expect("a mustache closes") + open;
+                let prop = style[open + 2..close].trim();
+                style = &style[close + 2..];
+                if prop.starts_with(['#', '/', '!', '^']) || prop == "else" {
+                    continue;
+                }
+                seen += 1;
+                let ty = &c["prop_schema"][prop];
+                if SCREEN_STYLE_PROPS.contains(&(name, prop)) {
+                    let role = entries
+                        .iter()
+                        .find(|e| e["name"] == name)
+                        .map(|e| e["role"].clone());
+                    assert_ne!(
+                        role,
+                        Some(json!("content")),
+                        "{name}.{prop} is a screen-written exception and may not be content"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    ty,
+                    &json!("int"),
+                    "{name}.{prop} stands in a style attribute but is typed {ty}"
+                );
+            }
+            rest = &body[end..];
+        }
+    }
+    assert!(seen >= 10, "the scanner read only {seen} props in styles");
+}

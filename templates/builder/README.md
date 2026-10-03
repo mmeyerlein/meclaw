@@ -1,4 +1,4 @@
-# `builder@1.23.0`
+# `builder@1.24.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -464,10 +464,10 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.9.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.4"}], "…": "…"}}]}
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.0"}], "…": "…"}}]}
 ```
 
 **There is no way to ask for a member without them.** A person in this substrate
@@ -1063,8 +1063,8 @@ name), `template` and `screen` (the node in `./channels` the app draws on).
 tool calls or tool results, or pins, and the switch refuses the wish without it
 (`recipe_params_incomplete`, `missing: ["generation"]`).
 
-**`pins`, `candidates` and `reads` travel in the member's round, never the
-app's** (GH #949). The context an app's message carries is written by the app's
+**`pins`, `candidates`, `reads`, `reads_residents` and the results of a `tool` offer travel in the
+member's round, never the app's** (GH #949, GH #965). The context an app's message carries is written by the app's
 own template, and nothing stops an edge inside it from setting `audience_set` to
 any round -- `["agent:<a>"]` alone covers every row the agent is part of. So the
 one edge each of these three lanes leaves the app by stamps
@@ -1122,12 +1122,13 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 |---|---|
 | `screen` | the view edge out of the app, every declared lane plus `error`, stamped `channel_node`/`channel` with the screen; the owner edge back in on `event`/`receipt` — the two `grow_level level=app` draws |
 | `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer: the member draws `. -> ./apps` itself. `close` observes the close batch of a session (`write` off `./assistants`, the batch the member's close pass takes) and restamps it `in_close` with the close pass's context (`session_id`, `audience_set`, `channel`); the body travels unchanged (`messages[]`, `rounds`, `hop.turn_count`), and `write` has a regular exit at the member, so this observer suppresses no default |
-| `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each surface of the generation, guarded on the tool names; every offering cell answers the menu tick on a `schemas` v-lane from each surface; one exit stamps `tool_answerer` |
+| `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each surface of the generation, guarded on the tool names; every offering cell answers the menu tick on a `schemas` v-lane from each surface; the `tool_schemas` exit stamps `tool_answerer`. A result leaves in the words of its CALL and of the builder, never the app's: the call edge stamps `offer_tool` (the called name), and the `tool_result` exit lets a result out only when `offer_tool` is one of the offered names, restamping `hop.tool_name` from it and `context.assistant` (the generation), `context.audience_set` (the member's round, as for `reads` -- a round parked in the app's context could be rewritten by its inner edges, so a `tool` offer needs `ctx.member_person`) and `tool_answerer` as literals (GH #963 review N-1, GH #965) |
 | `observes_tool_calls` | per surface of the generation one `tool` v-lane into `at` — the offer's own edge (same guard on the tool names, same stamp) with another target, restamped `route` (default `in_tool_call`), drawn as a tap |
 | `observes_tool_results` | as a string: two `tool_result` v-lanes into the named cell, from the generation's `./tools` and from `./memory-hive`. As an object: the same two, guarded on the tool names and restamped `route` (default `in_tool_result`), plus one off `./apps` for the other apps' results — the container as source so the install order does not matter, `context.tool_answerer` excluding the observer's own results; all three taps, and the two shared producers guarded on `context.assistant` |
 | `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |
 | `candidates` | ONE edge from the named cell straight onto the generation, `candidate` restamped `in_candidate` (GH #949, the push-candidate twin of `pins`; the body is the curator's `in_candidate` contract); the generation hands it to the curator of each of its brains. Names a cell `./<name>` inside the app, needs the generation like `pins`, and a `candidate` of an app that declares none stays unrouted |
 | `reads` | FOUR edges: from the named cell onto the generation, `read` restamped `in_read` for the one brain `hop.organ` names (`talky`, `talky-chat` or `cogny`; none or another and no edge carries it), and the answer `read` back to that cell alone, bound to `context.read_caller` (GH #949). The question edge stamps the member's round (see below), so the curator reads only rows that round may see. |
+| `reads_residents` | a list of residents, each named once (GH #965): `memory-hive`, `file-space`, `graph-space`, `objects`, `librarian`, `affinity`, `colony-view`. Per resident ONE edge from the app's RIM onto the resident's own read lane (`in_query`, `in_read`, `in_graph`, `in_tool` for `object_find`/`object_brief` only, `in_lib`, `in_brief`, the colony view's `in_read`), on `resident_read` with `hop.resident` naming it and `hop.op_id` set; the edge stamps the asker (`context.resident_caller`), its id (`context.resident_op`) and the member's round in BOTH `audience_now` and `audience_set` for every resident (a resident's own pulls carry the context on: the library asks the graph space), both reply-to marks (`recall_caller`, `brief_caller`; `resident` for the memory and affinity read, blank otherwise; memory-hive also gets the five recall keys and the screen as `channel`), and prefixes a mirrored `op_id` with `res:`. Per answering route ONE edge back onto the rim, guarded on the asker AND on the mark of this read (a `res:` `op_id` or `tool_call_id`, or the `resident` reply-to token), so the answers of a resident's inner pulls never leave the member; it deletes every context key the question wrote and is restamped `resident_answer` with `resident`, `resident_status` (the route it answered on), the asker's own `op_id` and `resident_round`: the member's round, or `["*"]` for the colony's counts. Needs the generation and the person like `reads`; a sealed app keeps its seal. |
 | `shows` | `{"at": "./<cell>"}` (GH #960): the question off the container into the app's RIM, `in_show` naming no app (the topics call every such app hears) or naming this one in `hop.show_app` (the data call); and the answer `show_topics` / `show_data` from the rim onto the container, stamped `show_app` with the app and `show_at` with `at` over whatever the app wrote. The app routes its rim to `at` and back in its own graph, so a sealed app keeps its seal. No generation, no round: the round of a topic lies in its data. The presenter's half comes with the presenter (below) |
 | `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
 
@@ -1179,7 +1180,7 @@ against the wiring a live colony carries for them:
 | app | edges |
 |---|---|
 | `voice2vision` | 18 |
-| `ambient` | 10 |
+| `ambient` | 11 |
 | `chat` | 8 |
 | `colony-view` | 3 |
 

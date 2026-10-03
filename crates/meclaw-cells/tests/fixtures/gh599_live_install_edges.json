@@ -1,5 +1,5 @@
 {
-  "_source": "GH #599 -- the wiring a live colony carries for four installed apps, as its install manifests drew it and as it was measured standing: the three apps of the voice2vision repository (manifests/install.json, scripts/ambient_install.py, scripts/chat_install.py, scripts/v2v_install.py for the browser road, and the talky-chat twin every talky v-lane gets) and colony-view as the builder's member_devices renders it. Member-relative; the generation is called `sam`. The three voice2vision templates do not travel with this repository, so their declarations stand here as a fixture beside the edges they must render; the colony-view declaration is read from templates/colony-view/template.json.",
+  "_source": "GH #599 -- the wiring a live colony carries for four installed apps, as its install manifests drew it and as it was measured standing: the three apps of the voice2vision repository (manifests/install.json, scripts/ambient_install.py, scripts/chat_install.py, scripts/v2v_install.py for the browser road, and the talky-chat twin every talky v-lane gets) and colony-view as the builder's member_devices renders it. Member-relative; the generation is called `sam`. The three voice2vision templates do not travel with this repository, so their declarations stand here as a fixture beside the edges they must render; the colony-view declaration is read from templates/colony-view/template.json. GH #965 (review N-1, OR-DP.M.18): the edges of an app that answers a tool call are the RENDERED ones, not the measured ones -- its results leave in the words of the call (`offer_tool`) and in the member's round (`ctx.member_person`, stamped by the builder), so a colony that installed it before carries the older exit until it is reinstalled.",
   "voice2vision": {
     "template": "voice2vision@0.7.2",
     "screen": "display",
@@ -253,6 +253,55 @@
         }
       },
       {
+        "from": "./apps",
+        "to": "./apps/ambient",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/ambient",
+        "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/ambient/')"
+      },
+      {
+        "from": "./apps/ambient",
+        "to": "./apps",
+        "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')",
+        "modifier": {
+          "set_context": {
+            "channel_node": "'display'",
+            "channel": "'display'"
+          }
+        }
+      },
+      {
+        "from": "./apps/ambient",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+        "modifier": {
+          "set_context": {
+            "tool_answerer": "'ambient'"
+          }
+        }
+      },
+      {
+        "from": "./apps/ambient",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'tool_result' && has(context.offer_tool) && (context.offer_tool == 'set_timer' || context.offer_tool == 'cancel_timer')",
+        "modifier": {
+          "set_hop": {
+            "tool_name": "context.offer_tool"
+          },
+          "set_context": {
+            "tool_answerer": "'ambient'",
+            "assistant": "'sam'",
+            "audience_set": "'[\"agent:sam\",\"member:alex\"]'"
+          },
+          "delete_context": [
+            "offer_tool"
+          ]
+        }
+      },
+      {
         "from": "./assistants/sam/talky",
         "to": "./apps/ambient/timer",
         "lane": "tool",
@@ -260,7 +309,8 @@
         "modifier": {
           "set_context": {
             "tool_caller": "'talky'",
-            "assistant": "'sam'"
+            "assistant": "'sam'",
+            "offer_tool": "hop.tool_name"
           },
           "delete_context": [
             "col_phase",
@@ -289,37 +339,6 @@
         }
       },
       {
-        "from": "./apps/ambient",
-        "to": "./apps",
-        "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
-        "modifier": {
-          "set_context": {
-            "tool_answerer": "'ambient'"
-          }
-        }
-      },
-      {
-        "from": "./apps/ambient",
-        "to": "./apps",
-        "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')",
-        "modifier": {
-          "set_context": {
-            "channel_node": "'display'",
-            "channel": "'display'"
-          }
-        }
-      },
-      {
-        "from": "./apps",
-        "to": "./apps/ambient",
-        "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/ambient/')"
-      },
-      {
-        "from": "./apps",
-        "to": "./apps/ambient",
-        "condition": "has(hop.route) && hop.route == 'answer'"
-      },
-      {
         "from": "./assistants/sam/talky-chat",
         "to": "./apps/ambient/timer",
         "lane": "tool",
@@ -327,7 +346,8 @@
         "modifier": {
           "set_context": {
             "tool_caller": "'talky-chat'",
-            "assistant": "'sam'"
+            "assistant": "'sam'",
+            "offer_tool": "hop.tool_name"
           },
           "delete_context": [
             "col_phase",
@@ -355,7 +375,10 @@
           ]
         }
       }
-    ]
+    ],
+    "ctx": {
+      "member_person": "alex"
+    }
   },
   "chat": {
     "template": "chat@0.3.3",
@@ -458,7 +481,7 @@
     ]
   },
   "colony-view": {
-    "template": "colony-view@1.1.4",
+    "template": "colony-view@1.2.0",
     "screen": "display",
     "edges": [
       {

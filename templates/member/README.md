@@ -1,4 +1,4 @@
-# `member@2.5.0`
+# `member@2.5.1`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and three edges.
@@ -879,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.1` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.1"}]
 }}
 ```
 
@@ -1124,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.1"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1465,7 +1465,8 @@ One mutation, scope `<member>`, and the builder renders it: the fast-lane recipe
 [#599](https://github.com/mmeyerlein/meclaw/issues/599)) draws the wiring from
 the block the app's `template.json` carries under `app`. The wish hands that
 block over verbatim — the recipe reads nothing but the wish. `<gen>` is the
-generation the app offers its tool to, `<app>` is the instance name — which is
+generation the app offers its tool to, `<person>` the person of the
+member (an app that answers a tool call answers in its member's round, GH #965), `<app>` is the instance name — which is
 the template name, because an instance is named after its template — and
 `<screen>` is the screen node in `./channels` the app draws on. This example
 declares every kind at once: a screen, three listened lanes, a tool and a
@@ -1482,6 +1483,9 @@ device `<device>` it opens pages on.
     "template": "<app>@<version>",
     "screen": "<screen>",
     "generation": "<gen>",
+    "ctx": {
+      "member_person": "<person>"
+    },
     "declaration": {
       "screen": {
         "out": [
@@ -1533,7 +1537,7 @@ It renders this declaration, and a test holds the two blocks together
 (`crates/meclaw-cells/tests/gh599_an_app_is_installed_from_what_it_declares.rs`):
 
 ```json
-{"scope": "<member>", "ctx": {}, "diff": {
+{"scope": "<member>", "ctx": {"member_person": "<person>"}, "diff": {
   "add_nodes": [{"name": "apps/<app>", "template": "<app>@<version>"}],
   "add_edges": [
     {"from": "./firewall", "to": "./apps", "condition": "has(hop.route) && hop.route == 'pass'", "modifier": {"set_hop": {"route": "'turn'"}, "delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]}},
@@ -1544,10 +1548,11 @@ It renders this declaration, and a test holds the two blocks together
     {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == '<section>'"},
     {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/<app>/')"},
     {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')", "modifier": {"set_context": {"channel_node": "'<screen>'", "channel": "'<screen>'"}}},
-    {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')", "modifier": {"set_context": {"tool_answerer": "'<app>'"}}},
-    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && hop.route == 'tool_schemas'", "modifier": {"set_context": {"tool_answerer": "'<app>'"}}},
+    {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && hop.route == 'tool_result' && has(context.offer_tool) && (context.offer_tool == 'show')", "modifier": {"set_hop": {"tool_name": "context.offer_tool"}, "set_context": {"tool_answerer": "'<app>'", "assistant": "'<gen>'", "audience_set": "'[\"agent:<gen>\",\"member:<person>\"]'"}, "delete_context": ["offer_tool"]}},
+    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'", "offer_tool": "hop.tool_name"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
     {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
-    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'", "offer_tool": "hop.tool_name"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
     {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
     {"from": "./assistants/<gen>/tools", "to": "./apps/<app>/stage", "lane": "tool_result", "condition": "has(hop.route) && hop.route == 'tool_result'"},
     {"from": "./memory-hive", "to": "./apps/<app>/stage", "lane": "tool_result", "condition": "has(hop.route) && hop.route == 'tool_result'"},

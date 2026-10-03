@@ -77,7 +77,13 @@ async fn a_presenter_without_topics_asks_nothing() {
     if !guard("a_presenter_without_topics_asks_nothing") {
         return;
     }
-    let mut s = boot(Dials::default()).await;
+    // GH #963: the shipped presenter offers its own observed topics on every turn; a
+    // presenter WITHOUT topics is one with none of its own either.
+    let mut s = boot(Dials {
+        observed_topics: json!([]),
+        ..Dials::default()
+    })
+    .await;
     s.turn("n1", "before any topic").await;
     s.install_sample().await;
     s.turn("n2", "after the topic").await;

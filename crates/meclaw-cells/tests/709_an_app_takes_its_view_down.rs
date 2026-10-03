@@ -110,7 +110,7 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
 
     let meta = read_json(&root.join("template.json"));
     assert_eq!(
-        meta["version"], "2.5.0",
+        meta["version"], "2.5.1",
         "a lane an app can use and could not before is the second digit \
          (docs/development-rules.md § 4). The number is the LEVEL's, not this \
          lane's: it moved on again with member@1.9.0, which wired the channel \
@@ -140,7 +140,9 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          `assistant@3.5.0`; 2.5.0 holds the catalogue of the person's files in \
          `./librarian` (GH #950) and the things the person keeps talking about in \
          `./objects` (GH #951), pins `file-space@1.3.0`, `memory-hive@3.8.0` and \
-         `graph-space@1.1.0` and derives `./assistants` from `assistant@3.6.0`. None of it \
+         `graph-space@1.1.0` and derives `./assistants` from `assistant@3.6.0`; 2.5.1 only \
+         pins `affinity@3.9.0` and `memory-hive@3.8.1` and derives `./assistants` from \
+         `assistant@3.6.1` (GH #965, GH #937). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"
     );

@@ -389,10 +389,11 @@ fn what_the_recipe_announces_is_what_the_cell_states() {
             "memory-hive/dialectic",
             "memory-hive/dreamer",
             "memory-hive/judge",
+            "presenter/decide",
             "talky/brain"
         ],
-        "the recipe announces the assistant's brains, its curator summarizers (GH #877) and \
-         the member's memory cells"
+        "the recipe announces the assistant's brains, its curator summarizers (GH #877), \
+         the member's memory cells and the presenter's decider (GH #963, PE-DP-11)"
     );
     for (cell, copy) in &copies {
         let cfg = read_json(&repo(&format!("templates/{cell}/config.json")));
@@ -571,9 +572,10 @@ fn instances_of(template: &str, cell: &str) -> Vec<(String, Map<String, Value>)>
     out
 }
 
-/// The shipped catalogue's CHAT rows, as the store seeds them. GH #957: a
-/// row whose `wire_dialect` is `decisions` is only ever resolved for a
-/// decisions subscriber, never pushed to the chat brains this sweep walks.
+/// The shipped catalogue's rows, as the store seeds them. GH #957: a row
+/// whose `wire_dialect` is `decisions` is only ever resolved for a decisions
+/// subscriber (a cell born with `provider: "decisions"`), a chat row only for
+/// a chat cell -- `push_refusals` matches them by that protocol.
 fn catalogue_rows() -> Vec<Value> {
     let seed = std::fs::read_to_string(repo("templates/llm-registry/store/seed/models.jsonl"))
         .expect("the shipped catalogue");
@@ -587,7 +589,6 @@ fn catalogue_rows() -> Vec<Value> {
             }
         })
         .filter(|row| row["model_id"].as_str().is_some())
-        .filter(|row| row["wire_dialect"] != "decisions")
         .collect()
 }
 
@@ -597,15 +598,28 @@ fn catalogue_rows() -> Vec<Value> {
 /// an endpoint its start value and its `base_url_allow` do not admit, and a
 /// package call timeout its backstop does not clear.
 fn push_refusals(rows: &[Value]) -> Vec<String> {
-    let endpoints: BTreeSet<String> = rows
-        .iter()
-        .filter_map(|row| row["base_url"].as_str().map(str::to_string))
-        .filter(|u| !u.is_empty())
-        .collect();
-    let timeouts: BTreeSet<u64> = rows
-        .iter()
-        .filter_map(|row| row["package"]["external_timeout_ms"].as_u64())
-        .collect();
+    // GH #957 / GH #965: the registry resolves a subscriber only to rows of its
+    // own protocol, so each protocol has its own endpoints and timeouts. A row
+    // with an empty `base_url` sends none (`package_of` drops empty values): the
+    // cell keeps its start endpoint, which is no refusal.
+    let of_protocol = |decisions: bool| -> Vec<&Value> {
+        rows.iter()
+            .filter(|row| (row["wire_dialect"] == "decisions") == decisions)
+            .collect()
+    };
+    let endpoints_of = |decisions: bool| -> BTreeSet<String> {
+        of_protocol(decisions)
+            .iter()
+            .filter_map(|row| row["base_url"].as_str().map(str::to_string))
+            .filter(|u| !u.is_empty())
+            .collect()
+    };
+    let timeouts_of = |decisions: bool| -> BTreeSet<u64> {
+        of_protocol(decisions)
+            .iter()
+            .filter_map(|row| row["package"]["external_timeout_ms"].as_u64())
+            .collect()
+    };
     // Who the shipped tree announces: the shell's own entries, and every
     // template cell the builder's recipe announces for a grown level.
     let mut announced: BTreeMap<String, String> = BTreeMap::new();
@@ -629,6 +643,9 @@ fn push_refusals(rows: &[Value]) -> Vec<String> {
         let backstop = born["cell"]["message_timeout"]
             .as_u64()
             .unwrap_or(default_backstop);
+        let decisions = born["params"]["provider"] == "decisions";
+        let endpoints = endpoints_of(decisions);
+        let timeouts = timeouts_of(decisions);
         let (template, inner) = cell.split_once('/').expect("<template>/<cell>");
         // The template cell as it is born, and every instance of its template
         // with the overrides it gives this cell (a shallow merge, as the colony
@@ -747,6 +764,37 @@ fn a_catalogue_row_a_subscriber_cannot_take_is_refused() {
                 .iter()
                 .all(|r| r.contains("https://nobody-admits.example/v1")),
         "an endpoint no subscriber admits is refused: {refused:?}"
+    );
+
+    // GH #965 (OR-DP.M.21): the decisions half. A decisions row on an endpoint
+    // the decider does not admit is refused by the decider and by nobody else
+    // (a chat cell is never resolved to it); the shipped decisions rows name no
+    // endpoint, so the decider keeps the one its set gives it and every push
+    // lands -- subscription and delivery agree.
+    let shipped_decisions: Vec<&Value> = rows
+        .iter()
+        .filter(|r| r["wire_dialect"] == "decisions")
+        .collect();
+    assert!(
+        !shipped_decisions.is_empty(),
+        "the catalogue ships a decisions row"
+    );
+    for r in &shipped_decisions {
+        assert_eq!(
+            r["base_url"], "",
+            "a shipped decisions row names no endpoint (no foreign origin in the public default): {r}"
+        );
+    }
+    let mut foreign = shipped_decisions[0].clone();
+    foreign["model_id"] = json!("test/foreign-decider");
+    foreign["base_url"] = json!("https://decide.example/api");
+    let refused = push_refusals(&with_row(foreign));
+    assert!(
+        !refused.is_empty()
+            && refused
+                .iter()
+                .all(|r| r.contains("presenter/decide") && r.contains("https://decide.example/api")),
+        "a decisions endpoint the decider does not admit is refused by the decider alone: {refused:?}"
     );
 }
 

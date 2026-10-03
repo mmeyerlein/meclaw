@@ -31,8 +31,26 @@
           "because": "the screen refused a write. It is heard and answered with nothing: the journal row of the turn already says what was shown"
         },
         {
+          "route": "tool",
+          "at": [
+            "./stage"
+          ],
+          "because": "a tool call of the generation the presenter is installed for, overheard on the builder's tap (`observes_tool_calls`, restamped `in_tool_call`): one of the generation's own tools (web_search, web_fetch, bash, file, edit). It is data and nothing else (R-29-6): it becomes one row of the `work` table and opens no window and asks the decider nothing. The lane docks at `./stage`, past this rim, because the mutation door matches the producer's lane at the observing cell"
+        },
+        {
+          "route": "tool_result",
+          "at": [
+            "./stage"
+          ],
+          "because": "a tool result of that generation, overheard (`observes_tool_results`, the string form: every result of its own `./tools` and of the member's memory, unstamped). A result whose call was observed fills in that call's state; a web search's result gives the turn that caused it its hits, in the round the result carries. Anything else is not ours and is dropped; nothing is answered"
+        },
+        {
+          "route": "resident_answer",
+          "because": "a resident's answer to a declared source of one of the presenter's own topics, restamped by the builder's `reads_residents` edge with `hop.resident`, `hop.resident_status` (the resident's own route), the `op_id` the read carried and `hop.resident_round` (the member's round the read was asked with). The source's paths pick its rows or value; the set's round is `resident_round` and never anything in the body, and an answer without it shows nothing"
+        },
+        {
           "route": "in_model",
-          "because": "a model package for the decider, pushed by the colony's llm-registry: a PARAMS-ONLY body that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./decide`, the one llm cell of this hive, past `stage`, because a params body is not a request. Draw it only from the registry's `update` lane, restamped `in_model`; as shipped nothing is drawn and the decider runs on its start values"
+          "because": "a model package for the decider, pushed by the colony's llm-registry: a PARAMS-ONLY body that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./decide`, the one llm cell of this hive, past `stage`, because a params body is not a request. Draw it only from the registry's `update` lane, restamped `in_model`; as shipped nothing is drawn and the decider runs on its start values. The door deletes the inner context of the hive on the way in (`show_origin`, `show_phase`, `show_id`), so a push can never pose as a turn's verdict; a refusal that does not name this decider (a push for another cell, or one without `subscriber`) reaches `stage` and leaves as `error` `decide_refused`, never as a `no_route` inside this hive"
         }
       ],
       "emits": [
@@ -50,11 +68,15 @@
         },
         {
           "route": "error",
-          "because": "a store bundle or a clock order failed. It leaves rather than being logged, because a presenter that kept a fault to itself would be a screen that quietly stopped answering"
+          "because": "a store bundle or a clock order failed, or `./decide` refused a message that was no turn's call (`decide_refused`). It leaves rather than being logged, because a presenter that kept a fault to itself would be a screen that quietly stopped answering"
         },
         {
           "route": "model_refused",
           "because": "a model package pushed through `in_model` that `./decide` refused: its error, with the decider's path in `hop.refused_subscriber` and the named model in `hop.refused_model`, leaves here instead of reaching `stage` as a verdict. A parent without an edge for it dead-letters it `no_route`, loudly"
+        },
+        {
+          "route": "resident_read",
+          "because": "a sure verdict on one of the presenter's own topics whose candidates declare a source: one read per wanted set, `hop.resident` naming the resident, `hop.op_id` the turn and set, plus the source's own hop keys and body, where a value that is exactly `$request` becomes the turn's text. The builder's `reads_residents` edge carries it to the resident in the member's round; without that road it dead-letters, loudly"
         }
       ]
     },
@@ -63,7 +85,7 @@
         {
           "from": ".",
           "to": "./stage",
-          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'mutation_committed' || hop.route == 'show_topics' || hop.route == 'show_data' || hop.route == 'event' || hop.route == 'receipt')",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'mutation_committed' || hop.route == 'show_topics' || hop.route == 'show_data' || hop.route == 'event' || hop.route == 'receipt' || hop.route == 'resident_answer')",
           "modifier": {
             "delete_context": [
               "show_origin",
@@ -75,7 +97,14 @@
         {
           "from": ".",
           "to": "./decide",
-          "condition": "has(hop.route) && hop.route == 'in_model'"
+          "condition": "has(hop.route) && hop.route == 'in_model'",
+          "modifier": {
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
         },
         {
           "from": "./stage",
@@ -114,6 +143,21 @@
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
+            },
+            "delete_context": [
+              "show_origin",
+              "show_phase",
+              "show_id"
+            ]
+          }
+        },
+        {
+          "from": "./decide",
+          "to": "./stage",
+          "condition": "!has(hop.refused_subscriber) && !(has(context.show_origin) && context.show_origin == 'decide' && has(context.show_id))",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_decision'"
             },
             "delete_context": [
               "show_origin",
@@ -186,7 +230,7 @@
         {
           "from": "./stage",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'in_show' || hop.route == 'error')",
+          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'in_show' || hop.route == 'error' || hop.route == 'resident_read')",
           "modifier": {
             "delete_context": [
               "show_origin",

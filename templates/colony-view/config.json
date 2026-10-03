@@ -13,12 +13,20 @@
         {
           "route": "mutation_committed",
           "because": "the graph moved, so draw it again (GH #553). The app used to hold a `refresh` timer that asked `/colony/graph` every minute for a topology that only changes when somebody mutates it; the door below turns the receipt into this hive's own `in_refresh`, so the picture is exactly as fresh as the graph and costs nothing between two changes. The boot receipt is the first fill, which is what keeps a restarted screen from standing empty until the first mutation of the day"
+        },
+        {
+          "route": "in_read",
+          "because": "a read of the colony's COUNTS (GH #965): hop `op` = `stats`, `op_id` mirrored. Answered by exactly one `answer` `{ok, op, scope, cells, hives, edges, kinds: [{kind, n}]}` out of the last snapshot -- counts and never content, the line `/colony/ledger` draws (GH #267) -- or `{ok: false, error: {code: not_ready | unknown_op}}`. No round: the counts are everybody's, and the edge that asks says so"
         }
       ],
       "emits": [
         {
           "route": "view",
           "because": "one view towards a display; who that display is, is the wiring's question. The app says what the picture IS and says it whole; it does not know which surface will hold it, whether anybody is looking, or whether a second display holds the same view beside the first"
+        },
+        {
+          "route": "answer",
+          "because": "the one answer to an `in_read`, with the asker's context, so the edge that asked can take it back; `op` and `op_id` mirrored"
         }
       ]
     },
@@ -40,6 +48,11 @@
           }
         },
         {
+          "from": ".",
+          "to": "./probe",
+          "condition": "has(hop.route) && hop.route == 'in_read'"
+        },
+        {
           "from": "./probe",
           "to": "/colony/graph",
           "condition": "has(hop.route) && hop.route == 'ask_colony'"
@@ -53,6 +66,11 @@
           "from": "./layout",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'view'"
+        },
+        {
+          "from": "./probe",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'"
         }
       ]
     }
@@ -61,7 +79,7 @@
     "purpose": "An app: it draws the colony and hands the drawing to whoever is wired to hold it. A committed mutation takes a topology snapshot and a code cell turns it into one view -- a component tree plus the components it is written in. THE HIVE IS THE ADDRESS: params.ports is empty, so no edge reaches a cell in here; a caller names the hive and a lane on hop.route.",
     "use_when": "Somebody should see and rearrange what the colony knows, and a display is already there to show it. An app owns no channel and no mount of its own, which is what lets the same drawing go to a display on a laptop, a display behind a proxy, or two displays at once, without this template knowing any of it.",
     "not_in_scope": "It draws nothing the topology snapshot does not hold, and it takes that snapshot on a mutation receipt through this hive's own lane to the colony's read-only graph endpoint (GH #163: that endpoint is one of the absolute endpoints a mutation may draw, because it is the sanctioned alternative to reading colony.db; the counts-never-content ledger endpoint joined it with GH #267). So the picture is as fresh as the graph itself. No mount, no authentication, no TLS -- an app has no surface to protect, and whatever guards the display guards this too. No object vocabulary beyond cells, hives and edges. No stored camera: where a person is looking is theirs and stays in their browser.",
-    "contract_in": "Two lanes, at the hive path. mutation_committed -- the mutation door's receipt (GH #553): the graph moved, so draw it again, and the BOOT receipt is what puts the first picture up. in_refresh -- take the topology snapshot now without changing anything, the operator gesture. The hive's own door turns the first into the second; which cell does the asking is this hive's business.",
-    "contract_out": "One lane, out of the hive path. view -- the whole picture, ready to be laid on a surface. An edge from this hive to a display carries it and renames the lane to what the display accepts."
+    "contract_in": "Two lanes, at the hive path. mutation_committed -- the mutation door's receipt (GH #553): the graph moved, so draw it again, and the BOOT receipt is what puts the first picture up. in_refresh -- take the topology snapshot now without changing anything, the operator gesture. The hive's own door turns the first into the second; which cell does the asking is this hive's business. in_read -- a read of the colony's counts (`op: stats`, GH #965), answered on `answer` out of the last snapshot.",
+    "contract_out": "One lane, out of the hive path. view -- the whole picture, ready to be laid on a surface. An edge from this hive to a display carries it and renames the lane to what the display accepts. answer -- the one answer to an `in_read`, counts and never content."
   }
 }

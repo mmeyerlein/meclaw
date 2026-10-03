@@ -76,7 +76,7 @@ fn what_was_kept_follows_the_hold_and_the_ring_is_then_empty() {
         .split("function begin() {")
         .nth(1)
         .expect("the hook has a `begin`")
-        .split("function up()")
+        .split("function up(e)")
         .next()
         .unwrap();
     let hold = begin.find("frame({ type: \"hold\" })").expect("the hold");
@@ -104,7 +104,7 @@ fn the_ring_starts_at_the_touch_and_a_tap_takes_it_with_it() {
         "the capture phase on the whole mark: the device is asked for while the finger is going down"
     );
     let up = src
-        .split("function up() {")
+        .split("function up(e) {")
         .nth(1)
         .expect("the hook has an `up`")
         .split("holding = false;")
@@ -121,7 +121,7 @@ fn the_ring_starts_at_the_touch_and_a_tap_takes_it_with_it() {
     // to 2 s of room tone from before the last release in front of it, plus a
     // `setup_ms` that never happened.
     let held = src
-        .split("function up() {")
+        .split("function up(e) {")
         .nth(1)
         .expect("the hook has an `up`")
         .split("holding = false;")

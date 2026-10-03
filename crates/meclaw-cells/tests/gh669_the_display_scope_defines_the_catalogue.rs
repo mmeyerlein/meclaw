@@ -72,6 +72,9 @@ fn content() -> Vec<String> {
 /// The blocks the catalogue added (GH #958); they stand among the content components.
 const NEW_BLOCKS: [&str; 3] = ["display-card", "display-steps", "display-step"];
 
+/// The blocks that move by target state (GH #961): a coordinate space and a point in it.
+const MOTION_BLOCKS: [&str; 2] = ["display-field", "display-mark"];
+
 fn library_ships() -> bool {
     repo("templates/display/template.json").is_file()
 }
@@ -161,7 +164,9 @@ fn the_scope_defines_the_four_glass_components() {
 }
 
 /// Five of the screen's own, four glass components, and the content components of the
-/// catalogue -- thirty-six before GH #958, thirty-nine with the card and the steps.
+/// catalogue -- thirty-six before GH #958, thirty-nine with the card and the steps,
+/// forty-one with the map and its tile (GH #964), forty-three with the field and the
+/// mark (GH #961).
 #[test]
 fn the_scope_defines_every_component_of_the_catalogue() {
     if !library_ships() {
@@ -174,10 +179,14 @@ fn the_scope_defines_every_component_of_the_catalogue() {
     let content = content();
     assert_eq!(all.len(), 5 + 4 + content.len(), "{names:?}");
     assert!(
+        all.len() >= 43,
+        "forty-three with the map, its tile, the field and the mark: {names:?}"
+    );
+    assert!(
         content.len() >= 30,
         "twenty-seven and the three new blocks: {content:?}"
     );
-    for block in NEW_BLOCKS {
+    for block in NEW_BLOCKS.iter().chain(&MOTION_BLOCKS) {
         assert!(
             content.iter().any(|c| c == block),
             "`{block}` is not in the catalogue"
