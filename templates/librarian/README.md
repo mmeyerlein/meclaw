@@ -1,4 +1,4 @@
-# `librarian@1.0.0`
+# `librarian@1.0.1`
 
 The catalogue of one knowledge space ([#950](https://github.com/mmeyerlein/meclaw/issues/950)): one row per source with its path, kind, format, summary line, tags and the names of its top-level items, kept current from the space's own announcements, so that "where is the thing called X" is answered from one store and wakes no file. The hive is sealed (`params.ports: []`). Cells: `index` (code: announcement, pull, write), `query` (code: the questions), `tools` and `schemas` (code: the tool adapter and the menu), `store` (store, `write_surface: internal`). No model, no embedding request, no network.
 

@@ -1,4 +1,4 @@
-# `member@2.5.1`
+# `member@2.5.2`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and three edges.
@@ -879,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.1` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.1"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.2"}]
 }}
 ```
 
@@ -1124,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.1"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.2"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1538,7 +1538,7 @@ It renders this declaration, and a test holds the two blocks together
 
 ```json
 {"scope": "<member>", "ctx": {"member_person": "<person>"}, "diff": {
-  "add_nodes": [{"name": "apps/<app>", "template": "<app>@<version>"}],
+  "add_nodes": [{"name": "apps/<app>", "template": "<app>@<version>", "privileged": false}],
   "add_edges": [
     {"from": "./firewall", "to": "./apps", "condition": "has(hop.route) && hop.route == 'pass'", "modifier": {"set_hop": {"route": "'turn'"}, "delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]}},
     {"from": "./assistants", "to": "./apps", "condition": "has(hop.route) && hop.route == 'answer'"},
@@ -1560,6 +1560,16 @@ It renders this declaration, and a test holds the two blocks together
     {"from": "./<device>", "to": "./apps/<app>", "condition": "has(hop.route) && hop.route == 'page'"}
   ]}}
 ```
+
+The node is added `privileged: false`: the mutation door refuses it when a cell
+of the app's template declares `contract.parks_context`, the warden's privilege
+of handing a parked speaker back ([#979](https://github.com/mmeyerlein/meclaw/issues/979)).
+The door judges that one word and nothing else, and an operator manifest
+reaches the privilege on purpose: an `add_nodes` entry without `privileged`
+counts as `true`, and `swap_nodes[].with` and `replace_nodes` are not judged
+(the flag is not kept on the node). No recipe renders those for an app, so no
+app reaches them; the operator who writes a manifest is trusted, and
+authentication lives in the proxy in front of the colony.
 
 Read it in five classes. The first four edges are the **observer** fan-out into
 the container, and they carry **no channel guard**: an app of a person hears

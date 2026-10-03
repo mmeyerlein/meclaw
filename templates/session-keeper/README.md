@@ -1,4 +1,4 @@
-# `session-keeper@2.3.1`
+# `session-keeper@2.4.0`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -33,7 +33,7 @@ the only place that mints it.
 |---|---|---|
 | `stamp` | `code` | the ingress pass: look up the generation, restart the idle clock, stamp the turn |
 | `close` | `code` | the night pass: which channels fell silent, seal them, ask for the close |
-| `sessions` | `store` | one row per generation: `channel, session_id, opened_at, last_seen, closed, closed_at, audience_set`. Since 2.1.0 one more table stands beside it and is not domain at all: `port_scratch`, the transfer lane's notepad — written and read by `porter` alone, and it never travels. |
+| `sessions` | `store` | one row per generation: `channel, session_id, opened_at, last_seen, closed, closed_at, audience_set, owed_turn` (the last since GH #953: the turn whose final answer the generation still waits for). Since 2.1.0 one more table stands beside it and is not domain at all: `port_scratch`, the transfer lane's notepad — written and read by `porter` alone, and it never travels. |
 | `night` | `timer` | the firing, every thirty minutes through the local night |
 | `porter` | `code` | the transfer lane: it walks `sessions` for an `in_export` and writes one part back on `in_import`. It opens no generation and closes none — stateless like the other two, which is why its notepad is a table in `sessions`. |
 
@@ -70,16 +70,81 @@ the only place it can be recorded, and the keeper records it on the row right th
 GH #940 the stamp also ENFORCES it: a turn whose round (compared as a sorted list) differs from
 an open generation of its channel seals that generation -- its `close` carries the round it was
 opened in -- and opens a new one, so a generation is "per channel and round". A turn without a
-round seals nothing and runs in the round-less generation of the channel. The price is one
+round seals no generation of another round and runs in the round-less generation of the channel. The price is one
 close pass per sealed generation: a channel whose round flips often makes many short
-generations, by design (E8). A
-door that declares nothing leaves the column empty; nothing here derives a round from the
+generations, by design (E8).
+
+**One open generation per channel and round (GH #954).** Two first turns of a round that arrive
+together both find no open generation of it. Opening one is therefore a claim: the store's
+unique index `sessions_open_round` on `(channel, audience_set, closed_at)` lets one OPEN row of a
+round stand per channel (an open row's `closed_at` is empty, a sealed one's is the instant it was
+sealed), and the turn that opens a generation waits for its own insert. The loser meets the index
+(`unique_violation`), looks again and runs in the winner's generation. Measured before the claim
+on a real colony: 20 of 20 races opened two generations of one round, and the round's
+conversation left in two closes, with one racing turn whole in neither
+(`crates/meclaw-cells/tests/gh954_two_first_turns_open_one_generation.rs`). Compared is the round
+as the door spells it.
+
+The index needs every SEALED row to be distinct too, so every seal stamps its own instant: a
+stamp or night run that seals several generations gives the i-th one `now` plus i microseconds.
+A store from before the index can hold rows that collide -- two open rows of one round, or two
+sealed ones a single old run stamped with one `now` -- and then the store cannot create the
+index (it logs it) until they are gone. Nothing is deleted to get there. The next turn on such a
+channel runs in the newest open row of its round and seals every older one like a generation of
+another round, each with its own stamp and its own close; the night does the same for the open
+rows it finds idle. Sealed rows are healed by the night as well: `owed_turn` (below) is NULL
+exactly on rows written before the column existed, and every firing reads one page of them
+(`heal_limit`, default 200), fetches every sealed row under the same stamps, keeps the stamp on
+the smallest `session_id` of each (channel, round, stamp) group, re-stamps every other one as
+`<stamp>~<session_id>` (unique by the id, still sorted right after the instant) and marks the page visited (`owed_turn` ''); a full page asks for the next one in
+the same firing. Open rows are never touched by the heal. Once nothing is left, a firing costs
+one empty select, and the next wake creates the index
+(`crates/meclaw-cells/tests/gh954_old_duplicates_heal_and_the_index_follows.rs`).
+
+**A round change closes after the last answer (GH #953).** The `close` a round change sends
+must read a wall that holds the last answer of the generation it ends. That answer reaches the
+wall on its own branch (`./brain -> ./curator`, the intake's insert into the ledger), and up to
+this fix nothing but the length of that branch put it ahead of the close: the builder measured
+20 of 20 closes carrying the answer with the insert 47 to 65 deliveries ahead -- a probability,
+not an order (review I-3). The order is now an event. Every turn marks its generation with the
+turn id it carries (`owed_turn`, set by the touch and the open). A turn that reaches the keeper
+without a channel id (the Telegram text road, the member road) gets one at the keeper's door:
+the stamp mints `keeper:<trace id>:<instant>` on `in_turn`, and the turn and its answer carry it
+from there. So every turn owes its answer under a mark of its own, and the answer to an earlier
+turn never acknowledges the debt of a later one -- a double message followed by a round change
+closes only after the answer to the LAST message (Re-Review R-1, lock
+`a_double_message_without_ids_closes_after_the_answer_to_the_last_turn`). `*` remains only as
+the fallback of a lookup reply that carries no id at all. A round change seals
+the old generation in one store bundle of two guarded legs: `seal-done` takes a generation that
+owes nothing and the close leaves at once; `seal-owed` takes one whose last turn is still
+waiting, and NO close leaves. The close leaves on `in_answered` instead: the parent wires the
+curator's `turn_write` there, and the curator's intake emits the answer's insert to its ledger
+and the episode that becomes `turn_write` in ONE emission, so everything that follows
+`turn_write` stands behind that insert in the ledger's FIFO. Only the final answer (origin
+`assistant`) acknowledges; the acknowledgement clears the mark of the turn it answers
+(`context.turn_id`, the channel's id, or `*`; never the empty mark, which would close twice) and, if the generation is sealed, sends its close with the
+room and the round off its row (`crates/meclaw-cells/tests/gh953_a_round_change_closes_after_the_last_answer.rs`).
+The mark is cleared by exactly one of acknowledgement and night, so the close leaves once.
+
+An answer that never comes does not hold a generation open for ever: the night's firing also
+asks for sealed rows whose mark is still set and whose channel has been silent past the idle
+threshold, releases the mark and sends the close itself. The same holds for a parent that does
+not wire `turn_write` to `in_answered`, or a writer whose `turn_write` knob is `0` (today only
+cogny, which has no keeper): their owed generations close at night. The night's own seal takes a
+generation whether it owes an answer or not -- two hours of silence mean none is coming. The
+price of that bound: a generation sealed shortly before a firing whose answer never comes is
+still inside the idle window at that firing, so its close leaves with the NEXT night -- up to
+about 26 hours after the seal (Re-Review R-2). Only a generation whose answer never arrives
+pays it; an answered one closes at the acknowledgement.
+
+A door that declares nothing leaves the column empty; nothing here derives a round from the
 `session_id` prefix, and nothing defaults it to `["*"]`.
 
 | lane | who sends it | what it does |
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | stamps the turn and restarts the idle clock |
 | `in_sweep` | an operator, a second schedule | forces a sweep outside the night (optional) |
+| `in_answered` | the parent, from the curator's `turn_write` | the acknowledgement of a turn's final answer: clears the generation's `owed_turn` and closes a generation sealed while it waited (GH #953) |
 | `in_export` | whoever moves this keeper | demands the whole session ledger as a versioned document. Empty `context` -- an export is about the hive, not about a round. |
 | `in_import` | the same, on the receiving side | feeds ONE part of such a document into a keeper that is already running. Empty `context`. |
 

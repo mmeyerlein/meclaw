@@ -879,7 +879,7 @@ impl Browser {
                 _ => entry.busy_since = Some(now),
             }
             entry.last_frame = Some(now);
-            entry.ack_pending = Some((session.to_string(), frame_id));
+            entry.ack_pending.push((session.to_string(), frame_id));
             entry.ack_due = Some(entry.last_ack.map_or(now, |last| last + interval));
             throttled = entry.state != PageState::Throttled
                 && entry.busy_since.is_some_and(|since| {
@@ -1168,7 +1168,7 @@ impl Browser {
         self.register
             .pages
             .values()
-            .filter(|e| e.ack_pending.is_some())
+            .filter(|e| !e.ack_pending.is_empty())
             .filter_map(|e| e.ack_due)
             .min()
     }
@@ -1180,28 +1180,28 @@ impl Browser {
     /// next frame is the answer to this call.
     pub async fn flush_acks(&mut self) {
         let now = Instant::now();
-        let due: Vec<(String, String, u64)> = self
+        // GH #986: every frame waiting, not only the newest -- see
+        // `PageEntry::ack_pending`.
+        let due: Vec<(String, Vec<(String, u64)>)> = self
             .register
             .pages
-            .values()
+            .values_mut()
             .filter(|e| e.ack_due.is_some_and(|due| due <= now))
-            .filter_map(|e| {
-                e.ack_pending
-                    .as_ref()
-                    .map(|(session, frame)| (e.page.clone(), session.clone(), *frame))
-            })
+            .filter(|e| !e.ack_pending.is_empty())
+            .map(|e| (e.page.clone(), std::mem::take(&mut e.ack_pending)))
             .collect();
-        for (page, session, frame) in due {
-            let _ = self
-                .pipe
-                .call(
-                    "Page.screencastFrameAck",
-                    json!({"sessionId": frame}),
-                    Some(&session),
-                )
-                .await;
+        for (page, frames) in due {
+            for (session, frame) in frames {
+                let _ = self
+                    .pipe
+                    .call(
+                        "Page.screencastFrameAck",
+                        json!({"sessionId": frame}),
+                        Some(&session),
+                    )
+                    .await;
+            }
             if let Some(entry) = self.register.pages.get_mut(&page) {
-                entry.ack_pending = None;
                 entry.ack_due = None;
                 entry.last_ack = Some(Instant::now());
             }

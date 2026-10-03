@@ -1158,6 +1158,95 @@ def t_registry(s, t):
                  ("tool_result", "./assistants/g1/tools"), ("tool_result", "./memory-hive")])
 
 
+def t_results(s, t):
+    """GH #976 (PE-DP-9): the last result of the daily digest and of the research assistant
+    is shown only to the round it stems from. Both residents answer every row with its own
+    round; the card binds the newest row as its `value` and is gated by that row's round."""
+    t.check("both are residents a source may name",
+            [r for r in ("daily-digest", "research-assistant") if r in s.RESIDENTS],
+            ["daily-digest", "research-assistant"])
+    # A value with its own round is gated like a row; one without stays as it came.
+    t.check("a value of another round falls",
+            s.filter_set({"audience_set": ["*"], "value": {"a": 1, "audience_set": ["member:q"]}},
+                         ["member:p"]), None)
+    t.check("a value of the screen's round stands",
+            s.filter_set({"audience_set": ["*"], "value": {"a": 1, "audience_set": ["member:p"]}},
+                         ["member:p"]), {"value": {"a": 1, "audience_set": ["member:p"]}})
+    t.check("a value with an empty round falls",
+            s.filter_set({"audience_set": ["*"], "value": {"a": 1, "audience_set": ""}},
+                         ["member:p"]), None)
+    t.check("a value without a round of its own stays as it came (OR-DP-10)",
+            s.filter_set({"audience_set": ["*"], "value": {"a": 1}}, ["member:p"]),
+            {"value": {"a": 1}})
+    with open(CONFIG, encoding="utf-8") as f:
+        shipped = {x["topic"]: x for x in json.load(f)["params"]["builtin_topics"]}
+    member = json.dumps(["agent:g1", "member:p"])
+    mine = {"id": "d1", "at": 2, "when": "w2", "title": "Daily digest", "lead": "mine",
+            "items": ["mine"], "audience_set": ["agent:g1", "member:p"]}
+    theirs = {"id": "d0", "at": 3, "when": "w3", "title": "Daily digest", "lead": "theirs",
+              "items": ["theirs"], "audience_set": ["agent:g1", "member:p", "member:q"]}
+    group = {"id": "d2", "at": 1, "when": "w1", "title": "Daily digest", "lead": "kept",
+             "items": ["kept"], "audience_set": None}
+
+    def shown(topic, lead, resident, body, screen, tid):
+        c = observing(s, builtin_topics=[shipped[topic]], screen_audience=screen)
+        c.run({"route": "turn", "turn_id": tid},
+              {"messages": [{"type": "text", "text": "what came"}]}, ctx={"audience_set": member})
+        out = c.run({"route": "in_decision", "show_id": tid}, verdict(topic, 0.9, lead),
+                    ctx=DEC_CTX)
+        reads = [e["header"] for e in out if e["header"]["route"] == "resident_read"]
+        out = c.run({"route": "resident_answer", "op_id": "%s/%s" % (tid, lead),
+                     "resident": resident, "resident_status": "answer",
+                     "resident_round": member}, body)
+        return reads, last_blocks(out)
+
+    reads, blocks = shown("digest", "last", "daily-digest",
+                          {"ok": True, "op": "last", "digests": [mine, group]},
+                          ["member:p"], "g1")
+    t.check("the digest is read on its own lane, once per wanted set",
+            sorted((r["resident"], r["op_id"], r["op"]) for r in reads),
+            [("daily-digest", "g1/last", "last"), ("daily-digest", "g1/recent", "last")])
+    t.check("the newest digest of the round shows as the card",
+            [(b["component"], b["props"].get("body")) for b in blocks],
+            [("display-card", "mine")])
+    _, blocks = shown("digest", "last", "daily-digest",
+                      {"ok": True, "op": "last", "digests": [mine]}, ["member:q"], "g2")
+    t.check("a screen of another round sees no card", blocks, [])
+    _, blocks = shown("digest", "last", "daily-digest",
+                      {"ok": True, "op": "last", "digests": [theirs, mine]},
+                      ["member:p", "member:q"], "g3")
+    t.check("a screen wider than the member's round sees nothing (the set is the member's)",
+            blocks, [])
+    _, blocks = shown("digest", "last", "daily-digest",
+                      {"ok": True, "op": "last", "digests": [theirs, mine]}, ["member:p"], "g4")
+    t.check("a digest of a wider round that holds the screen shows",
+            [b["props"].get("body") for b in blocks], ["theirs"])
+    _, blocks = shown("digest", "recent", "daily-digest",
+                      {"ok": True, "op": "last",
+                       "digests": [dict(theirs, audience_set=["member:q"]), mine, group]},
+                      ["member:p"], "g5")
+    t.check("the list keeps only the rows of the screen's round, a row without one falls",
+            [k["props"]["v"] for b in blocks for k in b.get("children", [])], ["mine"])
+    q1 = {"id": "a1", "question_id": "t1", "question": "mine?", "answer": "yes", "at": 2,
+          "when": "w2", "audience_set": ["agent:g1", "member:p"]}
+    q2 = {"id": "a2", "question_id": "t2", "question": "theirs?", "answer": "no", "at": 3,
+          "when": "w3", "audience_set": ["agent:g1", "member:q"]}
+    reads, blocks = shown("research", "answers", "research-assistant",
+                          {"ok": True, "op": "last", "answers": [q2, q1]}, ["member:p"], "r1")
+    t.check("the research answers are read on their own lane",
+            sorted(r["resident"] for r in reads), ["research-assistant"] * 2)
+    t.check("a research answer shows only to its round",
+            [(k["props"]["k"], k["props"]["v"]) for b in blocks for k in b.get("children", [])],
+            [("mine?", "yes")])
+    _, blocks = shown("research", "latest", "research-assistant",
+                      {"ok": True, "op": "last", "answers": [q2, q1]}, ["member:p"], "r2")
+    t.check("the newest answer of another round is no card", blocks, [])
+    _, blocks = shown("research", "answers", "research-assistant",
+                      {"ok": False, "op": "last", "error": {"code": "no_round"}},
+                      ["member:p"], "r3")
+    t.check("a refused read places nothing", blocks, [])
+
+
 SEEN = []
 
 
@@ -1343,7 +1432,8 @@ TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_
           ("LIFECYCLE", t_lifecycle),
           ("OBSERVE", t_observe), ("SEARCH", t_search), ("WORK", t_work),
           ("SOURCE", t_source), ("REGISTRY", t_registry), ("DATAROUND", t_data_round),
-          ("FOLLOWUP", t_followup), ("CONTRACT", t_contract)]
+          ("FOLLOWUP", t_followup), ("RESULTS", t_results),
+          ("CONTRACT", t_contract)]
 
 
 def main(argv):

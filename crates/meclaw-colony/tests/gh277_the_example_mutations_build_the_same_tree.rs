@@ -812,7 +812,13 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// section edges only gained `things`). Two talkies and one cogny:
 /// 3 x 5 + 2 x 4 + 1 x 4. Measured red in the strand's single-test run (430
 /// against 403).
-const EDGES: usize = 430;
+///
+/// Moved 430 -> 434 with GH #953: every `session-keeper` one edge more
+/// (`. -> ./stamp` on `in_answered`), and `talky@6` one of its own
+/// (`./curator -> ./session-keeper` on `turn_write`, the answer receipt). Two
+/// talkies, one keeper each: 2 x 1 + 2 x 1. Measured red in the strand's
+/// single-test run (434 against 430).
+const EDGES: usize = 434;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

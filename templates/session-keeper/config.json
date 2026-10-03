@@ -19,6 +19,10 @@
           "because": "an operator-forced sweep outside the night"
         },
         {
+          "route": "in_answered",
+          "because": "the acknowledgement of a turn's final answer (GH #953): the parent wires the curator's `turn_write` here. A generation that a turn of a new round sealed while its last turn still waited for that answer is closed on THIS message and not at the seal -- `turn_write` leaves causally after the answer's insert into the curator's ledger, so the close stands behind it in that ledger's FIFO, an order by event rather than by the length of two paths. Only a message carrying the final answer (origin 'assistant') acts; hop.session_id names the generation and context.turn_id the channel turn it answers. A parent without the edge loses no close: the night releases a mark older than the idle threshold and closes the generation itself"
+        },
+        {
           "route": "in_export",
           "because": "a demand that this hive hand out everything it holds, as a versioned document. The walk reads `sessions`, one `dump` part per table -- schema declaration first, rows after it -- and the last part carries the completeness marker. The caller sends no keys with it: an export is about the whole hive rather than about a round, and what may leave is not a question this lane asks (GH #471)",
           "context": []
@@ -80,6 +84,11 @@
           "from": ".",
           "to": "./stamp",
           "condition": "has(hop.route) && hop.route == 'in_turn'"
+        },
+        {
+          "from": ".",
+          "to": "./stamp",
+          "condition": "has(hop.route) && hop.route == 'in_answered'"
         },
         {
           "from": ".",
@@ -326,7 +335,7 @@
     "purpose": "Scope marker of the session keeper: bundles the channel-generation state and the two passes that move it — the stamp in the ingress path and the nightly close. THE HIVE IS THE ADDRESS: a caller sends to the keeper and names a lane, never a cell inside it. A session is a phone call on a channel: it begins with a turn, it ends deterministically, and everything downstream only reads the id.",
     "use_when": "One per agent surface, in front of the context assembly. Wire the parent's edges TO THE HIVE PATH — see meclaw-overview § Die Hive-Grenze. `params.ports` is empty and therefore sealed: a mutation reaching inside is rejected with hive_port_boundary. The keeper is an island until an edge crosses into it.",
     "not_in_scope": "No conversation content and no context assembly -- the turns live in the collector's window. No judgement about whether a conversation is over: the close is a timer plus an idle threshold, never a model call. Nothing is deleted; a closed generation stays as a row. And no roster: the round of a generation is recorded once, when the generation opens, and never rewritten (ADR-0002 E12).",
-    "contract_in": "in_turn — an inbound turn from the surface; the caller MUST promote the channel identity to context.channel, or every chat lands on the channel 'default', and SHOULD promote the round to context.audience_set, or the generation this turn opens records none. in_sweep — an operator-forced sweep outside the night. Any other route is refused by the hive rather than delivered to a cell that would not know it.",
+    "contract_in": "in_turn — an inbound turn from the surface; the caller MUST promote the channel identity to context.channel, or every chat lands on the channel 'default', and SHOULD promote the round to context.audience_set, or the generation this turn opens records none. in_sweep — an operator-forced sweep outside the night. in_answered — the curator's `turn_write`, renamed on the parent edge: the acknowledgement of a turn's final answer, which closes a generation sealed while that answer was still on its way (GH #953). Any other route is refused by the hive rather than delivered to a cell that would not know it.",
     "contract_out": "turn — a stamped turn, carrying hop.session_id, for the context assembly (promote the id to context on that edge; that IS the stamp). close — a finished session, carrying hop.session_id, hop.channel and hop.audience_set, for whoever consumes one (the collector's in_close lane). The close is fired by a TIMER, which has no context of its own: everything it says about the round comes off the generation row, so the consuming edge has all three keys to promote and none of them is guessed."
   }
 }

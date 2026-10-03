@@ -282,7 +282,7 @@ fn the_template_declares_one_code_cell_and_the_four_lanes_it_really_has() {
     );
     let meta = read_json(&root.join("template.json"));
     assert_eq!(meta["name"], "chat-channel");
-    assert_eq!(meta["version"], "1.0.0");
+    assert_eq!(meta["version"], "1.0.1");
 }
 
 #[test]
@@ -308,7 +308,7 @@ fn the_catalogue_names_it() {
     let Some(_) = shipped() else { return };
     let table = std::fs::read_to_string(repo("templates/README.md")).expect("the catalogue");
     assert!(
-        table.contains("[`chat-channel`](chat-channel/) | 1.0.0 |"),
+        table.contains("[`chat-channel`](chat-channel/) | 1.0.1 |"),
         "every template the export ships has a row on the door sign (GH #235)"
     );
 }

@@ -322,7 +322,8 @@ fn main_config() -> Value {
         // The three keys the curator's writer mints per turn since GH #889
         // (`turn_id`, `happened_at`, `session_id`) are promoted here, together with the
         // provenance the writer refuses to guess (#244/#269): `audience_set`
-        // says who was in the round and `speaker`/`agent_id` who said it;
+        // says who was in the round and `agent_id` who answered (`speaker` rides in
+        // on the turn's own context, GH #979);
         // `channel` is not set here -- it travels from the connector seam above
         // (`hop.chat_id` -> `context.channel`), exactly as it does in a real
         // colony. One person, one agent, one room: that is this colony's whole
@@ -334,7 +335,6 @@ fn main_config() -> Value {
                                       "turn_id": "hop.turn_id",
                                       "happened_at": "hop.happened_at",
                                       "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
                                       "agent_id": "'agent:assistant'"}}},
         // The close route reaches no memory any more (Q11). `KEEPER_IDLE_MS=0`
         // means it fires during the run, so it is terminated rather than left
@@ -512,10 +512,20 @@ async fn boot(
     (h, sink_rx, reject_rx)
 }
 
+/// A turn of the one person, named the way a channel's ingress names it:
+/// `speaker` is a stamped key (GH #979, `STAMPED_CONTEXT_KEYS`) that no edge a
+/// config draws for itself may write, so the turn carries it in from outside
+/// as a real ingress does.
 fn turn(text: &str) -> Message {
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    ctx.insert("speaker".into(), json!("member:user"));
     MessageBuilder::new(Path::new("/surface"))
         .body(Body::Inline(
             json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
+        ))
+        .headers(meclaw_core::Headers::from_parts(
+            ctx,
+            meclaw_core::serde_json::Map::new(),
         ))
         .ttl(200)
         .build()

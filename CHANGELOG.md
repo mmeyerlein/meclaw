@@ -12,6 +12,36 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-10-03
+
+### Added
+
+- **An older seed or export is born with declared defaults** ([#822](https://github.com/mmeyerlein/meclaw/issues/822)). A store, `llm` or `web` seed and a memory export written under an older writer schema resolve against the defaults the template declares at birth, a missing default is refused at birth with the column name, and `affinity@3.10.0` declares its `proposals` columns that way.
+- **A turn names its speaker only from a proven channel identity** ([#979](https://github.com/mmeyerlein/meclaw/issues/979)). `context.speaker` is stamped only from a bound chat, a verified caller (`voice@2.5.0` on `in_session`, `freeswitch@2.3.0`) or an authenticated door, and `firewall@2.4.0` hands a released turn back with the sender it arrived with.
+- **Screen follow-ups** ([#976](https://github.com/mmeyerlein/meclaw/issues/976)). `daily-digest@2.2.0` and `research-assistant@2.2.0` keep what they showed with round and time for `presenter@1.2.0` to read, the decisions mode refuses `system` and `tool_scope`, and the status dot appears only where it is declared.
+
+### Changed
+
+- **An app pin carries the round its row proves** ([#972](https://github.com/mmeyerlein/meclaw/issues/972)). `curator@1.7.0` narrows a pin's round against the edge round and sends all audience groups of one source in one message.
+- **`reads_residents` draws edges only to residents the member has** ([#983](https://github.com/mmeyerlein/meclaw/issues/983)). `builder@1.25.0` takes `residents_present` in `install_app` and leaves out an edge to a missing resident instead of refusing the whole install.
+- **The presenter's decider takes a credential grant** ([#982](https://github.com/mmeyerlein/meclaw/issues/982)). Its key no longer has to come from the colony env.
+- **`wave_retro` finds a wave's plan folder under `docs/plans/` as well** ([#970](https://github.com/mmeyerlein/meclaw/issues/970)).
+
+### Fixed
+
+- **Every value stamped into a round literal is validated** ([#967](https://github.com/mmeyerlein/meclaw/issues/967)). The builder checks the assistant, generation and person values, and a comment no longer makes an env token count as quoted.
+- **A round change no longer closes the old generation before its last answer** ([#953](https://github.com/mmeyerlein/meclaw/issues/953)). `session-keeper@2.4.0` gives every turn an id at its door and closes a sealed generation only after `in_answered`, which `talky@6.6.0` wires from its curator.
+- **Two concurrent turns of a new round open one generation** ([#954](https://github.com/mmeyerlein/meclaw/issues/954)).
+- **Two first rebuild claims of the same round leave exactly one winner** ([#955](https://github.com/mmeyerlein/meclaw/issues/955)), now locked by a test.
+- **A missed one-shot timer fires its catch-up strike under full-suite load** ([#956](https://github.com/mmeyerlein/meclaw/issues/956)).
+- **A watchdog trip inside a read names its endpoint under full-suite load** ([#968](https://github.com/mmeyerlein/meclaw/issues/968)).
+- **Minor findings in the file space, librarian and memory hive are repaired** ([#973](https://github.com/mmeyerlein/meclaw/issues/973)). `file-space@1.3.1` bounds its directory derivation and pages, `librarian@1.0.1` refuses a malformed cursor, and `memory-hive@3.8.2` no longer chains a name to its own alias.
+- **Every dead letter of a person round has a declared class** ([#974](https://github.com/mmeyerlein/meclaw/issues/974)). Replies and write echoes that leave the top container without a consumer are sorted against a class table with one reason each, and a test locks that a tool call on a grown channel still gets its result.
+- **A projection job's file steps run with the full hop budget** ([#975](https://github.com/mmeyerlein/meclaw/issues/975)). The edges into the file space restore the TTL at each seam.
+- **The root-lease test waits for the daemon's boot instead of a fixed timeout under a full run** ([#984](https://github.com/mmeyerlein/meclaw/issues/984)).
+- **A screen can be drafted into a running member** ([#985](https://github.com/mmeyerlein/meclaw/issues/985)). The builder no longer trips `resume_requires_stopped_cell`.
+- **The screencast acknowledges every frame** ([#986](https://github.com/mmeyerlein/meclaw/issues/986)), so a viewer that stops reading no longer hangs the run to the nextest timeout.
+
 ## [0.59.0] — 2026-10-03
 
 ### Added

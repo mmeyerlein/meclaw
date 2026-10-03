@@ -121,9 +121,13 @@ pub struct PageEntry {
     pub idle_since: Option<Instant>,
     /// When the last screencast frame was acknowledged.
     pub last_ack: Option<Instant>,
-    /// A frame waiting to be acknowledged: the CDP session and the frame's own
-    /// id, plus when the acknowledgement is due (OR-G8).
-    pub ack_pending: Option<(String, u64)>,
+    /// The frames waiting to be acknowledged, oldest first: the CDP session and
+    /// each frame's own id (OR-G8). EVERY frame, not the newest: the browser
+    /// counts one acknowledgement as one in-flight slot back, so a frame that
+    /// arrived before the previous one was acknowledged and was then skipped
+    /// cost a slot for good, and after a few such pairs the cast stood
+    /// (GH #986). Bounded by the browser's own in-flight window.
+    pub ack_pending: Vec<(String, u64)>,
     /// When the pending acknowledgement is due.
     pub ack_due: Option<Instant>,
     /// When the last frame arrived, for the busy window below.
@@ -300,7 +304,7 @@ impl Register {
                         casting: false,
                         idle_since: Some(Instant::now()),
                         last_ack: None,
-                        ack_pending: None,
+                        ack_pending: Vec::new(),
                         ack_due: None,
                         last_frame: None,
                         busy_since: None,

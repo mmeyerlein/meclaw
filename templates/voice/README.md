@@ -1,4 +1,4 @@
-# `voice@2.4.0`
+# `voice@2.5.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -37,6 +37,7 @@ instantiating mutation put it -- and not a scope with a door, so there is no
 |---|---|
 | in | the finished assistant turn. `context.call_id` picks the connection it is spoken into (`context.session_id` where that key is absent) |
 | in, `hop.route == 'in_advise'` | one section of advice appended to a RUNNING duplex session, without cutting anybody off: `hop.section` says whether it is a `fact` (said out loud), a `context` (thought) or a `correction` (the standing instruction rewritten). Duplex only -- a cascade session has no channel to append to and answers `wrong_engine`. A `context` that carries `hop.renewal_n` is the handover of a renewal (see `renewed` below): it goes to the renewed session before the caller's audio does, and the call follows at the next quiet moment of the line; a block for a renewal that failed is dropped |
+| in, `hop.route == 'in_session'` | who is speaking in one session, where somebody PROVED it ([#979](https://github.com/mmeyerlein/meclaw/issues/979)): `hop.call_id` (or `hop.session_id`) names the session and `hop.user_id` the verified sender, stamped on the session's `turn` and `delegation` as `user_id` and `verified_user`. No text, no answer. An empty `user_id` withdraws the name, and the name goes with the connection -- a session that connects again is named again or not at all. Only an edge the installing level draws reaches it -- in the `freeswitch` hive, the signalling half, which knows the caller the switch put through |
 | out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode` |
 | out, `hop.route == 'partial'` | an interim transcript, same body shape, `hop` carries `eager` beside the rest. OFF by default -- `params.emit_partials` turns it on |
 | out, `hop.route == 'spoken'` | what the ASSISTANT is saying while it is still saying it, same body shape, `hop` carries `speaker: 'assistant'`. Duplex only, and on the same `params.emit_partials` -- the two halves of one stream are ordered together or not at all |
@@ -59,6 +60,19 @@ separate `partial` from `turn` by the presence of a key would be reading the
 absence of `turn_id` as a meaning. So the edges below carry no `set_hop` on the
 way up: the stamp the cell wrote is the stamp the container routes on.
 
+**A spoken turn names its sender only when somebody proved it** ([#979](https://github.com/mmeyerlein/meclaw/issues/979)).
+This cell knows a socket and a session id, never a person, so on its own its
+`turn` carries no `user_id` at all -- the key is absent, not empty. A level that
+DOES know who is in a session hands it over on `in_session`, and from then on
+every `turn` and every `delegation` of that session carries that sender twice:
+as `hop.user_id`, the sender a firewall allowlists by, and as
+`hop.verified_user`, the proof. A member's ingress stamps `context.speaker` from
+`verified_user` alone, and only where it equals the person's own id. `partial` stays unnamed: it is overtaken by its own `turn`. The
+telephone hive is the one level that does this today -- its signalling half
+hands on the caller the switch verified, and only that caller
+(`templates/freeswitch/README.md` § *Who is on the line*). A browser voice
+channel has no such proof and names nobody.
+
 ## Wiring it into a member
 
 **Adding a voice channel costs one node and two edges, and no template moves.**
@@ -71,7 +85,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.4.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.5.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -217,7 +231,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -251,7 +265,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -457,7 +471,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -522,7 +536,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -535,7 +549,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -599,7 +613,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "api_key": "${OPENAI_API_KEY}",
                                 "instructions": "<who the model is for this session>",
@@ -762,7 +776,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -777,7 +791,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.4.0",
+{"name": "channels/voice", "template": "voice@2.5.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

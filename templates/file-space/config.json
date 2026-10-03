@@ -468,7 +468,8 @@
               "cur_phase",
               "cur_call",
               "cur_job"
-            ]
+            ],
+            "restore_ttl": true
           }
         },
         {
@@ -481,7 +482,8 @@
               "cur_phase",
               "cur_call",
               "cur_job"
-            ]
+            ],
+            "restore_ttl": true
           }
         },
         {
@@ -494,7 +496,8 @@
               "cur_phase",
               "cur_call",
               "cur_job"
-            ]
+            ],
+            "restore_ttl": true
           }
         },
         {

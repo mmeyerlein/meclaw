@@ -1856,6 +1856,10 @@ pub struct ColonyTaskConfig {
     /// Deep-Audit F3 — liveness signal emitted from the loop; `None` disables the
     /// watchdog (test spawns).
     pub heartbeat_tx: Option<mpsc::Sender<crate::watchdog::Beat>>,
+    /// GH #968: where a work-item label goes when the heartbeat channel is
+    /// full ([`crate::watchdog::LabelSlot`]). `None` = labels travel on the
+    /// heartbeat channel only, as before.
+    pub label_slot: Option<crate::watchdog::LabelSlot>,
     /// stdio-Bridge (Direct-Mode): optional egress sink. When set, a message that
     /// is unroutable at the root hive `/` (HiveNoRoute) goes here instead of the
     /// DLQ. `None` (default) → unchanged DLQ behaviour.
@@ -1909,6 +1913,7 @@ impl ColonyTaskConfig {
             blob_store,
             env_source,
             heartbeat_tx: None,
+            label_slot: None,
             egress_tx: None,
             egress_policy: EgressPolicy::All,
             death_ack_wait_tx: None,
@@ -1920,6 +1925,14 @@ impl ColonyTaskConfig {
     /// tick on `tx` ~10×/s.
     pub fn with_heartbeat(mut self, tx: mpsc::Sender<crate::watchdog::Beat>) -> Self {
         self.heartbeat_tx = Some(tx);
+        self
+    }
+
+    /// GH #968: give the work pulses a slot for the label a full heartbeat
+    /// channel would drop. The supervisor reads the other half
+    /// ([`crate::watchdog::run_watchdog_with_label_slot`]).
+    pub fn with_label_slot(mut self, slot: crate::watchdog::LabelSlot) -> Self {
+        self.label_slot = Some(slot);
         self
     }
 
@@ -2685,6 +2698,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         blob_store,
         env_source,
         heartbeat_tx,
+        label_slot,
         egress_tx,
         egress_policy,
         death_ack_wait_tx,
@@ -2835,7 +2849,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     let mutation_pulse = crate::watchdog::WorkPulse::new(
         heartbeat_tx.clone(),
         crate::watchdog::WorkItem::new("mutation"),
-    );
+    )
+    .with_slot(label_slot);
     // GH #553: the receipt target, resolved once. `None` is the default and the
     // state of every colony that says nothing about receipts — with it nothing
     // is emitted and no mutation behaves differently.
@@ -3782,11 +3797,25 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 let carries = node_contracts
                     .get(&em.sender_path)
                     .is_some_and(|nc| nc.header_view.ingress_carries_trace);
-                let em = if em.parent_message_id.is_none() && !carries {
+                let mut em = if em.parent_message_id.is_none() && !carries {
                     CellEmission { input_ttl: colony_config.message_default_ttl, ..em }
                 } else {
                     em
                 };
+                // GH #979 (OR-NL-187, OR-NL.I.11): a config edge may write a
+                // stamped key only as the restore of a parked hop,
+                // `has(hop.ctx_<k>) ? hop.ctx_<k> : ''`. That hop key must come
+                // from a cell that really parked the turn -- the warden, which
+                // declares `contract.parks_context`. Anyone else's
+                // `ctx_<stamped>` is dropped here, before any edge reads it, so
+                // an app's own code cell cannot forge `ctx_speaker` and lift it
+                // on its own edge. Fail-closed: no projection = no declaration.
+                let parks = node_contracts
+                    .get(&em.sender_path)
+                    .is_some_and(|nc| nc.header_view.parks_context);
+                if !parks {
+                    strip_parked_stamps(&mut em.content, em.sender_path.as_str());
+                }
                 // W2b (Ruling A1, ruling 2026-06-12): a substrate-generated error
                 // reply addressed to a known sender (`direct_reply` — consumes_violation
                 // ingress check / message_timeout backstop) is delivered DIRECTLY to
@@ -10350,6 +10379,26 @@ fn split_content_header(mut content: Value) -> (Map<String, Value>, Value) {
         _ => Map::new(),
     };
     (cell_headers, content)
+}
+
+/// GH #979 (OR-NL.I.11) -- remove every `ctx_<stamped key>` hop key
+/// (`cel_eval::STAMPED_CONTEXT_KEYS`) from a cell's emitted `content.header`.
+/// Called for emitters that do not declare `contract.parks_context`; a content
+/// without an object header is left as it is. Never panics.
+fn strip_parked_stamps(content: &mut Value, sender: &str) {
+    let Some(header) = content.get_mut("header").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+        let parked = format!("ctx_{key}");
+        if header.remove(&parked).is_some() {
+            tracing::warn!(
+                sender = %sender,
+                key = %parked,
+                "a cell without contract.parks_context emitted a parked stamped key -- dropped"
+            );
+        }
+    }
 }
 
 /// Build the follow-up Message from a CellEmission. Header-Merge per

@@ -1,4 +1,4 @@
-# `talky@6.5.0`
+# `talky@6.6.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- fifty-six edges,
+dispatcher for the fan-out, the close batch out to the write port -- fifty-seven edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.5.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.6.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -449,7 +449,7 @@ and the `turn_id` is deterministic, so a repeat is recognisable downstream as we
 
 ## The internal wiring, edge by edge
 
-Twenty-one edges of round in this hive's `params.graph` -- plus the thirty-five that ARE the
+Twenty-two edges of round in this hive's `params.graph` -- plus the thirty-five that ARE the
 boundary (sixteen door edges from `.`, nineteen leaving towards it, and those are the lanes
 above; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
 push, GH #863, and ten of them leave `./curator` -- `write`, `turn_write`, `pack_ack` and
@@ -466,7 +466,7 @@ eleventh a gap's bundle into `./curator`, GH #895, the twelfth the renewed duple
 `in_pin` into `./curator`, GH #916, the fourteenth door an observer's stats question,
 `in_stats` into `./curator`, GH #926, the fifteenth a push candidate, `in_candidate` into
 `./curator`, GH #949, and the sixteenth an app's ledger read, `in_read` into `./curator`, GH #949).
-The two halves are the whole of this file, counted from it. Every one of the twenty-one names a
+The two halves are the whole of this file, counted from it. Every one of the twenty-two names a
 sub-unit **by its path**: three of the eight nodes below are sealed hives, so the address is
 the hive and the lane in the third column is what the door behind it reads; what those three
 draw INSIDE themselves is theirs and is not counted here. Read it as the round it is:
@@ -497,6 +497,7 @@ splitter --(sidecar, any other)-->  .        <- one per section, out of the side
 brain --(error | content_filter, !refused_subscriber)-> errors
 brain --(has(refused_subscriber))--> .   route := 'model_refused'  <- a refused push, GH #863
 session-keeper --(reject)--------> errors    <- the session store refused a step
+curator --(turn_write, !refused_subscriber)--> session-keeper  in_answered  <- the answer receipt: a sealed generation closes after its last answer stands on the wall, GH #953
 
 dispatcher --(calls)---> collector   in_calls    dispatcher ==(tool, DEFAULT)==> [your tools]
 dispatcher --(result)--> collector   in_tool
@@ -685,7 +686,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.5.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.6.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

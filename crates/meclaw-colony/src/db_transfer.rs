@@ -69,6 +69,15 @@
 //! declared schema disagrees with the target by a single column, in either
 //! direction. A column that cannot be dropped covers every table of every cell
 //! type, where a name list would only cover the ones somebody wrote down.
+//!
+//! The one exception is declared, not listed (GH #822): a target column with a
+//! SQL `DEFAULT` — written by a `store` from its `{type, default}` column form —
+//! may be absent from a part written by an older schema; the row takes the
+//! default. The resolver is `crate::schema_evolution`, the same one every seed
+//! reader runs, and the export names its writer `version` in the document.
+//! That exception does not reach provenance: [`PROVENANCE_COLUMNS`] is the one
+//! name list here, and it only narrows -- a part missing one of them is refused
+//! whatever default the target declares (review N-B E #2).
 
 use meclaw_core::serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -176,6 +185,11 @@ struct Column {
     name: String,
     decl_type: String,
     pk: i64,
+    /// The column's SQL `DEFAULT` as SQLite reports it (`pragma_table_info`
+    /// `dflt_value`), `None` without one. GH #822: a `store` writes a declared
+    /// default here, and an import resolves a part that lacks the column
+    /// against it.
+    dflt: Option<String>,
 }
 
 /// The columns of `table`, in storage order, straight from SQLite.
@@ -184,12 +198,14 @@ struct Column {
 /// only ever arrives as a bound parameter or as a name matched against this
 /// list. That is the same injection barrier the `store`'s query layer draws.
 fn columns_of(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<Vec<Column>> {
-    let mut st = conn.prepare("SELECT name, type, pk FROM pragma_table_info(?1) ORDER BY cid")?;
+    let mut st =
+        conn.prepare("SELECT name, type, pk, dflt_value FROM pragma_table_info(?1) ORDER BY cid")?;
     st.query_map([table], |r| {
         Ok(Column {
             name: r.get(0)?,
             decl_type: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
             pk: r.get(2)?,
+            dflt: r.get::<_, Option<String>>(3)?,
         })
     })?
     .collect()
@@ -386,6 +402,7 @@ pub fn export_document(
     for c in &cols {
         schema.insert(c.name.clone(), Value::from(seed_type(&c.decl_type)));
     }
+    let version = crate::schema_evolution::recorded_version(conn, &table);
     let mut payload = Map::new();
     payload.insert("format".into(), Value::from(TRANSFER_FORMAT));
     payload.insert("table".into(), Value::from(table));
@@ -394,6 +411,10 @@ pub fn export_document(
         Value::Array(key.into_iter().map(Value::from).collect()),
     );
     payload.insert("schema".into(), Value::Object(schema));
+    // GH #822 (E.2): the document says which version of the table wrote it, so
+    // a reader can tell an older writer from a newer one. Recorded by the
+    // `store`'s DDL from `params.schema_versions`; 1 when nothing is recorded.
+    payload.insert("version".into(), Value::from(version));
     let count = out.len() as i64;
     payload.insert("rows".into(), Value::Array(out));
     Ok(TransferOutcome::Done {
@@ -456,6 +477,23 @@ pub fn import_document(
     }
 }
 
+/// The provenance columns an import never fills from a declared default
+/// (review N-B E #2, orchestrator ruling B). Birth and boot read the template's
+/// own seed, where the default is the author's decision; an import carries a
+/// foreign part into a running cell, and a provenance column missing from it was
+/// dropped somewhere -- the gate of #244 holds for it by name. Every other
+/// column with a SQL `DEFAULT` stays resolvable.
+pub const PROVENANCE_COLUMNS: &[&str] = &[
+    "audience",
+    "audience_set",
+    "channel",
+    "speaker",
+    // Re-review N-B E: the collector's `turns` carries the legend key of a
+    // peer row beside `speaker` (GH #847) -- provenance of the same kind.
+    "speaker_ref",
+    "origin_round",
+];
+
 /// One part, applied on a transaction the CALLER opened.
 ///
 /// Split out of [`import_document`] for GH #261: a whole-directory import is
@@ -471,10 +509,11 @@ fn import_one(
         .get("table")
         .and_then(|v| v.as_str())
         .ok_or("import: missing table")?;
-    let part_schema = args
-        .get("schema")
-        .and_then(|v| v.as_object())
-        .ok_or("import: missing schema object — a row list without a header is a guess")?;
+    if !args.get("schema").is_some_and(Value::is_object) {
+        return Err(
+            "import: missing schema object — a row list without a header is a guess".to_string(),
+        );
+    }
     let rows = args
         .get("rows")
         .and_then(|v| v.as_array())
@@ -489,36 +528,75 @@ fn import_one(
         Err(e) => return Ok(TransferOutcome::Sql(e)),
     };
 
-    // THE gate (#244, the 0.16.0 audience-gate contract). An audience that
-    // is present but EMPTY travels as it stands — empty means invisible, which is
-    // the honest fate of a row from before the gate, and inventing one would be
-    // the laundering itself.
-    let target_cols: BTreeSet<&str> = cols.iter().map(|c| c.name.as_str()).collect();
-    let declared_cols: BTreeSet<&str> = part_schema.keys().map(String::as_str).collect();
-    if target_cols != declared_cols {
-        let missing: Vec<&str> = target_cols.difference(&declared_cols).copied().collect();
-        let extra: Vec<&str> = declared_cols.difference(&target_cols).copied().collect();
-        let mut parts = Vec::new();
-        if !missing.is_empty() {
-            parts.push(format!(
-                "the part does not carry {} — a column that does not travel is a column that \
-                 was dropped in transit, and provenance is never reconstructed",
-                missing.join(", ")
-            ));
+    // THE gate (#244, the 0.16.0 audience-gate contract), since GH #822 run by
+    // the one resolver every seed reader shares. An audience that is present
+    // but EMPTY travels as it stands — empty means invisible, which is the
+    // honest fate of a row from before the gate, and inventing one would be
+    // the laundering itself. A column the part lacks is refused, naming it,
+    // unless the target declares a DEFAULT for it: then the template has
+    // decided what a row from an older writer holds -- except for a provenance
+    // column (`PROVENANCE_COLUMNS`), which an import never fills, whatever its
+    // default (ruling B). A column the target lacks,
+    // a changed storage class and a newer writer version stay refusals: growing
+    // a schema is a template change, not something an import may do silently.
+    let declared = crate::schema_evolution::TableDecl {
+        version: crate::schema_evolution::recorded_version(conn, &table),
+        columns: cols
+            .iter()
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    crate::schema_evolution::ColumnDecl {
+                        ty: seed_type(&c.decl_type).to_string(),
+                        default: c.dflt.as_ref().map(|d| Value::from(d.as_str())),
+                    },
+                )
+            })
+            .collect(),
+    };
+    let writer = match crate::schema_evolution::parse_writer_header(&table, args) {
+        Ok(w) => w,
+        Err(e) => {
+            return Ok(TransferOutcome::Refused {
+                code: "import_schema_drift",
+                detail: format!("import refused for table {table:?}: {e}"),
+            });
         }
-        if !extra.is_empty() {
-            parts.push(format!(
-                "the part declares {} which this cell does not have — the source is newer, and \
-                 growing a schema is a template change, not something an import may do silently",
-                extra.join(", ")
-            ));
+    };
+    let fill = match crate::schema_evolution::resolve(&table, &writer, &declared) {
+        Ok(plan) => match plan
+            .fill
+            .keys()
+            .find(|c| PROVENANCE_COLUMNS.contains(&c.as_str()))
+        {
+            // Review N-B E #2, orchestrator ruling B: the default exception
+            // stops at provenance. A running cell's audience gate does not bend
+            // to a template's default, however fail-closed it is -- a part
+            // without the column is refused naming it, exactly as before #822.
+            Some(c) => {
+                return Ok(TransferOutcome::Refused {
+                    code: "import_schema_drift",
+                    detail: format!(
+                        "import refused for table {table:?}: schema_mismatch: column {c} is \
+                         provenance and is never filled from a default on import — a column \
+                         that does not travel was dropped in transit, and provenance is never \
+                         reconstructed"
+                    ),
+                });
+            }
+            None => plan.fill,
+        },
+        Err(e) => {
+            return Ok(TransferOutcome::Refused {
+                code: "import_schema_drift",
+                detail: format!(
+                    "import refused for table {table:?}: {e} — a column that does not travel \
+                     was dropped in transit unless this cell declares its default, and \
+                     provenance is never reconstructed"
+                ),
+            });
         }
-        return Ok(TransferOutcome::Refused {
-            code: "import_schema_drift",
-            detail: format!("import refused for table {table:?}: {}", parts.join("; ")),
-        });
-    }
-
+    };
     let key = match parse_key(args, &cols, "import")? {
         Ok(k) if !k.is_empty() => k,
         Ok(_) => primary_key(&cols),
@@ -559,7 +637,13 @@ fn import_one(
             .collect::<Vec<_>>()
             .join(" AND ")
     );
-    let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+    // The filled columns stay out of the INSERT: SQLite writes the column's own
+    // DEFAULT, byte for byte what the store declared — no literal re-parsed here.
+    let names: Vec<String> = cols
+        .iter()
+        .map(|c| c.name.clone())
+        .filter(|n| !fill.contains_key(n))
+        .collect();
     let insert = format!(
         "INSERT INTO \"{table}\" ({}) VALUES ({})",
         names
@@ -940,11 +1024,20 @@ async fn write_seed_file(
     seed_dir: &std::path::Path,
     table: &str,
     schema: &Value,
+    version: &Value,
     rows: &[Value],
 ) -> std::io::Result<i64> {
-    let mut text =
-        meclaw_core::serde_json::to_string(&meclaw_core::serde_json::json!({ "schema": schema }))
-            .unwrap_or_else(|_| "{\"schema\":{}}".to_string());
+    // GH #822 (E.2): the header names the writer's version beside its columns.
+    // Version 1 is left out — a header without one IS version 1 — so every
+    // seed set written before #822 and every table that never declared a
+    // version keeps its exact bytes.
+    let mut header = Map::new();
+    header.insert("schema".into(), schema.clone());
+    if version.as_u64().is_some_and(|v| v > 1) {
+        header.insert("version".into(), version.clone());
+    }
+    let mut text = meclaw_core::serde_json::to_string(&Value::Object(header))
+        .unwrap_or_else(|_| "{\"schema\":{}}".to_string());
     for row in rows {
         text.push('\n');
         text.push_str(&meclaw_core::serde_json::to_string(row).unwrap_or_else(|_| "{}".into()));
@@ -980,7 +1073,9 @@ async fn write_whole(path: &std::path::Path, text: &str) -> std::io::Result<()> 
 /// JSON object cannot be a row. Both are `transfer_seed_malformed`, both name
 /// the file, and the second names the LINE, because that is the part an
 /// operator repairs. Blank lines are skipped, exactly as the loader skips them.
-async fn read_seed_file(path: &std::path::Path) -> Result<(Value, Vec<Value>), TransferOutcome> {
+async fn read_seed_file(
+    path: &std::path::Path,
+) -> Result<(Value, Option<Value>, Vec<Value>), TransferOutcome> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1034,7 +1129,9 @@ async fn read_seed_file(path: &std::path::Path) -> Result<(Value, Vec<Value>), T
         }
         rows.push(row);
     }
-    Ok((schema, rows))
+    // GH #822: the writer's version travels into the import call beside the
+    // schema; absent = version 1.
+    Ok((schema, header.get("version").cloned(), rows))
 }
 
 /// The `*.jsonl` table names lying in `<dir>/seed`, in name order.
@@ -1256,7 +1353,7 @@ async fn export_to_dir(
         };
         let empty = Vec::new();
         let table_rows = doc["rows"].as_array().unwrap_or(&empty);
-        match write_seed_file(seed_dir, table, &doc["schema"], table_rows).await {
+        match write_seed_file(seed_dir, table, &doc["schema"], &doc["version"], table_rows).await {
             Ok(n) => {
                 total += n;
                 rows.insert(table.clone(), Value::from(n));
@@ -1421,7 +1518,7 @@ async fn import_from_dir(
             );
         }
         match read_seed_file(&seed_dir.join(format!("{table}.jsonl"))).await {
-            Ok((schema, rows)) => parts.push((table.clone(), schema, rows)),
+            Ok((schema, version, rows)) => parts.push((table.clone(), schema, version, rows)),
             Err(refusal) => return answer_from(refusal),
         }
     }
@@ -1432,11 +1529,14 @@ async fn import_from_dir(
         None
     };
     let mut calls = Vec::with_capacity(parts.len());
-    for (table, schema, rows) in parts {
+    for (table, schema, version, rows) in parts {
         let mut call = Map::new();
         call.insert("operation".into(), Value::from("import"));
         call.insert("table".into(), Value::from(table.as_str()));
         call.insert("schema".into(), schema);
+        if let Some(v) = version {
+            call.insert("version".into(), v);
+        }
         call.insert("rows".into(), Value::Array(rows));
         if let Some(k) = single_key {
             call.insert("key".into(), k.clone());

@@ -1,4 +1,4 @@
-# `daily-digest@2.1.1`
+# `daily-digest@2.2.0`
 
 Scheduled fetch-and-forward: timer → web_fetch → format (code) → Telegram proxy.
 
@@ -111,6 +111,25 @@ sent ends there. It declares `runner_mode: "warm"` since `2.1.1`
 a fresh namespace per message, the same `[]` out. The script keeps no state and reads
 stdin as text only (`json.load(sys.stdin)`), so the move changes cost and nothing else.
 
+## Since 2.2.0: the last digest is kept, with its round ([#976](https://github.com/mmeyerlein/meclaw/issues/976))
+
+Every formatted digest also goes to `./shelf`, which keeps it as one row of `./store`
+(`digests {id, at, audience_set, title, items}`) beside the delivery. The row's round is the
+round of the run that made it: the caller's `context.audience_set` on `in_digest` (a demanded
+run without one is kept with an empty round, which covers no screen -- never shown, never
+widened to `*`). A scheduled run belongs to the member that holds this app: it is kept with the
+holder mark and read back under the member's round that the builder's edge of the read stamps,
+so it shows on a screen of the member's round and on no other -- a round neither the app nor a
+caller can set.
+
+A read on `in_read` (hop `op` = `last`, `op_id` mirrored) answers once on `answer` with
+`{ok, op, digests: [{id, at, when, title, items, lead, audience_set}]}`, newest first, holding
+only the digests whose round covers the round of the read (`context.audience_set`, written by
+the builder's edge of the residents' road). A read without a round reads no row
+(`{ok: false, error: {code: no_round}}`). This is how a presenter shows the last digest as its
+built-in topic `digest`, only to the round it stems from. A new lane a caller can use is the
+second digit.
+
 ## Status
 
 All gates pass against core tag `post-migration-substrate-fixes` (timer/proxy factories
@@ -126,6 +145,8 @@ wants rides on `hop.route`.
 |---|---|---|
 | `in_digest` | in | a digest run demanded now, outside the timer -- the same body the schedule emits, one `tool_call` turn whose text is the JSON arguments carrying the URL. `chat_id` must already be in `context`, as a string |
 | `digest` | out | the formatted digest of a demanded run, handed back to whoever demanded it |
+| `in_read` | in | a read of the kept digests (hop `op` = `last`, `op_id`), with the round of the read in `context.audience_set` -- the residents' road of a presenter (GH #976) |
+| `answer` | out | the one answer to an `in_read`: the kept digests the round of the read may see, each with its own round, `op` and `op_id` mirrored |
 
 **The clock keeps its own path.** A scheduled run goes `clock -> fetcher -> format ->
 notifier` and never touches these lanes; a demanded run enters at the fetcher and leaves

@@ -109,7 +109,12 @@
         {
           "from": ".",
           "to": "./gate",
-          "condition": "has(hop.route) && hop.route == 'in_propose'"
+          "condition": "has(hop.route) && hop.route == 'in_propose'",
+          "modifier": {
+            "set_context": {
+              "audience_set": "has(context.audience_set) && context.audience_set != '' ? context.audience_set : (has(hop.audience_set) ? hop.audience_set : '')"
+            }
+          }
         },
         {
           "from": ".",

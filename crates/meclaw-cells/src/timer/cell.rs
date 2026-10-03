@@ -5,7 +5,7 @@
 //! The I/O task computes `sleep_until` on the working copy and emits the firings.
 //! Spec: `docs/cell-types.md` § `timer`.
 
-use crate::timer::io::{TimerEvent, TimerReconfig};
+use crate::timer::io::{TimerEvent, TimerReconfig, TimerReplan};
 use crate::timer::schedule::ActiveSchedule;
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Message, OriginSink, OutputSink, Path};
@@ -29,6 +29,10 @@ pub struct TimerCell {
     /// `catch_up` one-shot due at or before it was missed while the cell was
     /// down, and its strike is `late` ([`is_late`]).
     pub(crate) booted_at: chrono::DateTime<chrono::Utc>,
+    /// GH #956: the handler's way to plan a strike again whose state step
+    /// failed ([`TimerReplan`]). Opened by `split_io`; `None` before it (a
+    /// cell whose I/O never ran has nothing to plan again).
+    pub(crate) replan_tx: Option<mpsc::Sender<TimerReplan>>,
 }
 
 impl TimerCell {
@@ -41,6 +45,7 @@ impl TimerCell {
             initial_io: Some(initial_active),
             query_timeout_ms,
             booted_at: chrono::Utc::now(),
+            replan_tx: None,
         }
     }
 
@@ -61,6 +66,9 @@ pub struct TimerIo {
     /// Issue #7: progress mark, set after every schedule this loop actually
     /// fired. Default = disabled (reports nowhere).
     pub liveness: meclaw_colony::IoLivenessMark,
+    /// GH #956: the handler's replans ([`TimerReplan`]). `None` = a loop that
+    /// only plans from `active` and the reconfig channel, as before.
+    pub replan_rx: Option<mpsc::Receiver<TimerReplan>>,
 }
 
 impl LongRunningCell for TimerCell {
@@ -69,11 +77,15 @@ impl LongRunningCell for TimerCell {
     type Io = TimerIo;
 
     fn split_io(&mut self) -> Self::Io {
+        // GH #956: the replan channel opens with the I/O task it feeds.
+        let (replan_tx, replan_rx) = mpsc::channel(crate::timer::io::REPLAN_CAPACITY);
+        self.replan_tx = Some(replan_tx);
         TimerIo {
             active: self.initial_io.take().unwrap_or_default(),
             // Replaced by the substrate via `attach_liveness` when the cell is
             // spawned inside a colony.
             liveness: meclaw_colony::IoLivenessMark::disabled(),
+            replan_rx: Some(replan_rx),
         }
     }
 
@@ -661,6 +673,14 @@ impl LongRunningCell for TimerCell {
                         ?schedule_id,
                         "fire: load_schedule timed out (query_timeout_ms), skip"
                     );
+                    // GH #956: the I/O task dropped a one-shot from its
+                    // working copy when it pushed this strike; skipped here,
+                    // the row stayed `active` and planned nowhere. The I/O
+                    // task ignores the frame for a cron row (its next tick is
+                    // planned; this one is dropped, as before).
+                    if !forced {
+                        self.replan(schedule_id, scheduled_at);
+                    }
                     return;
                 }
             };
@@ -734,6 +754,14 @@ impl LongRunningCell for TimerCell {
                         ?marked,
                         "fire: catch_up one-shot not marked completed, strike withheld"
                     );
+                    // GH #956: "planned again" was a claim with nothing behind
+                    // it until the next op or boot -- the I/O task had dropped
+                    // the one-shot already. A mark that did not land (`None`)
+                    // plans the strike again; `Some(0)` is a row another op
+                    // completed or removed meanwhile, and stays done.
+                    if marked.is_none() && !forced {
+                        self.replan(schedule_id, scheduled_at);
+                    }
                     return;
                 }
             } else {
@@ -756,6 +784,33 @@ impl LongRunningCell for TimerCell {
                     content,
                 })
                 .await;
+        }
+    }
+}
+
+impl TimerCell {
+    /// GH #956: hand a strike whose state step failed back to the I/O task
+    /// ([`TimerReplan`]). `try_send`: the handler never waits on the I/O task,
+    /// which may itself be waiting to push the next event here. A full or
+    /// closed channel leaves the row `active` for the next op snapshot or
+    /// boot, the state before this fix, and says so.
+    fn replan(&self, schedule_id: meclaw_core::Uuid, scheduled_at: chrono::DateTime<chrono::Utc>) {
+        let Some(tx) = &self.replan_tx else {
+            return;
+        };
+        if tx
+            .try_send(TimerReplan {
+                schedule_id,
+                scheduled_at,
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                path = self.own_path.as_str(),
+                ?schedule_id,
+                %scheduled_at,
+                "fire: replan channel full or closed, strike left for the next plan"
+            );
         }
     }
 }
@@ -885,8 +940,9 @@ fn cron_strikes_at(expr: &str, moment: chrono::DateTime<chrono::Utc>) -> bool {
 /// GH #922 fix round 1 (review M-A): whether a one-shot strike may emit
 /// after its state step. A `catch_up` one-shot emits only when
 /// `mark_completed` reported the row it completed (`Ok(1)`): a timed-out or
-/// failed mark leaves the row `active`, the next op snapshot or boot takes it
-/// up again through `db::due_for_catch_up`, and emitting now would strike
+/// failed mark leaves the row `active`, `handle_event` plans the strike
+/// again ([`TimerReplan`], GH #956; the next op snapshot or boot takes it up
+/// through `db::due_for_catch_up` as well), and emitting now would strike
 /// twice -- the timer documents "rather once too few than twice". `marked` is
 /// the row count the mark returned, `None` when it timed out or failed.
 fn one_shot_strike_may_emit(catch_up: bool, marked: Option<usize>) -> bool {

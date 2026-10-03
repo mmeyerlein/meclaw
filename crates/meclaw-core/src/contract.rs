@@ -24,6 +24,14 @@ pub struct EmitSpec {
     /// Whether the key must be present. Defaults to `true` (l.100).
     #[serde(default = "default_required")]
     pub required: bool,
+    /// GH #982 -- a `hop` key that is `required` on every emission EXCEPT those
+    /// whose `hop.route` is one of these (an llm cell's `credential_request`
+    /// asks for its key before any model call and has no `finish_reason`).
+    /// Only with `required: true`, and only in the `hop` section: `body` slots
+    /// cannot see the route, and an optional key has nothing to bend, so
+    /// `compile` refuses both.
+    #[serde(default)]
+    pub optional_on_route: Option<Vec<String>>,
 }
 
 /// The `emits` block: `body` (content slots) + `hop` (routing metadata),
@@ -263,6 +271,9 @@ fn json_type_for(token: &str) -> &str {
 fn emitspec_map_to_schema(map: &BTreeMap<String, EmitSpec>) -> Value {
     let mut properties = serde_json::Map::new();
     let mut required: Vec<Value> = Vec::new();
+    // GH #982 -- `required` unless `route` is one of the named ones:
+    // if route ∈ routes then nothing, else the key is required.
+    let mut conditional: Vec<Value> = Vec::new();
     for (key, spec) in map {
         let mut prop = serde_json::Map::new();
         prop.insert(
@@ -276,15 +287,25 @@ fn emitspec_map_to_schema(map: &BTreeMap<String, EmitSpec>) -> Value {
             );
         }
         properties.insert(key.clone(), Value::Object(prop));
-        if spec.required {
-            required.push(Value::String(key.clone()));
+        match (&spec.optional_on_route, spec.required) {
+            (Some(routes), true) => conditional.push(serde_json::json!({
+                "if": {"required": ["route"],
+                       "properties": {"route": {"enum": routes}}},
+                "else": {"required": [key]},
+            })),
+            (_, true) => required.push(Value::String(key.clone())),
+            (_, false) => {}
         }
     }
-    serde_json::json!({
+    let mut schema = serde_json::json!({
         "type": "object",
         "properties": Value::Object(properties),
         "required": Value::Array(required),
-    })
+    });
+    if !conditional.is_empty() {
+        schema["allOf"] = Value::Array(conditional);
+    }
+    schema
 }
 
 /// Pre-compiled emit validators for one cell — body + hop.
@@ -306,6 +327,26 @@ impl CompiledEmits {
     /// Compile both schemas. `Err(reason)` if either schema is not valid
     /// Draft-2020-12 (e.g. an unknown `type` token).
     pub fn compile(emits: &EmitsBlock) -> Result<Self, String> {
+        if let Some(key) = emits
+            .body
+            .iter()
+            .find_map(|(k, s)| s.optional_on_route.as_ref().map(|_| k))
+        {
+            return Err(format!(
+                "emits.body.{key}: optional_on_route is a hop word (a body slot cannot see the route)"
+            ));
+        }
+        // Y review nit (welle-nachlese Z): the word bends a REQUIRED key only;
+        // on an optional one it was dropped without a word.
+        if let Some(key) = emits
+            .hop
+            .iter()
+            .find_map(|(k, s)| (s.optional_on_route.is_some() && !s.required).then_some(k))
+        {
+            return Err(format!(
+                "emits.hop.{key}: optional_on_route only bends a key with required: true"
+            ));
+        }
         let body_schema = emitspec_map_to_schema(&emits.body);
         let hop_schema = emitspec_map_to_schema(&emits.hop);
         let body = jsonschema::validator_for(&body_schema)
@@ -514,6 +555,7 @@ mod tests {
                 ty: "string".into(),
                 values: Some(vec!["stop".into(), "error".into()]),
                 required: true,
+                optional_on_route: None,
             },
         );
         map.insert(
@@ -522,6 +564,7 @@ mod tests {
                 ty: "string".into(),
                 values: None,
                 required: false,
+                optional_on_route: None,
             },
         );
         let schema = emitspec_map_to_schema(&map);
@@ -544,6 +587,7 @@ mod tests {
                 ty: "blob_uuid".into(),
                 values: None,
                 required: true,
+                optional_on_route: None,
             },
         );
         let schema = emitspec_map_to_schema(&map);
@@ -625,6 +669,78 @@ mod tests {
         let content = serde_json::json!({ "messages": [] });
         let err = validate_emits(&content, &c).unwrap_err();
         assert!(err.contains("hop"), "names hop: {err}");
+    }
+
+    /// Y fix round 1 (GH #982, M-2): a hop key required on every emission except
+    /// the ones whose `hop.route` is named in `optional_on_route`.
+    fn optional_on_route_compiled() -> CompiledEmits {
+        let emits: EmitsBlock = serde_json::from_str(
+            r#"{
+              "body": {"messages": {"type":"array","required":true}},
+              "hop":  {"route": {"type":"string","required":false},
+                       "finish_reason": {"type":"string","required":true,
+                                         "optional_on_route":["credential_request"]}}
+            }"#,
+        )
+        .unwrap();
+        CompiledEmits::compile(&emits).unwrap()
+    }
+
+    #[test]
+    fn a_key_optional_on_a_route_may_be_missing_only_there() {
+        let c = optional_on_route_compiled();
+        let ask = serde_json::json!({
+            "header": {"route": "credential_request"}, "messages": []
+        });
+        assert!(
+            validate_emits(&ask, &c).is_ok(),
+            "the named route may leave it out"
+        );
+        for header in [
+            serde_json::json!({}),
+            serde_json::json!({"route": "answer"}),
+            serde_json::json!({"route": 7}),
+        ] {
+            let content = serde_json::json!({"header": header, "messages": []});
+            let err = validate_emits(&content, &c).unwrap_err();
+            assert!(
+                err.contains("hop") && err.contains("finish_reason"),
+                "every other emission still owes it ({header}): {err}"
+            );
+        }
+        let with = serde_json::json!({
+            "header": {"route": "answer", "finish_reason": "stop"}, "messages": []
+        });
+        assert!(validate_emits(&with, &c).is_ok());
+    }
+
+    #[test]
+    fn optional_on_route_is_a_hop_word_only() {
+        let emits: EmitsBlock = serde_json::from_str(
+            r#"{"body": {"messages": {"type":"array","required":true,
+                                      "optional_on_route":["x"]}}, "hop": {}}"#,
+        )
+        .unwrap();
+        let err = CompiledEmits::compile(&emits).unwrap_err();
+        assert!(err.contains("optional_on_route"), "{err}");
+    }
+
+    /// Y review nit (welle-nachlese Z): `optional_on_route` only bends a
+    /// `required: true` key; on an optional one it said nothing and was
+    /// dropped without a word. The grammar says "only with `required: true`",
+    /// so `compile` refuses it, naming the key.
+    #[test]
+    fn optional_on_route_without_required_is_refused() {
+        let emits: EmitsBlock = serde_json::from_str(
+            r#"{"body": {}, "hop": {"finish_reason": {"type":"string","required":false,
+                                     "optional_on_route":["credential_request"]}}}"#,
+        )
+        .unwrap();
+        let err = CompiledEmits::compile(&emits).err().unwrap_or_default();
+        assert!(
+            err.contains("emits.hop.finish_reason") && err.contains("required: true"),
+            "refused naming the key and the rule: {err:?}"
+        );
     }
 
     #[test]

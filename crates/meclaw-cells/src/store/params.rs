@@ -536,6 +536,90 @@ mod tests {
             "absent stays absent (byte-stable overlay)"
         );
     }
+    // ---- GH #822: the column form with a default, and table versions. ----
+
+    #[test]
+    fn the_short_column_form_still_parses() {
+        let p = StoreParams::parse(&json!({"schema": {"t": {"a": "text", "n": "int"}}})).unwrap();
+        assert_eq!(p.schema["t"]["a"], "text");
+        assert!(p.evolution.defaults.is_empty());
+        let d = p.table_decl("t").unwrap();
+        assert_eq!(d.version, 1);
+        assert_eq!(d.columns["n"].default, None);
+    }
+
+    #[test]
+    fn a_column_may_declare_its_default() {
+        let p = StoreParams::parse(&json!({"schema": {"proposals": {
+            "id": "text",
+            "audience": {"type": "text", "default": ""},
+            "tries": {"type": "int", "default": 0}
+        }}, "schema_versions": {"proposals": 2}}))
+        .unwrap();
+        // The type map every other reader uses keeps its shape.
+        assert_eq!(p.schema["proposals"]["audience"], "text");
+        assert_eq!(p.schema["proposals"]["tries"], "int");
+        let d = p.table_decl("proposals").unwrap();
+        assert_eq!(d.version, 2);
+        assert_eq!(d.columns["audience"].default, Some(json!("")));
+        assert_eq!(d.columns["tries"].default, Some(json!(0)));
+        assert_eq!(d.columns["id"].default, None);
+    }
+
+    #[test]
+    fn a_default_that_does_not_fit_its_type_is_refused() {
+        for bad in [
+            json!({"type": "int", "default": "0"}),
+            json!({"type": "text", "default": 1}),
+            json!({"type": "real", "default": 1}),
+            json!({"type": "text", "default": "", "unique": true}),
+            json!({"default": ""}),
+        ] {
+            assert!(
+                StoreParams::parse(&json!({"schema": {"t": {"c": bad.clone()}}})).is_err(),
+                "{bad} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_versions_name_declared_tables_with_positive_integers() {
+        let parse = |v: Value| {
+            StoreParams::parse(&json!({"schema": {"t": {"c": "text"}}, "schema_versions": v}))
+        };
+        assert!(parse(json!({"t": 3})).is_ok());
+        assert!(parse(json!({"x": 1})).is_err(), "undeclared table");
+        assert!(parse(json!({"t": 0})).is_err());
+        assert!(parse(json!({"t": "2"})).is_err());
+        assert!(parse(json!([])).is_err());
+    }
+
+    /// The overlay round trip must carry the defaults back: a params update
+    /// that dropped them would leave the next boot's `ALTER TABLE` without one.
+    #[test]
+    fn defaults_and_versions_survive_the_overlay_round_trip_and_are_immutable() {
+        use crate::params_overlay::OverlayParams;
+        assert!(StoreParams::IMMUTABLE_KEYS.contains(&"schema_versions"));
+        let p = StoreParams::parse(&json!({"schema": {"t": {
+            "c": {"type": "json", "default": []}, "d": "text"
+        }}, "schema_versions": {"t": 2}, "query_timeout_ms": 5}))
+        .unwrap();
+        let v = meclaw_core::serde_json::to_value(&p).unwrap();
+        assert_eq!(v["schema"]["t"]["d"], "text", "the short form stays short");
+        let back = StoreParams::parse(&v).unwrap();
+        assert_eq!(back.evolution, p.evolution);
+        let upd = json!({"query_timeout_ms": 9}).as_object().unwrap().clone();
+        let (next, _) = crate::params_overlay::apply_update(&p, &upd).unwrap();
+        assert_eq!(next.evolution, p.evolution);
+        let upd = json!({"schema_versions": {"t": 3}})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(crate::params_overlay::apply_update(&p, &upd).is_err());
+        let plain = StoreParams::parse(&json!({"schema": {"t": {"c": "text"}}})).unwrap();
+        let v = meclaw_core::serde_json::to_value(&plain).unwrap();
+        assert!(v.get("schema_versions").is_none(), "absent stays absent");
+    }
 }
 
 use meclaw_core::serde_json::Value;
@@ -547,21 +631,27 @@ use std::collections::BTreeMap;
 /// Phase 9: `schema` is a 2-stage map `{ "<table>": { "<col>": "<type>" } }`.
 ///
 /// Allowed column types (Phase 9): `"text"`, `"int"`, `"json"`.
-/// Constraints (PK, NOT NULL, UNIQUE, defaults, indices) are deferred
-/// (see brainstorm E6).
+/// Since GH #822 a column is the type string OR `{"type", "default"?}`: the
+/// default is what a row written before the column existed takes — at birth
+/// (seed), at boot (an `ALTER TABLE ADD COLUMN` gives existing rows the
+/// default), and at import (`meclaw_colony::schema_evolution`). Each table may
+/// also declare a version (`schema_versions`, default 1). PK, NOT NULL and
+/// UNIQUE stay deferred (see brainstorm E6); indices are `indexes` (GH #915).
 ///
 /// `Serialize` (β): the generic params-overlay core round-trips a params struct
-/// through `serde_json::to_value` → merge → `parse`. `query_timeout_ms` carries
-/// `skip_serializing_if` so a `None` serializes to an ABSENT key (not `null`) —
-/// the manual `parse` rejects a `null` `query_timeout_ms`, so omitting it keeps
-/// the round-trip lossless.
-#[derive(Debug, Clone, Serialize)]
+/// through `serde_json::to_value` → merge → `parse`. The impl is written out
+/// (below) because the declared defaults live beside `schema` in
+/// [`SchemaEvolution`] and must come back as the object column form, or a
+/// params update would silently drop every default. Absent optional keys stay
+/// ABSENT (not `null`) — the manual `parse` rejects a `null`
+/// `query_timeout_ms`, so omitting it keeps the round-trip lossless.
+#[derive(Debug, Clone)]
 pub struct StoreParams {
     /// Schema definition: outer key is table name, inner key is column name,
-    /// value is column type (`"text"`, `"int"`, or `"json"`).
+    /// value is column type (`"text"`, `"int"`, or `"json"`). The defaults of
+    /// the object column form are in [`StoreParams::evolution`].
     pub schema: BTreeMap<String, BTreeMap<String, String>>,
     /// Optional query timeout in milliseconds applied to user-facing queries.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub query_timeout_ms: Option<u64>,
     /// Opt-in canonical columns: `{ "<table>": [{source, target, aliases}, …] }`
     /// (0.2.0 P2, ruling Q3; the list form is 0.2.0 P4, ruling Q5).
@@ -580,7 +670,6 @@ pub struct StoreParams {
     /// Bootstrap-only like `schema` and `fts`: the binding drives DDL (alias table,
     /// backfill, FTS index shape), so changing it at runtime would desync the
     /// database from the declaration.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub canonical: BTreeMap<String, Vec<CanonicalSpec>>,
     /// Opt-in full-text indexes: `{ "<table>": ["<column>", …] }` (P3).
     ///
@@ -592,7 +681,6 @@ pub struct StoreParams {
     /// Known limit: only tables declared in `schema` can carry an index —
     /// tables created at runtime via the `create_table` op cannot (the FTS DDL
     /// is bootstrap work of the factory, not a message effect).
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fts: BTreeMap<String, Vec<String>>,
     /// GH #132 — **opt-in** writer boundary: who may change this store's data.
     ///
@@ -606,7 +694,6 @@ pub struct StoreParams {
     ///
     /// Serialised only when it is NOT the default, so an existing `config.json`
     /// and the β params-overlay round-trip keep their exact bytes.
-    #[serde(default, skip_serializing_if = "WriteSurface::is_open")]
     pub write_surface: WriteSurface,
     /// Declared indexes (GH #915): `{ "<name>": { "table", "on": [..], "unique" } }`.
     ///
@@ -617,8 +704,10 @@ pub struct StoreParams {
     /// `where` and `order_by` take, rendered by the same function, so a filter
     /// on the key can use the index. An index that disappears from the
     /// declaration stays in the database (no-delete, as with columns).
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub indexes: BTreeMap<String, IndexSpec>,
+    /// GH #822: declared column defaults and table versions — the part of the
+    /// declaration a plain type map cannot carry.
+    pub evolution: SchemaEvolution,
 }
 
 /// One entry of `params.indexes` (GH #915, docs/cell-types.md § store).
@@ -721,6 +810,7 @@ impl crate::params_overlay::OverlayParams for StoreParams {
         "canonical",
         "write_surface",
         "indexes",
+        "schema_versions",
     ];
     /// `schema` is bootstrap-only — it is baked into `cell.db` via DDL at spawn;
     /// changing it at runtime would desync the live tables from the declared
@@ -729,8 +819,14 @@ impl crate::params_overlay::OverlayParams for StoreParams {
     /// `write_surface` (GH #132) is immutable for a different reason: a boundary
     /// that a message can switch off is not a boundary. It is declared in the
     /// `config.json` and stays there.
-    const IMMUTABLE_KEYS: &'static [&'static str] =
-        &["schema", "fts", "canonical", "write_surface", "indexes"];
+    const IMMUTABLE_KEYS: &'static [&'static str] = &[
+        "schema",
+        "fts",
+        "canonical",
+        "write_surface",
+        "indexes",
+        "schema_versions",
+    ];
     fn parse(raw: &Value) -> Result<Self, String> {
         StoreParams::parse(raw)
     }
@@ -751,6 +847,7 @@ impl StoreParams {
             return Err("params.schema must declare at least one table".into());
         }
         let mut schema = BTreeMap::new();
+        let mut evolution = SchemaEvolution::default();
         for (table, cols_v) in schema_obj {
             crate::store::ddl::check_new_identifier("params.schema table", table)?;
             let cols_obj = cols_v
@@ -767,17 +864,40 @@ impl StoreParams {
                     &format!("params.schema.{table} column"),
                     col,
                 )?;
-                let ty = ty_v
-                    .as_str()
-                    .ok_or_else(|| format!("params.schema.{table}.{col} must be a string"))?;
-                if !matches!(ty, "text" | "int" | "json") {
-                    return Err(format!(
-                        "params.schema.{table}.{col}: unsupported type {ty:?} (allowed: text/int/json)"
-                    ));
+                // GH #822 (E.1): the short form `"text"` or `{type, default?}`,
+                // parsed by the same function the import and staging readers
+                // use, so a default means one thing on every path.
+                let decl = meclaw_colony::schema_evolution::parse_column(
+                    &format!("params.schema.{table}.{col}"),
+                    ty_v,
+                )?;
+                if let Some(d) = decl.default {
+                    evolution
+                        .defaults
+                        .entry(table.clone())
+                        .or_default()
+                        .insert(col.clone(), d);
                 }
-                cols.insert(col.clone(), ty.to_string());
+                cols.insert(col.clone(), decl.ty);
             }
             schema.insert(table.clone(), cols);
+        }
+        if let Some(v) = obj.get("schema_versions") {
+            let versions = v
+                .as_object()
+                .ok_or("params.schema_versions must be an object {\"<table>\": <int>}")?;
+            for (table, n) in versions {
+                if !schema.contains_key(table) {
+                    return Err(format!(
+                        "params.schema_versions.{table}: not declared in params.schema"
+                    ));
+                }
+                let n = meclaw_colony::schema_evolution::parse_version(
+                    &format!("params.schema_versions.{table}"),
+                    n,
+                )?;
+                evolution.versions.insert(table.clone(), n);
+            }
         }
         let query_timeout_ms = match obj.get("query_timeout_ms") {
             None => None,
@@ -805,7 +925,94 @@ impl StoreParams {
             fts,
             write_surface,
             indexes,
+            evolution,
         })
+    }
+
+    /// GH #822: the declaration of one table as the schema resolver reads it —
+    /// types, defaults and version. `None` for a table `schema` does not name.
+    pub fn table_decl(&self, table: &str) -> Option<meclaw_colony::schema_evolution::TableDecl> {
+        use meclaw_colony::schema_evolution::{ColumnDecl, TableDecl};
+        let cols = self.schema.get(table)?;
+        let defaults = self.evolution.defaults.get(table);
+        Some(TableDecl {
+            version: self.evolution.versions.get(table).copied().unwrap_or(1),
+            columns: cols
+                .iter()
+                .map(|(c, ty)| {
+                    (
+                        c.clone(),
+                        ColumnDecl {
+                            ty: ty.clone(),
+                            default: defaults.and_then(|d| d.get(c)).cloned(),
+                        },
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    /// `params.schema` back in its declared form: the short type string, or
+    /// `{type, default}` where a default is declared.
+    fn schema_value(&self) -> Value {
+        let mut out = meclaw_core::serde_json::Map::new();
+        for (table, cols) in &self.schema {
+            let defaults = self.evolution.defaults.get(table);
+            let mut t = meclaw_core::serde_json::Map::new();
+            for (c, ty) in cols {
+                let v = match defaults.and_then(|d| d.get(c)) {
+                    Some(d) => meclaw_core::serde_json::json!({"type": ty, "default": d}),
+                    None => Value::from(ty.as_str()),
+                };
+                t.insert(c.clone(), v);
+            }
+            out.insert(table.clone(), Value::Object(t));
+        }
+        Value::Object(out)
+    }
+}
+
+/// GH #822 — the half of a store declaration that a `{column: type}` map
+/// cannot carry: declared column defaults (`{type, default}`) and table
+/// versions (`params.schema_versions`). Both bootstrap-only, like `schema`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SchemaEvolution {
+    /// table → column → declared default (`Value::Null` = SQL `NULL`).
+    pub defaults: BTreeMap<String, BTreeMap<String, Value>>,
+    /// table → declared version; a table not named here is version 1.
+    pub versions: BTreeMap<String, u32>,
+}
+
+impl Serialize for StoreParams {
+    /// Written out rather than derived (see the type docs): `schema` must carry
+    /// its defaults back, and every optional key stays absent when it holds
+    /// its default, so a params document written before a key existed keeps
+    /// its exact shape through the overlay round trip.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        fn val<T: Serialize + ?Sized, E: serde::ser::Error>(v: &T) -> Result<Value, E> {
+            meclaw_core::serde_json::to_value(v).map_err(E::custom)
+        }
+        let mut m = meclaw_core::serde_json::Map::new();
+        m.insert("schema".into(), self.schema_value());
+        if let Some(t) = self.query_timeout_ms {
+            m.insert("query_timeout_ms".into(), Value::from(t));
+        }
+        if !self.canonical.is_empty() {
+            m.insert("canonical".into(), val(&self.canonical)?);
+        }
+        if !self.fts.is_empty() {
+            m.insert("fts".into(), val(&self.fts)?);
+        }
+        if !self.write_surface.is_open() {
+            m.insert("write_surface".into(), val(&self.write_surface)?);
+        }
+        if !self.indexes.is_empty() {
+            m.insert("indexes".into(), val(&self.indexes)?);
+        }
+        if !self.evolution.versions.is_empty() {
+            m.insert("schema_versions".into(), val(&self.evolution.versions)?);
+        }
+        m.serialize(s)
     }
 }
 

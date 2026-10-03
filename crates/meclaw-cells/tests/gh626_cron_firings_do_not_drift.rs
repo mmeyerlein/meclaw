@@ -42,6 +42,7 @@ async fn consecutive_cron_firings_land_on_whole_seconds_exactly_one_apart() {
             kind: ScheduleKind::Cron("* * * * * *".into()),
         }],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 

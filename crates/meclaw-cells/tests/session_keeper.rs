@@ -128,6 +128,10 @@ fn the_session_row_is_one_generation_of_one_channel() {
         ("last_seen", "text"),
         ("closed", "int"),
         ("closed_at", "text"),
+        // GH #953: the channel turn id whose final answer the generation
+        // still owes ('' = nothing; NULL = a row from before the column,
+        // not yet visited by the night's heal, GH #954).
+        ("owed_turn", "text"),
     ] {
         assert_eq!(cols[col], ty, "sessions.{col} is the {ty} column");
     }
@@ -308,7 +312,8 @@ fn a_channel_without_an_open_generation_opens_the_next_one_lazily() {
     // Nothing pre-creates a session -- not a boot, not a close, not a timer.
     // The next turn after the end of a call IS the beginning of the next one.
     let out = stamp(look_reply(serde_json::json!([]), turn_body("good morning")));
-    assert_eq!(out.len(), 2);
+    // GH #954: the open is the claim of the round, and the turn waits for it.
+    assert_eq!(out.len(), 1, "the open alone, the turn held: {out:?}");
 
     let open = op_of(&route(&out, "kstore"));
     assert_eq!(open["operation"], "insert");
@@ -329,9 +334,62 @@ fn a_channel_without_an_open_generation_opens_the_next_one_lazily() {
         "<channel>-<recorded_at>: {minted}"
     );
 
+    // The insert's reply: the claim stands, the held turn leaves with the id.
+    let held = route(&out, "kstore")["header"]["keeper_body"].clone();
+    let mut doc = reply_doc("keeper-stamp", "open", "insert", 1, serde_json::json!([]));
+    doc["header"]["context"]["keeper_session"] = serde_json::json!(minted);
+    doc["header"]["context"]["keeper_body"] = held;
+    let out = stamp(doc);
     let turn = route(&out, "turn");
     assert_eq!(turn["header"]["session_id"], minted);
     assert_eq!(turn["messages"][0]["text"], "good morning");
+}
+
+/// GH #954: the open is the claim of its round. A racing first turn that met
+/// the unique index `sessions_open_round` looks again, the held turn riding
+/// along, and joins whatever generation it then finds; the index itself is
+/// declared on the store.
+#[test]
+fn a_first_turn_that_loses_the_claim_of_its_round_looks_again() {
+    let sessions = config_of("sessions/config.json");
+    assert_eq!(
+        sessions["params"]["indexes"]["sessions_open_round"],
+        serde_json::json!({"table": "sessions",
+                           "on": ["channel", "audience_set", "closed_at"],
+                           "unique": true}),
+        "one open generation of a round per channel is the store's to hold"
+    );
+
+    let held = turn_body("we raced").to_string();
+    let mut doc = reply_doc("keeper-stamp", "open", "insert", 0, serde_json::json!([]));
+    doc["header"]["hop"]["error_code"] = serde_json::json!("unique_violation");
+    doc["header"]["context"]["keeper_session"] = serde_json::json!("tg:42-0009");
+    doc["header"]["context"]["keeper_body"] = serde_json::json!(held);
+    let out = stamp(doc);
+    assert_eq!(
+        out.len(),
+        1,
+        "a lost claim is no refusal, it looks again: {out:?}"
+    );
+    let look = op_of(&route(&out, "kstore"));
+    assert_eq!(look["operation"], "select");
+    assert_eq!(
+        look["where"],
+        serde_json::json!({"channel": "tg:42", "closed": 0})
+    );
+    assert_eq!(route(&out, "kstore")["header"]["phase"], "look");
+    assert_eq!(
+        route(&out, "kstore")["header"]["keeper_body"],
+        held,
+        "the held turn rides along"
+    );
+
+    // The second look finds the winner's generation: the turn runs in it.
+    let out = stamp(look_reply(
+        serde_json::json!([session_row("tg:42-0008", "0008", "0008")]),
+        turn_body("we raced"),
+    ));
+    assert_eq!(route(&out, "turn")["header"]["session_id"], "tg:42-0008");
 }
 
 #[test]
@@ -361,20 +419,19 @@ fn the_turn_itself_travels_through_the_stamp_unchanged() {
 fn a_finished_step_is_terminal() {
     // The stamp sits in a loop with its own store. A reply to the write it just
     // made must not produce a second write, or the ingress feeds itself.
-    for phase in ["touch", "open"] {
-        let op = if phase == "touch" { "update" } else { "insert" };
-        assert!(
-            stamp(reply_doc(
-                "keeper-stamp",
-                phase,
-                op,
-                1,
-                serde_json::json!("ok")
-            ))
-            .is_empty(),
-            "the {phase} reply is the end of the chain"
-        );
-    }
+    // `open` is no longer an end (GH #954): its reply hands the held turn
+    // on, exactly once -- `a_channel_without_an_open_generation_opens_the_next_one_lazily`.
+    assert!(
+        stamp(reply_doc(
+            "keeper-stamp",
+            "touch",
+            "update",
+            1,
+            serde_json::json!("ok")
+        ))
+        .is_empty(),
+        "the touch reply is the end of the chain"
+    );
     let stray = serde_json::json!({
         "header": {"context": {}, "hop": {}},
         "messages": [{"origin": "user", "type": "text", "text": "stray"}]
@@ -414,13 +471,32 @@ fn seconds_back(cutoff: &str) -> i64 {
     (chrono::Utc::now() - parsed.with_timezone(&chrono::Utc)).num_seconds()
 }
 
+/// The emission of `out` on store phase `phase` (exactly one).
+fn on_phase(out: &[serde_json::Value], phase: &str) -> serde_json::Value {
+    let hits: Vec<&serde_json::Value> = out
+        .iter()
+        .filter(|m| m["header"]["phase"] == phase)
+        .collect();
+    assert_eq!(hits.len(), 1, "one emission on phase {phase}: {out:?}");
+    hits[0].clone()
+}
+
 #[test]
 fn the_night_sweep_asks_only_for_the_channels_that_fell_silent() {
     let out = close(firing());
-    assert_eq!(out.len(), 1, "one question, asked of the store");
-    assert_eq!(out[0]["header"]["route"], "kstore");
-    assert_eq!(out[0]["header"]["phase"], "sweep");
-    let op = op_of(&out[0]);
+    // Three questions since GH #953/#954, each a read: the idle sweep, the
+    // sentinel for an answer that never came, and a page of the heal.
+    assert_eq!(
+        out.len(),
+        3,
+        "sweep, owed and heal-page, asked of the store: {out:?}"
+    );
+    for m in &out {
+        assert_eq!(m["header"]["route"], "kstore");
+        assert_eq!(op_of(m)["operation"], "select", "a firing only asks: {m}");
+    }
+    let sweep = on_phase(&out, "sweep");
+    let op = op_of(&sweep);
     assert_eq!(op["operation"], "select");
     assert_eq!(op["table"], "sessions");
     assert_eq!(
@@ -437,8 +513,25 @@ fn the_night_sweep_asks_only_for_the_channels_that_fell_silent() {
         "the shipped `idle_ms` is two hours, got {back}s back"
     );
 
+    // GH #953: the sentinel asks for sealed generations that still owe an
+    // answer and fell silent past the same cutoff -- `neq ''` lets no NULL
+    // (a row from before the column) through.
+    let owed = op_of(&on_phase(&out, "owed"));
+    assert_eq!(owed["where"]["closed"], 1, "{owed}");
+    assert_eq!(owed["where"]["owed_turn"], serde_json::json!({"neq": ""}));
+    assert_eq!(owed["where"]["last_seen"]["lt"].as_str(), Some(cutoff));
+    // GH #954: the heal visits sealed rows the column has not marked yet, a
+    // page at a time (the shipped `heal_limit`), oldest stamp first.
+    let heal = op_of(&on_phase(&out, "heal-page"));
+    assert_eq!(
+        heal["where"],
+        serde_json::json!({"closed": 1, "owed_turn": {"is_null": true}})
+    );
+    assert_eq!(heal["limit"], 200, "the shipped `heal_limit`");
+    assert_eq!(heal["order_by"][0]["col"], "closed_at");
+
     let out = close_with(serde_json::json!({"idle_ms": 600000}), firing());
-    let cutoff = op_of(&out[0])["where"]["last_seen"]["lt"]
+    let cutoff = op_of(&on_phase(&out, "sweep"))["where"]["last_seen"]["lt"]
         .as_str()
         .expect("lt cutoff")
         .to_string();
@@ -495,7 +588,18 @@ fn every_idle_generation_is_sealed_under_a_guard() {
             op["where"]["closed"], 0,
             "the guard: only an OPEN generation can be closed, and only once"
         );
+        // GH #953: two hours of silence mean the owed answer is not coming;
+        // the seal clears the mark with it.
+        assert_eq!(op["set"]["owed_turn"], "", "{op}");
     }
+    // GH #954 (review I-1): one pass, one distinct `closed_at` per sealed
+    // row -- two rows of one round sealed with one `now` collide under the
+    // unique index `sessions_open_round`, and the next wake cannot build it.
+    assert_ne!(
+        op_of(&out[0])["set"]["closed_at"],
+        op_of(&out[1])["set"]["closed_at"],
+        "two generations sealed by one pass share a stamp"
+    );
 }
 
 #[test]
@@ -616,7 +720,12 @@ async fn a_round_change_ends_the_generation() {
     const ROUND_B: &str = r#"["member:robin","agent:scribe"]"#;
 
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, None);
+    // Every turn here carries a channel turn id (`turn_in`), so its
+    // generation owes the turn's final answer until the stand-in downstream
+    // acknowledges it (GH #953): whether a seal finds the mark already
+    // cleared (`seal-done`, close at once) or not (`seal-owed`, close on the
+    // acknowledgement), exactly one close of the sealed generation arrives.
+    build_tree_with(&td, None, true);
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
 
     // Round A, twice: one generation, whatever the spelling of the set.
@@ -746,31 +855,136 @@ async fn a_round_change_ends_the_generation() {
     h.shutdown().await;
 }
 
-/// The seal a round change sends is the night's guarded update (GH #940): only
-/// the turn whose seal flipped `closed` hands the generation over, and it hands
-/// it over under the round it was opened in, never under the round of the turn
-/// that ended it -- which is in context and must not leave on this message.
+/// The store's answer to a bundle as the hive edge delivers it back (GH #295):
+/// `hop.operation` 'bundle', one `tool_result` per leg and the per-leg
+/// metadata in `results[]`, both tied to the leg by its id. `legs` is
+/// `(id, operation, rows_affected, rows)`.
+fn bundle_reply(
+    phase: &str,
+    session: &str,
+    legs: &[(&str, &str, i64, serde_json::Value)],
+) -> serde_json::Value {
+    let rows_affected: i64 = legs.iter().map(|l| l.2).sum();
+    let turns: Vec<serde_json::Value> = legs
+        .iter()
+        .map(|l| {
+            serde_json::json!({"origin": "tool", "type": "tool_result", "id": l.0,
+                               "text": l.3.to_string()})
+        })
+        .collect();
+    let results: Vec<serde_json::Value> = legs
+        .iter()
+        .map(|l| {
+            serde_json::json!({"tool_call_id": l.0, "operation": l.1,
+                               "rows_affected": l.2, "duration_ms": 0})
+        })
+        .collect();
+    serde_json::json!({
+        "header": {"context": {"channel": "tg:42", "ses_phase": phase,
+                               "store_origin": "keeper-stamp",
+                               "keeper_session": session},
+                   "hop": {"operation": "bundle", "rows_affected": rows_affected,
+                           "bundle_errors": 0}},
+        "messages": turns,
+        "results": results
+    })
+}
+
+/// The tool_call legs of one emitted store message, by id.
+fn legs_of(msg: &serde_json::Value) -> std::collections::BTreeMap<String, serde_json::Value> {
+    msg["messages"]
+        .as_array()
+        .expect("legs")
+        .iter()
+        .map(|m| {
+            assert_eq!(m["type"], "tool_call", "{msg}");
+            (
+                m["id"].as_str().expect("leg id").to_string(),
+                serde_json::from_str(m["text"].as_str().expect("leg text")).expect("leg json"),
+            )
+        })
+        .collect()
+}
+
+/// The seal a round change sends is a guarded bundle (GH #940, GH #953): two
+/// legs, both guarded by `closed = 0`, so at most one flips the row. A
+/// generation that owes no answer (`seal-done`) is handed over at once; one
+/// whose last turn still waits for its final answer (`seal-owed`) is not --
+/// the acknowledgement of that answer sends the close (see
+/// [`the_answer_a_sealed_generation_owed_hands_it_over`]). Either way it is
+/// handed over under the round it was opened in, never under the round of the
+/// turn that ended it -- which is in context and must not leave on this
+/// message.
 #[test]
 fn only_the_turn_that_won_the_seal_hands_the_generation_over() {
     let old_round = r#"["member:alex","agent:scribe"]"#;
-    let seal_reply = |rows_affected: i64| {
-        let mut doc = reply_doc(
-            "keeper-stamp",
-            "seal",
-            "update",
-            rows_affected,
-            serde_json::json!("ok"),
+    let new_round = r#"["member:robin"]"#;
+
+    // The look of a turn of round b finds the open generation of round a.
+    let mut row = session_row("tg:42-0001", "0001", "0002");
+    row["audience_set"] = serde_json::json!(old_round);
+    let mut doc = look_reply(serde_json::json!([row]), turn_body("round b speaks"));
+    doc["header"]["context"]["audience_set"] = serde_json::json!(new_round);
+    doc["header"]["context"]["turn_id"] = serde_json::json!("turn-b");
+    let out = stamp(doc);
+    let seal = on_phase(&out, "seal");
+    assert_eq!(seal["header"]["session_id"], "tg:42-0001");
+    assert_eq!(seal["header"]["audience_set"], old_round);
+    let legs = legs_of(&seal);
+    assert_eq!(
+        legs.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["seal-done", "seal-owed"],
+        "ONE bundle, two legs: {seal}"
+    );
+    let (done, owed) = (&legs["seal-done"], &legs["seal-owed"]);
+    assert_eq!(
+        done["where"],
+        serde_json::json!({"session_id": "tg:42-0001", "closed": 0,
+                           "owed_turn": {"or_null": {"eq": ""}}}),
+        "seal-done takes only a generation that owes nothing: {done}"
+    );
+    assert_eq!(done["set"]["owed_turn"], "");
+    assert_eq!(
+        owed["where"],
+        serde_json::json!({"session_id": "tg:42-0001", "closed": 0}),
+        "seal-owed takes the rest: {owed}"
+    );
+    assert!(
+        owed["set"].get("owed_turn").is_none(),
+        "seal-owed leaves the mark standing for the acknowledgement: {owed}"
+    );
+    for leg in [done, owed] {
+        assert_eq!(leg["operation"], "update");
+        assert_eq!(leg["set"]["closed"], 1);
+        assert_eq!(
+            leg["set"]["closed_at"], done["set"]["closed_at"],
+            "both legs carry the one stamp of this seal"
         );
-        doc["header"]["context"]["keeper_session"] = serde_json::json!("tg:42-0001");
+    }
+
+    let seal_reply = |done: i64, owed: i64| {
+        let mut doc = bundle_reply(
+            "seal",
+            "tg:42-0001",
+            &[
+                ("seal-done", "update", done, serde_json::json!("ok")),
+                ("seal-owed", "update", owed, serde_json::json!("ok")),
+            ],
+        );
         doc["header"]["context"]["keeper_audience"] = serde_json::json!(old_round);
-        doc["header"]["context"]["audience_set"] = serde_json::json!(r#"["member:robin"]"#);
+        doc["header"]["context"]["audience_set"] = serde_json::json!(new_round);
         doc
     };
     assert!(
-        stamp(seal_reply(0)).is_empty(),
-        "rows_affected 0: a parallel turn sealed first, and its close is the one"
+        stamp(seal_reply(0, 0)).is_empty(),
+        "neither leg flipped the row: a parallel turn sealed first, and its close is the one"
     );
-    let out = stamp(seal_reply(1));
+    assert!(
+        stamp(seal_reply(0, 1)).is_empty(),
+        "sealed while it owes an answer: the acknowledgement of that answer sends \
+         the close, not the seal (GH #953)"
+    );
+    let out = stamp(seal_reply(1, 0));
     assert_eq!(out.len(), 1, "exactly ONE close request per generation");
     assert_eq!(out[0]["header"]["route"], "close");
     assert_eq!(out[0]["header"]["session_id"], "tg:42-0001");
@@ -780,6 +994,223 @@ fn only_the_turn_that_won_the_seal_hands_the_generation_over() {
         "the close carries the round the generation was opened in"
     );
     assert_eq!(out[0]["messages"], serde_json::json!([]));
+}
+
+/// GH #953 (review I-3, OR-NL-163): a turn makes its generation owe its final
+/// answer -- the open and the touch write the channel's turn id into
+/// `owed_turn` -- and the acknowledgement of that answer (`in_answered`, the
+/// curator writer's `turn_write` behind the wall insert) clears it. If the
+/// generation was sealed while it waited, the acknowledgement is what hands
+/// it over: after the answer stands on the wall, by an event, not by a lead.
+#[test]
+fn the_answer_a_sealed_generation_owed_hands_it_over() {
+    // The open and the touch record what the turn is owed.
+    let mut doc = look_reply(serde_json::json!([]), turn_body("hello"));
+    doc["header"]["context"]["turn_id"] = serde_json::json!("turn-1");
+    let open = op_of(&route(&stamp(doc), "kstore"));
+    assert_eq!(open["row"]["owed_turn"], "turn-1", "{open}");
+    let mut doc = look_reply(
+        serde_json::json!([session_row("tg:42-0001", "0001", "0002")]),
+        turn_body("and again"),
+    );
+    doc["header"]["context"]["turn_id"] = serde_json::json!("turn-2");
+    let touch = op_of(&on_phase(&stamp(doc), "touch"));
+    assert_eq!(touch["set"]["owed_turn"], "turn-2", "{touch}");
+
+    // The acknowledgement: only the FINAL answer, of a known session and turn.
+    let answered = |origin: &str, turn: &str, session: &str| {
+        stamp(serde_json::json!({
+            "header": {"context": {"channel": "tg:42", "turn_id": turn},
+                       "hop": {"route": "in_answered", "session_id": session}},
+            "messages": [{"origin": origin, "type": "text", "text": "the answer"}]
+        }))
+    };
+    assert!(
+        answered("user", "turn-2", "tg:42-0001").is_empty(),
+        "the person's own turn acknowledges nothing"
+    );
+    assert!(
+        answered("assistant", "turn-2", "").is_empty(),
+        "an answer without a session acknowledges nothing"
+    );
+    let out = answered("assistant", "turn-2", "tg:42-0001");
+    assert_eq!(out.len(), 1, "ONE bundle to the store: {out:?}");
+    let ack = route(&out, "kstore");
+    let legs = legs_of(&ack);
+    assert_eq!(
+        legs["ack-sealed"]["where"],
+        serde_json::json!({"session_id": "tg:42-0001",
+                           "owed_turn": {"in": ["turn-2", "*"]}, "closed": 1}),
+        "the mark of this turn, or the turn-less mark '*'"
+    );
+    assert_eq!(
+        legs["ack-open"]["where"],
+        serde_json::json!({"session_id": "tg:42-0001",
+                           "owed_turn": {"in": ["turn-2", "*"]}, "closed": 0})
+    );
+    for id in ["ack-sealed", "ack-open"] {
+        assert_eq!(legs[id]["operation"], "update");
+        assert_eq!(legs[id]["set"], serde_json::json!({"owed_turn": ""}));
+    }
+    assert_eq!(legs["ack-row"]["operation"], "select");
+    assert_eq!(
+        legs["ack-row"]["where"],
+        serde_json::json!({"session_id": "tg:42-0001"})
+    );
+
+    // The store's answer, as the hive edge carries it back.
+    let phase = ack["header"]["phase"]
+        .as_str()
+        .expect("ack phase")
+        .to_string();
+    let reply = |sealed: i64, open: i64| {
+        stamp(bundle_reply(
+            &phase,
+            "tg:42-0001",
+            &[
+                ("ack-sealed", "update", sealed, serde_json::json!("ok")),
+                ("ack-open", "update", open, serde_json::json!("ok")),
+                (
+                    "ack-row",
+                    "select",
+                    1,
+                    serde_json::json!([{"channel": "tg:42",
+                                        "audience_set": r#"["member:alex","agent:scribe"]"#}]),
+                ),
+            ],
+        ))
+    };
+    assert!(
+        reply(0, 1).is_empty(),
+        "the generation is still open: the call goes on, nothing is handed over"
+    );
+    assert!(
+        reply(0, 0).is_empty(),
+        "the mark is a later turn's, or the night released it and closed it itself"
+    );
+    let out = reply(1, 0);
+    assert_eq!(out.len(), 1, "exactly ONE close: {out:?}");
+    assert_eq!(out[0]["header"]["route"], "close");
+    assert_eq!(out[0]["header"]["session_id"], "tg:42-0001");
+    assert_eq!(out[0]["header"]["channel"], "tg:42");
+    assert_eq!(
+        out[0]["header"]["audience_set"], r#"["member:alex","agent:scribe"]"#,
+        "room and round come off the row, as the night reads them"
+    );
+    assert_eq!(out[0]["messages"], serde_json::json!([]));
+}
+
+/// GH #953: a lookup reply WITHOUT a turn id still owes its final answer --
+/// the open and the touch write the mark '*' -- and an answer without a turn
+/// id acknowledges exactly that mark. Since Re-Review R-1 a turn on `in_turn`
+/// never gets here without an id (`a_turn_without_an_id_gets_one_at_the_door`);
+/// '*' is the fallback of a reply that lost it (one in flight across the
+/// upgrade), which must not close a sealed generation by path length again.
+#[test]
+fn a_turn_without_an_id_owes_its_answer_under_the_star() {
+    let open = op_of(&route(
+        &stamp(look_reply(serde_json::json!([]), turn_body("hello"))),
+        "kstore",
+    ));
+    assert_eq!(open["row"]["owed_turn"], "*", "{open}");
+    let touch = op_of(&on_phase(
+        &stamp(look_reply(
+            serde_json::json!([session_row("tg:42-0001", "0001", "0002")]),
+            turn_body("and again"),
+        )),
+        "touch",
+    ));
+    assert_eq!(touch["set"]["owed_turn"], "*", "{touch}");
+
+    let out = stamp(serde_json::json!({
+        "header": {"context": {"channel": "tg:42"},
+                   "hop": {"route": "in_answered", "session_id": "tg:42-0001"}},
+        "messages": [{"origin": "assistant", "type": "text", "text": "the answer"}]
+    }));
+    assert_eq!(out.len(), 1, "ONE bundle to the store: {out:?}");
+    let legs = legs_of(&route(&out, "kstore"));
+    for (id, closed) in [("ack-sealed", 1), ("ack-open", 0)] {
+        assert_eq!(
+            legs[id]["where"],
+            serde_json::json!({"session_id": "tg:42-0001", "owed_turn": "*",
+                               "closed": closed}),
+            "{id}: an answer without a turn id clears only the mark '*'"
+        );
+        assert_eq!(legs[id]["set"], serde_json::json!({"owed_turn": ""}));
+    }
+}
+
+/// GH #953, Re-Review R-1 (Fix-Runde 2): a turn that reaches the keeper
+/// WITHOUT a channel turn id (the Telegram text road) gets one at this door,
+/// minted from the substrate's own trace of the turn plus the stamp's instant
+/// -- so two id-less turns owe their answers under two marks, and the answer
+/// to the earlier one can no longer acknowledge the debt of the later one.
+/// The id rides the lookup on the hop (the keeper's store edge promotes it to
+/// `context.turn_id`, and the turn leaves with it). A turn that carries a
+/// channel id keeps it untouched; `'*'` stays only as the fallback of a
+/// lookup reply that carries no id at all.
+#[test]
+fn a_turn_without_an_id_gets_one_at_the_door() {
+    let id_of = |trace: &str, ctx: serde_json::Value| -> String {
+        let out = stamp(serde_json::json!({
+            "header": {"context": ctx, "hop": {"route": "in_turn"}},
+            "trace_id": trace,
+            "messages": [{"origin": "user", "type": "text", "text": "hello"}]
+        }));
+        assert_eq!(out.len(), 1, "one lookup: {out:?}");
+        assert_eq!(out[0]["header"]["phase"], "look");
+        out[0]["header"]["turn_id"]
+            .as_str()
+            .expect("the lookup carries a turn id")
+            .to_string()
+    };
+    let first = id_of("trace-1", serde_json::json!({"channel": "tg:42"}));
+    let second = id_of("trace-2", serde_json::json!({"channel": "tg:42"}));
+    assert!(
+        !first.is_empty() && first != "*",
+        "minted, never empty or '*': {first}"
+    );
+    assert!(
+        first.contains("trace-1"),
+        "the substrate's trace names the turn: {first}"
+    );
+    assert_ne!(first, second, "two id-less turns, two marks");
+    assert_eq!(
+        id_of(
+            "trace-3",
+            serde_json::json!({"channel": "tg:42", "turn_id": "turn-9"})
+        ),
+        "turn-9",
+        "a channel id is carried, never replaced"
+    );
+}
+
+/// Review M-3: an insert the store answered without an error AND without a
+/// row is not a lost claim (that is `unique_violation`) -- and parking it
+/// swallowed the held turn whole: no answer, no reject, nothing in any log.
+/// The turn runs on under the id it minted, and a reject says the row is
+/// missing.
+#[test]
+fn an_open_that_wrote_no_row_hands_the_turn_on_and_says_so() {
+    let mut doc = reply_doc("keeper-stamp", "open", "insert", 0, serde_json::json!([]));
+    doc["header"]["context"]["keeper_session"] = serde_json::json!("tg:42-0009");
+    doc["header"]["context"]["keeper_body"] =
+        serde_json::json!(turn_body("is anybody there").to_string());
+    let out = stamp(doc);
+    assert_eq!(out.len(), 2, "the held turn and a reject: {out:?}");
+    let turn = route(&out, "turn");
+    assert_eq!(turn["header"]["session_id"], "tg:42-0009");
+    assert_eq!(turn["messages"][0]["text"], "is anybody there");
+    let reject = route(&out, "reject");
+    assert_eq!(reject["header"]["reject_reason"], "store_refused");
+    assert_eq!(reject["header"]["store_operation"], "insert");
+    assert!(
+        !reject["header"]["store_error"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "the reject names what went wrong: {reject}"
+    );
 }
 
 /// The sweep reads the round of every generation it seals, and carries it down
@@ -797,7 +1228,7 @@ fn every_seal_carries_the_round_of_its_own_generation() {
 
     // The sweep has to ASK for the column, or the rows come back without it.
     let asked = close(firing());
-    let cols = op_of(&asked[0])["columns"].clone();
+    let cols = op_of(&on_phase(&asked, "sweep"))["columns"].clone();
     assert!(
         cols.as_array()
             .is_some_and(|c| c.contains(&serde_json::json!("audience_set"))),
@@ -1125,6 +1556,26 @@ sys.stdout.write(json.dumps({"header": {"route": "report"},
                                            "text": str(ctx.get("session_id", ""))}]}))
 "#;
 
+/// [`REPORT`] plus the acknowledgement the curator's writer gives a turn's
+/// final answer (`turn_write`, GH #953): an `answered` message carrying the
+/// session and the channel turn id, which the parent wires into the keeper's
+/// `in_answered` the way talky wires `./curator -> ./session-keeper`. Here the
+/// answer is "written" the moment the turn is stamped -- this tree has no
+/// wall, only the order: stamped, answered, acknowledged.
+const REPORT_ANSWERED: &str = r#"
+import sys, json
+doc = json.load(sys.stdin)
+envelope = doc["envelope"]
+ctx = (envelope.get("header") or {}).get("context") or {}
+sid = str(ctx.get("session_id", ""))
+tid = str(ctx.get("turn_id", ""))
+sys.stdout.write(json.dumps([
+    {"header": {"route": "report"},
+     "messages": [{"origin": "assistant", "type": "text", "text": sid}]},
+    {"header": {"route": "answered", "session_id": sid, "turn_id": tid},
+     "messages": [{"origin": "assistant", "type": "text", "text": "the answer to " + tid}]}]))
+"#;
+
 /// The stand-in for the close lane downstream -- the curator's `in_close` since
 /// GH #889, the collector's before. Its second message is the round the close
 /// names on its hop (GH #940: a round change seals under the round of the
@@ -1162,8 +1613,8 @@ sys.stdout.write(json.dumps({"header": {"route": "closed"},
 /// a message that names an interior cell of it is refused `hive_boundary`. A
 /// parent may reach the timer -- birth topology is authorship -- and this is what
 /// that looks like: the parent draws the lane and the caller names the parent.
-fn main_config() -> Value {
-    json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
+fn main_config(answered: bool) -> Value {
+    let mut cfg = json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
         {"from": ".", "to": "./session-keeper/night",
          "condition": "hop.route == 'fire_night'"},
         {"from": "./probe", "to": "./session-keeper",
@@ -1172,14 +1623,29 @@ fn main_config() -> Value {
         {"from": "./session-keeper", "to": "./report",
          "condition": "hop.route == 'turn'",
          "modifier": {"set_context": {"session_id": "hop.session_id"}}},
-        {"from": "./report", "to": "/sink"},
+        // Only the report: with `answered` the stand-in also emits the
+        // acknowledgement, which goes back into the keeper and never to the sink.
+        {"from": "./report", "to": "/sink", "condition": "hop.route == 'report'"},
         {"from": "./session-keeper", "to": "./closed",
          "condition": "hop.route == 'close'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "channel": "hop.channel",
                                       "close_round": "has(hop.audience_set) ? hop.audience_set : ''"}}},
         {"from": "./closed", "to": "/park"}
-    ]}}})
+    ]}}});
+    if answered {
+        // The acknowledgement of a turn's final answer (GH #953), drawn the
+        // way talky draws `./curator -> ./session-keeper` on `turn_write`.
+        cfg["params"]["graph"]["edges"]
+            .as_array_mut()
+            .expect("edges")
+            .push(json!({"from": "./report", "to": "./session-keeper",
+                         "condition": "hop.route == 'answered'",
+                         "modifier": {"set_hop": {"route": "'in_answered'"},
+                                      "set_context": {"session_id": "hop.session_id",
+                                                      "turn_id": "hop.turn_id"}}}));
+    }
+    cfg
 }
 
 /// The tree, with `idle_ms` for `./close` or `None` for the shipped two hours.
@@ -1192,9 +1658,17 @@ fn main_config() -> Value {
 /// mutation door writes the same key into the same file
 /// (`patch_and_substitute_config`).
 fn build_tree(td: &tempfile::TempDir, idle_ms: Option<i64>) {
+    build_tree_with(td, idle_ms, false);
+}
+
+/// [`build_tree`], and with `answered` the stand-in downstream also
+/// acknowledges every turn's final answer into the keeper (GH #953) -- the
+/// tree for turns that carry a channel turn id, whose generation owes that
+/// answer until it is acknowledged.
+fn build_tree_with(td: &tempfile::TempDir, idle_ms: Option<i64>, answered: bool) {
     let root = td.path();
     std::fs::write(root.join(".env"), "").unwrap();
-    write(root, "main/config.json", &main_config());
+    write(root, "main/config.json", &main_config(answered));
     let template =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/session-keeper");
     copy_cells(&template, &root.join("main/session-keeper"));
@@ -1216,7 +1690,11 @@ fn build_tree(td: &tempfile::TempDir, idle_ms: Option<i64>) {
     write(
         root,
         "main/report/config.json",
-        &code_cell(REPORT, &["report"]),
+        &if answered {
+            code_cell(REPORT_ANSWERED, &["report", "answered"])
+        } else {
+            code_cell(REPORT, &["report"])
+        },
     );
     write(
         root,
@@ -1401,8 +1879,11 @@ fn round_of_close(m: &Message) -> String {
 }
 
 /// The `seal` traffic of the stamp so far, read off the colony's own log: the
-/// guarded updates it asked of its store, the answers that came back, and how
-/// many of those flipped a generation (`rows_affected >= 1`).
+/// guarded seals it asked of its store, the answers that came back, and how
+/// many of those flipped a generation (`rows_affected >= 1`). Since GH #953 a
+/// seal is ONE bundle of two guarded legs (`seal-done`, `seal-owed`), answered
+/// with `operation: "bundle"` and the SUM of the legs' `rows_affected` on the
+/// header -- at most one leg can flip the row, so the sum is the flip.
 #[derive(Clone, Copy, Debug, Default)]
 struct SealTraffic {
     asked: usize,
@@ -1430,7 +1911,7 @@ fn seal_traffic(td: &tempfile::TempDir) -> SealTraffic {
         }
         if to == "/session-keeper/sessions" {
             t.asked += 1;
-        } else if h["hop"]["operation"] == "update" {
+        } else if h["hop"]["operation"] == "update" || h["hop"]["operation"] == "bundle" {
             t.answered += 1;
             if h["hop"]["rows_affected"].as_i64().unwrap_or(0) >= 1 {
                 t.won += 1;
@@ -1503,30 +1984,43 @@ async fn until_generation(td: &tempfile::TempDir, sid: &str) {
     }
 }
 
-fn delivered_to(td: &tempfile::TempDir, path: &str) -> i64 {
+/// Deliveries from `from` to `to`, optionally only those whose
+/// `context.ses_phase` is `phase`.
+fn delivered(td: &tempfile::TempDir, from: &str, to: &str, phase: Option<&str>) -> i64 {
     let conn = rusqlite::Connection::open(td.path().join("colony.db")).expect("colony.db");
     conn.query_row(
-        "SELECT COUNT(*) FROM message_log WHERE to_path = ?1",
-        [path],
+        "SELECT COUNT(*) FROM message_log WHERE from_path = ?1 AND to_path = ?2 \
+         AND (?3 IS NULL OR json_extract(headers, '$.context.ses_phase') = ?3)",
+        rusqlite::params![from, to, phase],
         |r| r.get(0),
     )
     .unwrap_or(0)
 }
 
-/// Waits until the close pass has been handed `n` messages. A firing produces
-/// two: the trigger itself and the store's answer to the sweep. Once the second
-/// has landed, the pass has SEEN its candidates and decided -- which is what
-/// turns "nothing arrived at the port" from a race into a statement.
-async fn await_close_pass(td: &tempfile::TempDir, n: i64) {
+/// Waits until the close pass has DECIDED on `firings` firings: the store
+/// answered the idle sweep of each, and every question the pass asked of its
+/// store has its answer. Only then does "nothing arrived at the port" become a
+/// statement rather than a race.
+///
+/// Counted by phase and not by message count (GH #953/#954): a firing asks
+/// three things since then -- the sweep, the sentinel for an owed answer, a
+/// page of the heal -- so a raw count of deliveries to the pass no longer says
+/// which of them were answered.
+async fn await_close_pass(td: &tempfile::TempDir, firings: i64) {
+    const CLOSE: &str = "/session-keeper/close";
+    const SESSIONS: &str = "/session-keeper/sessions";
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if delivered_to(td, "/session-keeper/close") >= n {
+        let sweeps = delivered(td, SESSIONS, CLOSE, Some("sweep"));
+        let asked = delivered(td, CLOSE, SESSIONS, None);
+        let answered = delivered(td, SESSIONS, CLOSE, None);
+        if sweeps >= firings && answered == asked {
             return;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the close pass saw {} of {n} messages within 30s",
-            delivered_to(td, "/session-keeper/close")
+            "the close pass did not decide on {firings} firing(s) within 30s: sweeps \
+             answered {sweeps}, questions asked {asked}, answered {answered}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -1567,8 +2061,9 @@ async fn a_firing_on_a_channel_that_just_spoke_closes_nothing() {
 
     let sid = say(&h, &mut sink_rx, "tg:42", "still talking").await;
     h.send(fire()).await;
-    // Trigger + the store's answer to the sweep: the pass has decided.
-    await_close_pass(&td, 2).await;
+    // The store answered the sweep and every other question: the pass has
+    // decided.
+    await_close_pass(&td, 1).await;
     assert!(
         tokio::time::timeout(Duration::from_secs(1), park_rx.recv())
             .await
@@ -1609,7 +2104,7 @@ async fn an_idle_channel_is_closed_once_and_reopens_on_the_next_turn() {
     // repeated ones are silent -- that is what makes the timer safe to run
     // twelve times a night.
     h.send(fire()).await;
-    await_close_pass(&td, 4).await;
+    await_close_pass(&td, 2).await;
     assert!(
         tokio::time::timeout(Duration::from_secs(1), park_rx.recv())
             .await

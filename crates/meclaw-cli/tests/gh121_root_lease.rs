@@ -23,7 +23,55 @@ const DEADLINE: Duration = Duration::from_secs(30);
 
 /// A child process this test owns. Dropping it ends the process, so a panicking
 /// assertion cannot leave a daemon running on a temp root.
-struct Proc(Option<std::process::Child>);
+///
+/// GH #984: its stdout and stderr are DRAINED from the start. They used to be
+/// piped and never read: a daemon whose log lines filled the 64 KiB pipe (a
+/// loaded host is a chatty one) blocked in `write(2)` and never reached the
+/// boot line the test waits for -- and a daemon that died was waited for the
+/// whole 30 s, because nothing asked whether it was still there.
+struct Proc(Option<std::process::Child>, Drained);
+
+/// What a child said on stderr, collected by a thread until EOF.
+#[derive(Default)]
+struct Drained {
+    stderr: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drained {
+    fn of(child: &mut std::process::Child) -> Self {
+        use std::io::Read as _;
+        let mut d = Drained::default();
+        if let Some(mut out) = child.stdout.take() {
+            d.threads.push(std::thread::spawn(move || {
+                let _ = std::io::copy(&mut out, &mut std::io::sink());
+            }));
+        }
+        if let Some(mut err) = child.stderr.take() {
+            let buf = std::sync::Arc::clone(&d.stderr);
+            d.threads.push(std::thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = err.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.lock().unwrap().extend_from_slice(&chunk[..n]);
+                }
+            }));
+        }
+        d
+    }
+
+    /// Everything said so far, after waiting for EOF when the child is gone.
+    fn text(&mut self, child_gone: bool) -> String {
+        if child_gone {
+            for t in self.threads.drain(..) {
+                let _ = t.join();
+            }
+        }
+        String::from_utf8_lossy(&self.stderr.lock().unwrap()).into_owned()
+    }
+}
 
 impl Proc {
     fn pid(&self) -> u32 {
@@ -68,6 +116,11 @@ impl Proc {
     fn exited(&mut self) -> Option<std::process::ExitStatus> {
         self.0.as_mut()?.try_wait().ok().flatten()
     }
+
+    /// What the child said on stderr; complete once it has exited.
+    fn stderr(&mut self, child_gone: bool) -> String {
+        self.1.text(child_gone)
+    }
 }
 
 impl Drop for Proc {
@@ -89,17 +142,17 @@ fn bootable_root(root: &Path) {
 /// Start a headless daemon on `root` (`--daemon` without `--api`: the colony
 /// runs, no port is opened, it waits for SIGTERM).
 fn spawn_daemon(root: &Path) -> Proc {
-    Proc(Some(
-        Command::new(env!("CARGO_BIN_EXE_meclaw"))
-            .arg("--root")
-            .arg(root)
-            .arg("--daemon")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn meclaw daemon"),
-    ))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_meclaw"))
+        .arg("--root")
+        .arg(root)
+        .arg("--daemon")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn meclaw daemon");
+    let drained = Drained::of(&mut child);
+    Proc(Some(child), drained)
 }
 
 /// Boot a daemon that is EXPECTED to refuse, and collect its exit + stderr.
@@ -123,11 +176,7 @@ fn expect_refusal(root: &Path) -> (std::process::ExitStatus, String) {
         std::thread::sleep(Duration::from_millis(25));
     };
     let mut child = proc.0.take().expect("child is still owned");
-    let mut stderr = String::new();
-    if let Some(mut s) = child.stderr.take() {
-        use std::io::Read as _;
-        let _ = s.read_to_string(&mut stderr);
-    }
+    let stderr = proc.stderr(true);
     // Already reaped by `try_wait` above; this returns the cached status and
     // keeps the "every spawned process is waited on" contract explicit.
     let _ = child.wait();
@@ -140,10 +189,33 @@ fn expect_refusal(root: &Path) -> (std::process::ExitStatus, String) {
 /// non-blocking, so by the time the line is readable the process is already
 /// past it and into the shutdown select — which is exactly the guarantee a
 /// SIGTERM needs.
-fn wait_for_boot(root: &Path) {
-    wait_until("the daemon to finish booting", || {
-        log_contains(root, "filesystem bootstrap applied")
-    });
+///
+/// GH #984: the wait ends on one of two events -- the boot line, or the daemon
+/// gone (then at once, with its exit and its stderr, instead of 30 s later
+/// with "timed out"). The 30-s marker stays a failure marker for a daemon that
+/// is alive and silent, and it names how long the boot had and what it said.
+fn wait_for_boot(root: &Path, daemon: &mut Proc) {
+    let started = Instant::now();
+    loop {
+        if log_contains(root, "filesystem bootstrap applied") {
+            return;
+        }
+        if let Some(status) = daemon.exited() {
+            panic!(
+                "the daemon exited before it finished booting ({status:?}, after {:?})\nstderr:\n{}",
+                started.elapsed(),
+                daemon.stderr(true)
+            );
+        }
+        if started.elapsed() >= DEADLINE {
+            panic!(
+                "timed out waiting for: the daemon to finish booting (alive, {:?})\nstderr so far:\n{}",
+                started.elapsed(),
+                daemon.stderr(false)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Whether the JSONL log carries `needle` yet.
@@ -185,15 +257,18 @@ fn plant_lease(root: &Path, pid: u32, start_id: u64) {
 
 /// A real foreign process that stays alive for the duration of a test.
 fn spawn_bystander() -> Proc {
-    Proc(Some(
-        Command::new("sleep")
-            .arg("120")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn bystander"),
-    ))
+    Proc(
+        Some(
+            Command::new("sleep")
+                .arg("120")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn bystander"),
+        ),
+        Drained::default(),
+    )
 }
 
 fn start_id_of(pid: u32) -> u64 {
@@ -213,7 +288,7 @@ fn a_second_daemon_on_a_live_root_refuses_to_boot_and_names_the_holder() {
     let td = tempfile::TempDir::new().unwrap();
     bootable_root(td.path());
 
-    let first = spawn_daemon(td.path());
+    let mut first = spawn_daemon(td.path());
     let first_pid = first.pid();
     wait_until("the first daemon to publish its lease", || {
         lease_pid(td.path()) == Some(first_pid)
@@ -240,7 +315,7 @@ fn a_second_daemon_on_a_live_root_refuses_to_boot_and_names_the_holder() {
 
     // The first daemon was never disturbed and still owns the root.
     assert_eq!(lease_pid(td.path()), Some(first_pid));
-    wait_for_boot(td.path());
+    wait_for_boot(td.path(), &mut first);
     assert!(
         first.stop().success(),
         "the holder stops cleanly afterwards"
@@ -287,7 +362,7 @@ fn a_lease_from_a_dead_holder_is_taken_over_with_a_loud_log() {
     let dead_pid = corpse.kill_and_reap();
     plant_lease(td.path(), dead_pid, dead_start_id);
 
-    let daemon = spawn_daemon(td.path());
+    let mut daemon = spawn_daemon(td.path());
     let daemon_pid = daemon.pid();
     wait_until("the next boot to reclaim the dead lease", || {
         lease_pid(td.path()) == Some(daemon_pid)
@@ -301,7 +376,7 @@ fn a_lease_from_a_dead_holder_is_taken_over_with_a_loud_log() {
 
     // And a SIGTERM must give the root back — a hard kill leaves no permanent
     // blocker, an orderly stop leaves nothing at all.
-    wait_for_boot(td.path());
+    wait_for_boot(td.path(), &mut daemon);
     let status = daemon.stop();
     assert!(status.success(), "SIGTERM is an orderly stop: {status:?}");
     assert!(
@@ -329,12 +404,12 @@ fn a_hard_killed_daemon_leaves_no_permanent_blocker() {
         "SIGKILL runs no destructor: the stale lease is still there"
     );
 
-    let second = spawn_daemon(td.path());
+    let mut second = spawn_daemon(td.path());
     let second_pid = second.pid();
     wait_until("the next boot to take the root", || {
         lease_pid(td.path()) == Some(second_pid)
     });
-    wait_for_boot(td.path());
+    wait_for_boot(td.path(), &mut second);
     assert!(
         second.stop().success(),
         "and it stops cleanly, leaving the root free again"
@@ -363,7 +438,7 @@ fn a_recycled_pid_does_not_block_a_boot() {
     let stale_start_id = start_id_of(reused_pid) - 1;
     plant_lease(td.path(), reused_pid, stale_start_id);
 
-    let daemon = spawn_daemon(td.path());
+    let mut daemon = spawn_daemon(td.path());
     let daemon_pid = daemon.pid();
     wait_until("the boot to see through the recycled pid", || {
         lease_pid(td.path()) == Some(daemon_pid)
@@ -373,7 +448,7 @@ fn a_recycled_pid_does_not_block_a_boot() {
         log_contains(td.path(), "RECYCLED") && log_contains(td.path(), &reused_pid.to_string())
     });
 
-    wait_for_boot(td.path());
+    wait_for_boot(td.path(), &mut daemon);
     let _ = daemon.stop();
     assert!(
         process_status(reused_pid) != ProcStatus::Gone,

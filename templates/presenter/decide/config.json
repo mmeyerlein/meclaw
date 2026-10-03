@@ -8,6 +8,8 @@
     "requirement": "Answers a fixed set of typed choices about one short spoken or typed request: which topic it belongs to, if any, and which block would show it best. It needs a fast, cheap decider that returns a calibrated probability per answer, never generated text. It runs on every turn while the person waits for the screen, so an answer must come back within a few hundred milliseconds and cost next to nothing.",
     "model": "${PRESENTER_DECIDE_MODEL:-}",
     "api_key": "${PRESENTER_DECIDE_API_KEY:-}",
+    "credential_grant_id": "",
+    "credential_wait_ms": 30000,
     "base_url": "${PRESENTER_DECIDE_BASE_URL:-}",
     "base_url_allow": [],
     "external_timeout_ms": 3000
@@ -25,7 +27,19 @@
         "type": "string",
         "secret": true,
         "default": "",
-        "description": "The decider's key (`PRESENTER_DECIDE_API_KEY`), or a `credential_grant_id` in its place."
+        "description": "The decider's key (`PRESENTER_DECIDE_API_KEY`). Leave it EMPTY when `credential_grant_id` is set: the empty key is the switch, because the cell asks for a credential only while it holds none, and a key in its config counts as one."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #976: the grant this decider presents to get its bearer credential SEALED from the member's own access hive, instead of carrying it in `api_key` -- the same param, with the same meaning, as on the talky and cogny brains (GH #560). It ships EMPTY, which is no grant at all: the decider then spends `api_key` exactly as before. Set it, together with an EMPTY `api_key`, through `override_params` of the declaration that installs the presenter (the builder's `install_app` does both when the wish carries `credential`): the turn that finds no credential is parked, the request leaves on `credential_request` from `./decide` (a v-lane the rim names `./decide` for), the sealed box comes back on `in_sealed`, is opened in this task's RAM and is written nowhere. WHICH credential is named by the grant and never here (R-AC-2). Immutable at run time: a model push cannot move it, so the repair is a new installation."
+      },
+      "credential_wait_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 30000,
+        "description": "GH #976: how long one sealed credential round may take before every parked turn gets its `credential_pending` receipt (an `error` on `in_decision`, so the screen stays as it is and the journal says why). The member's broker is a few cells and two store round trips away, so the presenter ships the brains' 30 s rather than the substrate's 10 s. Only meaningful together with `credential_grant_id`."
       },
       "base_url": {
         "type": "string",
@@ -60,9 +74,23 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "finish_reason": {
           "type": "string",
-          "required": true
+          "required": true,
+          "optional_on_route": [
+            "credential_request"
+          ]
         },
         "tokens_prompt": {
           "type": "number",
@@ -125,6 +153,10 @@
           "required": false
         },
         "params": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
           "type": "object",
           "required": false
         }

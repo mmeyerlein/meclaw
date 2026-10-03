@@ -1123,6 +1123,9 @@ pub async fn run_with_hooks_tuned(
     let (heartbeat_tx, heartbeat_rx) = tokio::sync::mpsc::channel::<meclaw_colony::watchdog::Beat>(
         meclaw_colony::watchdog::HEARTBEAT_CAPACITY,
     );
+    // GH #968: the label a full heartbeat channel would drop goes here, so a
+    // trip inside a declared work item still names it.
+    let (label_slot, label_slot_reader) = meclaw_colony::watchdog::label_slot();
 
     // Step 5.3 — Direct-Mode egress channel: root-hive HiveNoRoute → stdout.
     // Only set in Direct-Mode; --daemon/--api paths leave egress as None → DLQ
@@ -1150,7 +1153,8 @@ pub async fn run_with_hooks_tuned(
     // rescan triggered from inside the colony walks `--templates` and not the
     // whole workspace.
     .with_templates_root(templates_root.clone())
-    .with_heartbeat(heartbeat_tx);
+    .with_heartbeat(heartbeat_tx)
+    .with_label_slot(label_slot);
     if let Some(egress_tx) = egress_tx_opt {
         colony_cfg = colony_cfg.with_egress(egress_tx);
     }
@@ -1203,7 +1207,7 @@ pub async fn run_with_hooks_tuned(
         wd_witness_tx,
         watchdog.period,
     ));
-    tokio::spawn(meclaw_colony::watchdog::run_watchdog(
+    tokio::spawn(meclaw_colony::watchdog::run_watchdog_with_label_slot(
         heartbeat_rx,
         wd_trip_tx,
         watchdog.threshold,
@@ -1211,6 +1215,7 @@ pub async fn run_with_hooks_tuned(
         wd_arm_rx,
         watchdog.on_trip,
         Some(wd_witness_rx),
+        Some(label_slot_reader),
     ));
 
     // Bootstrap from filesystem (reads config.json files, plans + applies).

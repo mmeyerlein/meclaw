@@ -69,7 +69,13 @@ struct Scripted {
 const SCRIPTED: &[Scripted] = &[
     Scripted {
         cell: "session-keeper/close",
-        knobs: &[("idle_ms", "_int"), ("close_limit", "_int")],
+        // `heal_limit` since GH #954: the page size of the night's heal of
+        // rows from before the unique index, read like `close_limit`.
+        knobs: &[
+            ("idle_ms", "_int"),
+            ("close_limit", "_int"),
+            ("heal_limit", "_int"),
+        ],
     },
     Scripted {
         cell: "summarizer/prep",
@@ -274,7 +280,7 @@ fn nothing_in_the_shipped_three_reads_a_behaviour_knob_out_of_the_environment() 
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("idle_ms", …)` is the value a cell
 /// uses when its config says nothing, and comparing the text is the complete
-/// check over all ten knobs.
+/// check over all eleven knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let mut total = 0usize;
@@ -337,8 +343,8 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 10,
-        "the scripted half of this migration is ten knobs"
+        total, 11,
+        "the scripted half of this migration is ten knobs, and GH #954 added `heal_limit`"
     );
 }
 
@@ -363,6 +369,18 @@ fn op_of(msg: &Value) -> Value {
     meclaw_core::serde_json::from_str(text).expect("op json")
 }
 
+/// The idle sweep among a firing's questions. Since GH #953/#954 a firing
+/// asks three (`sweep`, `owed`, `heal-page`), and the knobs of this file are
+/// the sweep's; picked by phase, never by position.
+fn sweep_of(out: &[Value]) -> Value {
+    let hits: Vec<&Value> = out
+        .iter()
+        .filter(|m| m["header"]["phase"] == "sweep")
+        .collect();
+    assert_eq!(hits.len(), 1, "one idle sweep per firing: {out:?}");
+    op_of(hits[0])
+}
+
 fn seconds_back(cutoff: &str) -> i64 {
     let parsed = chrono::DateTime::parse_from_rfc3339(cutoff)
         .unwrap_or_else(|e| panic!("cutoff {cutoff} is not RFC-3339: {e}"));
@@ -379,8 +397,12 @@ fn seconds_back(cutoff: &str) -> i64 {
 #[test]
 fn the_idle_window_and_the_close_limit_come_from_the_params() {
     let shipped = emit_with_params("session-keeper/close", json!({}), firing());
-    assert_eq!(shipped.len(), 1, "one question, asked of the store");
-    let op = op_of(&shipped[0]);
+    assert_eq!(
+        shipped.len(),
+        3,
+        "three questions, asked of the store: sweep, owed, heal-page"
+    );
+    let op = sweep_of(&shipped);
     assert_eq!(op["limit"], 50, "the shipped runaway guard is fifty");
     let back = seconds_back(op["where"]["last_seen"]["lt"].as_str().expect("lt cutoff"));
     assert!(
@@ -393,7 +415,7 @@ fn the_idle_window_and_the_close_limit_come_from_the_params() {
         json!({"idle_ms": 600000, "close_limit": 7}),
         firing(),
     );
-    let op = op_of(&tuned[0]);
+    let op = sweep_of(&tuned);
     assert_eq!(
         op["limit"], 7,
         "the guard an override names is not the one the sweep asks for"
@@ -408,7 +430,7 @@ fn the_idle_window_and_the_close_limit_come_from_the_params() {
     // candidate, which is exactly what the colony tests need of it.
     let now = emit_with_params("session-keeper/close", json!({"idle_ms": 0}), firing());
     let back = seconds_back(
-        op_of(&now[0])["where"]["last_seen"]["lt"]
+        sweep_of(&now)["where"]["last_seen"]["lt"]
             .as_str()
             .expect("lt cutoff"),
     );
@@ -640,7 +662,7 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
             firing(),
         );
         assert_eq!(
-            op_of(&out[0])["limit"],
+            sweep_of(&out)["limit"],
             50,
             "a close_limit of {blank} must fall back to the shipped default"
         );
@@ -651,7 +673,7 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
         firing(),
     );
     assert_eq!(
-        op_of(&out[0])["limit"],
+        sweep_of(&out)["limit"],
         7,
         "a numeric knob may arrive as a string"
     );
@@ -680,8 +702,8 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
 fn two_instances_of_the_same_close_script_are_tuned_apart() {
     let one = emit_with_params("session-keeper/close", json!({"close_limit": 3}), firing());
     let other = emit_with_params("session-keeper/close", json!({"close_limit": 90}), firing());
-    assert_eq!(op_of(&one[0])["limit"], 3);
-    assert_eq!(op_of(&other[0])["limit"], 90);
+    assert_eq!(sweep_of(&one)["limit"], 3);
+    assert_eq!(sweep_of(&other)["limit"], 90);
 }
 
 /// The declarations carry no leftover env NAME in their prose either. A

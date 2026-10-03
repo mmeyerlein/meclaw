@@ -36,6 +36,27 @@ fn seed_now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// The declared shape of the `system` table as a seed may write it (GH #822):
+/// `slot_path` and `value` are required, `updated_at` has a default because
+/// this loader stamps it at seed time — a header that carries it (the staging
+/// form, see the module docs) and one that does not are both current.
+fn system_decl() -> meclaw_colony::schema_evolution::TableDecl {
+    use meclaw_colony::schema_evolution::{ColumnDecl, TableDecl};
+    let col = |ty: &str, default: Option<Value>| ColumnDecl {
+        ty: ty.to_string(),
+        default,
+    };
+    TableDecl {
+        version: 1,
+        columns: [
+            ("slot_path".to_string(), col("text", None)),
+            ("value".to_string(), col("json", None)),
+            ("updated_at".to_string(), col("int", Some(Value::from(0)))),
+        ]
+        .into(),
+    }
+}
+
 /// Parse the seed file into its `(slot_path, leaf)` pairs.
 ///
 /// Pure parse — no database, no side effects. Single parse path shared by the
@@ -56,9 +77,9 @@ fn parse_system_seed(path: &std::path::Path) -> Result<Vec<(String, Value)>, Str
             path.display()
         )
     })?;
-    let header_schema = header
-        .get("schema")
-        .and_then(|v| v.as_object())
+    let header_obj = header
+        .as_object()
+        .filter(|h| h.get("schema").is_some_and(Value::is_object))
         .ok_or_else(|| {
             format!(
                 "seed {} line 1: missing schema object — line 1 must be the header \
@@ -66,14 +87,13 @@ fn parse_system_seed(path: &std::path::Path) -> Result<Vec<(String, Value)>, Str
                 path.display()
             )
         })?;
-    for col in ["slot_path", "value"] {
-        if !header_schema.contains_key(col) {
-            return Err(format!(
-                "seed {}: schema mismatch — column {col} missing in seed header",
-                path.display()
-            ));
-        }
-    }
+    // GH #822: the header is resolved by the one resolver every seed reader
+    // shares. Only the plan's verdict matters here — `updated_at` is the one
+    // column with a default, and this loader stamps it itself either way.
+    let writer = meclaw_colony::schema_evolution::parse_writer_header("system", header_obj)
+        .map_err(|e| format!("seed {}: {e}", path.display()))?;
+    meclaw_colony::schema_evolution::resolve("system", &writer, &system_decl())
+        .map_err(|e| format!("seed {}: {e}", path.display()))?;
     let mut rows = Vec::new();
     for (idx, line) in lines.enumerate() {
         if line.trim().is_empty() {
@@ -270,6 +290,60 @@ mod tests {
         );
         let err = check_system_seed(td.path()).expect_err("header must cover both columns");
         assert!(err.contains("value"), "error must name the column: {err}");
+    }
+
+    // ---- GH #822: the header is resolved, not just covered. ----
+
+    #[test]
+    fn a_missing_column_with_a_default_is_filled_at_birth() {
+        for header in [
+            r#"{"schema":{"slot_path":"text","value":"json"}}"#,
+            r#"{"schema":{"slot_path":"text","value":"json","updated_at":"int"}}"#,
+        ] {
+            let td = td_with_seed(&format!(
+                "{header}\n{}\n",
+                r#"{"slot_path":"identity","value":{"text":"I am Egon."}}"#
+            ));
+            check_system_seed(td.path()).unwrap();
+            let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+            load_system_seed_if_present(&mut conn, td.path()).unwrap();
+            let stamped: i64 = conn
+                .query_row("SELECT updated_at FROM system", [], |r| r.get(0))
+                .unwrap();
+            assert!(stamped > 0, "{header}: the loader stamps updated_at");
+        }
+    }
+
+    #[test]
+    fn a_missing_column_without_default_is_refused_at_birth_naming_it() {
+        let td = td_with_seed("{\"schema\":{\"value\":\"json\"}}\n");
+        let err = check_system_seed(td.path()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column slot_path"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_changed_type_is_refused() {
+        let td = td_with_seed("{\"schema\":{\"slot_path\":\"int\",\"value\":\"json\"}}\n");
+        let err = check_system_seed(td.path()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column slot_path"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_column_is_refused() {
+        let td = td_with_seed(
+            "{\"schema\":{\"slot_path\":\"text\",\"value\":\"json\",\"extra\":\"text\"}}\n",
+        );
+        let err = check_system_seed(td.path()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column extra"),
+            "{err}"
+        );
     }
 
     #[test]

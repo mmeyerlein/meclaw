@@ -356,14 +356,16 @@ fn a_judgement_becomes_aliases_refusals_and_exactly_one_re_derive() {
         ops[0],
         serde_json::json!({"operation": "set_alias", "table": "facts", "column": "predicate",
                            "alias": "Lieblingseditor", "canonical": "favorite_editor",
-                           "recorded_at": TO}),
+                           "recorded_at": TO, "if_absent": true, "resolve": true}),
         "the relation dimension is named explicitly -- an alias is a statement \
          about exactly one identity"
     );
     assert_eq!(
         ops[1],
         serde_json::json!({"operation": "set_alias", "table": "facts", "column": "subject",
-                           "alias": "user:u1", "canonical": "user", "recorded_at": TO})
+                           "alias": "user:u1", "canonical": "user", "recorded_at": TO,
+                           "if_absent": true, "resolve": true}),
+        "GH #973 M-B1: the night never bends a binding and writes the canonical end"
     );
     assert_eq!(
         ops[2],

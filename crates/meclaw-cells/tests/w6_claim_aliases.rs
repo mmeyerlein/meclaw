@@ -294,7 +294,7 @@ fn a_rewording_verdict_becomes_one_alias_and_one_re_derive() {
         vec![serde_json::json!({
             "operation": "set_alias", "table": "facts", "column": "claim",
             "alias": "The user practices yoga.", "canonical": "yoga twice a week",
-            "recorded_at": TO
+            "recorded_at": TO, "if_absent": true, "resolve": true
         })],
         "one alias, on the claim dimension, in the shape the other two dimensions \
          already use: {msgs:?}"

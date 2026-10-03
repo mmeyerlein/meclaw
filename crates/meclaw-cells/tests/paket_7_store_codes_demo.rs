@@ -84,6 +84,7 @@ async fn store_code_unknown_table() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
     // No table created → SELECT hits "no such table".
     let em = run_store_op(
@@ -115,6 +116,7 @@ async fn store_code_unknown_column() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
     // Column "nosuch" is not declared → "table t has no column named nosuch".
     let em = run_store_op(
@@ -143,6 +145,7 @@ async fn store_code_constraint_violation() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
     // Duplicate PK → SQLITE_CONSTRAINT.
     let em = run_store_op(
@@ -171,6 +174,7 @@ async fn store_code_type_mismatch() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
     let em = run_store_op(
         &mut cell,
@@ -196,6 +200,7 @@ async fn store_code_sql_error_backstop() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
     // TRIGGER CHANGED IN P3 (behaviour of the backstop is unchanged).
     // Until P3 this test reached the backstop by injecting a dangling clause via
@@ -251,6 +256,7 @@ async fn store_code_malformed_table_name_is_rejected_by_the_catalog() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
     let em = run_store_op(
         &mut cell,
@@ -300,6 +306,7 @@ async fn store_code_query_timeout() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
 
     // A full-table SELECT over 400k rows — interruptible inside SQLite, far

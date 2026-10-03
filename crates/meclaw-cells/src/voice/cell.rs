@@ -422,6 +422,17 @@ pub struct VoiceCell {
     sessions: HashMap<String, SessionState>,
     /// Live duplex sessions, keyed by `session_id`. See [`Self::sessions`].
     live_sessions: HashMap<String, LiveSessionState>,
+    /// The verified sender of a session, as the `in_session` lane handed it
+    /// (GH #979), keyed by `session_id`.
+    ///
+    /// A table of its own and not a field of either session type: the lane
+    /// comes from the signalling half of a telephone, which hears the call
+    /// from the switch at the same moment the switch opens the audio fork, so
+    /// the sender may arrive BEFORE the connection does. It is stamped as
+    /// `hop.user_id` on every lane that carries the caller's own words
+    /// ([`CALLER_ROUTES`]) and dropped with the connection. A session nobody
+    /// named carries no `user_id` at all -- the cell itself knows nobody.
+    senders: HashMap<String, String>,
     /// Whether this cell runs a duplex provider (`params.duplex`).
     ///
     /// Settled at birth: the block is not in
@@ -522,6 +533,7 @@ impl VoiceCell {
             io: Some(io),
             sessions: HashMap::new(),
             live_sessions: HashMap::new(),
+            senders: HashMap::new(),
             duplex: params.duplex.is_some(),
             duplex_turn_gap_ms: duplex_gap_ms(params),
             duplex_backchannel_max_ms: duplex_backchannel_ms(params),
@@ -716,13 +728,94 @@ impl VoiceCell {
     }
 
     /// Emit a source emission at this cell's own path.
-    async fn emit(&self, sink: &OriginSink, content: Value) {
+    ///
+    /// Every source emission passes here, so this is the one place the
+    /// verified sender of a session is stamped (GH #979): a lane that carries
+    /// the caller's words gets `hop.user_id`, and every other lane -- and
+    /// every session nobody named -- is left exactly as it was built.
+    async fn emit(&self, sink: &OriginSink, mut content: Value) {
+        self.stamp_sender(&mut content);
         let _ = sink
             .emit(CellOutput {
                 target: self.path.clone(),
                 content,
             })
             .await;
+    }
+
+    /// Stamp the verified sender of the emission's session as `hop.user_id`
+    /// and `hop.verified_user` (GH #979), on the lanes that carry what the
+    /// caller said.
+    fn stamp_sender(&self, content: &mut Value) {
+        let Some(header) = content.get_mut("header").and_then(Value::as_object_mut) else {
+            return;
+        };
+        let route = header
+            .get("route")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !CALLER_ROUTES.contains(&route) {
+            return;
+        }
+        let Some(sender) = header
+            .get("session_id")
+            .and_then(Value::as_str)
+            .and_then(|s| self.senders.get(s))
+            .cloned()
+        else {
+            return;
+        };
+        // Both keys, one value: `user_id` is the sender a firewall allowlists
+        // by, `verified_user` the proof a member's ingress stamps
+        // `context.speaker` from (GH #979, OR-NL.I.6). This lane only ever
+        // carries a sender somebody verified, so the two coincide here.
+        header.insert("user_id".into(), json!(sender));
+        header.insert("verified_user".into(), json!(sender));
+    }
+
+    /// The `in_session` lane (GH #979): who is speaking in one session.
+    ///
+    /// Sent by the signalling half of a telephone, which knows the caller the
+    /// switch verified while this cell knows only the call's UUID. The session
+    /// is read off the HOP, where that half writes it, and not off context: a
+    /// context key is inherited from whatever came before, a hop key is what
+    /// the sender of this one message said. An empty `user_id` withdraws the
+    /// name -- fail-closed, the session's turns name nobody again. No answer
+    /// is emitted: the lane is a fact handed over, not a question.
+    async fn take_sender(&mut self, msg: &Message, reply_target: Path, sink: &OutputSink) {
+        let on_hop = |key: &str| {
+            msg.headers
+                .hop
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let Some(session_id) = on_hop("call_id").or_else(|| on_hop("session_id")) else {
+            self.refuse(
+                sink,
+                reply_target,
+                "missing_session",
+                "in_session names the session on hop.call_id (or hop.session_id)",
+                None,
+            )
+            .await;
+            return;
+        };
+        match on_hop("user_id") {
+            Some(user) => {
+                tracing::info!(
+                    path = self.path.as_str(),
+                    %session_id,
+                    "voice: the session's sender is named"
+                );
+                self.senders.insert(session_id, user);
+            }
+            None => {
+                self.senders.remove(&session_id);
+            }
+        }
     }
 
     /// Stamp `hop.engine` on an emission of a duplex cell.
@@ -1824,6 +1917,13 @@ fn split_paragraph(paragraph: &str) -> Vec<String> {
 }
 
 /// The body of a `partial` or a `turn` emission.
+/// The lanes that carry what the CALLER said, and therefore the verified
+/// sender of their session (GH #979): a finished turn, and a delegation, whose
+/// body is the user text of the open turn. `partial` is an interim of the same
+/// words and is left unnamed on purpose -- it is overtaken by its own `turn`,
+/// and a name on it would be a second place for the stamp to drift from.
+const CALLER_ROUTES: [&str; 2] = ["turn", "delegation"];
+
 fn transcript_body(route: &str, session_id: &str, mode: Mode, text: &str, extra: Value) -> Value {
     let mut header = Map::new();
     header.insert("route".into(), json!(route));
@@ -1947,6 +2047,12 @@ impl LongRunningCell for VoiceCell {
             // (contract § 1.5).
             if msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("in_advise") {
                 self.advise(&msg, body, reply_target, sink).await;
+                return;
+            }
+
+            // The sender lane (GH #979): no text to speak, a name to keep.
+            if msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("in_session") {
+                self.take_sender(&msg, reply_target, sink).await;
                 return;
             }
 
@@ -2161,6 +2267,10 @@ impl LongRunningCell for VoiceCell {
                 VoiceEvent::Disconnected { session_id } => {
                     self.sessions.remove(&session_id);
                     self.live_sessions.remove(&session_id);
+                    // The name goes with the connection (GH #979): a session
+                    // id that comes back is a new connection, and it is named
+                    // again or not at all -- never by a leftover.
+                    self.senders.remove(&session_id);
                 }
                 VoiceEvent::Control { session_id, frame } => {
                     self.drive(&session_id, Input::Control(frame), sink).await;

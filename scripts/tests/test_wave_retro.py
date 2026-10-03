@@ -1201,10 +1201,60 @@ class MissingSourceTests(unittest.TestCase):
         self.assertEqual(
             wr.main(["welle-leer-2026-01-01", "--root", str(root)]), 0)
 
-    def test_an_unknown_wave_is_reported_and_exits_zero(self):
+    def test_wave_retro_names_both_paths_when_missing(self):
+        """A wave found under neither `plans/` nor `docs/plans/` is an error
+        that names both paths -- a silent `n/a` read as "nothing to measure"
+        for a repo whose plans live in `docs/plans/` (GH #970)."""
+        import contextlib
+        import io
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.assertEqual(wr.main(["welle-gibtsnicht", "--root", tmp.name]), 0)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()):
+            rc = wr.main(["welle-gibtsnicht", "--root", tmp.name])
+        self.assertNotEqual(rc, 0)
+        text = err.getvalue()
+        root = pathlib.Path(tmp.name)
+        self.assertIn(str(root / "plans" / "welle-gibtsnicht"), text)
+        self.assertIn(str(root / "docs" / "plans" / "welle-gibtsnicht"), text)
+        self.assertNotIn("n/a", text)
+
+    def test_wave_retro_finds_docs_plans(self):
+        """A repo that keeps its plans under `docs/plans/` gets a
+        retro instead of `n/a` (GH #970); the history line goes next to the
+        wave, `docs/plans/retro/RETRO.md`."""
+        root, troot = fixture_wave(self)
+        (root / "docs").mkdir()
+        (root / "plans").rename(root / "docs" / "plans")
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = run_retro(self, root, troot)
+        self.assertEqual(rc, 0)
+        wave_dir = root / "docs" / "plans" / WAVE
+        self.assertTrue((wave_dir / "retro.md").is_file())
+        self.assertTrue(
+            (root / "docs" / "plans" / "retro" / "RETRO.md").is_file())
+        self.assertFalse((root / "plans").exists())
+        self.assertIn(str(wave_dir), out.getvalue())
+
+    def test_plans_wins_over_docs_plans(self):
+        """First hit wins: `plans/<wave>/` before `docs/plans/<wave>/`."""
+        root, troot = fixture_wave(self)
+        (root / "docs" / "plans" / WAVE).mkdir(parents=True)
+        self.assertEqual(run_retro(self, root, troot), 0)
+        self.assertTrue((root / "plans" / WAVE / "retro.md").is_file())
+        self.assertFalse((root / "docs" / "plans" / WAVE / "retro.md").exists())
+
+    def test_check_looks_in_docs_plans_too(self):
+        root, troot = fixture_wave(self)
+        (root / "docs").mkdir()
+        (root / "plans").rename(root / "docs" / "plans")
+        self.assertEqual(wr.main(["--check", WAVE, "--root", str(root)]), 1)
+        run_retro(self, root, troot)
+        self.assertEqual(wr.main(["--check", WAVE, "--root", str(root)]), 0)
 
 
 class CheckAndReadmeTests(unittest.TestCase):

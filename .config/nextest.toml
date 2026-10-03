@@ -97,18 +97,8 @@ path = "junit.xml"
 # one entry would silently retry the same helper everywhere.)
 #
 # --- current quarantine ----------------------------------------------------
-# (GH #714, GH #763 and GH #911 closed with their measurements; an entry comes
-# back only with a new issue behind it)
-
-[[profile.default.overrides]]
-# GH #956 -- the catch-up strike after the second boot misses its 30 s wait under full-suite load; 3/3 green alone, red once in a strand gate.
-filter = 'binary_id(=meclaw-cells::gh922_a_missed_strike_fires_late_once) & test(=gh922_a_missed_strike_fires_late_once)'
-retries = 2
-
-[[profile.default.overrides]]
-# GH #968 -- the watchdog trip inside the read misses its 30 s wait under full-suite load; 3/3 green alone, red once in a strand gate.
-filter = 'binary_id(=meclaw-colony::gh571_a_read_is_a_named_work_item) & test(=a_trip_inside_a_read_names_the_endpoint)'
-retries = 2
+# (GH #714, GH #763, GH #911, GH #956 and GH #968 closed with their
+# measurements; an entry comes back only with a new issue behind it)
 
 # ---------------------------------------------------------------------------
 # LOUD WHEN GREEN -- the tests that may decide not to measure.

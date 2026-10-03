@@ -1,4 +1,4 @@
-# `freeswitch@2.2.0`
+# `freeswitch@2.3.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -183,14 +183,51 @@ ends the leg it is refusing and hands the extension back, and whether the caller
 then hears a mailbox, a tone or a busy signal is the dialplan's to write.
 
 The turns of the **media half** — the words actually spoken during a call —
-carry no sender of their own, because the `voice` cell has no idea who is on the
-line. For a personal agent that speaks with one person, the ingress edge promotes
-that person as a literal, exactly as `templates/voice/README.md` writes it. A
-channel serving several callers wants the media half's turns to carry the sender
-of their session; that is a lane through the signalling half and it is not built
-(see *What is not here* below).
+carry the sender the SWITCH verified, and only that one
+([#979](https://github.com/mmeyerlein/meclaw/issues/979)). The `voice` cell has
+no idea who is on the line; the signalling half does. So when an inbound call is
+taken — put through at once, or put in the queue — the signalling half hands the
+caller the switch stamped to the media half, once, on the internal `in_session`
+lane (`call_id`, `session_id`, `user_id`), and the media half stamps it as
+`hop.user_id` and `hop.verified_user` on every `turn` and `delegation` of that
+call. A refused call gets nothing; its leg is put down. Two calls are two
+sessions, and each carries its own caller. A session that connects again — the
+same `?session=` a second time — is not named again: its words name nobody
+until the call is a new call.
+
+**Two keys: the sender and the proof.** `hop.user_id` is who the call is put
+through as, and the member's firewall allowlists by it — the switch's stamp, or
+the `callers` fallback, or for a call this channel PLACED the number it dialled.
+`hop.verified_user` is the switch's stamp ALONE, and it rides beside `user_id`
+on the arrival turn of a stamped call (live, or put through from the queue) and
+on every media turn of it. A number in a table is configuration, not a proof
+from the call: a caller only `params.callers` knows is put through and
+allowlisted as before, but neither the arrival turn nor the words of that call
+carry `verified_user`, and neither does any turn of a call this channel placed
+— nobody verified who picked up. The edge from the signalling half to the store
+carries the stamp beside `phone_user` as `context.phone_verified`, and the row
+keeps it (`verified_user`) for a caller who waits in the queue. Those `phone_*`
+keys are the store's answer and nothing else: every edge INTO the signalling half
+(the channel's own `in_speak` and the switch's events from outside, `speak_end`
+from the media half, `request` from the tool lane) deletes all of them, so a chain
+that arrives carrying a forged `phone_verified` or `phone_origin` is read as what
+it is -- a message from outside -- and never as the store answering an arrival.
+When a call whose caller was named ends, the media half is told so with an empty
+`in_session`, which drops the name even when the audio never connected.
 
 ## Wiring it into a member
+
+**Who SAID it is a second claim, and it needs the proof** (GH #979). `context.speaker`
+names the member as the author of a turn -- the object hive's owner tools and the
+memory's `writer` read it -- so the ingress stamps it only from the identity the
+switch verified: `hop.verified_user` equal to the person's sender id. `user_id`
+is never read for it — neither the edge's own literal fallback nor the
+`callers` table nor the number of a placed call is a proof (*Who is on the
+line*): a caller the switch verified names the member, on the arrival turn and
+in every word of the call, and every other call names nobody; a caller the
+switch put through as somebody else names nobody either. Without the proof the key
+is written empty, which also overwrites a speaker an earlier hop carried in.
+
 
 **A phone channel costs one node and two edges**, the same shape a `voice`
 channel costs — plus, if the assistant should be able to *place* calls, the two
@@ -198,7 +235,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.2.0",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.3.0",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -213,6 +250,7 @@ tool v-lanes and their way back.
                                   "assistant": "'<assistant>'",
                                   "audience_set": "'[\"agent:<assistant>\",\"member:<member>\"]'",
                                   "user_id": "has(hop.user_id) && hop.user_id != '' ? hop.user_id : '<the person's sender id>'",
+                                  "speaker": "has(hop.verified_user) && string(hop.verified_user) == '<the person's sender id>' ? 'member:<member>' : ''",
                                   "call_state": "has(hop.call_state) ? hop.call_state : ''",
                                   "call_id": "has(hop.call_id) ? hop.call_id : ''",
                                   "session_id": "has(hop.session_id) ? hop.session_id : ''"}}},
@@ -874,11 +912,14 @@ them: the gateway it names works.
 FreeSWITCH. What this template owes the dialplan is written down above and
 nothing else.
 
-**A sender for the media half's turns.** Spoken words carry the session and no
-`user_id`, so a member with several callers needs the media half's turns to pass
-through the signalling half, which would look each session's caller up in the
-call table. One person per channel — the personal agent — is served by the
-literal in the ingress edge, which is the shape `voice` already ships.
+**A sender for the media half's turns — BUILT** ([#979](https://github.com/mmeyerlein/meclaw/issues/979)).
+This paragraph used to read: *Spoken words carry the session and no `user_id`, so
+a member with several callers needs the media half's turns to pass through the
+signalling half, which would look each session's caller up in the call table.*
+It is the other way round now: the signalling half hands the verified caller to
+the media half on `in_session`, and the media half stamps it on the session's
+turns (*Who is on the line*). What is still not here is a sender for a caller
+the switch did not verify — by design.
 
 **Arbitration between two calls — RETRACTED in 1.1.0.** This paragraph used to
 read: *A second call at a time. `hangup()` ends the newest live call, and the
@@ -1053,7 +1094,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.2.0`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.3.0`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1066,7 +1107,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.2.0"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.3.0"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

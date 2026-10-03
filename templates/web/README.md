@@ -193,6 +193,13 @@ of this cell owes the stamp a promotion into the context --
 same line a channel's entry edge carries -- or the identity ends at the first
 edge.
 
+A member's web channel grown by the builder's `grow_level` recipe takes
+`bind_user` (GH #979): the identity the proxy puts in this header for the
+member. Its entry edge then names the member as the turn's speaker
+(`context.speaker = 'member:<person>'`) only when `hop.user_id` equals it;
+another identity, or no header, names nobody. Without `bind_user` a web
+turn names no speaker at all.
+
 `params.external_timeout_ms` (default `5000`) is the ordinary A-timeout around
 I/O the cell itself starts.
 

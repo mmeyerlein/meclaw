@@ -215,3 +215,154 @@ fn a_directory_summary_is_made_when_read_and_only_then() {
         "no job left parked"
     );
 }
+
+/// GH #973 M-5: two `dir_summary` of one dirty directory at once pay ONE model
+/// call. The first claims `y:<path>` in `claims` (unique on `path`) in its
+/// load bundle; the second meets the claim and answers what is stored, with
+/// `fresh: false`. The claim ends with the summary, so a later read asks no
+/// model and finds no claim left.
+#[test]
+fn two_summaries_at_once_ask_the_model_once() {
+    if !shipped() {
+        return;
+    }
+    let prompt = dir_prompt();
+    let mut sp = plain();
+    // The declared indexes, as the store factory applies them (GH #915):
+    // `claims_path` is the unique key the claim meets.
+    let store = meclaw_cells::store::StoreParams::parse(&cell_config("store")["params"])
+        .expect("the store params parse");
+    meclaw_cells::store::ddl::apply_index_ddl(&sp.db, &store.indexes).expect("index ddl");
+    ok(sp.request(
+        "in_write",
+        "create",
+        None,
+        json!({"path": "/a/b/x.py", "text": "def f():\n    return 1\n"}),
+        json!({}),
+    ));
+    settle(&mut sp, &prompt);
+    let before = sp.out.len();
+    let ids = [sp.next_op_id(), sp.next_op_id()];
+    let asks = ids
+        .iter()
+        .map(|id| {
+            (
+                ".".to_string(),
+                Space::on_lane(
+                    "in_read",
+                    json!({}),
+                    json!({"op": "dir_summary", "op_id": id}),
+                    json!({"op": "dir_summary", "args": {"path": "/a/b"}}),
+                ),
+            )
+        })
+        .collect();
+    sp.pump_all(asks);
+    assert_eq!(sp.llm.len(), 1, "two at once, one model call");
+    sp.llm_answer("Holds the sources.", "stop");
+    let answer = |sp: &Space, id: &str| -> Value {
+        let mine: Vec<&Msg> = sp.out[before..]
+            .iter()
+            .filter(|m| m.route() == "answer" && m.hop.get("op_id") == Some(&json!(id)))
+            .collect();
+        assert_eq!(mine.len(), 1, "one answer for {id}; stderr {:?}", sp.stderr);
+        Value::Object(mine[0].body.clone())
+    };
+    let (a, b) = (answer(&sp, &ids[0]), answer(&sp, &ids[1]));
+    let fresh: Vec<Value> = [&a, &b].iter().map(|v| v["fresh"].clone()).collect();
+    assert!(
+        fresh.contains(&json!(true)) && fresh.contains(&json!(false)),
+        "one made it, the other answered the stored one: {a} {b}"
+    );
+    for v in [&a, &b] {
+        assert_eq!(v["ok"], json!(true), "{v}");
+    }
+    assert_eq!(dir_calls(&sp, &prompt).len(), 1);
+    assert_eq!(
+        sp.rows("SELECT COUNT(*) FROM claims WHERE path LIKE 'y:%'"),
+        vec![vec![json!(0)]],
+        "the claim ends with the summary"
+    );
+    let again = ok(dir_summary(&mut sp, "/a/b", "unused", &prompt));
+    assert_eq!(
+        (again["summary"].clone(), again["fresh"].clone()),
+        (json!("Holds the sources."), json!(false))
+    );
+    assert_eq!(
+        dir_calls(&sp, &prompt).len(),
+        1,
+        "a clean directory asks nothing"
+    );
+}
+
+/// `count` living files `<dir>/k0000.md`, ... straight into the store: a deep
+/// subtree as many writes would leave it, without paying for the writes.
+fn deep_files(sp: &Space, dir: &str, count: usize) {
+    sp.db
+        .execute_batch(&format!(
+            "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < {last}) \
+             INSERT INTO files (file, path, kind, mime, head, head_seq, tomb, oneline, bytes, \
+             lines, dir) \
+             SELECT 'fh-deep' || replace('{dir}', '/', '-') || i, \
+             printf('{dir}/k%04d.md', i), 'text', 'text/plain', 'h', 1, '', 'Deep.', 1, 1, \
+             '{dir}' FROM n;",
+            last = count - 1
+        ))
+        .expect("the deep rows");
+}
+
+/// GH #973 fix round 1 (review M-3): the files of a directory are read by
+/// path from `path/` on, and the window holds the deeper files too. With
+/// more deeper files than one window before a direct file (`/a/b/**` and
+/// `/a/c/**` before `/a/z.md`), the summary still reads that file's line:
+/// the scan goes on past the subtree a full window ended in.
+#[test]
+fn a_summary_reads_the_direct_files_behind_deep_ones() {
+    if !shipped() {
+        return;
+    }
+    let prompt = dir_prompt();
+    let mut sp = plain();
+    for path in ["/a/a.md", "/a/z.md"] {
+        ok(sp.request(
+            "in_write",
+            "create",
+            None,
+            json!({"path": path, "text": "x\n"}),
+            json!({}),
+        ));
+        settle(&mut sp, &prompt);
+    }
+    deep_files(&sp, "/a/b", 1100);
+    deep_files(&sp, "/a/c", 1100);
+    let parked = sp.rows("SELECT COUNT(*) FROM pending");
+    let op_id = sp.next_op_id();
+    sp.lane(
+        "in_read",
+        json!({}),
+        json!({"op": "dir_summary", "op_id": op_id}),
+        json!({"op": "dir_summary", "args": {"path": "/a"}}),
+    );
+    let (_, asked) = sp.llm.front().expect("the directory's summary is asked");
+    let text = Value::Object(asked.body.clone()).to_string();
+    assert!(text.contains("a.md: "), "the first direct file: {text}");
+    assert!(
+        text.contains("z.md: "),
+        "the direct file behind 2200 deeper ones: {text}"
+    );
+    assert!(!text.contains("k0000"), "no deeper file is a line: {text}");
+    sp.llm_answer("Two files.", "stop");
+    let mine: Vec<Msg> = sp
+        .out
+        .iter()
+        .filter(|m| m.route() == "answer" && m.hop.get("op_id") == Some(&json!(op_id)))
+        .cloned()
+        .collect();
+    assert_eq!(mine.len(), 1, "one answer; stderr {:?}", sp.stderr);
+    assert_eq!(mine[0].body["summary"], json!("Two files."));
+    assert_eq!(
+        sp.rows("SELECT COUNT(*) FROM pending"),
+        parked,
+        "the scan parks nothing past its end"
+    );
+}

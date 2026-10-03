@@ -41,7 +41,7 @@
 //!
 //! THE BOOT FORM. Runs 1 and 2 boot the root as the member reduced to what this
 //! road touches: the shipped assistant level as a node named `assistants`, and
-//! the member's own `./file-space` node beside it (the `file-space@1.3.0` ref,
+//! the member's own `./file-space` node beside it (the `file-space@1.3.1` ref,
 //! resolved). The node is named `assistants` so the member's four `./file-space`
 //! edges can be read off `templates/member/config.json` and drawn VERBATIM --
 //! nothing in them is retyped or re-pointed. What this leaves out is the

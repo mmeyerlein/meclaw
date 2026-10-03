@@ -63,6 +63,8 @@ The override is path-keyed on the ref that instantiates the space, one level per
 | `in_proj` / `answer` → `in_answer` | `git` → `mat` → `git` | `ws_materialize` with `caller` 'git'; the answer is turned back to `in_answer` on its way |
 | `in_ws`, `in_write` / `in_answer` | `git` → space → `git` | `caller` 'projection', `op_id` `git:<job>.<n>` |
 
+Every file step into the space (`in_ws`, `in_read`, `in_write`) arrives with the full colony TTL: the space's edges out of `./projection` restore it, one door per step, and the job's file list bounds the steps (`import_max_files` for an import or a pull) ([#975](https://github.com/mmeyerlein/meclaw/issues/975)).
+
 ## git -- the exchange format ([#906](https://github.com/mmeyerlein/meclaw/issues/906))
 
 | Op | Args | Answer |

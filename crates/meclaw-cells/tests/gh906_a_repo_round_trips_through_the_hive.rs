@@ -23,6 +23,9 @@
 //! hive path -- and the run leaves no dead letter. The source repository and
 //! the remote live under `base_path` (the sandbox reads and writes nothing
 //! else), everything under the test's temporary directory; no network.
+//! Every request carries the colony's own TTL (`MESSAGE_DEFAULT_TTL`): each
+//! file step of a projection job enters the space through a door that
+//! restores it (GH #975), so no request needs a budget of its own.
 //!
 //! Guarded like every template-reading test (GH #49): a tree without the
 //! projection's cells is skipped, never judged.
@@ -33,7 +36,7 @@ use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::timer::TimerCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Map, Value, json};
-use meclaw_core::{Body, Message, MessageBuilder, Path};
+use meclaw_core::{Body, MESSAGE_DEFAULT_TTL, Message, MessageBuilder, Path};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use meclaw_testing::{ColonyHandle, override_params_on_disk};
 use std::collections::BTreeMap;
@@ -303,7 +306,9 @@ impl Run {
             .hop(map(hop))
             .context(Map::new())
             .body(Body::Inline(body))
-            .ttl(400)
+            // GH #975: the run holds the colony TTL; every file step of a
+            // projection job is a door, so a job of any size fits it.
+            .ttl(MESSAGE_DEFAULT_TTL)
             .build();
         self.h.send(msg).await;
         let deadline = tokio::time::Instant::now() + DEADLINE;

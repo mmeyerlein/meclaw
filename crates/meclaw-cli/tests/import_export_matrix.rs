@@ -429,6 +429,17 @@ fn birth_state_in_the_base_file(cell_dir: &std::path::Path) -> Result<String, St
     .map_err(|e| e.to_string())
 }
 
+/// `(len, mtime)` of `cell.db` and its two sidecars, `None` for a file that is
+/// not there: the movement a checkpoint in progress leaves behind (GH #988).
+type FileMark = Option<(u64, std::time::SystemTime)>;
+fn db_files_state(cell_dir: &std::path::Path) -> [FileMark; 3] {
+    ["cell.db", "cell.db-wal", "cell.db-shm"].map(|name| {
+        std::fs::metadata(cell_dir.join(name))
+            .ok()
+            .and_then(|m| Some((m.len(), m.modified().ok()?)))
+    })
+}
+
 /// `(path, cell_id)` for every registry row in a `colony.db`.
 fn registry_ids(db_path: &std::path::Path) -> Vec<(String, String)> {
     let conn = rusqlite::Connection::open(db_path).unwrap();
@@ -1225,15 +1236,33 @@ async fn c5_db_copy_without_wal_sidecars_silently_restores_stale_state() {
     // with no `-wal` beside it. A shutdown that stopped checkpointing at all,
     // or one that wrote the birth state nowhere, never produces that row, and
     // the wait ends red at the marker with the last thing the copy said.
-    let deadline = std::time::Instant::now() + MARKER;
+    //
+    // **The window follows the files, not the clock (GH #988).** Measured in the
+    // 0.60.0 release gate on lane build01 (2026-10-03, 9992 tests): the wait
+    // ended red after 30.9 s with `no such table: schedules` while the same
+    // test is green alone -- one fixed 30 s window measured the host's load.
+    // Every movement of `cell.db`, `cell.db-wal` or `cell.db-shm` (size, mtime,
+    // appearing or disappearing) is the checkpoint making progress and opens a
+    // fresh window; the wait ends red only after `MARKER` with no movement at
+    // all, which is what a shutdown that never checkpoints looks like.
+    let mut seen = db_files_state(&tick);
+    let mut window = std::time::Instant::now() + MARKER;
     loop {
         match birth_state_in_the_base_file(&tick) {
             Ok(cron) if cron == "0 0 5 * * *" => break,
-            other => assert!(
-                std::time::Instant::now() < deadline,
-                "the birth checkpoint never reached cell.db itself within the \
-                 failure marker; a sidecar-less copy last read {other:?}"
-            ),
+            other => {
+                let now = db_files_state(&tick);
+                if now != seen {
+                    seen = now;
+                    window = std::time::Instant::now() + MARKER;
+                }
+                assert!(
+                    std::time::Instant::now() < window,
+                    "the birth checkpoint never reached cell.db itself, and its \
+                     files did not move for the failure marker; a sidecar-less \
+                     copy last read {other:?}"
+                );
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }

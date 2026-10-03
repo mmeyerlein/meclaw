@@ -34,6 +34,13 @@ pub struct ContractBlock {
     /// `transfer` slot entirely, export and import alike. Absent ⇒ `All` ⇒
     /// nothing changes.
     pub transfer: meclaw_core::TransferPolicy,
+    /// GH #979 (OR-NL.I.11) -- the cell's own statement that it parks a turn's
+    /// context and hands it back as `ctx_<key>` hop keys (the firewall's
+    /// warden). Only such a cell's `ctx_<stamped key>` reaches an edge; the
+    /// colony drops it from everyone else's emission. A privilege: a node
+    /// added `privileged: false` (every app `install_app` renders) is refused
+    /// at the door when a cell of it declares this. Absent => `false`.
+    pub parks_context: bool,
 }
 
 /// Hard presence check for the builder-mandatory contract keys

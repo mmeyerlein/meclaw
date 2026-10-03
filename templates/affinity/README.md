@@ -1,4 +1,4 @@
-# `affinity@3.9.0`
+# `affinity@3.10.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -170,7 +170,7 @@ round trip *is* the cell's memory. That is why this hive has ten internal edges 
 | `in_brief` | in -> the **hive path** | the request as a `tool_call` turn (`{subject, channel, slots}`), plus TWO facts a body may never carry: `hop.audience` (who asks) and `hop.audience_set` (the round, a JSON array of participant ids). The door edge promotes both to `context.asker` and `context.audience_set` -- a caller that promotes those keys on its own edge is served the same way, and **wins** where both exist (see § Identity comes from the edge). `participants` is **retired, not aliased** ([#330](https://github.com/mmeyerlein/meclaw/issues/330); see the retraction note under the audience-SET rule) -- a request that spells the round that way declared no round at all. **Both facts are required** -- no asker is `no_audience`, no round is `no_round`, and either is a denial with an `audit` row and no `system` slot at all |
 | `in_brief` `{"op": "list"}` | in -> the **hive path** | (GH #965) the PEOPLE the round may see the name of, not a brief: same edge truth (`context.asker`, `context.audience_set`), one disclosure read over all subjects, R-AF-3 and newest-row-per-path exactly as the brief, and of each person only the released name parts (`released_name`, the `who.name` rule of PP-S3-10 / the slot head of GH #939) and nothing else -- no participant reference (the people listed are absent ones), alphabetical by that name. A person no usable row releases a name part of is absent -- no entry; the asker is never listed; no asker or no round answers the empty list. Answered on `answer` with the body slots `op: list`, `ok`, `people: [{name}]` beside the `tool_result`. The screen reads it through the builder's `reads_residents` |
 | `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the `system.*` slots the request asked for **and** the same pack as JSON in the `tool_result` (its structure without the per-slot `text` rendering, since 3.6.1, #864), under the id of the call being answered, plus the body slot `who {ref, name, identity, known}` -- on the served brief and on every refusal after the subject was read whose subject is in the round (§ Who is speaking, since 3.6.0) |
-| `in_propose` | in -> the **hive path** | the proposal as a `tool_call` turn (`{op, ...}`); the edge **MUST** promote the writer to `context.actor` and, for `subscribe`, the subscribing cell's address to `context.subscriber` |
+| `in_propose` | in -> the **hive path** | the proposal as a `tool_call` turn (`{op, ...}`); the edge **MUST** promote the writer to `context.actor` and, for `subscribe`, the subscribing cell's address to `context.subscriber`; the round the call is made in rides as `hop.audience_set` (or an edge-pinned `context.audience_set`) and lands in `proposals.origin_round` ([#822](https://github.com/mmeyerlein/meclaw/issues/822)) |
 | `out_ack` | `./gate` -> the proposer | `hop.route == 'ack'`, `accepted` or `rejected` plus a `reason_code` |
 | `out_push` | `./brief` -> each subscribed `llm` cell | `hop.route == 'answer' && hop.subscriber == '<cell path>'`: the `system.*` slots the subscription asked for and **no** turn beside them, so the update costs a write and not an inference (GH #263; the `llm` cell returns without calling when a body carries no `messages[]`). Since #877 it also carries `hop.pack_sub` (the subscriber row) and `hop.pack_hash` (the hash of what is sent); the delivering edge promotes both into context. The delivery is booked only when the receiving side answers `pack_ack` with both keys on an edge back into `in_pack_ack`, as the curator behind a generation's rims does; an `llm` cell answers none, so a pack pushed straight at one goes again on the retry schedule for as long as its row is active |
 | `in_pack_ack` | in -> the **hive path** | the receipt of one pushed pack (GH #877), with `context.pack_sub` and `context.pack_hash` as the delivering edge promoted them. A clean one books the delivery (`pack_hash`, `sent_at`) onto that row while it is active; one with `hop.error_code` set books no delivery and parks that hash in `subscribers.retry`, so the pack goes again only once it changes; one without `pack_sub` is dropped with a line on stderr |
@@ -448,6 +448,21 @@ of this section applied to itself: an edge is written by the colony, a hop key b
 cell the message passed through -- so a cell downstream of the pinning edge must not be able
 to shrink its own room by stamping `hop.audience_set`.
 
+The write door (`. -> ./gate`) promotes the round by the same precedence, and `gate` writes it
+into `proposals.origin_round` of every `propose` row
+([#822](https://github.com/mmeyerlein/meclaw/issues/822)): the round a proposal was made in is
+edge truth like its actor. A body that names `origin_round` is ignored, never read -- a round a
+model may choose is a room it may choose. No round is `''`, and a row with `''` belongs to no
+round: whatever works per round (a counselor task that may only propose inside the round its
+source spoke in) drops it, fail-closed.
+
+A `decide_proposal` row writes `''`: a verdict has no round of its own. The value it judges was
+spoken in the round of the proposal, and stamping the round of the verdict would move it --
+proposed in front of `[alex, bo]`, judged in front of `[alex]`, and bo's word would count in a
+room without bo. A round-bound reader follows `supersedes` to the row the verdict judged and
+takes that row's `origin_round` (through a chain of verdicts, to the `propose` row at its
+start); a verdict whose origin row it cannot find has no round, fail-closed.
+
 `context.participants` was this hive's internal name for the round until
 [#330](https://github.com/mmeyerlein/meclaw/issues/330); it is retired, not aliased -- a
 request that declares its round only under the old name is refused `no_round`.
@@ -664,7 +679,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.9.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.10.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -978,7 +993,19 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.9.0`) and
+**An export older than this hive is resolved, not edited** ([#822](https://github.com/mmeyerlein/meclaw/issues/822)).
+A column is declared either as its type (`"text"`) or as `{"type": "text", "default": ""}`, and
+a seed part written before the column existed takes the declared default -- at birth and at
+every later boot. `proposals` declares two: `audience` (a part from before 3.4.0 has none) and
+`origin_round`, both `''`, both fail-closed -- an empty audience releases nothing to anybody, an
+empty round is no round. `in_import` is stricter: both are provenance, and the substrate never
+fills a provenance column from a default on import -- a part without `audience` or
+`origin_round` is refused naming it (`import_schema_drift`). An export older than the column
+enters as the seed of a new hive, where the template's default decides, never into a running one. Every other difference stays a refusal at birth
+that names the column (`schema_mismatch`): a missing column without a default, a changed type, a
+column this store does not declare, a header `version` newer than the table's.
+
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

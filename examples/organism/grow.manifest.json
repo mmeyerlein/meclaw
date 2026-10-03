@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.2.6"
+            "template": "meclaw-os@2.2.7"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.1.5"
+            "template": "org@2.1.6"
           }
         ],
         "add_edges": [
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.5.1"
+            "template": "member@2.5.2"
           }
         ],
         "add_edges": [
@@ -249,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@3.6.1",
+            "template": "assistant@3.6.2",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -529,6 +529,7 @@
                 "chat_id": "has(hop.chat_id) ? hop.chat_id : ''",
                 "user_id": "has(hop.user_id) ? hop.user_id : ''",
                 "audience_set": "'[\"agent:scribe\",\"member:alex\"]'",
+                "turn_round": "'[\"agent:scribe\",\"member:alex\"]'",
                 "speaker": "has(hop.user_id) && string(hop.user_id) == '4711' ? 'member:alex' : ''"
               }
             }

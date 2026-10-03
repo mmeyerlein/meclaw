@@ -24,6 +24,7 @@ async fn insert_then_select_round_trip() {
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
 
     let (otx, mut orx) = mpsc::channel(8);
@@ -92,6 +93,7 @@ async fn sql_error_emits_tool_result_with_error_code_header_not_finish_reason() 
         canonical: Default::default(),
         write_surface: Default::default(),
         indexes: Default::default(),
+        evolution: Default::default(),
     });
 
     let (otx, mut orx) = mpsc::channel(8);

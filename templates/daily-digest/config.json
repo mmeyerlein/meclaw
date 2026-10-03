@@ -12,12 +12,20 @@
             "chat_id"
           ],
           "because": "a digest run demanded NOW, outside the timer: the same body the schedule emits -- one `tool_call` turn whose text is the JSON arguments carrying the URL. `chat_id` must be promoted to context by the caller (a string, as the timer's own header is), because the formatter recasts it into the delivery header and cannot invent one"
+        },
+        {
+          "route": "in_read",
+          "because": "a read of the last digests (GH #976, the residents' road of GH #965): hop `op` = `last`, `op_id` mirrored. Answered by exactly one `answer` `{ok, op, digests: [{id, at, when, title, items, lead, audience_set}]}`, newest first, holding only the digests whose round covers the round of the read (`context.audience_set`, the builder's word) -- or `{ok: false, error: {code: unknown_op | no_round | store_error}}`. A read without a round reads no row"
         }
       ],
       "emits": [
         {
           "route": "digest",
           "because": "the formatted digest of a run that was demanded from outside, handed back to whoever demanded it instead of being pushed into this bot's own chat. A scheduled run goes to the notifier and never reaches this lane"
+        },
+        {
+          "route": "answer",
+          "because": "the one answer to an `in_read`, with the asker's context, so the edge that asked can take it back; `op` and `op_id` mirrored, every digest with the round it was made for"
         }
       ]
     },
@@ -29,8 +37,13 @@
           "condition": "has(hop.route) && hop.route == 'in_digest'",
           "modifier": {
             "set_context": {
-              "digest_origin": "'parent'"
-            }
+              "digest_origin": "'parent'",
+              "digest_round": "has(context.audience_set) ? context.audience_set : ''"
+            },
+            "delete_context": [
+              "shelf_origin",
+              "shelf_op_id"
+            ]
           }
         },
         {
@@ -68,13 +81,56 @@
               "route": "'digest'"
             },
             "delete_context": [
-              "digest_origin"
+              "digest_origin",
+              "digest_round",
+              "shelf_op_id",
+              "shelf_origin"
             ]
           }
         },
         {
           "from": "./void",
           "to": "./format"
+        },
+        {
+          "from": "./format",
+          "to": "./shelf"
+        },
+        {
+          "from": "./shelf",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'shelf_store'"
+        },
+        {
+          "from": "./store",
+          "to": "./shelf"
+        },
+        {
+          "from": ".",
+          "to": "./shelf",
+          "condition": "has(hop.route) && hop.route == 'in_read' && !has(hop.error_code)",
+          "modifier": {
+            "set_context": {
+              "shelf_origin": "'read'",
+              "shelf_op_id": "has(hop.op_id) ? hop.op_id : ''"
+            }
+          }
+        },
+        {
+          "from": "./shelf",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "set_hop": {
+              "op_id": "has(context.shelf_op_id) ? context.shelf_op_id : ''"
+            },
+            "delete_context": [
+              "shelf_op_id",
+              "shelf_origin",
+              "digest_origin",
+              "digest_round"
+            ]
+          }
         }
       ]
     }

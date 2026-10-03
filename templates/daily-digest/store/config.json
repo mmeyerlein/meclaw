@@ -1,0 +1,76 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "digests": {
+        "id": "text",
+        "at": "int",
+        "audience_set": "text",
+        "title": "text",
+        "items": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The digest's shelf (GH #976): one row per finished digest -- {id, at, audience_set, title, items} -- beside its delivery, so the last digest can be read back by the round it was made for.",
+    "use_when": "Written by ./shelf after every formatted digest; read by ./shelf on a read of the hive (in_read, op last).",
+    "not_in_scope": "No search, no deletion: rows are kept, a read takes the newest.",
+    "emits_meaning": "messages[]: one tool_result per operation. hop.operation/rows_affected for routing; SQL failures are normal tool_results with hop.error_code. hop.duration_ms is what that reply cost in milliseconds. A bundle reply (two or more tool_call turns, GH #295) stamps hop.operation 'bundle', sums hop.rows_affected over its legs and adds hop.bundle_errors: how many legs carry an error_code. That key is present on every bundle reply, 0 included, and never on a single-operation reply -- it is what an edge reads to see that one leg failed without opening the body, while hop.error_code keeps its hard meaning (the WHOLE reply is a refusal). results[]: the per-operation metadata of that same bundle reply, one entry per leg in call order -- {tool_call_id, operation, rows_affected, duration_ms} plus error_code if that one leg failed. It is a top-level body slot and not a key on the turn because a tool_result turn stays schema-pure ({origin, type, text, id}; ubf-body.json $defs/TurnObject is additionalProperties:false, so a metadata key there would dead-letter the whole reply), and tool_call_id is what ties an entry back to its turn. Like bundle_errors the slot exists only on a bundle reply -- a single-operation reply carries messages[] alone.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args {operation, table, ...} from ./shelf; select names its columns.",
+    "examples": [
+      "{operation: insert, table: digests, row: {id, at, audience_set, title, items}} -> tool_result, hop {operation: 'insert', rows_affected: 1}"
+    ]
+  }
+}

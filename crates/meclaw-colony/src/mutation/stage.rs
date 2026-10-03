@@ -110,6 +110,66 @@ pub(crate) fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// GH #979 (OR-NL-187, OR-NL.I.11) -- an `add_nodes` entry that says
+/// `privileged: false` (every app `install_app` renders) may not bring a cell
+/// whose contract declares a privilege. Today the one privilege is
+/// `contract.parks_context`: a cell that declares it gets its `ctx_<stamped
+/// key>` hop keys past the colony, and an edge may restore `speaker` /
+/// `turn_round` from them -- so an app that could declare it could name the
+/// member on a stranger's turn. Absent key = `true` = nothing changes (a
+/// member brings its firewall this way). Any other value than a boolean is
+/// `schema`. Judged on the staged cells of the entry and of its subtree.
+fn refuse_privileged_contracts(
+    adds: Option<&Vec<JsonValue>>,
+    scope: &str,
+    staged: &[StagedDir],
+    subtrees: &[crate::mutation::subtree::StagedSubtreeMerge],
+) -> Result<(), MutationError> {
+    for (i, n) in adds.into_iter().flatten().enumerate() {
+        let privileged = match n.get("privileged") {
+            None => true,
+            Some(JsonValue::Bool(b)) => *b,
+            Some(other) => {
+                return Err(MutationError::Schema(format!(
+                    "add_nodes[{i}].privileged is a boolean, not {other}"
+                )));
+            }
+        };
+        let Some(name) = n.get("name").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        if privileged {
+            continue;
+        }
+        let root = super::resolve_scoped_path(scope, name);
+        let inside = |p: &meclaw_core::Path| {
+            p.as_str() == root.as_str()
+                || p.as_str()
+                    .strip_prefix(root.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        let declared = staged
+            .iter()
+            .map(|d| (&d.absolute_path, d.header_view.parks_context))
+            .chain(subtrees.iter().flat_map(|t| {
+                t.rename_roots
+                    .iter()
+                    .flat_map(|r| r.cells.iter())
+                    .map(|c| (&c.absolute_path, c.header_view.parks_context))
+            }))
+            .find(|(p, parks)| *parks && inside(p));
+        if let Some((cell, _)) = declared {
+            return Err(MutationError::Schema(format!(
+                "add_nodes[{i}] ({name}) is added `privileged: false`, and {} \
+                 declares `contract.parks_context` -- a privilege an unprivileged \
+                 node (an app) never holds",
+                cell.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Phase-11 Slice 11-F T15: build staging tree from templates.
 ///
 /// For each `add_nodes` entry in `diff`, resolves the template from the
@@ -333,6 +393,9 @@ pub fn build_staging_tree_from_templates(
             relocation: None,
         });
     }
+    // GH #979 (OR-NL.I.11): an entry added `privileged: false` takes no
+    // privileged contract -- judged on what was just staged, before the rename.
+    refuse_privileged_contracts(adds, scope, &out, &subtrees)?;
     // Paket-2 T4 (b1): graph-swap with-side template instantiation. Each
     // `swap_nodes[].with` that carries a `template` instantiates a FRESH t3 cell
     // through the SAME single-cell staging machinery as add_nodes (own fresh
@@ -941,16 +1004,77 @@ pub fn seed_cell_db_if_present(
         .map_err(|e| MutationError::Schema(format!("open seed cell.db: {e}")))?;
     crate::persist::setup_cell_db(&conn)
         .map_err(|e| MutationError::Schema(format!("setup_cell_db: {e}")))?;
+    let declared = declared_store_tables(staging_path, cell_type)?;
     for entry in std::fs::read_dir(&seed_dir)
         .map_err(|e| MutationError::Schema(format!("read seed dir: {e}")))?
     {
         let entry = entry.map_err(|e| MutationError::Schema(format!("seed entry: {e}")))?;
         let path = entry.path();
         if path.extension().map(|x| x == "jsonl").unwrap_or(false) {
-            apply_seed_jsonl(&conn, &path)?;
+            let table = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            apply_seed_jsonl(&conn, &path, declared.get(table))?;
         }
     }
     Ok(())
+}
+
+/// GH #822: the declaration a staged `store` cell will check its seed against
+/// at spawn, read from the staged (already substituted) `config.json`.
+///
+/// The staging seeder runs BEFORE the cell exists, so this is where a seed
+/// with an older writer schema is resolved first: a missing column with a
+/// declared default is filled here, and everything the store would refuse at
+/// spawn is refused here — before the switch, never at a later boot. Only the
+/// `store` declares its tables this way (`params.schema`, with the column form
+/// and `schema_versions` of `meclaw_cells::store::StoreParams`); for every
+/// other type the map is empty and the seeder behaves as it always did.
+fn declared_store_tables(
+    staging_path: &std::path::Path,
+    cell_type: &str,
+) -> Result<std::collections::BTreeMap<String, crate::schema_evolution::TableDecl>, MutationError> {
+    use crate::schema_evolution::{TableDecl, parse_column, parse_version};
+    let mut out = std::collections::BTreeMap::new();
+    if cell_type != "store" {
+        return Ok(out);
+    }
+    let Ok(text) = std::fs::read_to_string(staging_path.join("config.json")) else {
+        return Ok(out);
+    };
+    let cfg: JsonValue = meclaw_core::serde_json::from_str(&text)
+        .map_err(|e| MutationError::Schema(format!("staged config.json: {e}")))?;
+    let params = cfg.get("params");
+    let Some(schema) = params
+        .and_then(|p| p.get("schema"))
+        .and_then(|v| v.as_object())
+    else {
+        return Ok(out);
+    };
+    let versions = params
+        .and_then(|p| p.get("schema_versions"))
+        .and_then(|v| v.as_object());
+    for (table, cols) in schema {
+        let Some(cols) = cols.as_object() else {
+            continue;
+        };
+        let mut decl = TableDecl {
+            version: 1,
+            columns: Default::default(),
+        };
+        if let Some(v) = versions.and_then(|m| m.get(table)) {
+            decl.version = parse_version(&format!("params.schema_versions.{table}"), v)
+                .map_err(MutationError::Schema)?;
+        }
+        for (col, v) in cols {
+            let c = parse_column(&format!("params.schema.{table}.{col}"), v)
+                .map_err(MutationError::Schema)?;
+            decl.columns.insert(col.clone(), c);
+        }
+        out.insert(table.clone(), decl);
+    }
+    Ok(out)
 }
 
 /// Generic JSONL-Seed-Loader (Spec overview Z.1206–1216).
@@ -966,6 +1090,7 @@ pub fn seed_cell_db_if_present(
 fn apply_seed_jsonl(
     conn: &rusqlite::Connection,
     path: &std::path::Path,
+    declared: Option<&crate::schema_evolution::TableDecl>,
 ) -> Result<(), MutationError> {
     let table = path
         .file_stem()
@@ -992,18 +1117,41 @@ fn apply_seed_jsonl(
                 refusal_name(path)
             ))
         })?;
+    // GH #822: a table the staged store declares is resolved against that
+    // declaration — the same resolver the store runs at spawn. Columns the
+    // writer did not know and the declaration gives a default join the table
+    // here, filled with that default in every row.
+    let fill = match declared {
+        Some(decl) => {
+            // `schema_obj` above proved the header an object; the empty map is
+            // never reached and would be refused as "no schema object".
+            let empty = meclaw_core::serde_json::Map::new();
+            let header_obj = header.as_object().unwrap_or(&empty);
+            let writer = crate::schema_evolution::parse_writer_header(&table, header_obj)
+                .map_err(|e| MutationError::Schema(format!("seed {}: {e}", refusal_name(path))))?;
+            crate::schema_evolution::resolve(&table, &writer, decl)
+                .map_err(|e| MutationError::Schema(format!("seed {}: {e}", refusal_name(path))))?
+                .fill
+        }
+        None => Default::default(),
+    };
     // CREATE TABLE IF NOT EXISTS from schema line. Type-mapping per Spec.
-    let cols: Vec<(String, String)> = schema_obj
+    let type_of = |ty: &str| match ty {
+        "int" => "INTEGER",
+        "json" => "TEXT",
+        _ => "TEXT", // text + fallback.
+    };
+    let mut cols: Vec<(String, String)> = schema_obj
         .iter()
-        .map(|(k, v)| {
-            let sql_type = match v.as_str().unwrap_or("text") {
-                "int" => "INTEGER",
-                "json" => "TEXT",
-                _ => "TEXT", // text + fallback.
-            };
-            (k.clone(), sql_type.to_string())
-        })
+        .map(|(k, v)| (k.clone(), type_of(v.as_str().unwrap_or("text")).to_string()))
         .collect();
+    for c in fill.keys() {
+        let ty = declared
+            .and_then(|d| d.columns.get(c))
+            .map(|d| d.ty.as_str())
+            .unwrap_or("text");
+        cols.push((c.clone(), type_of(ty).to_string()));
+    }
     let col_defs = cols
         .iter()
         .map(|(c, t)| format!("\"{c}\" {t}"))
@@ -1039,7 +1187,7 @@ fn apply_seed_jsonl(
         })?;
         let params: Vec<rusqlite::types::Value> = col_names
             .iter()
-            .map(|c| json_to_sql_value(row_obj.get(c.as_str())))
+            .map(|c| json_to_sql_value(fill.get(c.as_str()).or(row_obj.get(c.as_str()))))
             .collect();
         let bind: Vec<&dyn rusqlite::ToSql> =
             params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();

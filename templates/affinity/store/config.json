@@ -67,7 +67,14 @@
         "source_ref": "text",
         "entity_ref": "text",
         "field_path": "text",
-        "audience": "text",
+        "audience": {
+          "type": "text",
+          "default": ""
+        },
+        "origin_round": {
+          "type": "text",
+          "default": ""
+        },
         "value": "json",
         "status": "text",
         "decided_by": "text",

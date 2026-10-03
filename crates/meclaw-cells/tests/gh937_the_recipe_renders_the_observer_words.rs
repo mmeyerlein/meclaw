@@ -237,10 +237,12 @@ fn the_string_form_draws_the_same_two_edges() {
         "byte for byte {bytes}\nin {stdout}"
     );
     // `manifest_sha256` of this very request under builder@1.19.0 (master
-    // e3f9f0e2c), measured before #937 touched the recipe.
+    // e3f9f0e2c), measured before #937 touched the recipe -- re-measured once
+    // for GH #979 (OR-NL.I.11), whose only change to this manifest is the
+    // node's `"privileged": false`; the edges above stay byte for byte.
     assert!(
         stdout.contains(
-            "\"manifest_sha256\": \"d92fd1c043ee782912991310c86ed391086534c15343cfca53604899418a94da\""
+            "\"manifest_sha256\": \"999ebbdfd23021b6a6a13eac92b15bf40d2c2a36054ff120375a5c124e43009f\""
         ),
         "the manifest hash moved: {stdout}"
     );

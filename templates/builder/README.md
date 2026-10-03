@@ -1,4 +1,4 @@
-# `builder@1.24.0`
+# `builder@1.25.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -447,6 +447,7 @@ on a `channel` (§ *A round is provenance*).
 | `subscribe` | optional, `assistant` | draw the identity door as well — since #877 six v-lanes: one push from the member's own `./affinity` into each brain rim of the generation (`talky`, `talky-chat`, `cogny`), and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
 | — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its door. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the mount*) |
 | `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration* |
+| `credential` | optional, `install_app` (the presenter) | the same object for an app whose template has a cell that spends a provider key -- today the presenter's `decide` ([#976](https://github.com/mmeyerlein/meclaw/issues/976)): an EMPTY `api_key` and `credential_grant_id` on that cell (`override_params`), two v-lanes between it and the member's `./access` (requester `app:<app>/<cell>`, handle `grant:<cred tail>@<subject>/<app>-<cell>`) behind the app's own edges, and the grant with its birth event in `seed_rows`. The list is the TEMPLATE's: a `credential` for an app whose template is not on it, or whose name is not its template's (`presenter` grown from another template), is refused as `app_declaration_invalid` on the field `credential` |
 | `door` | optional, `assistant` | grow the generation as its **member's door**: one default edge more, from the container into it, on `in_turn` only, stamping `context.assistant` with its name — so a turn that names no agent reaches it instead of dying at the container as `hive_no_route`. One door per member is a rule of the wish, not checked here. A value that is not a boolean is refused as `door_invalid`; on any other level it is refused as `door_level_invalid`; see § *The member's door is one default edge* |
 
 ### A member grows a screen and an app, and the OS hands out the mount
@@ -538,6 +539,13 @@ screen talks to the mount named in the display's own `compose.voice_mount`
 renders `screen_mount`. One OS-grown screen needs nothing; an operator who grows
 a second sets `voice_mount` per screen — and mounts that member's `voice` cell
 under the matching name — or both buttons speak into one door.
+
+**The member's own screen is `./channels/display`, and it stands from the member's
+birth.** A `screen` wish is for a second screen, under a name of its own. A draft
+named `display` adds a subtree that already runs, and the mutation door answers it
+as what it is, a resume of running cells: `resume_requires_stopped_cell`, naming the
+first running cell inside it (GH #985). Nothing is staged, and the screen that
+stands keeps answering.
 
 **Two organisations with a member of the same name render the same name, and
 the builder has no knob for the organisation today.** `{member}` is the only
@@ -1076,6 +1084,23 @@ woken by its own timer (no context at all) has a round too. A wish that
 declares any of the three and names no `ctx.member_person` renders nothing and
 is asked, as `wish_incomplete`, at the switch and at the renderer.
 
+**That member round is a ceiling, and a pin may name its own round inside it -- or the round of
+its turn** (GH #972). The member round on the pin edge is the most a pin may reach without proof;
+a pin of the set that names its own `audience_set` keeps it when it is narrower, or when it is the
+round of the turn the message belongs to. That second round is `context.turn_round`: the channel's
+ingress edge stamps it beside `audience_set` with the same literal, at the moment the turn is
+born, and no config's own edge may set it (`STAMPED_CONTEXT_KEYS`; the mutation door and the boot
+pass refuse such an edge as `edge_schema`). Only the wiring -- `add_edges`, which is what these
+recipes render -- stamps it, so an app cannot claim the round of a group it was not raised in. The
+curator side (`pin:held`, one message per source) is `templates/curator/README.md` § `in_pin`.
+
+**Every name in a round literal is checked** (GH #967). The assistant of a channel and the
+generation of an app stand beside the person in `["agent:<a>","member:<p>"]`, a JSON string inside
+a CEL string; like the person, a name with a quote, a backslash, `$`, `*`, a comma or a control
+character renders nothing and is asked again (`wish_incomplete`, `missing: ["params.assistant"]`
+or `["params.generation"]`). The switch's fast lane takes a channel wish only when the person
+passes the same check; otherwise the wish goes to the design lane, which asks.
+
 **The vocabulary is closed**, and a word outside it is refused as
 `app_declaration_invalid` with `field` and `known`: `screen.out` is drawn from
 `view` and `withdraw` (`error` always travels with them), `screen.back` is
@@ -1115,6 +1140,24 @@ into its member without naming an addressee is routed by the member's door
 as `hive_no_route`. The recipe reads no tree and no app contract, so it cannot
 find that out — the member has to be grown with the door first.
 
+**A resident the member does not have gets no road.** The recipe reads no
+tree, so the wish TELLS it which residents the member has: the optional
+parameter `residents_present`, a list of resident names (or their cell paths,
+`apps/colony-view`), filled by whoever holds the tree. A resident that
+`reads_residents` names and the list does not is left out — no edge either
+way, and no refusal: an edge onto a node that does not stand is refused at the
+door as `edge_schema` and takes the whole installation with it. The app's
+question to the missing resident then matches no edge and dies at its rim, so
+the topic it would have filled is withdrawn (fail-closed). A name in the list
+the recipe has no resident for is ignored; a value that is not a list of
+strings is refused as `app_declaration_invalid`. Without the parameter every
+resident the declaration reads is drawn, as before — and a member that lacks
+one of them refuses the installation at the door. The two member APPS that
+keep a result with its round (`daily-digest`, `research-assistant`, GH #976)
+are the exception: almost no member has them, so they are drawn only when
+`residents_present` names them, and left out — no edge, no refusal — without
+the parameter.
+
 **What each kind draws**, all of it in ONE declaration at the member — the
 lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 
@@ -1128,7 +1171,7 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 | `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |
 | `candidates` | ONE edge from the named cell straight onto the generation, `candidate` restamped `in_candidate` (GH #949, the push-candidate twin of `pins`; the body is the curator's `in_candidate` contract); the generation hands it to the curator of each of its brains. Names a cell `./<name>` inside the app, needs the generation like `pins`, and a `candidate` of an app that declares none stays unrouted |
 | `reads` | FOUR edges: from the named cell onto the generation, `read` restamped `in_read` for the one brain `hop.organ` names (`talky`, `talky-chat` or `cogny`; none or another and no edge carries it), and the answer `read` back to that cell alone, bound to `context.read_caller` (GH #949). The question edge stamps the member's round (see below), so the curator reads only rows that round may see. |
-| `reads_residents` | a list of residents, each named once (GH #965): `memory-hive`, `file-space`, `graph-space`, `objects`, `librarian`, `affinity`, `colony-view`. Per resident ONE edge from the app's RIM onto the resident's own read lane (`in_query`, `in_read`, `in_graph`, `in_tool` for `object_find`/`object_brief` only, `in_lib`, `in_brief`, the colony view's `in_read`), on `resident_read` with `hop.resident` naming it and `hop.op_id` set; the edge stamps the asker (`context.resident_caller`), its id (`context.resident_op`) and the member's round in BOTH `audience_now` and `audience_set` for every resident (a resident's own pulls carry the context on: the library asks the graph space), both reply-to marks (`recall_caller`, `brief_caller`; `resident` for the memory and affinity read, blank otherwise; memory-hive also gets the five recall keys and the screen as `channel`), and prefixes a mirrored `op_id` with `res:`. Per answering route ONE edge back onto the rim, guarded on the asker AND on the mark of this read (a `res:` `op_id` or `tool_call_id`, or the `resident` reply-to token), so the answers of a resident's inner pulls never leave the member; it deletes every context key the question wrote and is restamped `resident_answer` with `resident`, `resident_status` (the route it answered on), the asker's own `op_id` and `resident_round`: the member's round, or `["*"]` for the colony's counts. Needs the generation and the person like `reads`; a sealed app keeps its seal. |
+| `reads_residents` | a list of residents, each named once (GH #965): `memory-hive`, `file-space`, `graph-space`, `objects`, `librarian`, `affinity`, `colony-view`, and the member's apps `daily-digest` and `research-assistant` (GH #976: `./apps/<name>`, `in_read` op `last`, every row with the round it was made for). Per resident ONE edge from the app's RIM onto the resident's own read lane (`in_query`, `in_read`, `in_graph`, `in_tool` for `object_find`/`object_brief` only, `in_lib`, `in_brief`, the colony view's, the digest's and the research assistant's `in_read`), on `resident_read` with `hop.resident` naming it and `hop.op_id` set; the edge stamps the asker (`context.resident_caller`), its id (`context.resident_op`) and the member's round in BOTH `audience_now` and `audience_set` for every resident (a resident's own pulls carry the context on: the library asks the graph space), both reply-to marks (`recall_caller`, `brief_caller`; `resident` for the memory and affinity read, blank otherwise; memory-hive also gets the five recall keys and the screen as `channel`), and prefixes a mirrored `op_id` with `res:`. Per answering route ONE edge back onto the rim, guarded on the asker AND on the mark of this read (a `res:` `op_id` or `tool_call_id`, or the `resident` reply-to token), so the answers of a resident's inner pulls never leave the member; it deletes every context key the question wrote and is restamped `resident_answer` with `resident`, `resident_status` (the route it answered on), the asker's own `op_id` and `resident_round`: the member's round, or `["*"]` for the colony's counts. Needs the generation and the person like `reads`; a sealed app keeps its seal. |
 | `shows` | `{"at": "./<cell>"}` (GH #960): the question off the container into the app's RIM, `in_show` naming no app (the topics call every such app hears) or naming this one in `hop.show_app` (the data call); and the answer `show_topics` / `show_data` from the rim onto the container, stamped `show_app` with the app and `show_at` with `at` over whatever the app wrote. The app routes its rim to `at` and back in its own graph, so a sealed app keeps its seal. No generation, no round: the round of a topic lies in its data. The presenter's half comes with the presenter (below) |
 | `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
 

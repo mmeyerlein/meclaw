@@ -35,15 +35,17 @@
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::web_fetch::WebFetchCellFactory;
-use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
+use meclaw_colony::{
+    CellFactory, CellFactoryRegistry, ColonyMsg, MutationOutcome, bootstrap_from_filesystem,
+};
 use meclaw_core::serde_json::{Value, json};
-use meclaw_core::{Body, Message, MessageBuilder, Path};
+use meclaw_core::{Body, Headers, Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::mock_http::{CapturedRequest, MockResponse, start_mock_server_capturing};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 /// A path inside this repository, from the crate's manifest directory.
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -147,6 +149,14 @@ if route == "in_speak":
         "header": {"route": "error", "error_code": "media_got_in_speak",
                    "spoke_session": str(ctx.get("call_id") or "")},
         "messages": []}))
+elif route == "in_session":
+    # GH #979: the sender the signalling half handed the media half, read
+    # where a real `voice` cell reads it -- on the hop of that one message.
+    sys.stdout.write(json.dumps({
+        "header": {"route": "error", "error_code": "media_got_in_session",
+                   "got_session": str(hop.get("call_id") or hop.get("session_id") or ""),
+                   "got_user": str(hop.get("user_id") or "")},
+        "messages": []}))
 elif route == "end_speak":
     # The `speak_end` lane of a real `voice` cell, on demand: the test decides
     # WHEN a sentence is over, because that is the whole thing under test.
@@ -221,6 +231,7 @@ elif route == "in_turn":
                    "got_session": str(ctx.get("session_id") or ""),
                    "got_call": str(ctx.get("call_id") or ""),
                    "got_user": str(ctx.get("user_id") or ""),
+                   "got_speaker": str(ctx.get("speaker") or ""),
                    "got_channel": str(ctx.get("channel") or ""),
                    "got_text": last_text()},
         "messages": []}))
@@ -236,12 +247,15 @@ doc = json.load(sys.stdin)
 hop = ((doc["envelope"].get("header") or {}).get("hop") or {})
 mode = str(hop.get("mode") or "")
 if mode == "ev":
-    sys.stdout.write(json.dumps({
-        "header": {"route": str(hop.get("ev") or ""),
-                   "call_uuid": str(hop.get("call_uuid") or ""),
-                   "number": str(hop.get("number") or ""),
-                   "cause": str(hop.get("cause") or "")},
-        "messages": []}))
+    header = {"route": str(hop.get("ev") or ""),
+              "call_uuid": str(hop.get("call_uuid") or ""),
+              "number": str(hop.get("number") or ""),
+              "cause": str(hop.get("cause") or "")}
+    # The switch's stamp, where the test plays a dialplan that verified the
+    # caller (GH #979). Absent otherwise: the `callers` table answers then.
+    if hop.get("user_id"):
+        header["user_id"] = str(hop["user_id"])
+    sys.stdout.write(json.dumps({"header": header, "messages": []}))
 else:
     sys.stdout.write(json.dumps({
         "header": {"route": "in_wire", "mode": mode,
@@ -296,6 +310,7 @@ fn install_edges(agent: &str, channel: &str) -> Vec<Value> {
                 "assistant": format!("'{agent}'"),
                 "audience_set": format!("'[\"agent:{agent}\",\"member:person\"]'"),
                 "user_id": format!("has(hop.user_id) && hop.user_id != '' ? hop.user_id : '{KNOWN_USER}'"),
+                "speaker": format!("has(hop.verified_user) && string(hop.verified_user) == '{KNOWN_USER}' ? 'member:person' : ''"),
                 "call_state": "has(hop.call_state) ? hop.call_state : ''",
                 "call_id": "has(hop.call_id) ? hop.call_id : ''",
                 "session_id": "has(hop.session_id) ? hop.session_id : ''"}}
@@ -495,7 +510,10 @@ fn build_tree(
         .as_array_mut()
         .expect("the member ships a graph");
     edges.extend(assistant_edges(AGENT));
-    edges.extend(install_edges(AGENT, CHANNEL));
+    // The ingress sets `speaker`, a key only the wiring may stamp
+    // (`STAMPED_CONTEXT_KEYS`, GH #979): it goes through the door after the
+    // boot ([`start_tuned`]), exactly as the install manifest lays it.
+    edges.extend(install_edges(AGENT, CHANNEL).into_iter().skip(1));
     std::fs::write(
         &cfg_path,
         meclaw_core::serde_json::to_string_pretty(&cfg).expect("serialise"),
@@ -581,6 +599,26 @@ async fn start_tuned(answers: Vec<MockResponse>, tune: impl Fn(&mut Value)) -> C
     bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
         .await
         .expect("the shipped member, assistant and freeswitch must boot");
+    // The install manifest's ingress, through the mutation door: the one
+    // place a stamped key (`speaker`) may be set (GH #979, OR-NL-179).
+    let ingress = install_edges(AGENT, CHANNEL).remove(0);
+    assert!(ingress["modifier"]["set_context"].get("speaker").is_some());
+    let (ack_tx, ack_rx) = oneshot::channel();
+    h.inbox_tx
+        .send(ColonyMsg::Mutation {
+            payload: json!({"scope": "/person", "diff": {"add_edges": [ingress]}}),
+            reply_to: None,
+            trace_id: Uuid::now_v7(),
+            parent_message_id: Uuid::now_v7(),
+            ack: ack_tx,
+        })
+        .await
+        .expect("the colony is up");
+    let outcome = ack_rx.await.expect("the mutation answers");
+    assert!(
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "the telephone's ingress was not committed: {outcome:?}"
+    );
     Colony {
         td,
         h,
@@ -1234,4 +1272,282 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).to_string()
+}
+
+// ═══════════════════════════════════════════ GH #979: who speaks in the media half
+
+/// The switch's stamp for a verified caller, as the dialplan puts it on
+/// `call_incoming`: the person's own sender id -- the SAME value the `callers`
+/// table maps `KNOWN` to, so the only difference between the two calls below
+/// is the proof.
+const VERIFIED: &str = KNOWN_USER;
+
+/// Every turn the surface heard, as `(user_id, speaker)` in its context.
+fn heard_as(got: &[Message]) -> Vec<(String, String)> {
+    got.iter()
+        .filter(|m| hop_of(m, "error_code") == "surface_got_in_turn")
+        .map(|m| (hop_of(m, "got_user"), hop_of(m, "got_speaker")))
+        .collect()
+}
+
+/// One inbound call the SWITCH verified: the same three keys plus `user_id`.
+async fn rings_verified(c: &mut Colony, uuid: &str) -> Vec<Message> {
+    round(
+        c,
+        json!({"mode": "ev", "ev": "call_incoming", "call_uuid": uuid, "number": KNOWN,
+               "user_id": VERIFIED}),
+    )
+    .await
+}
+
+/// Every `in_session` the media half received, as `(session, user)`.
+fn sessions_named(got: &[Message]) -> Vec<(String, String)> {
+    got.iter()
+        .filter(|m| hop_of(m, "error_code") == "media_got_in_session")
+        .map(|m| (hop_of(m, "got_session"), hop_of(m, "got_user")))
+        .collect()
+}
+
+/// **The media half is told the caller the switch verified — once, for the
+/// call it belongs to, and for no call that was refused** (GH #979).
+///
+/// Read at the receiver: the media half's own double reports the `in_session`
+/// it was handed. The signal turn beside it is the control that the call was
+/// taken at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_media_half_is_told_the_caller_the_switch_verified() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![ok("+OK\n"); 4]).await;
+
+    let got = rings_verified(&mut c, "call-a").await;
+    assert_eq!(
+        turns(&got).len(),
+        1,
+        "the verified call is a turn: {got:#?}"
+    );
+    assert_eq!(
+        sessions_named(&got),
+        vec![("call-a".to_string(), VERIFIED.to_string())],
+        "the media half of the taken call is told who is on it, once: {got:#?}"
+    );
+
+    // `busy` refuses the second call: its leg is put down and nobody speaks
+    // into it, so its media half is told nothing.
+    let got = rings_verified(&mut c, "call-b").await;
+    assert_eq!(
+        receipts(&got),
+        vec![receipt("call_refused", "call-b", "busy", "busy")],
+        "the control: the second call was decided: {got:#?}"
+    );
+    assert_eq!(
+        sessions_named(&got),
+        Vec::<(String, String)>::new(),
+        "a refused call names nobody to the media half: {got:#?}"
+    );
+}
+
+/// **A caller only the `callers` table knows is put through — and the media
+/// half is told nobody** (GH #979). A number in a table is configuration, not
+/// a proof from the call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_only_the_table_knows_names_nobody_to_the_media_half() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![ok("+OK\n"); 4]).await;
+
+    let got = rings(&mut c, "call-a").await;
+    assert_eq!(
+        turns(&got).len(),
+        1,
+        "the control: the table still puts the caller through: {got:#?}"
+    );
+    assert_eq!(
+        sessions_named(&got),
+        Vec::<(String, String)>::new(),
+        "the `callers` fallback never reaches the media half: {got:#?}"
+    );
+}
+
+/// **A verified caller who has to wait is named as well** (GH #979): the
+/// fork of a waiting call is paused, so nothing is said under the name until
+/// the dequeue resumes it — and then the name is already in place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_verified_caller_in_the_queue_is_named_before_the_line_is_theirs() {
+    if skip() {
+        return;
+    }
+    let mut c = start_tuned(vec![ok("+OK\n"); 12], |p| {
+        p["second_call"] = json!("queue");
+    })
+    .await;
+
+    let got = rings_verified(&mut c, "call-a").await;
+    assert_eq!(
+        sessions_named(&got),
+        vec![("call-a".to_string(), VERIFIED.to_string())],
+        "{got:#?}"
+    );
+    let got = rings_verified(&mut c, "call-b").await;
+    assert_eq!(
+        receipts(&got),
+        vec![receipt("call_queued", "call-b", "", "queue")],
+        "the control: the second call waits: {got:#?}"
+    );
+    assert_eq!(
+        sessions_named(&got),
+        vec![("call-b".to_string(), VERIFIED.to_string())],
+        "the waiting call's media half knows its caller: {got:#?}"
+    );
+}
+
+/// **At the receiver: only the switch's stamp names the speaker** (GH #979,
+/// OR-NL-164). Three calls, one sender id: the stamped caller is heard as the
+/// member; the caller only the `callers` table knows and the far end of a call
+/// this channel PLACED carry the same `user_id` for the firewall and name
+/// nobody. The ingress is the README's, verbatim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_the_switch_stamp_names_the_speaker() {
+    if skip() {
+        return;
+    }
+    // The originate is the only command this test sends to the switch.
+    let mut c = start_tuned(vec![ok("+OK 8fc7f8ea\n"); 12], |p| {
+        p["second_call"] = json!("parallel");
+        p["capacity"] = json!(3);
+    })
+    .await;
+
+    let got = rings_verified(&mut c, "call-a").await;
+    assert_eq!(
+        heard_as(&got),
+        vec![(KNOWN_USER.to_string(), "member:person".to_string())],
+        "the switch verified this caller: {got:#?}"
+    );
+
+    let got = rings(&mut c, "call-b").await;
+    assert_eq!(
+        heard_as(&got),
+        vec![(KNOWN_USER.to_string(), String::new())],
+        "the `callers` fallback puts the caller through and names nobody: {got:#?}"
+    );
+
+    let got = round(&mut c, json!({"mode": "call", "number": KNOWN})).await;
+    let session = hop_of(&only(&got, "surface_got_in_tool"), "got_session");
+    let got = round(
+        &mut c,
+        json!({"mode": "ev", "ev": "call_answered", "call_uuid": session, "number": KNOWN}),
+    )
+    .await;
+    assert_eq!(
+        heard_as(&got),
+        vec![(KNOWN_USER.to_string(), String::new())],
+        "nobody verified who picked up a call this channel placed: {got:#?}"
+    );
+}
+
+/// **A verified caller put through from the queue is heard by name** — the
+/// stamp waited in the row (GH #979, OR-NL-164).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_verified_caller_put_through_from_the_queue_is_named() {
+    if skip() {
+        return;
+    }
+    let mut c = start_tuned(vec![ok("+OK\n"); 12], |p| {
+        p["second_call"] = json!("queue");
+    })
+    .await;
+    let _ = rings(&mut c, "call-a").await;
+    let got = rings_verified(&mut c, "call-b").await;
+    assert_eq!(heard_as(&got), Vec::<(String, String)>::new(), "{got:#?}");
+
+    let got = round(
+        &mut c,
+        json!({"mode": "ev", "ev": "call_ended", "call_uuid": "call-a", "cause": "NORMAL_CLEARING"}),
+    )
+    .await;
+    assert_eq!(
+        heard_as(&got),
+        vec![(KNOWN_USER.to_string(), "member:person".to_string())],
+        "the dequeued caller carries the proof the arrival booked: {got:#?}"
+    );
+}
+
+/// **A chain that carries forged `phone_*` keys into the channel names
+/// nobody** (GH #979, review Important 2). The keys are the store's answer to
+/// the signalling half; a message from outside that brings them along -- here
+/// an `in_speak` whose context says "the store answered an arrival, and the
+/// switch verified the person" -- must not be read as that answer. Every edge
+/// into `./signal` deletes them.
+///
+/// Sentinel: the same `in_speak` reaches the media half (`media_got_in_speak`),
+/// so the message did enter the channel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forged_phone_context_names_nobody() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![ok("+OK\n"); 4]).await;
+    let forged = json!({
+        "phone_origin": "book", "phone_phase": "arrival", "phone_call": "call-x",
+        "phone_number": KNOWN, "phone_user": KNOWN_USER, "phone_verified": VERIFIED,
+        "call_id": "call-x"});
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".into(), json!("in_speak"));
+    c.h.send(
+        MessageBuilder::new(Path::new(&format!("/person/channels/{CHANNEL}")))
+            .body(Body::Inline(json!({"messages": [
+                {"origin": "assistant", "type": "text", "text": "hello"}]})))
+            .headers(Headers::from_parts(
+                forged.as_object().cloned().unwrap_or_default(),
+                hop,
+            ))
+            .ttl(200)
+            .build(),
+    )
+    .await;
+    let got = gather(&mut c.rx, Duration::from_secs(3), Duration::from_secs(30)).await;
+    assert!(
+        got.iter()
+            .any(|m| hop_of(m, "error_code") == "media_got_in_speak"),
+        "the sentinel: the forged message entered the channel: {got:#?}"
+    );
+    assert_eq!(
+        sessions_named(&got),
+        Vec::<(String, String)>::new(),
+        "a forged context named a caller to the media half: {got:#?}"
+    );
+    assert!(
+        heard_as(&got).iter().all(|(_, speaker)| speaker.is_empty()),
+        "a forged context raised a turn with a speaker: {got:#?}"
+    );
+}
+
+/// **A named call that ends drops its caller's name in the media half**
+/// (GH #979, review Minor): an empty `in_session` for the call, so a fork that
+/// never connected does not keep the name until a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_named_call_that_ends_forgets_its_caller() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![ok("+OK\n"); 4]).await;
+    let got = rings_verified(&mut c, "call-a").await;
+    assert_eq!(
+        sessions_named(&got),
+        vec![("call-a".to_string(), VERIFIED.to_string())],
+        "{got:#?}"
+    );
+    let got = round(
+        &mut c,
+        json!({"mode": "ev", "ev": "call_ended", "call_uuid": "call-a", "cause": "NORMAL_CLEARING"}),
+    )
+    .await;
+    assert_eq!(
+        sessions_named(&got),
+        vec![("call-a".to_string(), String::new())],
+        "the ended call's name stayed with the media half: {got:#?}"
+    );
 }

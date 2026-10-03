@@ -545,6 +545,9 @@ async fn a_tree_is_a_page_of_at_most_twenty_entries() {
             "{id} {args}: at most `limit` (20) entries, ordered by path: {a}"
         );
         assert_eq!(a["next"], json!(next), "{id} {args}: {a}");
+        // GH #973 M-8 (OR-BC.B.8): a tree page carries `entries` only -- no
+        // `items` twin beside them.
+        assert!(a.get("items").is_none(), "{id}: a tree has no items: {a}");
         assert_eq!(
             a["more"],
             json!(true),
@@ -561,6 +564,18 @@ async fn a_tree_is_a_page_of_at_most_twenty_entries() {
     ))
     .await;
     let (_, a) = librarian::tool_result(&mut ports, &root, "tree-bad-cursor").await;
+    assert_eq!(a["ok"], json!(false), "{a}");
+    assert_eq!(a["error"]["code"], json!("invalid_input"), "{a}");
+    // GH #973 M-7: a superscript two passed `str.isdigit()` and crashed the
+    // page; a cursor is ASCII digits, everything else is refused.
+    h.send(librarian::tool_call(
+        "lib_tree",
+        "tree-bad-cursor-sup",
+        &json!({"cursor": "\u{b2}"}).to_string(),
+        ctx(),
+    ))
+    .await;
+    let (_, a) = librarian::tool_result(&mut ports, &root, "tree-bad-cursor-sup").await;
     assert_eq!(a["ok"], json!(false), "{a}");
     assert_eq!(a["error"]["code"], json!("invalid_input"), "{a}");
 

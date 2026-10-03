@@ -51,6 +51,13 @@
         {
           "route": "in_model",
           "because": "a model package for the decider, pushed by the colony's llm-registry: a PARAMS-ONLY body that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./decide`, the one llm cell of this hive, past `stage`, because a params body is not a request. Draw it only from the registry's `update` lane, restamped `in_model`; as shipped nothing is drawn and the decider runs on its start values. The door deletes the inner context of the hive on the way in (`show_origin`, `show_phase`, `show_id`), so a push can never pose as a turn's verdict; a refusal that does not name this decider (a push for another cell, or one without `subscriber`) reaches `stage` and leaves as `error` `decide_refused`, never as a `no_route` inside this hive"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./decide"
+          ],
+          "because": "the answer half of the credential lane (GH #976, the form of GH #560): the broker's `ack` for `vault.deliver` with the sealed box, addressed by `hop.grant_id`. It lands on `./decide` and on nothing else -- the box is sealed against the ephemeral key of the cell that asked. Only a presenter installed with a grant ever receives one"
         }
       ],
       "emits": [
@@ -77,6 +84,13 @@
         {
           "route": "resident_read",
           "because": "a sure verdict on one of the presenter's own topics whose candidates declare a source: one read per wanted set, `hop.resident` naming the resident, `hop.op_id` the turn and set, plus the source's own hop keys and body, where a value that is exactly `$request` becomes the turn's text. The builder's `reads_residents` edge carries it to the resident in the member's round; without that road it dead-letters, loudly"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./decide"
+          ],
+          "because": "the ask half of the credential lane (GH #976): a decider that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and `./decide` is the one address this sealed rim opens for this one lane. Whoever draws the edge points it at the member's own `access` and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },
@@ -123,7 +137,7 @@
         {
           "from": "./decide",
           "to": "./stage",
-          "condition": "!has(hop.refused_subscriber) && has(context.show_origin) && context.show_origin == 'decide' && has(context.show_id)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && has(context.show_origin) && context.show_origin == 'decide' && has(context.show_id)",
           "modifier": {
             "set_hop": {
               "show_id": "context.show_id",
@@ -154,7 +168,7 @@
         {
           "from": "./decide",
           "to": "./stage",
-          "condition": "!has(hop.refused_subscriber) && !(has(context.show_origin) && context.show_origin == 'decide' && has(context.show_id))",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !(has(context.show_origin) && context.show_origin == 'decide' && has(context.show_id))",
           "modifier": {
             "set_hop": {
               "route": "'in_decision'"

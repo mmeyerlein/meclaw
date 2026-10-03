@@ -327,7 +327,17 @@
             "set_context": {
               "channel": "hop.channel",
               "user_id": "hop.user_id",
-              "turn_id": "hop.turn_id"
+              "turn_id": "hop.turn_id",
+              "speaker": "has(hop.ctx_speaker) ? hop.ctx_speaker : ''",
+              "turn_round": "has(hop.ctx_turn_round) ? hop.ctx_turn_round : ''",
+              "audience_set": "has(hop.ctx_audience_set) ? hop.ctx_audience_set : ''",
+              "tools_allow": "has(hop.ctx_tools_allow) ? hop.ctx_tools_allow : ''",
+              "tools_deny": "has(hop.ctx_tools_deny) ? hop.ctx_tools_deny : ''",
+              "counterpart": "has(hop.ctx_counterpart) ? hop.ctx_counterpart : ''",
+              "counterpart_name": "has(hop.ctx_counterpart_name) ? hop.ctx_counterpart_name : ''",
+              "chat_id": "has(hop.ctx_chat_id) ? hop.ctx_chat_id : ''",
+              "channel_node": "has(hop.ctx_channel_node) ? hop.ctx_channel_node : ''",
+              "assistant": "has(hop.ctx_assistant) ? hop.ctx_assistant : ''"
             },
             "delete_context": [
               "wd_body",

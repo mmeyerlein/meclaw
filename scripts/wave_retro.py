@@ -13,18 +13,20 @@ Run it as the last step of a wave, before the receipt is committed:
     python3 scripts/wave_retro.py --check welle-h3-2026-09-18
     python3 scripts/wave_retro.py --readme
 
-It reads what the wave already produced -- the strand reports in
-`plans/<wave>/berichte/`, the gate receipts and GATE-SUMMARY lines, and the
-session transcripts -- and writes `plans/<wave>/retro.md` plus one line in
-`plans/retro/RETRO.md`. Sessions are found by the wave marker in the prompt
-that started them, or named with `--sessions`; the planning session (Q12)
-by the marker and `HANDOVER-PLANUNG` in its first prompt, or named with
-`--planning`.
+The wave folder is `plans/<wave>/` or, in repos that keep their plans in
+`docs/`, `docs/plans/<wave>/` (first hit wins). It reads what the wave already
+produced -- the strand reports in `<wave folder>/berichte/`, the gate receipts
+and GATE-SUMMARY lines, and the session transcripts -- and writes
+`<wave folder>/retro.md` plus one line in `retro/RETRO.md` beside it.
+Sessions are found by the wave marker in the prompt that started them, or
+named with `--sessions`; the planning session (Q12) by the marker and
+`HANDOVER-PLANUNG` in its first prompt, or named with `--planning`.
 
 THE EXIT CODE IS ALWAYS 0. A breached threshold is a finding, a missing
 source is an `n/a` with its reason; neither blocks a wave. The one exception
 is `--check <wave>`, which returns 1 while the wave has no `retro.md` -- that
-is the receipt duty, not a quality gate.
+is the receipt duty, not a quality gate; the other is a wave folder found
+under neither path, which exits 1 and names both.
 
 The measuring library is `scripts/retro/`, taken from the P0 tools of wave P
 under `plans/welle-p-2026-09-19/befund/tools/`; the thresholds live in
@@ -62,11 +64,26 @@ def _default_root() -> Path:
     return HERE.parent
 
 
+def find_wave_dir(root: Path, wave: str) -> tuple:
+    """The plan folder of `wave` and every place that was looked at.
+
+    This repo keeps its waves under `plans/`; a repo that keeps its plans
+    under `docs/plans/` has them there. Before GH #970 the retro looked only
+    under `plans/` and printed `n/a` for every such wave. The first hit
+    wins; without a hit the first element is None."""
+    candidates = [root / "plans" / wave, root / "docs" / "plans" / wave]
+    for cand in candidates:
+        if cand.is_dir():
+            return cand, candidates
+    return None, candidates
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Wave retro: thirteen numbers over one wave (ruling R-P3).")
     parser.add_argument("wave", nargs="?",
-                        help="the wave directory under plans/, e.g. welle-h3-2026-09-18")
+                        help="the wave directory under plans/ or docs/plans/, "
+                             "e.g. welle-h3-2026-09-18")
     parser.add_argument("--root", default=None,
                         help="repository root (default: the tree this script is in)")
     parser.add_argument("--transcripts", default=None,
@@ -105,15 +122,20 @@ def main(argv=None) -> int:
     if not args.wave:
         parser.error("ohne --readme wird eine Welle gebraucht")
 
-    wave_dir = root / "plans" / args.wave
+    wave_dir, looked = find_wave_dir(root, args.wave)
     if args.check:
-        ok = (wave_dir / "retro.md").is_file()
-        print(f"{'ok' if ok else 'fehlt'}: {wave_dir / 'retro.md'}")
+        target = (wave_dir or looked[0]) / "retro.md"
+        ok = target.is_file()
+        print(f"{'ok' if ok else 'fehlt'}: {target}")
         return 0 if ok else 1
 
-    if not wave_dir.is_dir():
-        print(f"n/a: {wave_dir} gibt es nicht — nichts zu messen.")
-        return 0
+    if wave_dir is None:
+        # An error, not `n/a`: a silent `n/a` read as "nothing to measure"
+        # for a wave that only lived elsewhere (GH #970).
+        print("Fehler: kein Plan-Ordner fuer " + args.wave + " -- gesucht in "
+              + " und ".join(str(p) for p in looked), file=sys.stderr)
+        return 1
+    print(f"Plan-Ordner:  {wave_dir}")
 
     sessions = [s for s in re.split(r"[,\s]+", args.sessions) if s]
     planning = [s for s in re.split(r"[,\s]+", args.planning) if s]
@@ -132,7 +154,8 @@ def main(argv=None) -> int:
     retro.write_text(
         render.retro_md(args.wave, rows, evidence, spec, args.provisional),
         encoding="utf-8")
-    history = root / "plans" / "retro" / "RETRO.md"
+    # The history sits beside the wave: plans/retro/ or docs/plans/retro/.
+    history = wave_dir.parent / "retro" / "RETRO.md"
     render.update_history(history, args.wave, rows, note)
 
     breaches = [r["id"] for r in rows if r["verdict"] == "VERSTOSS"]

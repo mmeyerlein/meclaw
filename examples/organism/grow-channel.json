@@ -27,6 +27,7 @@
             "chat_id": "has(hop.chat_id) ? hop.chat_id : ''",
             "user_id": "has(hop.user_id) ? hop.user_id : ''",
             "audience_set": "'[\"agent:scribe\",\"member:alex\"]'",
+            "turn_round": "'[\"agent:scribe\",\"member:alex\"]'",
             "speaker": "has(hop.user_id) && string(hop.user_id) == '4711' ? 'member:alex' : ''"
           }
         }

@@ -20,6 +20,7 @@
 //! operator had deleted.
 
 use crate::web::db::{TABLES, columns_of};
+use meclaw_colony::schema_evolution::{self, ColumnDecl, ResolvePlan, TableDecl};
 use meclaw_core::serde_json::{Map, Value};
 use rusqlite::Connection;
 
@@ -45,8 +46,7 @@ fn seed_path(cell_dir: &std::path::Path, table: &str) -> std::path::PathBuf {
 fn parse_seed_file(
     path: &std::path::Path,
     table: &str,
-    cols: &[&str],
-) -> Result<Vec<Map<String, Value>>, String> {
+) -> Result<(Vec<Map<String, Value>>, ResolvePlan), String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("seed read {}: {e}", path.display()))?;
     let mut lines = text.lines();
@@ -59,9 +59,9 @@ fn parse_seed_file(
             path.display()
         )
     })?;
-    let header_schema = header
-        .get("schema")
-        .and_then(|v| v.as_object())
+    let header_obj = header
+        .as_object()
+        .filter(|h| h.get("schema").is_some_and(Value::is_object))
         .ok_or_else(|| {
             format!(
                 "seed {} line 1: missing schema object — line 1 must be the header \
@@ -69,14 +69,13 @@ fn parse_seed_file(
                 path.display()
             )
         })?;
-    for col in cols {
-        if !header_schema.contains_key(*col) {
-            return Err(format!(
-                "seed {}: schema mismatch — column {col} missing in seed header",
-                path.display()
-            ));
-        }
-    }
+    // GH #822: resolved against the fixed schema by the one resolver every
+    // seed reader shares — a column the header lacks takes the default the
+    // DDL declares for it (`web::db`), every other difference is refused.
+    let writer = schema_evolution::parse_writer_header(table, header_obj)
+        .map_err(|e| format!("seed {}: {e}", path.display()))?;
+    let plan = schema_evolution::resolve(table, &writer, &table_decl(table))
+        .map_err(|e| format!("seed {}: {e}", path.display()))?;
 
     let mut rows = Vec::new();
     for (idx, line) in lines.enumerate() {
@@ -98,7 +97,56 @@ fn parse_seed_file(
         }
         rows.push(row_obj.clone());
     }
-    Ok(rows)
+    Ok((rows, plan))
+}
+
+/// The fixed schema of one `web` table as the resolver reads it (GH #822):
+/// types and the defaults of `web::db::setup_web_schema`'s `NOT NULL DEFAULT`
+/// columns, so a seed written before such a column existed loads with the
+/// value the DDL itself would give it. Kept beside the loader; a drift lock
+/// (`the_declared_defaults_match_the_ddl`) pins it against the DDL.
+fn table_decl(table: &str) -> TableDecl {
+    let col = |ty: &str, default: Option<Value>| ColumnDecl {
+        ty: ty.to_string(),
+        default,
+    };
+    let text = |d: &str| Some(Value::from(d));
+    let columns: Vec<(&str, ColumnDecl)> = match table {
+        "objects" => vec![
+            ("id", col("text", None)),
+            ("parent", col("text", None)),
+            ("component", col("text", None)),
+            ("ord", col("int", Some(Value::from(0)))),
+            ("props", col("json", text("{}"))),
+        ],
+        "components" => vec![
+            ("name", col("text", None)),
+            ("template", col("text", None)),
+            ("prop_schema", col("json", text("{}"))),
+            ("editable", col("json", text("[]"))),
+            ("layer", col("text", text("content"))),
+        ],
+        "pages" => vec![
+            ("route", col("text", None)),
+            ("root", col("text", None)),
+            ("title", col("text", text(""))),
+        ],
+        // `body` is a BLOB column the loader binds as TEXT; a header may say
+        // `blob` or `text` (one storage class, `schema_evolution::HEADER_TYPES`).
+        "assets" => vec![
+            ("path", col("text", None)),
+            ("content_type", col("text", None)),
+            ("body", col("text", None)),
+        ],
+        _ => vec![],
+    };
+    TableDecl {
+        version: 1,
+        columns: columns
+            .into_iter()
+            .map(|(c, d)| (c.to_string(), d))
+            .collect(),
+    }
 }
 
 /// The semantic checks one seeded `components` row has to pass.
@@ -181,11 +229,7 @@ pub fn check_seed_files(cell_dir: &std::path::Path) -> Result<(), String> {
         if !path.exists() {
             continue;
         }
-        parse_seed_file(
-            &path,
-            table,
-            columns_of(table).expect("TABLES entry has columns"),
-        )?;
+        parse_seed_file(&path, table)?;
     }
     Ok(())
 }
@@ -200,7 +244,7 @@ pub fn load_seed_if_present(conn: &Connection, cell_dir: &std::path::Path) -> Re
             continue;
         }
         let cols = columns_of(table).expect("TABLES entry has columns");
-        let rows = parse_seed_file(&path, table, cols)?;
+        let (rows, plan) = parse_seed_file(&path, table)?;
         if rows.is_empty() {
             continue;
         }
@@ -220,7 +264,7 @@ pub fn load_seed_if_present(conn: &Connection, cell_dir: &std::path::Path) -> Re
         for (idx, row) in rows.iter().enumerate() {
             let values: Vec<rusqlite::types::Value> = cols
                 .iter()
-                .map(|c| json_to_sql(row.get(*c).unwrap_or(&Value::Null)))
+                .map(|c| json_to_sql(plan.fill.get(*c).or(row.get(*c)).unwrap_or(&Value::Null)))
                 .collect();
             let params: Vec<&dyn rusqlite::ToSql> =
                 values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -288,6 +332,99 @@ mod tests {
         let td = dir_with(&[("pages.jsonl", "{\"schema\":{\"route\":\"text\"}}\n")]);
         let err = check_seed_files(td.path()).unwrap_err();
         assert!(err.contains("root") || err.contains("title"), "{err}");
+    }
+
+    // ---- GH #822: the header is resolved against the fixed schema. ----
+
+    #[test]
+    fn a_missing_column_with_a_default_is_filled_at_birth() {
+        // A components seed from before `layer` existed.
+        let td = dir_with(&[(
+            "components.jsonl",
+            concat!(
+                r#"{"schema":{"name":"text","template":"text","prop_schema":"json","editable":"json"}}"#,
+                "\n",
+                r#"{"name":"a","template":"<p>x</p>","prop_schema":{},"editable":[]}"#,
+                "\n"
+            ),
+        )]);
+        check_seed_files(td.path()).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::web::db::setup_web_schema(&conn).unwrap();
+        load_seed_if_present(&conn, td.path()).unwrap();
+        let layer: String = conn
+            .query_row("SELECT layer FROM components WHERE name = 'a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(layer, "content");
+    }
+
+    #[test]
+    fn a_missing_column_without_default_is_refused_at_birth_naming_it() {
+        let td = dir_with(&[(
+            "pages.jsonl",
+            "{\"schema\":{\"route\":\"text\",\"title\":\"text\"}}\n",
+        )]);
+        let err = check_seed_files(td.path()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column root"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_changed_type_is_refused() {
+        let td = dir_with(&[(
+            "pages.jsonl",
+            "{\"schema\":{\"route\":\"text\",\"root\":\"int\",\"title\":\"text\"}}\n",
+        )]);
+        let err = check_seed_files(td.path()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column root"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_column_is_refused() {
+        let td = dir_with(&[(
+            "pages.jsonl",
+            "{\"schema\":{\"route\":\"text\",\"root\":\"text\",\"title\":\"text\",\"x\":\"text\"}}\n",
+        )]);
+        let err = check_seed_files(td.path()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column x"),
+            "{err}"
+        );
+    }
+
+    /// The resolver's view of the fixed schema names exactly the DDL's columns,
+    /// and every declared default is the DDL's own `DEFAULT`.
+    #[test]
+    fn the_declared_defaults_match_the_ddl() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::web::db::setup_web_schema(&conn).unwrap();
+        for table in TABLES {
+            let decl = table_decl(table);
+            let mut st = conn
+                .prepare("SELECT name, dflt_value FROM pragma_table_info(?1)")
+                .unwrap();
+            let ddl: Vec<(String, Option<String>)> = st
+                .query_map([table], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let names: Vec<&str> = decl.columns.keys().map(String::as_str).collect();
+            let mut ddl_names: Vec<&str> = ddl.iter().map(|(n, _)| n.as_str()).collect();
+            ddl_names.sort();
+            assert_eq!(names, ddl_names, "{table}");
+            assert_eq!(columns_of(table).unwrap().len(), names.len(), "{table}");
+            for (name, dflt) in &ddl {
+                let lit = schema_evolution::sql_default_literal(&decl.columns[name]);
+                assert_eq!(lit.as_deref(), dflt.as_deref(), "{table}.{name}");
+            }
+        }
     }
 
     #[test]

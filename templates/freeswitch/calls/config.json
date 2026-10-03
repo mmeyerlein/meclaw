@@ -15,7 +15,8 @@
         "started": "int",
         "speaking": "int",
         "hangup_pending": "int",
-        "hangup_at": "int"
+        "hangup_at": "int",
+        "verified_user": "text"
       }
     }
   },

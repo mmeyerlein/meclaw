@@ -189,6 +189,17 @@ pub struct Hive {
     /// `store_error`): the store's refusal then travels on like any
     /// answer. Unset, a refused ledger op fails the test where it happens.
     pub ledger_may_refuse: bool,
+    /// The store refuses -- every leg `store_error` -- the next ledger
+    /// message whose `cur_phase` is this (GH #955: a bundle of a running
+    /// rebuild that the store does not take). Taken when it strikes; set
+    /// `ledger_may_refuse` with it.
+    pub refuse_phase: Option<String>,
+    /// Before the store answers the next ledger message whose `cur_phase`
+    /// is the first, it runs the SQL of the second on the ledger: another
+    /// chain's write landing between two steps of this one (GH #955 review
+    /// M-1, a claim taken over while a refused bundle is on its way back).
+    /// Taken when it strikes, before `refuse_phase` is looked at.
+    pub sql_at_phase: Option<(String, String)>,
 }
 
 impl Hive {
@@ -257,6 +268,8 @@ impl Hive {
             stderr: Vec::new(),
             ledger_ops: Vec::new(),
             ledger_may_refuse: false,
+            refuse_phase: None,
+            sql_at_phase: None,
         }
     }
 
@@ -314,6 +327,41 @@ impl Hive {
             .into_iter()
             .filter(|m| m["type"] == "tool_call")
             .collect();
+        let phase = msg.context.get("cur_phase").and_then(Value::as_str);
+        if self
+            .sql_at_phase
+            .as_ref()
+            .is_some_and(|(at, _)| Some(at.as_str()) == phase)
+            && let Some((_, sql)) = self.sql_at_phase.take()
+        {
+            self.db
+                .execute_batch(&sql)
+                .expect("the SQL of `sql_at_phase` runs");
+        }
+        if self.refuse_phase.is_some() && self.refuse_phase.as_deref() == phase {
+            self.refuse_phase = None;
+            let legs: Vec<BundleLeg> = calls
+                .iter()
+                .map(|c| {
+                    let args: Value =
+                        sj::from_str(c["text"].as_str().unwrap_or("")).unwrap_or(Value::Null);
+                    BundleLeg::refusal(
+                        args["operation"].as_str().unwrap_or("error"),
+                        c["id"].as_str().unwrap_or("").to_string(),
+                        0,
+                        "store_error",
+                        "refused by the test".to_string(),
+                    )
+                })
+                .collect();
+            let (body, hop) = build_bundle_result(&legs, 0);
+            return Msg {
+                context: msg.context.clone(),
+                hop,
+                body: obj(body),
+                reply_to: String::new(),
+            };
+        }
         let (body, hop) = if calls.len() == 1 {
             let c = &calls[0];
             let args: Value = sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
@@ -396,7 +444,14 @@ impl Hive {
     }
 
     fn pump(&mut self, from: &str, msg: Msg) {
-        let mut queue = VecDeque::from([(from.to_string(), msg)]);
+        self.pump_many(vec![(from.to_string(), msg)]);
+    }
+
+    /// Several messages at once, run to rest through ONE FIFO queue: each
+    /// step of each chain is taken in turn, so two chains interleave step by
+    /// step the way two deliveries in flight do (GH #955).
+    fn pump_many(&mut self, starts: Vec<(String, Msg)>) {
+        let mut queue = VecDeque::from(starts);
         let mut steps = 0;
         while let Some((from, msg)) = queue.pop_front() {
             steps += 1;
@@ -454,6 +509,11 @@ impl Hive {
     /// its `emit_headers` ride -- the round of the newest call (GH #925,
     /// OR-BD.A.6); an order the clock never saw brings its own.
     pub fn fire(&mut self, order: &Msg) {
+        let msg = self.strike_of(order);
+        self.pump("./clock", msg);
+    }
+
+    fn strike_of(&self, order: &Msg) -> Msg {
         let id = order.body.get("schedule_id");
         let armed = self
             .clock
@@ -470,13 +530,22 @@ impl Hive {
         {
             hop.insert(k, v);
         }
-        let msg = Msg {
+        Msg {
             context: Map::new(),
             hop,
             body: obj(order.body["emit_body"].clone()),
             reply_to: String::new(),
-        };
-        self.pump("./clock", msg);
+        }
+    }
+
+    /// Several strikes at the same instant (GH #955): each as [`Hive::fire`]
+    /// builds it, all of them through one queue, so their steps interleave.
+    pub fn fire_together(&mut self, orders: &[Msg]) {
+        let starts = orders
+            .iter()
+            .map(|o| ("./clock".to_string(), self.strike_of(o)))
+            .collect();
+        self.pump_many(starts);
     }
 
     /// The summarizer's answer to the oldest request it holds.

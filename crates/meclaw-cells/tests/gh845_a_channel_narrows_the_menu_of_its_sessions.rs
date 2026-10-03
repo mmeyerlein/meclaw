@@ -558,9 +558,20 @@ fn only_the_consult_edges_on_the_road_drop_the_scope() {
                 .iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect::<Vec<_>>();
+            // GH #979 (OR-NL-179): the firewall's release edge writes both
+            // keys back from the parked row (`has(hop.ctx_<k>) ? hop.ctx_<k>
+            // : ''`) -- that is the channel's own scope returned, not dropped.
             let sets = m["set_context"]
                 .as_object()
-                .map(|o| o.keys().cloned().collect::<Vec<_>>())
+                .map(|o| {
+                    o.iter()
+                        .filter(|(k, v)| {
+                            v.as_str()
+                                != Some(format!("has(hop.ctx_{k}) ? hop.ctx_{k} : ''").as_str())
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             for k in ["tools_allow", "tools_deny"] {
                 if deletes.iter().any(|d| d == k) || sets.iter().any(|s| s == k) {

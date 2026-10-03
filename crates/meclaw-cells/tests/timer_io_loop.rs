@@ -19,6 +19,7 @@ async fn run_io_on_empty_active_stays_pending_then_reacts_to_setactive_with_futu
     let io = TimerIo {
         active: vec![],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
@@ -64,6 +65,7 @@ async fn run_io_emits_fire_for_every_second_cron_and_keeps_active() {
             kind: ScheduleKind::Cron("*/1 * * * * *".into()),
         }],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
@@ -95,6 +97,7 @@ async fn run_io_drops_once_locally_after_fire() {
             kind: ScheduleKind::At(when),
         }],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
@@ -129,6 +132,7 @@ async fn run_io_terminates_when_events_channel_consumer_drops() {
             kind: ScheduleKind::Cron("*/1 * * * * *".into()),
         }],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
     drop(events_rx);
@@ -155,6 +159,7 @@ async fn a_sleep_strike_is_not_forced_and_a_trigger_is() {
             kind: ScheduleKind::At(at),
         }],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 

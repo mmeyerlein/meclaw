@@ -1,4 +1,4 @@
-# `chat-channel@1.0.0`
+# `chat-channel@1.0.1`
 
 The channel `chat`, as one `code` cell. A sentence a person types on their own screen is
 a turn of its own channel -- not a voice turn in disguise.
@@ -54,6 +54,7 @@ The two edges a channel costs, the pattern `voice` set:
     "modifier": {"set_context": {"channel_node": "'chat'", "channel": "'chat'",
                                  "assistant": "'<agent>'",
                                  "audience_set": "'[\"agent:<agent>\",\"member:<member>\"]'",
+                                 "turn_round": "'[\"agent:<agent>\",\"member:<member>\"]'",
                                  "user_id": "has(hop.user_id) ? hop.user_id : ''",
                                  "turn_id": "has(hop.turn_id) ? hop.turn_id : ''"}} },
   { "from": "./channels", "to": "./channels/chat",
@@ -61,6 +62,12 @@ The two edges a channel costs, the pattern `voice` set:
     "modifier": {"set_hop": {"route": "'in_answer'"}} }
 ]
 ```
+
+`turn_round` repeats the round under the key the curator reads as proof of the turn's round: an
+installed app's pin labelled with this round is placed only in a turn that carries it
+(`templates/curator/README.md`, "The round of a pin"). Only the wiring (`add_edges`) may set it; an
+edge a template draws for itself is refused as `edge_schema`. The builder's `grow_level` recipe
+renders both keys.
 
 The down-edge is not decoration: without it every answer of this channel dead-letters
 with `no_route`. It ends here, and the app hears the answer elsewhere.

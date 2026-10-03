@@ -3,7 +3,8 @@
 //!
 //! A screen app (the presenter) shows what the member's residents hold: the
 //! memory, the files, the knowledge graph, the objects, the library, the
-//! colony's counts. Those residents are not apps and answer no `in_show`; the
+//! colony's counts, the last digest and the last research answers (GH #976).
+//! Those residents are not apps and answer no `in_show`; the
 //! app reads them over their own read lanes, one edge per resident, drawn by
 //! the recipe from a declaration that names them:
 //!
@@ -88,7 +89,7 @@ type Resident = (
     &'static str,
 );
 
-const RESIDENTS: [Resident; 7] = [
+const RESIDENTS: [Resident; 9] = [
     (
         "memory-hive",
         "./memory-hive",
@@ -145,6 +146,25 @@ const RESIDENTS: [Resident; 7] = [
         &["answer"],
         EVERYBODY,
     ),
+    // GH #976 (PE-DP-9): the member's two apps that keep a result with the
+    // round it was made for; each row carries its own round, the answer is
+    // stamped with the member's.
+    (
+        "daily-digest",
+        "./apps/daily-digest",
+        "in_read",
+        RES_OP_ID,
+        &["answer"],
+        MEMBER_ROUND,
+    ),
+    (
+        "research-assistant",
+        "./apps/research-assistant",
+        "in_read",
+        RES_OP_ID,
+        &["answer"],
+        MEMBER_ROUND,
+    ),
 ];
 
 fn run_recipes(params: &Value) -> Vec<Value> {
@@ -189,6 +209,9 @@ fn refusal(params: &Value) -> Value {
 fn params_for(app: &str, declaration: Value) -> Value {
     json!({"scope": MEMBER, "app": app, "template": format!("{app}@1.0.0"),
            "screen": "display", "generation": "sam", "ctx": {"member_person": "alex"},
+           // The member has every resident: the two member apps (GH #976) are drawn
+           // only when named (Y fix round 1, I-1).
+           "residents_present": all_residents(),
            "declaration": declaration})
 }
 

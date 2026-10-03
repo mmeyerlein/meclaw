@@ -211,7 +211,12 @@ fn declared_schema(
         };
         let mut m = BTreeMap::new();
         for (col, ty) in cols {
-            m.insert(col.clone(), ty.as_str().unwrap_or("text").to_string());
+            // GH #822: a column is a type string or `{type, default}`.
+            let ty = ty
+                .as_str()
+                .or_else(|| ty.get("type").and_then(|t| t.as_str()))
+                .unwrap_or("text");
+            m.insert(col.clone(), ty.to_string());
         }
         out.insert(table.clone(), m);
     }

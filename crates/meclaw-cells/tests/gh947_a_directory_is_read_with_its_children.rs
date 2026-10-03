@@ -491,3 +491,105 @@ fn a_lone_surrogate_in_a_tool_call_still_gets_its_answer() {
     }
     assert_clean(&sp);
 }
+
+/// GH #973 M-2: a `files` row written before `files.dir` existed has none, and
+/// nothing backfills it. Its folder finds it all the same -- every reader and
+/// writer takes the children by path (`path/` <= p < `path0`), for old and new
+/// rows alike: `dir_info` lists it, `dir_summary` reads its one line,
+/// `remove_dir` refuses its folder, and a file is never created on top of it.
+#[test]
+fn old_rows_without_dir_are_children_of_their_folder() {
+    if !shipped() {
+        return;
+    }
+    let Tree {
+        mut sp, a, c, b, ..
+    } = tree();
+    sp.db
+        .execute_batch(&format!(
+            "UPDATE files SET dir = NULL WHERE file IN ('{c}', '{b}');"
+        ))
+        .expect("two rows of the old stock");
+    let docs = ok(sp.read_space("dir_info", json!({"path": "/docs"})));
+    assert_eq!(
+        docs["children"].as_array().unwrap()[..2].to_vec(),
+        vec![file_child(&sp, &a), file_child(&sp, &c)],
+        "an old row is a child of its folder"
+    );
+    let deep = ok(sp.read_space("dir_info", json!({"path": "/docs/deep"})));
+    assert_eq!(deep["children"], json!([file_child(&sp, &b)]));
+    let listed = ok(sp.read_space("list", json!({"prefix": "/docs/deep"})));
+    assert!(listed.to_string().contains("/docs/deep/b.md"), "{listed}");
+
+    // The summary of /docs reads the old row's line.
+    let op_id = sp.next_op_id();
+    sp.lane(
+        "in_read",
+        json!({}),
+        json!({"op": "dir_summary", "op_id": op_id}),
+        json!({"op": "dir_summary", "args": {"path": "/docs"}}),
+    );
+    let (_, asked) = sp.llm.front().expect("the directory's summary is asked");
+    let text = Value::Object(asked.body.clone()).to_string();
+    assert!(text.contains("c.md: "), "the old row's one line: {text}");
+    settle(&mut sp, SUMMARY);
+
+    // A folder whose counter missed it still holds it.
+    sp.db
+        .execute_batch("UPDATE dirs SET files = 0 WHERE path = '/docs/deep';")
+        .expect("a counter that never counted the old row");
+    refused(
+        sp.request(
+            "in_write",
+            "remove_dir",
+            None,
+            json!({"path": "/docs/deep"}),
+            json!({}),
+        ),
+        "not_empty",
+    );
+    // Without its directory row the old row still marks its folder taken.
+    sp.db
+        .execute_batch("DELETE FROM dirs WHERE path = '/docs/deep';")
+        .expect("no row of the folder");
+    refused(
+        sp.request(
+            "in_write",
+            "create",
+            None,
+            json!({"path": "/docs/deep", "text": "x\n"}),
+            json!({}),
+        ),
+        "path_taken",
+    );
+    assert_clean(&sp);
+}
+
+/// GH #973 fix round 1 (review M-4): the files of `dir_info` are read from
+/// the cursor on, but never from below `path/`. A cursor before the folder
+/// (`/` for `/docs`, with more than a window of foreign files between the
+/// two) answers the first page, not an empty one without `next`.
+#[test]
+fn a_cursor_before_the_folder_reads_the_folder() {
+    if !shipped() {
+        return;
+    }
+    let Tree { mut sp, .. } = tree();
+    sp.db
+        .execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 2099) \
+             INSERT INTO files (file, path, kind, mime, head, head_seq, tomb, oneline, bytes, \
+             lines, dir) \
+             SELECT 'fh-b' || i, printf('/b/k%04d.md', i), 'text', 'text/plain', 'h', 1, '', \
+             'Foreign.', 1, 1, '/b' FROM n;",
+        )
+        .expect("a window of foreign rows between / and /docs/");
+    let first = ok(sp.read_space("dir_info", json!({"path": "/docs"})));
+    let early = ok(sp.read_space("dir_info", json!({"path": "/docs", "cursor": "/"})));
+    assert_eq!(
+        (early["children"].clone(), early["next"].clone()),
+        (first["children"].clone(), first["next"].clone()),
+        "a cursor before the folder reads the folder from its start"
+    );
+    assert_eq!(first["children"].as_array().map(|c| c.len()), Some(4));
+}

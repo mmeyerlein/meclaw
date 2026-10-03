@@ -39,7 +39,7 @@ fn python(driver: &str, args: &[std::path::PathBuf]) -> String {
 }
 
 /// The residents the builder recipe can read (`RESIDENTS` there).
-const RESIDENTS: [&str; 7] = [
+const RESIDENTS: [&str; 9] = [
     "memory-hive",
     "file-space",
     "graph-space",
@@ -47,6 +47,9 @@ const RESIDENTS: [&str; 7] = [
     "librarian",
     "affinity",
     "colony-view",
+    // GH #976 (PE-DP-9): the member's apps that keep a result with its round.
+    "daily-digest",
+    "research-assistant",
 ];
 
 const TOPICS_DRIVER: &str = r#"
@@ -93,9 +96,11 @@ fn every_builtin_topic_binds_and_reads_a_declared_resident() {
     assert_eq!(
         names,
         [
-            "memory", "files", "graph", "library", "objects", "people", "colony"
+            "memory", "files", "graph", "library", "objects", "people", "colony", "digest",
+            "research"
         ],
-        "the resident topics of the inventory (DISPATCH-D2 § 2)"
+        "the resident topics of the inventory (DISPATCH-D2 § 2), and since GH #976 the \
+         last digest and the last research answers"
     );
     for t in topics {
         assert!(t["why"].is_null(), "the manifest check refuses {t}");

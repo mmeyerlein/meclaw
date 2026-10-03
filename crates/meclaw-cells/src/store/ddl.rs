@@ -54,14 +54,111 @@ fn sqlite_type(t: &str) -> &'static str {
 /// code already reads — the same catch-up property the FTS declaration has.
 /// Strictly additive: an existing column that the declaration does not name is
 /// never touched, never retyped and never dropped (no-delete).
+///
+/// The short form only: no column carries a default. The store's own wake runs
+/// [`apply_declared_schema_ddl`], which also writes the declared defaults.
 pub fn apply_schema_ddl(
     conn: &rusqlite::Connection,
     schema: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> rusqlite::Result<()> {
+    apply_schema_ddl_with_defaults(conn, schema, &BTreeMap::new())
+}
+
+/// GH #822: [`apply_schema_ddl`] with the declared column defaults, plus the
+/// declared table versions recorded in `meta`.
+///
+/// A declared default becomes the column's SQL `DEFAULT`, both in `CREATE
+/// TABLE` and in the `ALTER TABLE ADD COLUMN` that grows an existing table.
+/// The ALTER half is the point (N-A F review M-2): SQLite gives every row that
+/// already exists the column's default, so a column added to a table full of
+/// rows reads as declared instead of `NULL` — measured in soul2me, a `tries`
+/// column added without a default left every old shelf row at `NULL`,
+/// `tries < 3` is false for `NULL`, and those rows were never pulled again.
+/// An insert that omits the column (the store's `insert` op, an import) gets
+/// the default the same way. A table that is not grown is not rewritten: a
+/// default is no backfill of a column that already stands.
+///
+/// The versions go into the substrate's `meta` table as
+/// `table_version:<table>` (skipped when the database has no `meta`, i.e. a
+/// bare connection in a unit test): that is where the export reads the
+/// version it writes into the header (`meclaw_colony::db_transfer`).
+pub fn apply_declared_schema_ddl(
+    conn: &rusqlite::Connection,
+    params: &crate::store::StoreParams,
+) -> rusqlite::Result<()> {
+    refuse_lowered_table_versions(conn, params).map_err(|msg| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+            Some(msg),
+        )
+    })?;
+    apply_schema_ddl_with_defaults(conn, &params.schema, &params.evolution.defaults)?;
+    if params.evolution.versions.is_empty() {
+        return Ok(());
+    }
+    let has_meta: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if !has_meta {
+        return Ok(());
+    }
+    for (table, version) in &params.evolution.versions {
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            rusqlite::params![
+                meclaw_colony::schema_evolution::version_meta_key(table),
+                version.to_string()
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Review N-B E #5 (orchestrator ruling C): a declared table version may rise
+/// and never fall. `Err` names the first table whose declaration (absent = 1)
+/// is below the version `meta` records; nothing is written then, so the higher
+/// version keeps refusing a newer writer's import. A database without `meta`
+/// records nothing and passes.
+pub fn refuse_lowered_table_versions(
+    conn: &rusqlite::Connection,
+    params: &crate::store::StoreParams,
+) -> Result<(), String> {
+    for table in params.schema.keys() {
+        let declared = params.evolution.versions.get(table).copied().unwrap_or(1);
+        let recorded = meclaw_colony::schema_evolution::recorded_version(conn, table);
+        if declared < recorded {
+            return Err(format!(
+                "schema_version_lowered: table {table} declares version {declared}, the \
+                 cell.db records version {recorded} — a table version never falls"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn apply_schema_ddl_with_defaults(
+    conn: &rusqlite::Connection,
+    schema: &BTreeMap<String, BTreeMap<String, String>>,
+    defaults: &BTreeMap<String, BTreeMap<String, meclaw_core::serde_json::Value>>,
+) -> rusqlite::Result<()> {
     for (table, cols) in schema {
+        let column_def = |c: &str, t: &str| -> String {
+            let decl = meclaw_colony::schema_evolution::ColumnDecl {
+                ty: t.to_string(),
+                default: defaults.get(table).and_then(|d| d.get(c)).cloned(),
+            };
+            match meclaw_colony::schema_evolution::sql_default_literal(&decl) {
+                Some(lit) => format!("\"{c}\" {} DEFAULT {lit}", sqlite_type(t)),
+                None => format!("\"{c}\" {}", sqlite_type(t)),
+            }
+        };
         let col_clause = cols
             .iter()
-            .map(|(c, t)| format!("\"{c}\" {}", sqlite_type(t)))
+            .map(|(c, t)| column_def(c, t))
             .collect::<Vec<_>>()
             .join(", ");
         let stmt = format!("CREATE TABLE IF NOT EXISTS \"{table}\" ({col_clause})");
@@ -70,10 +167,7 @@ pub fn apply_schema_ddl(
         for (c, t) in cols {
             if !present.contains(c) {
                 conn.execute(
-                    &format!(
-                        "ALTER TABLE \"{table}\" ADD COLUMN \"{c}\" {}",
-                        sqlite_type(t)
-                    ),
+                    &format!("ALTER TABLE \"{table}\" ADD COLUMN {}", column_def(c, t)),
                     [],
                 )?;
             }
@@ -1159,6 +1253,139 @@ mod tests {
 
         // idempotent: a second boot must not fail on the column that now exists
         apply_schema_ddl(&conn, &schema).unwrap();
+    }
+
+    fn gh822_decl(v: meclaw_core::serde_json::Value) -> crate::store::StoreParams {
+        crate::store::StoreParams::parse(&v).unwrap()
+    }
+
+    /// GH #822 + N-A F review M-2: a column added to a table that already holds
+    /// rows gives those rows the declared default, not `NULL`.
+    #[test]
+    fn a_column_added_with_a_default_reaches_the_rows_already_there() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_declared_schema_ddl(
+            &conn,
+            &gh822_decl(meclaw_core::serde_json::json!(
+                {"schema": {"shelf": {"id": "text"}}}
+            )),
+        )
+        .unwrap();
+        conn.execute("INSERT INTO shelf (id) VALUES ('old')", [])
+            .unwrap();
+        apply_declared_schema_ddl(
+            &conn,
+            &gh822_decl(meclaw_core::serde_json::json!(
+                {"schema": {"shelf": {"id": "text",
+                                       "tries": {"type": "int", "default": 0},
+                                       "state": {"type": "text", "default": ""}}}}
+            )),
+        )
+        .unwrap();
+        let (tries, state): (Option<i64>, Option<String>) = conn
+            .query_row("SELECT tries, state FROM shelf WHERE id = 'old'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(tries, Some(0), "an old row must read the declared default");
+        assert_eq!(state.as_deref(), Some(""));
+        let picked: i64 = conn
+            .query_row("SELECT count(*) FROM shelf WHERE tries < 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(picked, 1, "the old row is pulled again");
+        // An insert that omits the column gets the default too.
+        conn.execute("INSERT INTO shelf (id) VALUES ('new')", [])
+            .unwrap();
+        let t: Option<i64> = conn
+            .query_row("SELECT tries FROM shelf WHERE id = 'new'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(t, Some(0));
+    }
+
+    /// Without a declared default an added column stays exactly what it was
+    /// before GH #822: `NULL` in the old rows.
+    #[test]
+    fn a_column_added_without_a_default_stays_null() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        schema_apply(&conn, [("id".to_string(), "text".to_string())].into());
+        conn.execute("INSERT INTO facts (id) VALUES ('old')", [])
+            .unwrap();
+        schema_apply(
+            &conn,
+            [
+                ("id".to_string(), "text".to_string()),
+                ("n".to_string(), "int".to_string()),
+            ]
+            .into(),
+        );
+        let n: Option<i64> = conn
+            .query_row("SELECT n FROM facts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, None);
+    }
+
+    /// The declared version lands in `meta`, where the export reads it.
+    #[test]
+    fn a_declared_version_is_recorded_for_the_export() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        meclaw_colony::persist::setup_cell_db(&conn).unwrap();
+        apply_declared_schema_ddl(
+            &conn,
+            &gh822_decl(meclaw_core::serde_json::json!(
+                {"schema": {"t": {"a": "text"}, "u": {"a": "text"}}, "schema_versions": {"t": 2}}
+            )),
+        )
+        .unwrap();
+        assert_eq!(
+            meclaw_colony::schema_evolution::recorded_version(&conn, "t"),
+            2
+        );
+        assert_eq!(
+            meclaw_colony::schema_evolution::recorded_version(&conn, "u"),
+            1
+        );
+    }
+
+    /// Review N-B E #5, orchestrator ruling C: a declaration that LOWERS a
+    /// table's version is refused at boot and leaves `meta` as it stood --
+    /// overwriting it would reopen the import to the newer writer the higher
+    /// version already turned away. Dropping the version altogether is a
+    /// lowering to 1. Equal or higher passes.
+    #[test]
+    fn a_lowered_table_version_is_refused_and_meta_keeps_the_higher_one() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        meclaw_colony::persist::setup_cell_db(&conn).unwrap();
+        let decl = |v| {
+            gh822_decl(meclaw_core::serde_json::json!(
+                {"schema": {"t": {"a": "text"}}, "schema_versions": {"t": v}}
+            ))
+        };
+        apply_declared_schema_ddl(&conn, &decl(3)).unwrap();
+        let err = apply_declared_schema_ddl(&conn, &decl(2))
+            .expect_err("a lowered version must be refused");
+        assert!(err.to_string().contains("table t"), "{err}");
+        assert!(
+            refuse_lowered_table_versions(&conn, &decl(2))
+                .unwrap_err()
+                .contains("version 3"),
+            "the refusal names the recorded version"
+        );
+        let unversioned = gh822_decl(meclaw_core::serde_json::json!(
+            {"schema": {"t": {"a": "text"}}}
+        ));
+        assert!(refuse_lowered_table_versions(&conn, &unversioned).is_err());
+        assert_eq!(
+            meclaw_colony::schema_evolution::recorded_version(&conn, "t"),
+            3
+        );
+        apply_declared_schema_ddl(&conn, &decl(3)).unwrap();
+        apply_declared_schema_ddl(&conn, &decl(4)).unwrap();
+        assert_eq!(
+            meclaw_colony::schema_evolution::recorded_version(&conn, "t"),
+            4
+        );
     }
 
     /// No-delete in DDL form: the migration only ever ADDS. A column that lives in

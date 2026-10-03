@@ -896,17 +896,53 @@ fn rows(db: &std::path::Path, sql: &str) -> Vec<Vec<String>> {
     .unwrap_or_default()
 }
 
-/// Until `sql` returns at least `n` rows in `db`, or the deadline says what
-/// did not happen.
+/// Until `sql` returns at least `n` rows in `db`. The wait is on an EVENT,
+/// not on the clock: every delivery the colony logs and every row the store
+/// adds is progress and opens a fresh window, and only a colony that does
+/// nothing at all for `DEADLINE` fails (GH #987). Measured on lane build01,
+/// release gate of 0.60.0 (2026-10-03): under the full run (9992 tests) the
+/// lock took 137.5 s and the first `SECRET-EA1` fact was not in the store
+/// within a fixed 30 s window after the last report, while the colony was
+/// still writing the 36 sessions' facts behind it; alone it was green
+/// (20/20 with its neighbours in 78 s). A fixed window measured the host's
+/// load, not the hive.
 async fn until_rows(db: &std::path::Path, sql: &str, n: usize, what: &str) {
-    let deadline = Instant::now() + DEADLINE;
+    let mut seen = progress(db);
+    let mut window = Instant::now() + DEADLINE;
     while rows(db, sql).len() < n {
+        let now = progress(db);
+        if now != seen {
+            seen = now;
+            window = Instant::now() + DEADLINE;
+        }
         assert!(
-            Instant::now() < deadline,
-            "{what}: fewer than {n} row(s) of `{sql}` within {DEADLINE:?}"
+            Instant::now() < window,
+            "{what}: fewer than {n} row(s) of `{sql}`, and the colony made no \
+             progress for {DEADLINE:?} (last seen: {seen:?})"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// What counts as the colony moving: the deliveries `colony.db` has logged
+/// and the rows of the memory store's own tables. Either changing is an event.
+fn progress(db: &std::path::Path) -> (i64, usize, usize) {
+    let logged = db
+        .ancestors()
+        .find(|p| p.join("colony.db").exists())
+        .and_then(|root| rusqlite::Connection::open(root.join("colony.db")).ok())
+        .and_then(|c| {
+            c.query_row("SELECT COALESCE(MAX(rowid), 0) FROM message_log", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .ok()
+        })
+        .unwrap_or(0);
+    (
+        logged,
+        rows(db, "SELECT id FROM facts").len(),
+        rows(db, "SELECT id FROM episodes").len(),
+    )
 }
 
 /// Until the facts table stops growing: the ingress writes AFTER the report

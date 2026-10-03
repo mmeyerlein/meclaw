@@ -34,6 +34,7 @@ mod overflow;
 pub mod path_truth;
 pub mod persist;
 mod runtime;
+pub mod schema_evolution;
 pub mod stateful_cell;
 pub mod stateless_cell;
 pub mod surfaces;

@@ -56,7 +56,9 @@ impl CellFactory for StoreCellFactory {
     /// which is what keeps validate-equals-spawn honest.
     fn validate_cell_dir(&self, raw: &JsonValue, cell_dir: &std::path::Path) -> Result<(), String> {
         let params = StoreParams::parse(raw)?;
-        seed::check_seed_files(cell_dir, &params.schema)
+        // GH #822: resolved against the FULL declaration (defaults, versions),
+        // so an older writer schema is accepted or refused here, at birth.
+        seed::check_declared_seed_files(cell_dir, &params)
     }
 
     /// Spawn a `store` cell instance.
@@ -113,7 +115,7 @@ impl CellFactory for StoreCellFactory {
         // reject) instead of panicking later inside the colony task's wake.
         // `schema` is an IMMUTABLE overlay key, so the birth schema checked
         // here is the same schema the WakeFn seeds against.
-        seed::check_seed_files(&cell_dir, &params.schema).map_err(|e| format!("store: {e}"))?;
+        seed::check_declared_seed_files(&cell_dir, &params).map_err(|e| format!("store: {e}"))?;
 
         // GH #132: `write_surface: "internal"` bounds writes to the store's own
         // parent scope. A store directly under the colony root has `/` as its
@@ -315,7 +317,8 @@ impl CellFactory for StoreCellFactory {
                     }
                 };
             if status == OpenStatus::Created
-                && let Err(e) = seed::load_seed_if_present(&conn, &wake_cell_dir, &effective.schema)
+                && let Err(e) =
+                    seed::load_declared_seed_if_present(&conn, &wake_cell_dir, &effective)
             {
                 // Issue #56: this closure runs INSIDE the colony task (the
                 // routing/dispatch path wakes a parked cell synchronously), so
@@ -480,7 +483,17 @@ fn effective_params_or_degrade(
             }
         }
     };
-    if let Err(e) = ddl::apply_schema_ddl(conn, &effective.schema) {
+    // Review N-B E #5 (ruling C): a lowered table version is a refusal, not a
+    // log line -- the cell starts DEGRADED and `meta` keeps the higher version.
+    if let Err(e) = ddl::refuse_lowered_table_versions(conn, &effective) {
+        tracing::error!(
+            path = path.as_str(),
+            error = %e,
+            "store: a declared table version fell at {phase} — the cell starts DEGRADED"
+        );
+        return Err(e);
+    }
+    if let Err(e) = ddl::apply_declared_schema_ddl(conn, &effective) {
         tracing::error!(
             path = path.as_str(),
             error = %e,

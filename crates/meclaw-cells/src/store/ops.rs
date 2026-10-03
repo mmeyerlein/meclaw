@@ -173,6 +173,8 @@ fn known_args(op: &str) -> Option<&'static [&'static str]> {
             "alias",
             "canonical",
             "recorded_at",
+            "if_absent",
+            "resolve",
         ],
         "reject_pair" => &[
             "operation",
@@ -997,6 +999,83 @@ fn op_set_alias(
     let target = &alias_key(spec, target);
     let recorded_at = args.get("recorded_at").and_then(|v| v.as_str());
     let aliases = &spec.aliases;
+    // `if_absent: true` (GH #973 M-B1): a binding that is there stays. The
+    // dream run wrote every alias as an upsert and so could bend a binding a
+    // member had stated on `in_alias`; with the guard a conflict changes
+    // nothing and the outcome names the canonical that holds.
+    let flag = |name: &str| match args.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(format!("set_alias: {name} must be a bool")),
+    };
+    let if_absent = flag("if_absent")?;
+    // `resolve: true` (GH #973 M-B1): the resolution is one hop and never
+    // transitive, so an alias written onto a spelling that is itself an alias
+    // would hang on a non-canonical identity. The target is followed through
+    // the alias table first -- at most ALIAS_RESOLVE_MAX steps -- and a chain
+    // that comes back to the alias is a cycle: refused, nothing written.
+    let resolved;
+    let target = if flag("resolve")? {
+        resolved = match resolve_alias_target(conn, aliases, alias, target)? {
+            Ok(end) => end,
+            // A refusal, not an error: nothing is written and the outcome says
+            // why, so a caller writing many aliases (the dream run) goes on.
+            Err(why) => {
+                return Ok(OpOutcome {
+                    operation: "set_alias",
+                    rows_affected: 0,
+                    // The alias and its column ride on the answer (GH #973
+                    // review M-1): the dream run writes many aliases in one
+                    // bundle and reads the answers back one by one, so an
+                    // answer that does not say which alias it is about
+                    // cannot be logged or kept out of the run's receipt.
+                    payload: meclaw_core::serde_json::json!({
+                        "alias": alias,
+                        "column": spec.source,
+                        "conflict": true,
+                        "refused": why,
+                    }),
+                    error_code: None,
+                    error_text: None,
+                    error_index: None,
+                });
+            }
+        };
+        &resolved
+    } else {
+        target
+    };
+    if if_absent {
+        let insert = format!(
+            "INSERT INTO \"{aliases}\" (\"alias\", \"canonical\", \"recorded_at\") \
+             VALUES (?1, ?2, ?3) ON CONFLICT(\"alias\") DO NOTHING"
+        );
+        let rows = match conn.execute(&insert, rusqlite::params![alias, target, recorded_at]) {
+            Ok(rows) => rows as i64,
+            Err(e) => return Ok(sql_error_outcome("set_alias", &e)),
+        };
+        let held: String = match conn.query_row(
+            &format!("SELECT \"canonical\" FROM \"{aliases}\" WHERE \"alias\" = ?1"),
+            rusqlite::params![alias],
+            |r| r.get(0),
+        ) {
+            Ok(c) => c,
+            Err(e) => return Ok(sql_error_outcome("set_alias", &e)),
+        };
+        return Ok(OpOutcome {
+            operation: "set_alias",
+            rows_affected: rows,
+            payload: meclaw_core::serde_json::json!({
+                "alias": alias,
+                "column": spec.source,
+                "canonical": held,
+                "conflict": rows == 0 && held != *target,
+            }),
+            error_code: None,
+            error_text: None,
+            error_index: None,
+        });
+    }
     let stmt = format!(
         "INSERT INTO \"{aliases}\" (\"alias\", \"canonical\", \"recorded_at\") VALUES (?1, ?2, ?3) \
          ON CONFLICT(\"alias\") DO UPDATE SET \"canonical\" = excluded.\"canonical\", \
@@ -1013,6 +1092,41 @@ fn op_set_alias(
         }),
         Err(e) => Ok(sql_error_outcome("set_alias", &e)),
     }
+}
+
+/// Most alias rows `set_alias {resolve: true}` follows from its target (GH #973).
+pub const ALIAS_RESOLVE_MAX: usize = 8;
+
+/// The canonical end of `target` in the alias table `aliases` (both keys in the
+/// binding's normal form already): `Ok(Ok(end))` -- the target itself when it is
+/// no alias, else the chain followed -- or `Ok(Err(why))` for a chain back onto
+/// `alias` (or round in itself, `alias_cycle`) or one longer than
+/// [`ALIAS_RESOLVE_MAX`] (`alias_chain_too_long`). `Err` is a failed read.
+fn resolve_alias_target(
+    conn: &rusqlite::Connection,
+    aliases: &str,
+    alias: &str,
+    target: &str,
+) -> Result<Result<String, &'static str>, String> {
+    let lookup = format!("SELECT \"canonical\" FROM \"{aliases}\" WHERE \"alias\" = ?1");
+    let mut seen = vec![alias.to_string()];
+    let mut at = target.to_string();
+    for _ in 0..=ALIAS_RESOLVE_MAX {
+        if seen.contains(&at) {
+            return Ok(Err("alias_cycle"));
+        }
+        let next: Option<String> = match conn.query_row(&lookup, [&at], |r| r.get(0)) {
+            Ok(c) => Some(c),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(format!("set_alias: resolving the target: {e}")),
+        };
+        match next {
+            None => return Ok(Ok(at)),
+            Some(n) if n == at => return Ok(Ok(at)),
+            Some(n) => seen.push(std::mem::replace(&mut at, n)),
+        }
+    }
+    Ok(Err("alias_chain_too_long"))
 }
 
 /// The two values of an unordered pair, keyed the way the binding keys identities
@@ -1800,6 +1914,110 @@ mod tests {
             Some("user"),
             "the alias was written in one spelling and hits in another"
         );
+    }
+
+    /// GH #973 M-B1: `if_absent: true` keeps a binding that is there -- the
+    /// dream run must never bend one a member stated -- and names the canonical
+    /// that holds; a free alias is written as before, a repeat of the same
+    /// binding is no conflict, and a non-bool guard is refused.
+    #[test]
+    fn set_alias_if_absent_keeps_the_existing_row() {
+        let conn = two_dimension_fixture();
+        let set = |alias: &str, canonical: &str, guard: Value| {
+            dispatch_with(
+                &conn,
+                &json!({"operation":"set_alias","table":"facts","column":"subject",
+                        "alias": alias, "canonical": canonical, "if_absent": guard}),
+                &two_dimension_map(),
+            )
+        };
+        let held = || -> String {
+            conn.query_row(
+                "SELECT canonical FROM subject_aliases WHERE alias = 'user:alpha'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let out = set("user:alpha", "user", json!(true)).unwrap();
+        assert_eq!(out.rows_affected, 1, "a free alias is written");
+        assert_eq!(
+            out.payload,
+            json!({"alias": "user:alpha", "column": "subject", "canonical": "user", "conflict": false})
+        );
+        let out = set("user:alpha", "user:beta", json!(true)).unwrap();
+        assert_eq!(out.rows_affected, 0, "a conflict changes nothing");
+        assert_eq!(
+            out.payload,
+            json!({"alias": "user:alpha", "column": "subject", "canonical": "user", "conflict": true})
+        );
+        assert_eq!(held(), "user", "the stated binding stays");
+        let out = set("user:alpha", "user", json!(true)).unwrap();
+        assert_eq!(
+            out.payload,
+            json!({"alias": "user:alpha", "column": "subject", "canonical": "user", "conflict": false})
+        );
+        assert!(set("user:alpha", "user", json!("yes")).is_err());
+        // without the guard the op stays the upsert it always was
+        let out = set("user:alpha", "user:beta", Value::Null).unwrap();
+        assert_eq!(out.rows_affected, 1);
+        assert_eq!(held(), "user:beta");
+    }
+
+    /// GH #973 M-B1: `resolve: true` writes an alias onto the canonical end of
+    /// its target's chain, refuses -- writing nothing, no error -- a chain back
+    /// onto the alias (a cycle) and one longer than ALIAS_RESOLVE_MAX; without
+    /// it the target stays as given.
+    #[test]
+    fn alias_chains_resolve_before_write() {
+        let conn = two_dimension_fixture();
+        let set = |alias: &str, canonical: &str, resolve: bool| {
+            dispatch_with(
+                &conn,
+                &json!({"operation":"set_alias","table":"facts","column":"subject",
+                        "alias": alias, "canonical": canonical, "resolve": resolve,
+                        "if_absent": true}),
+                &two_dimension_map(),
+            )
+        };
+        let held = |alias: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT canonical FROM subject_aliases WHERE alias = ?1",
+                [alias],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        set("b", "c", true).unwrap();
+        let out = set("a", "b", true).unwrap();
+        assert_eq!(out.rows_affected, 1);
+        assert_eq!(
+            held("a").as_deref(),
+            Some("c"),
+            "a -> b -> c is written a -> c"
+        );
+        let out = set("c", "a", true).unwrap();
+        assert_eq!(out.rows_affected, 0);
+        assert_eq!(
+            out.payload,
+            json!({"alias": "c", "column": "subject", "conflict": true, "refused": "alias_cycle"})
+        );
+        assert_eq!(held("c"), None, "a refused cycle writes nothing");
+        for i in 0..super::ALIAS_RESOLVE_MAX + 1 {
+            conn.execute(
+                "INSERT INTO subject_aliases (alias, canonical) VALUES (?1, ?2)",
+                [format!("k{i}"), format!("k{}", i + 1)],
+            )
+            .unwrap();
+        }
+        let out = set("z", "k0", true).unwrap();
+        assert_eq!(
+            out.payload,
+            json!({"alias": "z", "column": "subject", "conflict": true, "refused": "alias_chain_too_long"})
+        );
+        assert_eq!(held("z"), None);
+        set("y", "b", false).unwrap();
+        assert_eq!(held("y").as_deref(), Some("b"), "without resolve as given");
     }
 
     /// A table with two dimensions cannot be told an alias without being told

@@ -676,6 +676,10 @@ async fn every_op_refuses_a_bad_argument_and_asks_no_source() {
         ("tree", json!({"depth": 4})),
         ("tree", json!({"depth": 0})),
         ("tree", json!({"cursor": "next"})),
+        // GH #973 M-7: a superscript digit passes `str.isdigit()` and
+        // crashed `int()` in the page; a cursor is ASCII digits only.
+        ("tree", json!({"cursor": "\u{b2}"})),
+        ("find", json!({"q": "x", "cursor": "\u{b2}"})),
         ("tree", json!({"limit": 0})),
     ];
     for (i, (op, args)) in cases.iter().enumerate() {

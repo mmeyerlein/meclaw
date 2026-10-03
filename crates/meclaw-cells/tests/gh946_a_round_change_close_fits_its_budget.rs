@@ -327,6 +327,19 @@ async fn a_round_change_close_fits_its_budget() {
         "turn one's answer stands on the wall",
     )
     .await;
+    // GH #953: the generation owes turn one's final answer until the
+    // curator's `turn_write` acknowledges it (`in_answered`); a seal before
+    // that defers the close to the acknowledgement, which rides turn ONE's
+    // chain. This file measures the close a round change sends on turn TWO's
+    // chain, so turn two is spoken once the acknowledgement has landed -- an
+    // event, read off the keeper's own row.
+    until_rows(
+        &sessions,
+        "SELECT session_id FROM sessions WHERE closed = 0 AND owed_turn = ''",
+        1,
+        "turn one's final answer is acknowledged to the keeper",
+    )
+    .await;
 
     // Turn two changes the round: the generation of round A is sealed on its
     // chain, and the close pass runs behind the curator's door.

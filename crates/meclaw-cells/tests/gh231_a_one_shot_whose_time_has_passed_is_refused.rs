@@ -379,6 +379,7 @@ async fn a_one_shot_that_came_due_inside_the_io_set_fires() {
             kind: ScheduleKind::At(LONG_PAST.parse().unwrap()),
         }],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 

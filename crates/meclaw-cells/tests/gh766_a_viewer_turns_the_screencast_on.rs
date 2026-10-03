@@ -223,24 +223,57 @@ async fn a_viewer_that_stops_reading_is_given_up_and_the_other_is_not() {
     // `on_frame` is 4 ms, so the throttle never engages in this arm — which is
     // also the one thing that could have turned its acknowledgements into
     // two a second under load.)
-    let deadline = std::time::Instant::now() + MARKER;
+    //
+    // GH #978: the loop above still ended in a wall-clock assertion — "given up
+    // within 30 s" — and a release gate on a build lane once spent 30.1 s on
+    // it (9806 of 9807 green, the same commit green an hour earlier). Same
+    // class as #771: a window measures the runner, not the cell. The sentence
+    // has a count in it instead of a time, so the arm counts. A link queue
+    // holds `LINK_QUEUE` frames; distribution is `try_send`, so the frame that
+    // finds the sleeper's queue full is the frame that gives it up — not one
+    // later, however slow the host. Both directions are proven by events of
+    // the same order: every frame before that one leaves both viewers standing
+    // (the sentinel for "not given up too early"), and the frame count may
+    // never pass the queue size by more than that one frame (the bound for
+    // "never waits"). No clock is asked; the 5 ms receive window below only
+    // paces the acknowledgements, it asserts nothing.
+    //
+    // GH #986: counting frames needs frames. A cast that stands (measured on a
+    // gate under load: `TIMEOUT [240.017s]`, the loop had no exit without a
+    // frame) is now a failure under its own name after the 30-s marker since
+    // the last frame, not a hang the runner kills. The stand itself was the
+    // cell's: two frames before one flush were acknowledged once, and the
+    // browser's flow control lost a slot for good -- locked below in
+    // `every_frame_is_acknowledged_even_two_before_one_flush`.
+    let queue = meclaw_colony::surfaces::LINK_QUEUE;
+    let mut frames = 0usize;
+    let mut last_frame = std::time::Instant::now();
     loop {
-        if browser.register.pages["card-1"].viewers.len() == 1 {
-            break;
-        }
         assert!(
-            std::time::Instant::now() < deadline,
-            "(f) the cell waited for a viewer, which it must never do"
+            last_frame.elapsed() < MARKER,
+            "(f) the screencast stood: no frame for {MARKER:?} after {frames} frames"
         );
         match tokio::time::timeout(Duration::from_millis(5), events.recv()).await {
             Ok(Some(event)) if event.method == "Page.screencastFrame" => {
                 browser.on_frame(&event).await;
+                frames += 1;
+                last_frame = std::time::Instant::now();
             }
             Ok(Some(_)) | Err(_) => browser.flush_acks().await,
             Ok(None) => panic!("the browser's pipe closed"),
         }
         // The reader keeps reading, so only one of the two can fill up.
         while reader.link.from_cell.try_recv().is_ok() {}
+        let viewers = browser.register.pages["card-1"].viewers.len();
+        if viewers == 1 {
+            break;
+        }
+        assert_eq!(viewers, 2, "only the sleeper may ever be given up");
+        assert!(
+            frames <= queue,
+            "(f) the cell waited for a viewer, which it must never do: \
+             {frames} frames handed out and the sleeper's queue holds {queue}"
+        );
     }
     assert!(
         browser.register.pages["card-1"]
@@ -248,7 +281,64 @@ async fn a_viewer_that_stops_reading_is_given_up_and_the_other_is_not() {
             .contains_key(&reader.id),
         "the one that kept reading kept its picture"
     );
+    // Exactness: everything the sleeper got sits in its queue, and the frame
+    // that gave it up is the one that did not fit. A close could not fit
+    // either — the queue was full, which is why it was given up.
+    let mut sleeper = sleeper;
+    let mut held = 0usize;
+    let mut pictures = 0usize;
+    while let Ok(frame) = sleeper.link.from_cell.try_recv() {
+        held += 1;
+        if matches!(frame, LinkFrame::Binary(_)) {
+            pictures += 1;
+        }
+    }
+    assert_eq!(held, queue, "the sleeper was given up with a full queue");
+    assert_eq!(
+        frames,
+        pictures + 1,
+        "(f) given up at the first frame that found its queue full, not later"
+    );
     drop(sleeper);
+    browser.reaper.terminate(Duration::from_millis(500)).await;
+}
+
+/// GH #986: a frame that arrives before the previous one was acknowledged is
+/// acknowledged as well. The browser lets a few frames be in flight and counts
+/// one acknowledgement as one slot back (`IN_FLIGHT` in the fixture, measured
+/// at Chromium 153); the cell kept only the NEWEST frame to acknowledge, so
+/// two frames before one flush gave one slot back, and after `IN_FLIGHT` such
+/// pairs the cast stood for good -- the 240-s hang of the viewer arm above on
+/// a loaded lane, where frames bunch up between two flushes. Driven by events,
+/// not by a clock: every round takes exactly two frames before it flushes,
+/// which the old cell could survive at most `IN_FLIGHT` times.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_frame_is_acknowledged_even_two_before_one_flush() {
+    let (mut browser, mut events, _td) =
+        with_one_page(json!({"screencast": {"max_fps": 500}})).await;
+    let mut viewer = browser.join("card-1", &json!({})).await.expect("one");
+    for round in 0..12 {
+        for nth in 0..2 {
+            let event = loop {
+                let event = tokio::time::timeout(MARKER, events.recv())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("round {round}, frame {nth}: the screencast stood (no frame in {MARKER:?})")
+                    })
+                    .expect("the browser's pipe is open");
+                if event.method == "Page.screencastFrame" {
+                    break event;
+                }
+            };
+            browser.on_frame(&event).await;
+        }
+        // Both frames are in; acknowledge whatever is due, pacing included.
+        while let Some(due) = browser.next_ack() {
+            tokio::time::sleep_until(due.into()).await;
+            browser.flush_acks().await;
+        }
+        while viewer.link.from_cell.try_recv().is_ok() {}
+    }
     browser.reaper.terminate(Duration::from_millis(500)).await;
 }
 

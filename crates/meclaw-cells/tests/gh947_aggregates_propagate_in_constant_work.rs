@@ -427,7 +427,7 @@ fn the_delta_of_a_contribution_names_every_ancestor_and_nothing_else() {
 }
 
 #[test]
-fn a_delta_applies_to_a_row_and_never_below_zero() {
+fn a_delta_applies_to_a_row_with_its_sign() {
     if !shipped() {
         return;
     }
@@ -464,15 +464,51 @@ fn a_delta_applies_to_a_row_and_never_below_zero() {
     );
     assert_eq!(
         got[2],
-        json!({"files": 0, "bytes": 0, "nodes": 0, "vec_counts": "[]", "vec_n": 0,
-               "tags": "{}"}),
-        "never below zero, a counted-out tag goes"
+        json!({"files": -2, "bytes": -4, "nodes": -1, "vec_counts": "[]", "vec_n": -1,
+               "tags": "{\"x\": -1}"}),
+        "GH #973 M-1: stored with its sign -- the clamp is the reader's"
     );
     assert_eq!(
         got[3],
         json!({"files": 3, "bytes": 3, "nodes": 3, "vec_counts": "[3, 2, 1, 1]", "vec_n": 3,
                "tags": "{\"a\": 1, \"b\": 2}"}),
         "a wider vector pads the counts"
+    );
+}
+
+/// GH #973 M-1: two syncs of one row may land in either order. Clamped on
+/// writing, -1 before +1 made 1 where +1 before -1 made 0; stored with its
+/// sign, both orders give 0, and the reader (`read` `dir_counts`, `top_tags`)
+/// shows a sum below zero as zero and a tag at or below zero not at all.
+#[test]
+fn the_zero_clamp_does_not_depend_on_the_order() {
+    if !shipped() {
+        return;
+    }
+    let zero = json!({"files": 0, "bytes": 0, "nodes": 0, "vec_counts": "[]", "vec_n": 0,
+                      "tags": "{}"});
+    let minus = json!({"files": -1, "bytes": -7, "nodes": -2, "vec": [-1, 0], "vec_n": -1,
+                       "tags": {"p": -1}});
+    let plus = json!({"files": 1, "bytes": 7, "nodes": 2, "vec": [1, 0], "vec_n": 1,
+                      "tags": {"p": 1}});
+    let got = pure(
+        "derive",
+        "[agg_apply(agg_apply(r, a), b) for r, a, b in ARGS]",
+        json!([[zero, minus, plus], [zero, plus, minus]]),
+    );
+    assert_eq!(got[0], zero, "-1 before +1 gives 0");
+    assert_eq!(got[1], zero, "+1 before -1 gives 0");
+    let shown = pure(
+        "read",
+        "dir_counts(ARGS)",
+        json!({"files": -1, "bytes": -7, "nodes": -2, "dirty": 1,
+               "tags": "{\"p\": -1, \"q\": 2}", "summary": ""}),
+    );
+    assert_eq!(
+        shown,
+        json!({"files": 0, "bytes": 0, "nodes": 0, "dirty": true,
+               "tags": [{"tag": "q", "n": 2}], "summary": ""}),
+        "a sum below zero reads as zero, a tag at or below zero is not shown"
     );
 }
 
@@ -745,4 +781,87 @@ fn a_commit_whose_sync_keeps_losing_the_root_still_counts_in() {
         "the sync crosses its door: in_dirs from ./derive to ./derive"
     );
     assert_clean(&sp);
+}
+
+/// GH #973 M-6: `agg_retries` is capped by the routing budget of the sync's
+/// segment. Unbounded, a large value let the sync die of its ttl after the
+/// `contrib` claim (receipt C2: from 15 on) -- counted in `contrib`, never in
+/// the rows. Set to 40 against a rival that wins `/` 40 times, the sync tries
+/// exactly AGG_CAP + 1 rounds, gives up inside its segment and no delivery
+/// dies of its ttl; the cap fits `2 * ((SYNC_TRIES+1) * (SYNC_READS+1) +
+/// cap + 1) + 1 <= TTL - 16`, and one more would not.
+#[test]
+fn agg_retries_above_the_budget_acts_as_the_cap() {
+    if !all_shipped() {
+        return;
+    }
+    let budget = pure(
+        "derive",
+        "[AGG_CAP, SYNC_TRIES, SYNC_READS, SYNC_TTL]",
+        json!(null),
+    );
+    let n = |i: usize| budget[i].as_i64().expect("a number");
+    let (cap, tries, reads, ttl) = (n(0), n(1), n(2), n(3));
+    assert_eq!(ttl, TTL, "the script's budget is the colony's default ttl");
+    let spend = |c: i64| 2 * ((tries + 1) * (reads + 1) + c + 1) + 1;
+    assert!(spend(cap) <= SEGMENT_MAX, "the cap fits the segment");
+    assert!(
+        spend(cap + 1) > SEGMENT_MAX,
+        "the cap is the largest that fits"
+    );
+    assert!(
+        cell_config("derive")["params"]["agg_retries"]
+            .as_i64()
+            .expect("agg_retries")
+            <= cap,
+        "the shipped default lies within the cap"
+    );
+    let url = stub();
+    let mut sp = Space::with(
+        "/x/files",
+        &[
+            ("embed", "endpoint", json!(url)),
+            ("embed", "model", json!("stub-embed")),
+            ("embed", "dim", json!(DIM.to_string())),
+            ("derive", "agg_retries", json!(40)),
+        ],
+    );
+    create(&mut sp, "/a/b/x.py", X1);
+    settle(&mut sp, "stop");
+    let losses = 40;
+    sp.db
+        .execute_batch(&format!(
+            "CREATE TABLE lose_root (n INTEGER); INSERT INTO lose_root VALUES ({losses});
+             CREATE TRIGGER lose_root_cas BEFORE UPDATE ON dirs
+             WHEN NEW.path = '/' AND NEW.changed_seq <> OLD.changed_seq
+                  AND (SELECT n FROM lose_root) > 0
+             BEGIN UPDATE lose_root SET n = n - 1; SELECT RAISE(IGNORE); END;"
+        ))
+        .expect("the rival on /");
+    sp.worst_segment = (0, String::new());
+    create(&mut sp, "/a/z.py", Z1);
+    settle(&mut sp, "stop");
+    assert_eq!(
+        sp.rows("SELECT n FROM lose_root"),
+        vec![vec![json!(losses - (cap + 1))]],
+        "the sync tried {} rounds on /, not 41",
+        cap + 1
+    );
+    assert_eq!(
+        sp.ttl_dead,
+        Vec::<String>::new(),
+        "no delivery dies of its ttl"
+    );
+    assert!(
+        sp.worst_segment.0 <= SEGMENT_MAX,
+        "a segment spends {:?} of {SEGMENT_MAX} routing decisions",
+        sp.worst_segment
+    );
+    assert!(
+        sp.stderr
+            .iter()
+            .any(|e| e.contains("the directories drift")),
+        "the sync says it gave up: {:?}",
+        sp.stderr
+    );
 }

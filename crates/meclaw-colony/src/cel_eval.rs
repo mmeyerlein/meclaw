@@ -99,6 +99,48 @@ pub fn delete_entry_prefix(entry: &str) -> Option<&str> {
 /// one stays legal: it is visible, which is the whole point.
 pub const ROUND_CONTEXT_KEYS: [&str; 2] = ["audience_set", "audience_now"];
 
+/// GH #972 (R-NL-4) — context keys only the WIRING may set: an edge laid with
+/// `add_edges` (the builder's recipes, a manifest), never an edge a config
+/// draws for itself (`params.graph.edges` of a template, an `add_nodes`
+/// override or a `swap_nodes`/`replace_nodes` lift). The mutation door and the
+/// boot pass refuse such an edge as `edge_schema`
+/// (`mutation::substitute::check_graph_edges`).
+///
+/// Why: an app is a template, and every one of its inner edges may write any
+/// context key -- `audience_set` among them, which many shipped templates
+/// rewrite on purpose. A key that names a FACT about the turn (`turn_round`:
+/// the round the turn was born in, stamped by the edge that raised it) is only
+/// worth reading if nothing below the wiring can write it. Deleting one is not
+/// refused: a chain without the key proves nothing and every reader treats it
+/// fail-closed.
+///
+/// GH #979 adds `speaker` (who SAID the turn, stamped only from a channel
+/// proof: a bound chat, a caller the switch verified). An app that could write
+/// it would reach the owner-only tools of the object hive as the member
+/// (review of #979, Important 1).
+///
+/// One form of a config edge is not a claim but a hand-back, and passes: the
+/// literal restore of the SAME key from a parked hop,
+/// `has(hop.ctx_<key>) ? hop.ctx_<key> : ''` ([`is_stamped_restore`]) -- the
+/// firewall's `pass` edge out of `./warden`, which puts a turn released from
+/// the hold pile back under the speaker and the round it ARRIVED with instead
+/// of the releaser's (OR-NL-179: "the turn keeps what it came with"). The
+/// form being syntactic, the hop key it reads is guarded at the source: only a
+/// cell declaring `contract.parks_context` (the warden; refused for apps at the
+/// door) gets a `ctx_<stamped key>` past the colony's outputs arm (OR-NL-187).
+pub const STAMPED_CONTEXT_KEYS: [&str; 2] = ["turn_round", "speaker"];
+
+/// GH #979 (OR-NL-179) -- whether `expr` is the one form a config edge may
+/// write a stamped key ([`STAMPED_CONTEXT_KEYS`]) with: the restore of `key`
+/// itself from the hop a cell handed back, `has(hop.ctx_<key>) ? hop.ctx_<key>
+/// : ''`, byte for byte (surrounding blanks aside). Judged syntactically, so a
+/// fallback literal, a second key or any added term is a claim again and is
+/// refused like every other write.
+#[must_use]
+pub fn is_stamped_restore(key: &str, expr: &str) -> bool {
+    expr.trim() == format!("has(hop.ctx_{key}) ? hop.ctx_{key} : ''")
+}
+
 /// GH #937 — the first round key (`ROUND_CONTEXT_KEYS`) the PREFIX entry
 /// `entry` would delete, or `None` for an exact entry and for a prefix that
 /// covers none.

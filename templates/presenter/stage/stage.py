@@ -122,7 +122,7 @@ DEFAULT_TEST_PATTERNS = ["cargo test", "cargo nextest", "pytest", "npm test", "n
 # becomes the turn's text.
 SOURCE_KEYS = ("read", "hop", "body", "rows", "value")
 RESIDENTS = ("memory-hive", "file-space", "graph-space", "objects", "librarian", "affinity",
-             "colony-view")
+             "colony-view", "daily-digest", "research-assistant")
 SOURCE_HOP_KEYS = ("op", "recall_query", "memory_tier")
 SOURCE_MAX_BYTES = 4096
 REQUEST = "$request"
@@ -286,15 +286,20 @@ def filter_set(data_set, screen_round):
     because the set's stamp is the app's statement about all of its rows (OR-DP-56: the
     weather app sends public sets `["*"]` with unmarked rows). `value` stays as it came,
     because an app derives a value from rows under the intersection of their rounds
-    (OR-DP-10).
+    (OR-DP-10) -- unless it carries its OWN `audience_set`: then it is gated by that like
+    a row (GH #976, PE-DP-9: a source whose `value` is one row of the answer, the newest
+    digest or research answer, brings that row's round along, and the set's round is only
+    the member's).
     """
     if not isinstance(data_set, dict):
         return None
     if not covers(data_set.get("audience_set"), screen_round):
         return None
     out = {}
-    if isinstance(data_set.get("value"), dict):
-        out["value"] = data_set["value"]
+    value = data_set.get("value")
+    if isinstance(value, dict) and ("audience_set" not in value
+                                    or covers(value.get("audience_set"), screen_round)):
+        out["value"] = value
     rows = data_set.get("rows")
     if isinstance(rows, list):
         out["rows"] = [r for r in rows if isinstance(r, dict)

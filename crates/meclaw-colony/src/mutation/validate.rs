@@ -3185,6 +3185,11 @@ pub struct HeaderNodeView {
     /// rules ignore it. It rides here because this is the projection the colony
     /// already holds per node at runtime.
     pub ingress_carries_trace: bool,
+    /// GH #979 (OR-NL.I.11) -- `contract.parks_context`: this node's
+    /// `ctx_<stamped key>` hop keys reach its edges. The outputs arm reads it
+    /// through `NodeContract.header_view` (fail-closed: no projection, no
+    /// declaration); the two header rules ignore it.
+    pub parks_context: bool,
 }
 
 /// Project a parsed `contract` block into the [`HeaderNodeView`] the
@@ -3208,6 +3213,7 @@ pub fn header_view_from_contract(block: &crate::config::ContractBlock) -> Header
         required_hop: required_keys(&consumes.hop),
         ingress_context: block.ingress.context.clone(),
         ingress_carries_trace: block.ingress.carries_trace,
+        parks_context: block.parks_context,
     }
 }
 

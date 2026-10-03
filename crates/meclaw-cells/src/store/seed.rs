@@ -4,10 +4,19 @@
 //! (`OpenStatus::Created` — see brainstorm E4).
 //!
 //! Format (per overview Z.1193–1213):
-//!   Line 1: `{"schema": {"<col>": "<type>", ...}}`  (Cross-Check)
+//!   Line 1: `{"schema": {"<col>": "<type>", ...}, "version"?: n}` — the
+//!           schema the rows were WRITTEN with (GH #822; no version = 1)
 //!   Lines 2+: data rows as JSON-objects keyed by column name.
+//!
+//! GH #822: line 1 is resolved against the store's declaration by
+//! `meclaw_colony::schema_evolution::resolve` — the one resolver the `llm` and
+//! `web` loaders, the staging seeder and `import` share. A declared column the
+//! header lacks takes its declared default; one without a default, a changed
+//! storage class, an undeclared header column and a newer header version are
+//! refused as `schema_mismatch` naming the column.
 
 use crate::store::ops::json_to_sql_value;
+use meclaw_colony::schema_evolution::{self, ResolvePlan, TableDecl};
 use meclaw_core::serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
@@ -16,20 +25,21 @@ fn seed_path(cell_dir: &std::path::Path, table: &str) -> std::path::PathBuf {
     cell_dir.join("seed").join(format!("{table}.jsonl"))
 }
 
-/// Parse ONE seed file into its data rows. Header line 1 must be
-/// `{"schema": {…}}` and must cover every column declared for the table;
-/// every further non-empty line must be a JSON object.
+/// Parse ONE seed file into its data rows plus the resolution of its header
+/// against the declaration (GH #822). Every further non-empty line must be a
+/// JSON object.
 ///
 /// Pure parse — no database, no side effects. Issue #56: this is the single
-/// parse path shared by the static check ([`check_seed_files`], run in the
-/// `--validate` / bootstrap-plan phase and at factory spawn) and the loader
-/// ([`load_seed_if_present`], run at the first wake). Keeping them on one path
-/// is what makes the validate-equals-spawn invariant hold: a seed file that
-/// survives validation always parses at wake.
+/// parse path shared by the static check ([`check_declared_seed_files`], run in
+/// the `--validate` / bootstrap-plan phase and at factory spawn) and the loader
+/// ([`load_declared_seed_if_present`], run at the first wake). Keeping them on
+/// one path is what makes the validate-equals-spawn invariant hold: a seed file
+/// that survives validation always parses at wake.
 fn parse_seed_file(
     path: &std::path::Path,
-    cols: &BTreeMap<String, String>,
-) -> Result<Vec<Map<String, Value>>, String> {
+    table: &str,
+    decl: &TableDecl,
+) -> Result<(Vec<Map<String, Value>>, ResolvePlan), String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("seed read {}: {e}", path.display()))?;
     let mut lines = text.lines();
@@ -42,9 +52,9 @@ fn parse_seed_file(
             path.display()
         )
     })?;
-    let header_schema = header
-        .get("schema")
-        .and_then(|v| v.as_object())
+    let header_obj = header
+        .as_object()
+        .filter(|h| h.get("schema").is_some_and(Value::is_object))
         .ok_or_else(|| {
             format!(
                 "seed {} line 1: missing schema object — line 1 must be the header \
@@ -52,14 +62,10 @@ fn parse_seed_file(
                 path.display()
             )
         })?;
-    for col in cols.keys() {
-        if !header_schema.contains_key(col) {
-            return Err(format!(
-                "seed {}: schema mismatch — column {col} missing in seed header",
-                path.display()
-            ));
-        }
-    }
+    let writer = schema_evolution::parse_writer_header(table, header_obj)
+        .map_err(|e| format!("seed {}: {e}", path.display()))?;
+    let plan = schema_evolution::resolve(table, &writer, decl)
+        .map_err(|e| format!("seed {}: {e}", path.display()))?;
     let mut rows = Vec::new();
     for (idx, line) in lines.enumerate() {
         if line.trim().is_empty() {
@@ -76,7 +82,7 @@ fn parse_seed_file(
         })?;
         rows.push(row_obj.clone());
     }
-    Ok(rows)
+    Ok((rows, plan))
 }
 
 /// Static, database-free parse check of every seed file below `cell_dir`.
@@ -87,9 +93,27 @@ fn parse_seed_file(
 /// a panic on the store cell's first wake.
 ///
 /// Checked per declared table (a missing seed file stays legal): the header
-/// line is present and is a `{"schema": {…}}` object, it covers every declared
-/// column, and every data line is a JSON object. Data VALUES are deliberately
-/// not type-checked — "statically parseable" is the bar here.
+/// line is present and is a `{"schema": {…}}` object, it resolves against the
+/// declaration (GH #822), and every data line is a JSON object. Data VALUES are
+/// deliberately not type-checked — "statically parseable" is the bar here.
+pub fn check_declared_seed_files(
+    cell_dir: &std::path::Path,
+    params: &crate::store::StoreParams,
+) -> Result<(), String> {
+    for table in params.schema.keys() {
+        let path = seed_path(cell_dir, table);
+        if !path.exists() {
+            continue;
+        }
+        if let Some(decl) = params.table_decl(table) {
+            parse_seed_file(&path, table, &decl)?;
+        }
+    }
+    Ok(())
+}
+
+/// [`check_declared_seed_files`] for a declaration in the short form only (no
+/// defaults, every table version 1).
 pub fn check_seed_files(
     cell_dir: &std::path::Path,
     schema: &BTreeMap<String, BTreeMap<String, String>>,
@@ -99,53 +123,86 @@ pub fn check_seed_files(
         if !path.exists() {
             continue;
         }
-        parse_seed_file(&path, cols)?;
+        parse_seed_file(&path, table, &schema_evolution::table_decl_of_types(cols))?;
     }
     Ok(())
 }
 
-/// Load seed JSONL for every table declared in `schema`. Missing seed
-/// file is OK (silent skip). Per-file: full parse first (schema-line
-/// cross-check + data rows, see [`parse_seed_file`]), then the inserts using
-/// rusqlite parameter binding — so a parse error never leaves a half-seeded
-/// table behind.
+/// Load seed JSONL for every table declared in `params.schema`. Missing seed
+/// file is OK (silent skip). Per-file: full parse first (header resolution +
+/// data rows, see [`parse_seed_file`]), then the inserts using rusqlite
+/// parameter binding — so a parse error never leaves a half-seeded table
+/// behind. Every declared column is written: from the row when the writer had
+/// the column, from its declared default when it did not (GH #822).
 ///
 /// Called by `StoreCellFactory`'s `WakeFn` ONLY when `OpenStatus::Created`
 /// (brainstorm E4 — fresh-only, never on resume).
+pub fn load_declared_seed_if_present(
+    conn: &rusqlite::Connection,
+    cell_dir: &std::path::Path,
+    params: &crate::store::StoreParams,
+) -> Result<(), String> {
+    for table in params.schema.keys() {
+        if let Some(decl) = params.table_decl(table) {
+            load_one(conn, cell_dir, table, &decl)?;
+        }
+    }
+    Ok(())
+}
+
+/// [`load_declared_seed_if_present`] for a declaration in the short form only.
 pub fn load_seed_if_present(
     conn: &rusqlite::Connection,
     cell_dir: &std::path::Path,
     schema: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> Result<(), String> {
     for (table, cols) in schema {
-        let path = seed_path(cell_dir, table);
-        if !path.exists() {
-            continue;
-        }
-        let rows = parse_seed_file(&path, cols)?;
-        let col_names: Vec<&String> = cols.keys().collect();
-        let placeholders = col_names.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let col_list = col_names
+        load_one(
+            conn,
+            cell_dir,
+            table,
+            &schema_evolution::table_decl_of_types(cols),
+        )?;
+    }
+    Ok(())
+}
+
+fn load_one(
+    conn: &rusqlite::Connection,
+    cell_dir: &std::path::Path,
+    table: &str,
+    decl: &TableDecl,
+) -> Result<(), String> {
+    let path = seed_path(cell_dir, table);
+    if !path.exists() {
+        return Ok(());
+    }
+    let (rows, plan) = parse_seed_file(&path, table, decl)?;
+    let col_names: Vec<&String> = decl.columns.keys().collect();
+    let placeholders = col_names.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let col_list = col_names
+        .iter()
+        .map(|c| format!("\"{c}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let stmt = format!("INSERT INTO \"{table}\" ({col_list}) VALUES ({placeholders})");
+    for (idx, row_obj) in rows.iter().enumerate() {
+        let params: Vec<rusqlite::types::Value> = col_names
             .iter()
-            .map(|c| format!("\"{c}\""))
-            .collect::<Vec<_>>()
-            .join(",");
-        let stmt = format!("INSERT INTO \"{table}\" ({col_list}) VALUES ({placeholders})");
-        for (idx, row_obj) in rows.iter().enumerate() {
-            let params: Vec<rusqlite::types::Value> = col_names
-                .iter()
-                .map(|c| json_to_sql_value(row_obj.get(c.as_str())))
-                .collect();
-            let bind: Vec<&dyn rusqlite::ToSql> =
-                params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            conn.execute(&stmt, bind.as_slice()).map_err(|e| {
-                format!(
-                    "seed {} row {}: insert failed: {e}",
-                    path.display(),
-                    idx + 1
-                )
-            })?;
-        }
+            .map(|c| match plan.fill.get(c.as_str()) {
+                Some(default) => json_to_sql_value(Some(default)),
+                None => json_to_sql_value(row_obj.get(c.as_str())),
+            })
+            .collect();
+        let bind: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        conn.execute(&stmt, bind.as_slice()).map_err(|e| {
+            format!(
+                "seed {} row {}: insert failed: {e}",
+                path.display(),
+                idx + 1
+            )
+        })?;
     }
     Ok(())
 }
@@ -305,6 +362,93 @@ mod tests {
     fn check_seed_files_rejects_empty_file() {
         let td = td_with_seed("");
         assert!(check_seed_files(td.path(), &items_schema()).is_err());
+    }
+
+    // ---- GH #822: the header is resolved against the declaration. ----
+
+    fn declared() -> crate::store::StoreParams {
+        crate::store::StoreParams::parse(&meclaw_core::serde_json::json!({"schema": {"items": {
+            "id": "int",
+            "name": "text",
+            "audience": {"type": "text", "default": ""}
+        }}}))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_missing_column_with_a_default_is_filled_at_birth() {
+        let td = td_with_seed(
+            r#"{"schema":{"id":"int","name":"text"}}
+{"id":1,"name":"a"}
+"#,
+        );
+        let p = declared();
+        check_declared_seed_files(td.path(), &p).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::ddl::apply_declared_schema_ddl(&conn, &p).unwrap();
+        load_declared_seed_if_present(&conn, td.path(), &p).unwrap();
+        let aud: Option<String> = conn
+            .query_row("SELECT audience FROM items WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(aud.as_deref(), Some(""), "the declared default, not NULL");
+    }
+
+    #[test]
+    fn a_missing_column_without_default_is_refused_at_birth_naming_it() {
+        let td = td_with_seed(
+            r#"{"schema":{"id":"int","audience":"text"}}
+{"id":1,"audience":""}
+"#,
+        );
+        let err = check_declared_seed_files(td.path(), &declared()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column name"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_changed_type_is_refused() {
+        let td = td_with_seed(
+            r#"{"schema":{"id":"text","name":"text","audience":"text"}}
+"#,
+        );
+        let err = check_declared_seed_files(td.path(), &declared()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column id"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_column_is_refused() {
+        let td = td_with_seed(
+            r#"{"schema":{"id":"int","name":"text","audience":"text","extra":"text"}}
+"#,
+        );
+        let err = check_declared_seed_files(td.path(), &declared()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("column extra"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_newer_header_version_is_refused_and_an_absent_one_is_version_one() {
+        let newer = td_with_seed(
+            r#"{"schema":{"id":"int","name":"text","audience":"text"},"version":2}
+"#,
+        );
+        let err = check_declared_seed_files(newer.path(), &declared()).unwrap_err();
+        assert!(
+            err.contains("schema_mismatch") && err.contains("version 2"),
+            "{err}"
+        );
+        let same = td_with_seed(
+            r#"{"schema":{"id":"int","name":"text","audience":"text"},"version":1}
+"#,
+        );
+        check_declared_seed_files(same.path(), &declared()).unwrap();
     }
 
     /// Data VALUES are not type-checked — "statically parseable" is the bar.

@@ -62,8 +62,8 @@ const SPEAKER: &str = "member:alex";
 /// The channel templates whose ingress is bound before the turn is raised
 /// (`SELF_BOUND_CHANNELS` in `recipes`), at the versions the tree ships.
 const SELF_BOUND: [&str; 4] = [
-    "chat-channel@1.0.0",
-    "voice@2.4.0",
+    "chat-channel@1.0.1",
+    "voice@2.5.0",
     "web@2.2.0",
     "terminal@1.0.2",
 ];
@@ -352,10 +352,16 @@ fn the_speaker_expression_is_rendered_as_written() {
 #[test]
 fn the_self_bound_channels_never_name_a_speaker() {
     for template in SELF_BOUND {
-        for params in [
-            wish(template, None, None),
-            wish(template, Some("111"), Some("111")),
-        ] {
+        // GH #979 -- `web` with `bind_user` is the one exception: the proxy's
+        // identity header IS a sender proof there
+        // (`gh979_speaker_stamp_from_bound_channel.rs`, `mod web_session`); with a chat only
+        // it still names nobody.
+        let bound = if template.starts_with("web@") {
+            wish(template, Some("111"), None)
+        } else {
+            wish(template, Some("111"), Some("111"))
+        };
+        for params in [wish(template, None, None), bound] {
             let edge = ingress(&declaration("grow_level", params));
             assert!(
                 edge["modifier"]["set_context"].get("speaker").is_none(),
@@ -523,14 +529,27 @@ fn only_the_bound_ingress_names_a_speaker_and_only_a_close_drops_it() {
         all.len()
     );
 
+    // GH #979: one shipped edge writes the key, and it mints nothing: the
+    // firewall's warden hands a RELEASED turn back the speaker its own ingress
+    // stamped (`hop.ctx_speaker`, carried out of the parked row by the warden
+    // itself) -- or none -- instead of the speaker of whoever released it.
     let setters: Vec<String> = all
         .iter()
         .filter(|(_, e)| e["modifier"]["set_context"].get("speaker").is_some())
-        .map(|(f, e)| format!("{f}: {} -> {}", e["from"], e["to"]))
+        .map(|(f, e)| {
+            format!(
+                "{f}: {} -> {} = {}",
+                e["from"], e["to"], e["modifier"]["set_context"]["speaker"]
+            )
+        })
         .collect();
-    assert!(
-        setters.is_empty(),
-        "a shipped edge names a speaker without a sender proof: {setters:?}"
+    assert_eq!(
+        setters,
+        vec![
+            "firewall/config.json: \"./warden\" -> \".\" = \"has(hop.ctx_speaker) ? hop.ctx_speaker : ''\""
+                .to_string()
+        ],
+        "a shipped edge names a speaker without a sender proof"
     );
 
     let droppers: Vec<(String, String, String, String)> = all

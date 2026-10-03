@@ -168,6 +168,9 @@ fn word(n: usize) -> &'static str {
         // (`in_candidate`, `in_read`), and `thing_seen`, `candidate_ack` and
         // `read` leave it -- fifty-six.
         (56, "fifty-six"),
+        // GH #953: the curator's `turn_write` also reaches the session keeper
+        // as its answer receipt (`in_answered`) -- fifty-seven.
+        (57, "fifty-seven"),
     ]
     .into_iter()
     .collect();

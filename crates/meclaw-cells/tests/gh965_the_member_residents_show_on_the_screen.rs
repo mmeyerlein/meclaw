@@ -26,7 +26,10 @@
 //!   (`templates/presenter/template.json`, generation `sam`, `ctx.member_person` `alex`),
 //!   exactly as rendered, for those three residents.
 //!
-//! The recipe renders edges for all seven residents. `memory-hive`, `graph-space`,
+//! The recipe renders edges for the seven residents the presenter read before GH #976
+//! (the two member apps `daily-digest` and `research-assistant` only when
+//! `residents_present` names them -- GH #976's own lock,
+//! `gh976_the_last_result_shows_only_to_its_round`). `memory-hive`, `graph-space`,
 //! `objects` and `librarian` are not booted here, so their edges are left out (an edge to
 //! a node that does not stand is no edge the mutation takes); the rendered `in_show` and
 //! `show_*` edges are left out as well, because the harness draws its own lane from
@@ -172,7 +175,7 @@ fn rendered_diff() -> Value {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "install_app", "request": "…",
                                          "params": {"scope": "/alex", "app": "presenter",
-                                                    "template": "presenter@1.1.0",
+                                                    "template": "presenter@1.2.0",
                                                     "screen": "display-main",
                                                     "generation": GENERATION,
                                                     "declaration": declaration,

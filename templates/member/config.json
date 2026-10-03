@@ -85,7 +85,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of assistant@3.6.1"
+          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of assistant@3.6.2"
         }
       ],
       "emits": [
@@ -184,7 +184,7 @@
         },
         {
           "route": "stats",
-          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of assistant@3.6.1"
+          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of assistant@3.6.2"
         }
       ]
     },

@@ -53,6 +53,7 @@ async fn two_crons_due_at_the_same_second_both_fire_in_schedule_order() {
     let io = TimerIo {
         active: vec![every_second(first), every_second(second)],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
@@ -122,6 +123,7 @@ async fn a_one_shot_leaving_the_set_does_not_reorder_the_schedules_that_stay() {
             every_second(second),
         ],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
@@ -193,6 +195,7 @@ async fn a_one_shot_and_a_cron_due_at_the_same_second_both_fire_and_only_the_one
             every_second(repeating),
         ],
         liveness: meclaw_colony::IoLivenessMark::disabled(),
+        replan_rx: None,
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 

@@ -1,0 +1,89 @@
+{
+  "_doc": "GH #974: the dead-letter classes a lab colony shows while it grows level by level (shell, org, member, assistant, each as a `grow_level` wish to /os/builder) and while a person's round runs in it. meclaw is event-driven: a message that reaches the top of a graph nobody listens at is dead-lettered, and the dead-letter queue is the audit. Each row is one class -- lane (`hop.route`), reason, emitter (the dead letter's sender), target (where it died) -- and why it is no defect. Paths are the lab's: org `lab`, member `member`, assistant `agent`. Refusals (`reject`, `error`) are never a class: a refusal dead-letters so it is seen (GH #284). Nor is a lane of the way itself -- the turn, the answer, a tool's call result: a person's round runs on a channel the member grew, and the answer finds its way back. Read by crates/meclaw-cells/tests/gh974_a_person_round_leaves_no_dead_letter.rs; a dead letter that matches no row fails it.",
+  "classes": [
+    {
+      "route": "mutation_committed",
+      "reason": "unresolved_path",
+      "sender": "/colony",
+      "target": "/os",
+      "why": "The boot receipt. The lab seeds `mutation_receipts {to: /os}` and boots an empty root, so the colony's own boot receipt is addressed to a shell that is grown one stage later. The address exists from the next stage on; the order is the lab's."
+    },
+    {
+      "route": "mutation_committed",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs",
+      "target": "/os/orgs",
+      "why": "The receipt of a stage that grew into this container (GH #553, from /colony, addressed to the mutation's scope). The container ships empty, open and silent (GH #302): it routes what its children take, and nobody in it listens to receipts. The audit is the receipt in the queue."
+    },
+    {
+      "route": "mutation_committed",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members",
+      "target": "/os/orgs/lab/members",
+      "why": "The receipt of a stage that grew into this container (GH #553, from /colony, addressed to the mutation's scope). The container ships empty, open and silent (GH #302): it routes what its children take, and nobody in it listens to receipts. The audit is the receipt in the queue."
+    },
+    {
+      "route": "mutation_committed",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants",
+      "target": "/os/orgs/lab/members/member/assistants",
+      "why": "The receipt of a stage that grew into this container (GH #553, from /colony, addressed to the mutation's scope). The container ships empty, open and silent (GH #302): it routes what its children take, and nobody in it listens to receipts. The audit is the receipt in the queue."
+    },
+    {
+      "route": "in_build_result",
+      "reason": "hive_no_route",
+      "sender": "/os/builder/recipes",
+      "target": "/os/orgs",
+      "why": "A builder draft of a `grow_level` wish sent straight to /os/builder without an asking agent. The shell carries every draft down to the container its agents live in; with no agent asking there is no taker. The lab reads the draft off the trace (`lab.py build_result()`), so nothing is lost."
+    },
+    {
+      "route": "in_build_result",
+      "reason": "hive_no_route",
+      "sender": "/os/builder/recipes",
+      "target": "/os/orgs/lab/members",
+      "why": "A builder draft of a `grow_level` wish sent straight to /os/builder without an asking agent. The shell carries every draft down to the container its agents live in; with no agent asking there is no taker. The lab reads the draft off the trace (`lab.py build_result()`), so nothing is lost."
+    },
+    {
+      "route": "in_build_result",
+      "reason": "hive_no_route",
+      "sender": "/os/builder/recipes",
+      "target": "/os/orgs/lab/members/member/assistants",
+      "why": "A builder draft of a `grow_level` wish sent straight to /os/builder without an asking agent. The shell carries every draft down to the container its agents live in; with no agent asking there is no taker. The lab reads the draft off the trace (`lab.py build_result()`), so nothing is lost."
+    },
+    {
+      "route": "turn_write",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky/curator/writer",
+      "target": "/os",
+      "why": "The curator's archive echo. The member files `turn_write` into its own memory-hive and also hands it up (`./assistants -> .`), through org and shell, for a keeper above the person. The library ships none; at the top of the graph the echo is dead-lettered. Not a defect: the write already landed where it belongs."
+    },
+    {
+      "route": "write",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky/curator/writer",
+      "target": "/os",
+      "why": "The curator's archive echo. The member files `write` into its own memory-hive and also hands it up (`./assistants -> .`), through org and shell, for a keeper above the person. The library ships none; at the top of the graph the echo is dead-lettered. Not a defect: the write already landed where it belongs."
+    },
+    {
+      "route": "turn_write",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky-chat/curator/writer",
+      "target": "/os",
+      "why": "The curator's archive echo. The member files `turn_write` into its own memory-hive and also hands it up (`./assistants -> .`), through org and shell, for a keeper above the person. The library ships none; at the top of the graph the echo is dead-lettered. Not a defect: the write already landed where it belongs."
+    },
+    {
+      "route": "write",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky-chat/curator/writer",
+      "target": "/os",
+      "why": "The curator's archive echo. The member files `write` into its own memory-hive and also hands it up (`./assistants -> .`), through org and shell, for a keeper above the person. The library ships none; at the top of the graph the echo is dead-lettered. Not a defect: the write already landed where it belongs."
+    },
+    {
+      "route": "close_report",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/memory-hive/close-glue",
+      "target": "/os",
+      "why": "The close report of a session's close pass. The member hands it up for a keeper above the person; the library ships none, so it ends at the top of the graph. The pass itself is done; the report is the audit."
+    }
+  ]
+}

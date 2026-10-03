@@ -359,14 +359,37 @@ fn the_stamp_hands_the_turn_on_with_its_turn_id() {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "", "text": "[]"}]
         }),
     );
-    let m = on_route(&out, "turn", "session-keeper/stamp");
+    // GH #954: the open is the claim of the round, and the turn waits for its
+    // reply -- the id has to survive that round trip too.
+    let open = on_route(&out, "kstore", "session-keeper/stamp");
+    assert_eq!(
+        turn_id_of(open, "session-keeper/stamp open"),
+        T,
+        "the open lost the id it carries across the store"
+    );
+    let sid = open["header"]["session_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     assert!(
-        m["header"]["session_id"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty()),
+        !sid.is_empty(),
         "the fixture no longer opens a generation: {}",
         serde_json::to_string(&out).expect("serialise")
     );
+    let out = emit(
+        KEEPER_STAMP,
+        serde_json::json!({
+            "header": {
+                "context": {"ses_phase": "open", "channel": "chat", "turn_id": T,
+                            "keeper_session": sid,
+                            "keeper_body": open["header"]["keeper_body"].clone()},
+                "hop": {"operation": "insert", "rows_affected": 1}
+            },
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "", "text": "[]"}]
+        }),
+    );
+    let m = on_route(&out, "turn", "session-keeper/stamp");
+    assert_eq!(m["header"]["session_id"], sid.as_str());
     assert_eq!(
         turn_id_of(m, "session-keeper/stamp turn"),
         T,

@@ -1,4 +1,4 @@
-# `firewall@2.3.1`
+# `firewall@2.4.0`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -40,6 +40,28 @@ hot-updatable, visible in the tree, and **loud** when it fires.
   every single turn. An `update ... set enabled = 1` is a live policy change.
 - **A passed turn is byte-identical.** The firewall is a gate, not a rewriter --
   including a turn released out of the hold pile hours later.
+- **A released turn speaks as the sender it arrived with** (GH #979). It re-enters on
+  the context of the `in_release` message -- the chain of whoever answered -- so the
+  `pass` edge out of `./warden` sets `context.speaker` from the parked row
+  (`hop.ctx_speaker`, which only the warden writes), or empty when the turn named
+  nobody -- and `context.audience_set` the same way from `hop.ctx_audience_set`: the
+  released turn is heard in the round it was spoken in, never in the releaser's.
+  Every other key that says whose turn it is comes back the same way, or empty when
+  the turn arrived without it: `turn_round`, `tools_allow` and `tools_deny` (a string
+  or a list), `counterpart` and `counterpart_name`, `chat_id`, `channel_node` and
+  `assistant` -- a stranger's released turn never runs with the releaser's tools, brief
+  subject, chat or generation. `speaker` and `turn_round` are stamped keys
+  (`STAMPED_CONTEXT_KEYS`): a config's own edge may write them only in exactly this
+  form, `has(hop.ctx_<key>) ? hop.ctx_<key> : ''`, which hands back what the turn
+  arrived with and claims nothing. The hop key it reads is the warden's alone:
+  `./warden` declares `contract.parks_context`, and the colony drops
+  `ctx_speaker` / `ctx_turn_round` from the emission of every cell that does not
+  (GH #979). The declaration is a privilege -- an app is installed
+  `privileged: false` and the mutation door refuses one whose cell declares it.
+  A stranger's turn the member lets through is not the member's, and the
+  member's own held turn stays the member's. The firewall mints no speaker and
+  deletes none: `speaker` is not one of its keys, and it rides through `./screen`
+  untouched (`user_id`, which the screen consumes, is deleted on `pass`).
 - **Every turn ends on exactly one of `pass` and `reject`.** A held one just ends later.
   A hold that nobody answers expires and leaves a receipt; there is no parking bay.
 

@@ -1,4 +1,4 @@
-# `presenter@1.1.0`
+# `presenter@1.2.0`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -95,6 +95,14 @@ after `data_wait_ms` the view is withdrawn.
 | `test_patterns` | a list of common test commands | substrings that make a bash command a test run |
 | `builtin_topics` | the residents' topics | the presenter's own topics with declared sources |
 
+The built-in topics `digest` and `research` (GH #976) show the last result of the daily
+digest (standard `last`, a `display-card`; variant `recent`, a list) and of the research
+assistant (standard `answers`, a `display-list`; variant `latest`, a card), read with op
+`last` on the residents' road. Every row of those answers carries the round it was made
+for, and a `value` that carries its own `audience_set` (the card's newest row) is gated by
+it like a row: a screen sees a result only when that result's round covers it, and a set
+of the residents' road never reaches a screen wider than the member's round.
+
 The decider is `decide` (`PRESENTER_DECIDE_MODEL`, `PRESENTER_DECIDE_BASE_URL`, e.g.
 `https://openrouter.ai/api`, `PRESENTER_DECIDE_API_KEY` or a `credential_grant_id`). Empty
 model: every turn ends as `no_selector` and nothing is shown. A model registry can push a package through the
@@ -102,6 +110,23 @@ model: every turn ends as `no_selector` and nothing is shown. A model registry c
 leaves as `model_refused`. The door drops the hive's inner context, and a refusal that does not
 name this decider (a push for another cell, or one without `subscriber`) leaves as `error`
 `decide_refused`, never as a dead letter inside the presenter.
+
+**The decider's key can be a grant** ([#976](https://github.com/mmeyerlein/meclaw/issues/976)),
+exactly as on the talky and cogny brains. `decide` carries `credential_grant_id` (empty as
+shipped, which is no grant) and `credential_wait_ms` (30000). Installed with a grant and an
+**empty** `api_key` -- the empty key is the switch, a key in the config counts as a credential --
+the first turn is parked, the decider sends `credential_request` with the grant handle and a
+fresh recipient key, and the member's own `access` answers `in_sealed` with the sealed box,
+which is opened in RAM and written nowhere. The rim names `./decide` as the connect point of
+both lanes (`at`), so the member draws them as v-lanes straight between `./access` and
+`./apps/presenter/decide`; the decider's own exits never carry a `credential_request` into
+`stage`. The request is the one emission of `decide` without a `finish_reason` (it
+comes before any model call): the contract keeps `finish_reason` required and names that one
+route in `optional_on_route`, so a decision that lost it still breaks the contract. A round that does not come back in `credential_wait_ms` ends every parked turn on
+`credential_pending`, which reaches `stage` as an error verdict: nothing is shown. The builder's
+`install_app` renders the whole road from one `credential` object in the wish
+(`{"cred_ref", "subject", "expires_at"}`): both params on `decide`, the two v-lanes with the
+requester `app:presenter/decide`, and the grant with its birth event through `seed_rows`.
 
 ## Its own topics: tool results are data
 
@@ -143,8 +168,9 @@ may not hold their names):
 
 A topic of `builtin_topics` may give a candidate a **source** instead of an app (an app's
 topic may not): `"source": {"read": "<resident>", "hop": {...}, "body": {...}, "rows":
-"<path>", "value": "<path>"}`. The app block declares `reads_residents` (all seven residents
-a source may name), so the builder draws the road and installing needs the member's person
+"<path>", "value": "<path>"}`. The app block declares `reads_residents` (all nine residents
+a source may name -- the member's seven plus the daily digest and the research assistant, GH
+#976), so the builder draws the road and installing needs the member's person
 too. After a sure verdict `stage` sends one `resident_read` per wanted set: `hop.resident`,
 `hop.op_id` (`<turn_id>/<set>`) and the source's hop keys (`op`, `recall_query`,
 `memory_tier`), with the source's body; a string that is exactly `$request` becomes the turn's

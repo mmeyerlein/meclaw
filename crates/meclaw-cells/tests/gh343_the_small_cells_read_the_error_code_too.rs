@@ -653,7 +653,24 @@ fn a_refused_session_write_does_not_claim_the_turn_was_never_stamped() {
                 "query exceeded query_timeout_ms",
             ),
         );
-        asserts_the_refusal_is_reported(&out, "kstore", "query_timeout", "session-keeper/stamp");
+        // GH #954: the turn waits for its `open` (the claim of the round), so
+        // a refused open hands the held turn on beside the reject -- the
+        // conversation goes on, as it did when the turn rode with the open.
+        let (turns, rest): (Vec<_>, Vec<_>) = out
+            .iter()
+            .cloned()
+            .partition(|m| m["header"]["route"] == "turn");
+        assert_eq!(
+            turns.len(),
+            usize::from(phase == "open"),
+            "session-keeper/stamp: the `{phase}` refusal hands on the held turn \
+             exactly when it held one: {}",
+            spoken(&out)
+        );
+        if phase == "open" {
+            assert_eq!(turns[0]["header"]["session_id"], "tg:4711-1");
+        }
+        asserts_the_refusal_is_reported(&rest, "kstore", "query_timeout", "session-keeper/stamp");
         asserts_does_not_claim(&out, "turn was NOT stamped", "session-keeper/stamp");
         assert!(
             spoken(&out).contains("ALREADY stamped"),

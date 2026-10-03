@@ -562,11 +562,20 @@ enum Quoting {
 /// literal (`'…'` or `"…"`, backslash escapes honoured). Same token grammar as
 /// [`expand`]: an escaped `$${…}` is no token, and a `${` the scanner cannot
 /// close ends the scan (`expand` names it).
+///
+/// GH #967.2 — outside a literal, `//` opens a CEL comment that runs to the
+/// end of the line; a quote in it is text, not the start of a literal. Read
+/// as code, `1 // it's` opened a literal at the apostrophe, the next line's
+/// `${N}` counted as quoted, only [`cel_string_safe`] judged it, and
+/// `1 || true` bound into an always-true condition. A token INSIDE a comment
+/// is judged as quoted: a value without a control character (no newline)
+/// cannot end the comment, so it stays text.
 fn token_quoting(s: &str) -> Vec<Quoting> {
     let b = s.as_bytes();
     let mut out = Vec::new();
     let mut quote: Option<u8> = None;
     let mut unlexed = false;
+    let mut comment = false;
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
@@ -584,9 +593,20 @@ fn token_quoting(s: &str) -> Vec<Quoting> {
             out.push(match (unlexed, quote) {
                 (true, _) => Quoting::Unlexed,
                 (false, Some(_)) => Quoting::Inside,
+                (false, None) if comment => Quoting::Inside,
                 (false, None) => Quoting::Outside,
             });
             i += 2 + end + 1;
+            continue;
+        }
+        if comment {
+            comment = c != b'\n';
+            i += 1;
+            continue;
+        }
+        if quote.is_none() && c == b'/' && b.get(i + 1) == Some(&b'/') {
+            comment = true;
+            i += 2;
             continue;
         }
         match quote {
@@ -704,6 +724,36 @@ fn check_graph_edges(
         format!("{at}.")
     };
     for (i, edge) in edges.iter().enumerate() {
+        // GH #972 (R-NL-4) -- a config's own edge never sets a stamped key
+        // (`STAMPED_CONTEXT_KEYS`): only the wiring may, so an app cannot
+        // claim the round of a turn it was not raised in.
+        if let Some(set) = edge
+            .get("modifier")
+            .and_then(|m| m.get("set_context"))
+            .and_then(JsonValue::as_object)
+        {
+            for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+                // GH #979 (OR-NL-179): the literal restore of the same key
+                // from a parked hop hands back what the turn arrived with
+                // and claims nothing (`cel_eval::is_stamped_restore`).
+                let Some(value) = set.get(key) else {
+                    continue;
+                };
+                if value
+                    .as_str()
+                    .is_some_and(|expr| crate::cel_eval::is_stamped_restore(key, expr))
+                {
+                    continue;
+                }
+                return Err(MutationError::EdgeSchema(format!(
+                    "{at}graph.edges[{i}].modifier.set_context.{key}: `{key}` is stamped by \
+                     the wiring (an `add_edges` entry) and never by an edge a config draws \
+                     for itself -- an app could otherwise claim a turn it was not raised in; \
+                     the one form a config edge may write is the restore \
+                     `has(hop.ctx_{key}) ? hop.ctx_{key} : ''`"
+                )));
+            }
+        }
         for (slot, src) in edge_cel_slots(edge) {
             let slot = format!("{at}graph.edges[{i}].{slot}");
             let quoting = token_quoting(src);
@@ -2026,6 +2076,221 @@ mod tests {
             out["add_edges"][0]["condition"],
             "hop.n == 7 && hop.p == r'\\'"
         );
+    }
+
+    /// GH #967.2 -- a quote inside a `//` comment is text. Red before the fix:
+    /// the apostrophe of `it's` opened a literal, the next line's `${N}` was
+    /// held for quoted, and `1 || true` bound into an always-true condition --
+    /// at the door and in the boot pass alike. A token inside the comment is
+    /// judged as quoted (a value without a newline cannot leave the comment).
+    #[test]
+    fn a_comment_does_not_open_a_literal() {
+        let condition = "hop.m == 1 // it's\n && hop.n == ${N}";
+        let err = substitute_mutation_diff(
+            &json!({"add_edges": [{"from": "a", "to": "b", "condition": condition}]}),
+            &env_of("N", "1 || true"),
+            &HashMap::new(),
+        )
+        .expect_err("a quote in a comment opened a literal");
+        assert_eq!(err.error_code(), "env_value_unsafe");
+        let out = substitute_mutation_diff(
+            &json!({"add_edges": [{"from": "a", "to": "b", "condition": condition}]}),
+            &env_of("N", "7"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            out["add_edges"][0]["condition"],
+            "hop.m == 1 // it's\n && hop.n == 7"
+        );
+        // A token inside the comment is text: a plain word binds, a newline does not.
+        let in_comment = "hop.m == 1 // note ${N}\n && true";
+        substitute_mutation_diff(
+            &json!({"add_edges": [{"from": "a", "to": "b", "condition": in_comment}]}),
+            &env_of("N", "some word"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let err = substitute_mutation_diff(
+            &json!({"add_edges": [{"from": "a", "to": "b", "condition": in_comment}]}),
+            &env_of("N", "x\n || true"),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err.error_code(), "env_value_unsafe");
+        // `//` inside a literal is no comment: the quote after it still closes it.
+        let out = substitute_mutation_diff(
+            &json!({"add_edges": [{"from": "a", "to": "b",
+                                   "condition": "hop.u == 'http://x' && hop.n == ${N}"}]}),
+            &env_of("N", "7"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            out["add_edges"][0]["condition"],
+            "hop.u == 'http://x' && hop.n == 7"
+        );
+        // The boot pass reads the same table.
+        let boot = json!({"params": graph_params(condition)});
+        let boot_env = |n: &str| {
+            let mut e = env_of("N", n);
+            e.insert("CHAT".into(), "111".into());
+            e
+        };
+        let err = substitute_env_only(&boot, &boot_env("1 || true")).unwrap_err();
+        assert_eq!(err.error_code(), "env_value_unsafe");
+        let out = substitute_env_only(&boot, &boot_env("7")).unwrap();
+        assert_eq!(
+            out["params"]["graph"]["edges"][1]["condition"],
+            "hop.m == 1 // it's\n && hop.n == 7"
+        );
+    }
+
+    /// GH #972 (R-NL-4) -- `an_app_cannot_set_the_turn_round`: a config's own
+    /// edge that sets a stamped key is refused at the door (every lift of a
+    /// node's params) and in the boot pass, whatever the environment; the same
+    /// key on an `add_edges` entry -- the wiring -- passes, and so does a
+    /// config edge that deletes it (fail-closed for every reader).
+    #[test]
+    fn an_app_cannot_set_the_turn_round() {
+        for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+            let params = json!({"graph": {"edges": [
+                {"from": "./pin", "to": ".", "modifier": {"set_context": {(key): "'[\"*\"]'"}}}
+            ]}});
+            for diff in [
+                json!({"add_nodes": [{"name": "apps/x", "template": "x@1.0.0",
+                                      "override_params": params}]}),
+                json!({"swap_nodes": [{"match": {"name": "a"},
+                                       "with": {"template": "x@1.0.0", "params": params}}]}),
+                json!({"replace_nodes": [{"match": {"name": "a"},
+                                          "with": {"template": "x@1.0.0", "params": params}}]}),
+            ] {
+                let err = substitute_mutation_diff(&diff, &HashMap::new(), &HashMap::new())
+                    .expect_err("a config set a stamped key");
+                assert_eq!(err.error_code(), "edge_schema", "{diff}");
+                assert!(err.message().contains(key), "{err:?}");
+            }
+            for cfg in [json!({"params": params.clone()}), params.clone()] {
+                let err = substitute_env_only(&cfg, &HashMap::new()).unwrap_err();
+                assert_eq!(err.error_code(), "edge_schema", "boot: {cfg}");
+            }
+            substitute_mutation_diff(
+                &json!({"add_edges": [{"from": "./ch", "to": ".",
+                                       "modifier": {"set_context": {(key): "'[\"m\"]'"}}}]}),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .expect("the wiring stamps it");
+            substitute_env_only(
+                &json!({"params": {"graph": {"edges": [
+                    {"from": "./a", "to": ".", "modifier": {"delete_context": [key]}}
+                ]}}}),
+                &HashMap::new(),
+            )
+            .expect("deleting proves nothing and is not refused");
+        }
+    }
+
+    /// GH #979 (OR-NL-179) -- `a_config_edge_restores_a_stamped_key_and_claims_none`:
+    /// `speaker` is stamped like `turn_round`, so an app's own edge that writes
+    /// it is refused at the door and at boot; the ONE form a config edge may
+    /// write either key with is the literal restore of that same key from a
+    /// parked hop (the firewall's release edge). A fallback literal, a second
+    /// key or an added term is a claim again.
+    #[test]
+    fn a_config_edge_restores_a_stamped_key_and_claims_none() {
+        assert!(crate::cel_eval::STAMPED_CONTEXT_KEYS.contains(&"speaker"));
+        let edge_setting = |key: &str, expr: &str| {
+            json!({"graph": {"edges": [
+                {"from": "./warden", "to": ".", "condition": "has(hop.route) && hop.route == 'pass'",
+                 "modifier": {"set_context": {(key): expr}}}
+            ]}})
+        };
+        for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+            let restore = format!("has(hop.ctx_{key}) ? hop.ctx_{key} : ''");
+            let params = edge_setting(key, &restore);
+            substitute_env_only(&json!({"params": params.clone()}), &HashMap::new())
+                .expect("the boot pass takes the restore");
+            substitute_mutation_diff(
+                &json!({"add_nodes": [{"name": "firewall", "template": "firewall@1.0.0",
+                                       "override_params": params}]}),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .expect("the door takes the restore");
+            let other = if key == "speaker" {
+                "turn_round"
+            } else {
+                "speaker"
+            };
+            for claim in [
+                "'member:alex'".to_string(),
+                format!("has(hop.ctx_{key}) ? hop.ctx_{key} : 'member:alex'"),
+                format!("has(hop.ctx_{other}) ? hop.ctx_{other} : ''"),
+                format!("has(hop.ctx_{key}) ? hop.ctx_{key} : '' + 'x'"),
+                format!("hop.ctx_{key}"),
+                format!("has(hop.{key}) ? hop.{key} : ''"),
+            ] {
+                let params = edge_setting(key, &claim);
+                let err = substitute_env_only(&json!({"params": params.clone()}), &HashMap::new())
+                    .expect_err("a config edge claimed a stamped key at boot");
+                assert_eq!(err.error_code(), "edge_schema", "{key} = {claim}");
+                let err = substitute_mutation_diff(
+                    &json!({"add_nodes": [{"name": "apps/x", "template": "x@1.0.0",
+                                           "override_params": params}]}),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                )
+                .expect_err("a config edge claimed a stamped key at the door");
+                assert_eq!(err.error_code(), "edge_schema", "{key} = {claim}");
+            }
+        }
+    }
+
+    /// GH #979 (OR-NL-179) -- every shipped template boots past the stamped-key
+    /// check: the firewall's release edge restores `speaker` and `turn_round`
+    /// in the one allowed form, and no other template's own edge writes them.
+    /// (A variable a template leaves to the environment is not this check's.)
+    #[test]
+    fn no_shipped_template_claims_a_stamped_key() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).expect("readable").flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.file_name().is_some_and(|n| n == "config.json") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        if !root.is_dir() {
+            return;
+        }
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        assert!(files.len() > 50, "the template library: {}", files.len());
+        let firewall = root.join("firewall/config.json");
+        assert!(files.contains(&firewall));
+        let raw = std::fs::read_to_string(&firewall).expect("the firewall");
+        for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+            assert!(
+                raw.contains(&format!(
+                    "\"{key}\": \"has(hop.ctx_{key}) ? hop.ctx_{key} : ''\""
+                )),
+                "the firewall's release edge restores `{key}`"
+            );
+        }
+        for f in files {
+            let Ok(cfg) = meclaw_core::serde_json::from_str::<JsonValue>(
+                &std::fs::read_to_string(&f).expect("readable"),
+            ) else {
+                continue;
+            };
+            if let Err(e) = substitute_env_only(&cfg, &HashMap::new()) {
+                assert_ne!(e.error_code(), "edge_schema", "{}: {e:?}", f.display());
+            }
+        }
     }
 
     /// One hive config whose own edge carries `cond` as its condition, under

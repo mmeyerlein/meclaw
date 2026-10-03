@@ -105,6 +105,79 @@ impl std::fmt::Display for WorkItem {
     }
 }
 
+/// GH #968: the slot a work-item label lands in when the heartbeat channel has
+/// no room for it -- the writing half, held by every [`WorkPulse`].
+///
+/// Measured: a `/colony/graph` read declares itself with one labelled beat
+/// and then blocks. When that one beat met a full channel (a boot burst the
+/// supervisor had not drained yet, or a relay that had stopped reading), the
+/// `try_send` dropped it, the supervisor's last word stayed `Parked`, and the
+/// trip came out `starved=colony_loop` -- the fatal verdict, for a loop that
+/// had named exactly what it was inside (#968, `gh571`). A channel can only
+/// drop its NEWEST word; this slot keeps exactly that word: "last label wins",
+/// no room needed, nothing to block on.
+///
+/// A `tokio::sync::watch` channel, not shared state: the colony writes, the
+/// supervisor reads, the same one-way channel discipline as the heartbeat.
+/// Only a label the heartbeat channel REFUSED is written here, which is what
+/// makes it newer than every beat the channel still holds: those were queued
+/// before the channel filled, so before the refusal.
+///
+/// Known limit (review M-1 of #968): it is not newer than a beat the channel
+/// refused AFTER it. A label lands here (channel full), the read ends, and its
+/// `Parked` beat meets the same full channel and is dropped -- unlabelled
+/// beats have no slot. The supervisor then reads `Working` plus the label
+/// although the last word was `Parked`. The same holds while the supervisor
+/// drains and the loop refills the room it made. Either way a real hang right
+/// after reads as `slow_work_item` and turns fatal only after the work-item
+/// budget (10 x the window), and the next idle beat (100 ms) of any living
+/// loop corrects the picture.
+#[derive(Clone, Debug)]
+pub struct LabelSlot(std::sync::Arc<tokio::sync::watch::Sender<Option<WorkItem>>>);
+
+/// GH #968: the reading half of a [`LabelSlot`], held by the supervisor.
+#[derive(Debug)]
+pub struct LabelSlotReader(tokio::sync::watch::Receiver<Option<WorkItem>>);
+
+/// GH #968: a fresh label slot, both halves.
+pub fn label_slot() -> (LabelSlot, LabelSlotReader) {
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    (LabelSlot(std::sync::Arc::new(tx)), LabelSlotReader(rx))
+}
+
+impl LabelSlot {
+    /// Put `label` in the slot, replacing whatever the supervisor has not read
+    /// yet. Never blocks, never fails: a reader that is gone is a watchdog that
+    /// is gone, and there is nobody left to tell.
+    pub fn put(&self, label: WorkItem) {
+        self.0.send_replace(Some(label));
+    }
+}
+
+impl LabelSlotReader {
+    /// The label put since the last call, if any.
+    pub fn take(&mut self) -> Option<WorkItem> {
+        match self.0.has_changed() {
+            Ok(true) => self.0.borrow_and_update().clone(),
+            _ => None,
+        }
+    }
+
+    /// Another reader on the same slot -- a test relay that has to see what the
+    /// supervisor sees. Starts where this one stands.
+    pub fn observe(&self) -> Self {
+        Self(self.0.clone())
+    }
+
+    /// Wait until a label is put; `None` once the writing side is gone.
+    pub async fn changed(&mut self) -> Option<WorkItem> {
+        match self.0.changed().await {
+            Ok(()) => self.0.borrow_and_update().clone(),
+            Err(_) => None,
+        }
+    }
+}
+
 /// A cheap, cloneable handle the mutation path pulses while it works (GH #439).
 ///
 /// Sync by construction: [`WorkPulse::tick`] is a plain `fn` around `try_send`,
@@ -116,12 +189,25 @@ impl std::fmt::Display for WorkItem {
 pub struct WorkPulse {
     tx: Option<tokio::sync::mpsc::Sender<Beat>>,
     label: WorkItem,
+    /// GH #968: where the label goes when `tx` has no room for it.
+    slot: Option<LabelSlot>,
 }
 
 impl WorkPulse {
     /// A pulse that reports to `tx` under `label`.
     pub fn new(tx: Option<tokio::sync::mpsc::Sender<Beat>>, label: WorkItem) -> Self {
-        Self { tx, label }
+        Self {
+            tx,
+            label,
+            slot: None,
+        }
+    }
+
+    /// GH #968: the same pulse with a slot for the label a full channel would
+    /// drop. `None` keeps the pulse as it was.
+    pub fn with_slot(mut self, slot: Option<LabelSlot>) -> Self {
+        self.slot = slot;
+        self
     }
 
     /// A pulse that reports nowhere — the default for every call site with no
@@ -131,15 +217,23 @@ impl WorkPulse {
         Self {
             tx: None,
             label: WorkItem::new("<unlabelled>"),
+            slot: None,
         }
     }
 
     /// One non-blocking beat. Never awaits, never blocks, never panics: a full
     /// channel means the supervisor has not drained this period yet and needs
-    /// only one beat per period.
+    /// only one beat per period -- but it needs the newest LABEL, so a label
+    /// the channel refuses goes to the slot (GH #968).
     pub fn tick(&self) {
-        if let Some(t) = &self.tx {
-            let _ = t.try_send(Beat::WorkingOn(self.label.clone()));
+        let Some(t) = &self.tx else {
+            return;
+        };
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(Beat::WorkingOn(w))) =
+            t.try_send(Beat::WorkingOn(self.label.clone()))
+            && let Some(slot) = &self.slot
+        {
+            slot.put(w);
         }
     }
 
@@ -148,6 +242,7 @@ impl WorkPulse {
         Self {
             tx: self.tx.clone(),
             label,
+            slot: self.slot.clone(),
         }
     }
 
@@ -567,6 +662,117 @@ fn witness_work_unit() {
 /// by the next window instead of being lost. `None` = no witness wired: the trip
 /// then says `witness=absent` rather than pretending the host was fine.
 pub async fn run_watchdog(
+    heartbeat_rx: tokio::sync::mpsc::Receiver<Beat>,
+    trip_tx: tokio::sync::mpsc::Sender<WatchdogTrip>,
+    threshold: u32,
+    period: std::time::Duration,
+    armed_rx: tokio::sync::oneshot::Receiver<()>,
+    on_trip: WatchdogOnTrip,
+    witness_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+) {
+    run_watchdog_with_label_slot(
+        heartbeat_rx,
+        trip_tx,
+        threshold,
+        period,
+        armed_rx,
+        on_trip,
+        witness_rx,
+        None,
+    )
+    .await
+}
+
+/// GH #968: the last word the supervisor has heard -- phase, label, count --
+/// and the one place it is read from the two channels the loop speaks on.
+///
+/// GH #165: the LAST word wins. Within one period the loop may say `Working`
+/// then `Parked`; what matters at trip time is the phase it was in when it
+/// stopped talking. GH #439: a labelled beat is a `Working` beat that also
+/// names its operation; it is normalised to `Working` so every judgement
+/// (`in_flight_work`, the budget, the fatality rule) reads exactly as before
+/// -- a label changes the diagnosis, never the verdict. The label is kept
+/// across bare `Working` beats and cleared by `Parked`.
+#[derive(Debug)]
+pub(crate) struct LastWord {
+    pub(crate) phase: Beat,
+    pub(crate) label: Option<WorkItem>,
+    pub(crate) beats_seen: u64,
+}
+
+/// What one [`LastWord::drain`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Drained {
+    /// At least one word arrived this period.
+    pub(crate) received: bool,
+    /// The heartbeat channel is closed: the colony task is gone.
+    pub(crate) gone: bool,
+}
+
+impl LastWord {
+    /// A colony that has not spoken yet is not credited with work in flight.
+    pub(crate) fn new() -> Self {
+        Self {
+            phase: Beat::Parked,
+            label: None,
+            beats_seen: 0,
+        }
+    }
+
+    fn hear(&mut self, beat: Beat) {
+        self.beats_seen += 1;
+        match beat {
+            Beat::WorkingOn(w) => {
+                self.phase = Beat::Working;
+                self.label = Some(w);
+            }
+            Beat::Working => self.phase = Beat::Working,
+            Beat::Parked => {
+                self.phase = Beat::Parked;
+                self.label = None;
+            }
+        }
+    }
+
+    /// Drain every beat buffered this period, then the label slot. The slot is
+    /// read LAST because a label lands there only when the channel refused it,
+    /// i.e. after every beat the channel still holds (see [`LabelSlot`]).
+    pub(crate) fn drain(
+        &mut self,
+        heartbeat_rx: &mut tokio::sync::mpsc::Receiver<Beat>,
+        slot: Option<&mut LabelSlotReader>,
+    ) -> Drained {
+        let mut out = Drained {
+            received: false,
+            gone: false,
+        };
+        loop {
+            match heartbeat_rx.try_recv() {
+                Ok(beat) => {
+                    out.received = true;
+                    self.hear(beat);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    out.gone = true;
+                    break;
+                }
+            }
+        }
+        if let Some(w) = slot.and_then(LabelSlotReader::take) {
+            out.received = true;
+            self.hear(Beat::WorkingOn(w));
+        }
+        out
+    }
+}
+
+/// [`run_watchdog`] plus the reading half of the colony's [`LabelSlot`]
+/// (GH #968): a label the heartbeat channel refused still becomes the
+/// supervisor's last word, so a trip inside a declared work item names it
+/// even when the channel was full. `None` = [`run_watchdog`].
+#[allow(clippy::too_many_arguments)]
+pub async fn run_watchdog_with_label_slot(
     mut heartbeat_rx: tokio::sync::mpsc::Receiver<Beat>,
     trip_tx: tokio::sync::mpsc::Sender<WatchdogTrip>,
     threshold: u32,
@@ -574,6 +780,7 @@ pub async fn run_watchdog(
     armed_rx: tokio::sync::oneshot::Receiver<()>,
     on_trip: WatchdogOnTrip,
     mut witness_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+    mut label_slot: Option<LabelSlotReader>,
 ) {
     // Disarmed until boot says otherwise. `Err` = the arming sender was dropped
     // (the boot never finished) → nothing to guard, exit silently.
@@ -583,6 +790,10 @@ pub async fn run_watchdog(
     // Heartbeats buffered during boot prove liveness of a moment that is already
     // past. Drop them so the first evaluated period is a fresh observation.
     while heartbeat_rx.try_recv().is_ok() {}
+    // GH #968: a label put during boot is as stale as a boot beat.
+    if let Some(slot) = label_slot.as_mut() {
+        let _ = slot.take();
+    }
     let mut wd = Watchdog::new(threshold);
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -592,18 +803,11 @@ pub async fn run_watchdog(
     // "the colony loop wedged" from "the process lost the CPU".
     let armed_at = tokio::time::Instant::now();
     let mut last_beat_at = armed_at;
-    let mut beats_seen: u64 = 0;
     // GH #165 witness accounting. `witness_misses` is the run in progress,
     // `witness_worst` the longest run inside the window currently being judged —
     // reset whenever a colony beat starts a fresh window, and after every trip.
-    // GH #165: the loop's last declared phase. `Parked` until it says otherwise —
-    // a colony that has not spoken yet is not credited with work in flight.
-    let mut last_phase = Beat::Parked;
-    // GH #439: the last LABEL the loop declared. Kept across bare `Working`
-    // beats (a labelled operation goes on beating under its own name and the
-    // loop's top-of-iteration beat is unlabelled), cleared by `Parked` — a
-    // parked loop is inside nothing.
-    let mut last_label: Option<WorkItem> = None;
+    // GH #165 / GH #439 / GH #968: the loop's last word (see [`LastWord`]).
+    let mut last = LastWord::new();
     let mut witness_misses: u32 = 0;
     let mut witness_worst: u32 = 0;
     let mut witness_present = witness_rx.is_some();
@@ -617,41 +821,10 @@ pub async fn run_watchdog(
         // Drain every tick buffered this period; `received` = at least one. A
         // closed channel is a colony task that is gone — a strictly stronger
         // finding than silence, and it is recorded as such.
-        let mut received = false;
-        let mut colony_task_gone = false;
-        loop {
-            match heartbeat_rx.try_recv() {
-                Ok(beat) => {
-                    received = true;
-                    beats_seen += 1;
-                    // GH #165: the LAST word wins. Within one period the loop may
-                    // say `Working` then `Parked`; what matters at trip time is
-                    // the phase it was in when it stopped talking.
-                    //
-                    // GH #439: a labelled beat is a `Working` beat that also
-                    // names its operation. It is normalised to `Working` here so
-                    // every judgement below (`in_flight_work`, the budget, the
-                    // fatality rule) reads exactly as it did — a label changes
-                    // the diagnosis, never the verdict.
-                    match beat {
-                        Beat::WorkingOn(w) => {
-                            last_phase = Beat::Working;
-                            last_label = Some(w);
-                        }
-                        Beat::Working => last_phase = Beat::Working,
-                        Beat::Parked => {
-                            last_phase = Beat::Parked;
-                            last_label = None;
-                        }
-                    }
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    colony_task_gone = true;
-                    break;
-                }
-            }
-        }
+        let Drained {
+            received,
+            gone: colony_task_gone,
+        } = last.drain(&mut heartbeat_rx, label_slot.as_mut());
         // GH #165: the witness is evaluated on the SAME tick, before the colony
         // verdict, so the two observers always describe one and the same window.
         let mut witness_received = false;
@@ -689,13 +862,13 @@ pub async fn run_watchdog(
                 silent_periods: threshold,
                 period,
                 silent_for: now.saturating_duration_since(last_beat_at),
-                beats_seen,
+                beats_seen: last.beats_seen,
                 colony_task_gone,
                 armed_for: now.saturating_duration_since(armed_at),
-                in_flight_work: last_phase == Beat::Working,
+                in_flight_work: last.phase == Beat::Working,
                 witness_present,
                 witness_worst_misses: witness_worst,
-                work_item: last_label.clone(),
+                work_item: last.label.clone(),
             };
             let fatal = trip.is_fatal(on_trip);
             // `try_send`: the caller drains this channel; a full one means it has
@@ -721,6 +894,53 @@ pub async fn run_watchdog(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// GH #968: a label the full heartbeat channel refuses still becomes the
+    /// supervisor's last word -- through the slot, read after every beat the
+    /// channel holds -- and a label that fits the channel leaves the slot alone.
+    #[test]
+    fn a_full_heartbeat_channel_keeps_the_latest_label() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Beat>(4);
+        let (slot, mut reader) = label_slot();
+        while tx.try_send(Beat::Parked).is_ok() {}
+        let pulse = WorkPulse::new(Some(tx.clone()), WorkItem::new("colony-read /colony/graph"))
+            .with_slot(Some(slot));
+        pulse.tick();
+
+        let mut last = LastWord::new();
+        let d = last.drain(&mut rx, Some(&mut reader));
+        assert_eq!(
+            d,
+            Drained {
+                received: true,
+                gone: false
+            }
+        );
+        assert_eq!(last.phase, Beat::Working, "{last:?}");
+        assert_eq!(
+            last.label.as_ref().map(WorkItem::as_str),
+            Some("colony-read /colony/graph"),
+            "the refused label is the last word: {last:?}"
+        );
+        assert_eq!(last.beats_seen, 5, "four queued beats and the label");
+
+        // The slot is spent: the next word is the next word.
+        tx.try_send(Beat::Parked).unwrap();
+        last.drain(&mut rx, Some(&mut reader));
+        assert_eq!(
+            (last.phase.clone(), last.label.clone()),
+            (Beat::Parked, None)
+        );
+
+        // A label with room goes on the channel, not into the slot.
+        pulse.tick();
+        assert!(
+            reader.take().is_none(),
+            "a label that fits leaves the slot alone"
+        );
+        last.drain(&mut rx, Some(&mut reader));
+        assert_eq!(last.phase, Beat::Working);
+    }
 
     #[test]
     fn five_consecutive_misses_trigger_stop() {

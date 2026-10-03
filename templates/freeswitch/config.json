@@ -111,7 +111,20 @@
         {
           "from": ".",
           "to": "./signal",
-          "condition": "has(hop.route) && hop.route == 'in_speak'"
+          "condition": "has(hop.route) && hop.route == 'in_speak'",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_user",
+              "phone_verified",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
         },
         {
           "from": "./voice",
@@ -125,6 +138,7 @@
               "phone_cause",
               "phone_number",
               "phone_user",
+              "phone_verified",
               "phone_op",
               "phone_tool_call_id"
             ]
@@ -133,17 +147,61 @@
         {
           "from": "./voice",
           "to": "./signal",
-          "condition": "has(hop.route) && hop.route == 'speak_end'"
+          "condition": "has(hop.route) && hop.route == 'speak_end'",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_user",
+              "phone_verified",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
+        },
+        {
+          "from": "./signal",
+          "to": "./voice",
+          "condition": "has(hop.route) && hop.route == 'in_session'"
         },
         {
           "from": ".",
           "to": "./signal",
-          "condition": "has(hop.route) && (hop.route == 'call_incoming' || hop.route == 'call_ringing' || hop.route == 'call_answered' || hop.route == 'call_ended')"
+          "condition": "has(hop.route) && (hop.route == 'call_incoming' || hop.route == 'call_ringing' || hop.route == 'call_answered' || hop.route == 'call_ended')",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_user",
+              "phone_verified",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
         },
         {
           "from": "./dial",
           "to": "./signal",
-          "condition": "has(hop.route) && hop.route == 'request'"
+          "condition": "has(hop.route) && hop.route == 'request'",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_user",
+              "phone_verified",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
         },
         {
           "from": "./dial",
@@ -157,6 +215,7 @@
               "phone_cause",
               "phone_number",
               "phone_user",
+              "phone_verified",
               "phone_op",
               "phone_tool_call_id"
             ]
@@ -174,6 +233,7 @@
               "phone_cause": "has(hop.cause) ? hop.cause : ''",
               "phone_number": "has(hop.number) ? hop.number : ''",
               "phone_user": "has(hop.user_id) ? hop.user_id : ''",
+              "phone_verified": "has(hop.verified_user) ? hop.verified_user : ''",
               "phone_tool_call_id": "has(hop.tool_call_id) ? hop.tool_call_id : ''"
             }
           }
@@ -214,6 +274,7 @@
               "phone_cause",
               "phone_number",
               "phone_user",
+              "phone_verified",
               "phone_op",
               "phone_tool_call_id"
             ]

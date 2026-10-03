@@ -228,6 +228,37 @@ const SEAMS: &[Row] = &[
         None,
         Seam::Door,
     ),
+    // A file step of a projection job (GH #975): every request the child
+    // hive `./projection` sends into its space -- a workspace op, a read, a
+    // write -- is one step of one job for one file, the job's request to the
+    // room. The job's file list bounds its steps (the git cell refuses a tree
+    // past `import_max_files` = 2000), and no step returns to the door without
+    // the job sending the next one. Measured before: a `ws_pull` of six files
+    // ran 138 hops against the colony TTL of 64.
+    row(
+        FILE_SPACE,
+        "./projection",
+        "./ws",
+        "in_ws",
+        None,
+        Seam::Door,
+    ),
+    row(
+        FILE_SPACE,
+        "./projection",
+        "./read",
+        "in_read",
+        None,
+        Seam::Door,
+    ),
+    row(
+        FILE_SPACE,
+        "./projection",
+        "./write",
+        "in_write",
+        None,
+        Seam::Door,
+    ),
     // An index job in a graph space (GH #945): each `source_changed` is one
     // head move of one source, and the graph space answers it with a constant
     // number of pulls and two store bundles -- nothing in it returns to the

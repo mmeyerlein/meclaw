@@ -56,6 +56,55 @@ pub enum TimerReconfig {
     },
 }
 
+/// GH #956: handler → I/O, "this strike did not take; strike it again". A
+/// one-shot leaves the working copy the moment its strike is pushed (the sleep
+/// arm below drops it locally), so a strike whose state step then fails in
+/// `handle_event` -- `load_schedule` or `mark_completed` running out of
+/// `query_timeout_ms` -- left the row `active` in `cell.db` and planned
+/// nowhere: nothing fired until the next op snapshot or the next boot, and a
+/// test under suite load waited its 30 s out (#956, candidate b). The handler
+/// sends this frame instead, and the I/O task strikes the same moment once
+/// more after [`REPLAN_DELAY`].
+///
+/// Its own channel, not [`TimerReconfig`]: the handler only holds the reconfig
+/// sender while it handles a mailbox message, and the strike it has to plan
+/// again arrives as an I/O event -- the catch-up strike after a boot arrives
+/// before any message at all. The sender lives in the cell from `split_io` on.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TimerReplan {
+    /// PK in `cell.db.schedules`.
+    pub schedule_id: Uuid,
+    /// The moment the failed strike was for. The strike again carries it
+    /// unchanged, so the stale-strike guard of GH #904 and the `late` mark of
+    /// GH #922 read it exactly as they read the first one.
+    pub scheduled_at: DateTime<Utc>,
+}
+
+/// GH #956: how long the I/O task waits before it strikes a
+/// [`TimerReplan`]-ed moment again. The failed step timed out on an overloaded
+/// `cell.db`; striking at once would hand the same overload the same query.
+/// One second is one cron period at the finest grain the timer plans, and it
+/// is the order of the default `query_timeout_ms`.
+pub const REPLAN_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// GH #956 review M-2: the longest wait between two strikes of one replanned
+/// moment. The wait doubles from [`REPLAN_DELAY`] up to this.
+pub const REPLAN_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// GH #956 review M-2: how often one moment is struck again before the I/O task
+/// gives it up. A `mark_completed` that fails for good (read-only or broken
+/// `cell.db`, `Ok(Err(_))` and no timeout) was replanned every second without
+/// end; with the back-off the retries of one moment span about four minutes,
+/// then the row stays `active` for the next op snapshot or boot -- the state
+/// before #956, said out loud.
+pub const REPLAN_MAX_ATTEMPTS: u32 = 10;
+
+/// GH #956: how many replan frames the handler may queue before the I/O task
+/// picks them up. Sent with `try_send`, never awaited: the I/O task can itself
+/// be blocked pushing an event to the handler, and a handler that waited for
+/// room here would close that cycle.
+pub const REPLAN_CAPACITY: usize = 64;
+
 /// I/O sub-task. Single-owner state (`TimerIo.active`), no mutex.
 /// `select!` over (a) the reconfig channel — the snapshot replaces active,
 /// recompute — and (b) `sleep_until_optional(next)` — on None it hangs pending,
@@ -75,6 +124,17 @@ pub fn run_io(
         let parser = CronParser::builder().seconds(Seconds::Required).build();
         let mut active = io.active;
         let liveness = io.liveness;
+        // GH #956: the handler's replans and the strikes they wait for. A
+        // working copy of its own, not entries in `active`: a replanned strike
+        // belongs to the moment that failed, and `compute_next_occurrence`
+        // would plan a cron row in `active` strictly after now.
+        let mut replan_rx = io.replan_rx;
+        let mut retries: Vec<(TimerReplan, tokio::time::Instant)> = Vec::new();
+        // GH #956 review M-2: strikes again per moment, for the back-off and
+        // its cap. Bounded by the moments that failed since the last op
+        // snapshot; a moment given up leaves it.
+        let mut attempts: std::collections::HashMap<TimerReplan, u32> =
+            std::collections::HashMap::new();
         // Issue #7: announce before the first sleep — a timer that has not fired
         // yet is visibly "no tick yet", not invisible.
         liveness.announce();
@@ -83,7 +143,12 @@ pub fn run_io(
             tokio::select! {
                 biased;
                 maybe_rc = reconfig_rx.recv() => match maybe_rc {
-                    Some(TimerReconfig::SetActive(snap)) => { active = snap; }
+                    Some(TimerReconfig::SetActive(snap)) => {
+                        active = snap;
+                        // GH #956 review M-2: an op snapshot plans every row
+                        // from `cell.db` afresh; the retry counts start over.
+                        attempts.clear();
+                    }
                     Some(TimerReconfig::FireNow { schedule_id }) => {
                         // GH #17: the operator's trigger enters through the SAME
                         // frame the sleep arm below pushes, so the run that
@@ -107,6 +172,54 @@ pub fn run_io(
                     }
                     None => break,
                 },
+                maybe_rp = recv_optional(&mut replan_rx) => match maybe_rp {
+                    Some(rp) => {
+                        if take_replan(&active, &retries, &rp) {
+                            match next_replan_delay(&mut attempts, &rp) {
+                                Some(delay) => {
+                                    retries.push((rp, tokio::time::Instant::now() + delay));
+                                }
+                                None => tracing::warn!(
+                                    schedule_id = %rp.schedule_id,
+                                    scheduled_at = %rp.scheduled_at,
+                                    attempts = REPLAN_MAX_ATTEMPTS,
+                                    "timer: strike failed its state step again and again, \
+                                     row left for the next plan"
+                                ),
+                            }
+                        }
+                    }
+                    // The handler is gone; the reconfig arm ends the loop.
+                    None => replan_rx = None,
+                },
+                _ = sleep_until_instant_optional(retries.iter().map(|(_, due)| *due).min()) => {
+                    let now = tokio::time::Instant::now();
+                    let mut handler_gone = false;
+                    let mut kept = Vec::with_capacity(retries.len());
+                    for (rp, due) in std::mem::take(&mut retries) {
+                        if due > now || handler_gone {
+                            kept.push((rp, due));
+                            continue;
+                        }
+                        if events_tx
+                            .send(TimerEvent::Fire {
+                                schedule_id: rp.schedule_id,
+                                scheduled_at: rp.scheduled_at,
+                                forced: false,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            handler_gone = true;
+                            continue;
+                        }
+                        liveness.mark_success();
+                    }
+                    retries = kept;
+                    if handler_gone {
+                        break;
+                    }
+                }
                 _ = sleep_until_optional(next.as_ref().map(|(t, _)| *t)) => {
                     if let Some((t, due)) = next {
                         // GH #613: EVERY schedule due at this instant fires,
@@ -156,6 +269,59 @@ pub fn run_io(
                 }
             }
         }
+    }
+}
+
+/// GH #956: whether a replan frame becomes a strike again. Not for a cron row
+/// of the working copy: its next occurrence is planned already, and the
+/// moment that failed is a tick dropped the way a timed-out cron strike has
+/// always been dropped (`handle_event` step 1). Not twice for one moment: a
+/// replan that is already waiting covers it.
+fn take_replan(
+    active: &[ActiveSchedule],
+    waiting: &[(TimerReplan, tokio::time::Instant)],
+    rp: &TimerReplan,
+) -> bool {
+    let is_cron = active
+        .iter()
+        .any(|a| a.schedule_id == rp.schedule_id && matches!(a.kind, ScheduleKind::Cron(_)));
+    !is_cron && !waiting.iter().any(|(w, _)| w == rp)
+}
+
+/// GH #956 review M-2: the wait before the next strike of `rp`, counted in
+/// `attempts` per moment; `None` once the moment has had
+/// [`REPLAN_MAX_ATTEMPTS`] strikes again (its count is dropped then).
+fn next_replan_delay(
+    attempts: &mut std::collections::HashMap<TimerReplan, u32>,
+    rp: &TimerReplan,
+) -> Option<std::time::Duration> {
+    let n = attempts.entry(rp.clone()).or_insert(0);
+    if *n >= REPLAN_MAX_ATTEMPTS {
+        attempts.remove(rp);
+        return None;
+    }
+    let delay = REPLAN_DELAY
+        .saturating_mul(1u32 << (*n).min(16))
+        .min(REPLAN_MAX_DELAY);
+    *n += 1;
+    Some(delay)
+}
+
+/// GH #956: the next replan frame, or `pending` forever once there is no
+/// channel (a `TimerIo` built without one, or a handler that is gone).
+async fn recv_optional(rx: &mut Option<mpsc::Receiver<TimerReplan>>) -> Option<TimerReplan> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// GH #956: sleeps until `t`; on `None` it hangs `pending`, like
+/// [`sleep_until_optional`].
+async fn sleep_until_instant_optional(t: Option<tokio::time::Instant>) {
+    match t {
+        Some(t) => tokio::time::sleep_until(t).await,
+        None => std::future::pending::<()>().await,
     }
 }
 
@@ -451,5 +617,75 @@ mod tests_utc {
             "2026-09-08T16:15:20+00:00",
             "truncating the anchor to :00 must not re-plan :00"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_replan {
+    use super::*;
+
+    fn rp(id: Uuid, at: &str) -> TimerReplan {
+        TimerReplan {
+            schedule_id: id,
+            scheduled_at: at.parse().unwrap(),
+        }
+    }
+
+    /// GH #956: a replanned one-shot is struck again once; a cron row of the
+    /// working copy is not (its next tick is planned, the failed one is
+    /// dropped as before), and a moment already waiting is not queued twice.
+    #[test]
+    fn a_replan_takes_a_one_shot_once_and_never_a_cron_row() {
+        let once = Uuid::now_v7();
+        let cron = Uuid::now_v7();
+        let active = vec![ActiveSchedule {
+            schedule_id: cron,
+            kind: ScheduleKind::Cron("*/5 * * * * *".into()),
+        }];
+        let at = "2026-10-03T10:00:00Z";
+        assert!(take_replan(&active, &[], &rp(once, at)));
+        assert!(!take_replan(&active, &[], &rp(cron, at)));
+        let waiting = vec![(rp(once, at), tokio::time::Instant::now())];
+        assert!(!take_replan(&active, &waiting, &rp(once, at)));
+        assert!(
+            take_replan(&active, &waiting, &rp(once, "2026-10-03T10:00:01Z")),
+            "another moment of the same row is its own strike"
+        );
+    }
+
+    /// GH #956 review M-2 (welle-nachlese Z): a strike whose state step fails
+    /// for good -- `mark_completed` on a read-only or broken `cell.db` answers
+    /// `Ok(Err(_))`, no timeout -- was planned again every second without end.
+    /// The retries of one moment back off from [`REPLAN_DELAY`] and stop after
+    /// [`REPLAN_MAX_ATTEMPTS`]; the row stays `active` for the next op
+    /// snapshot or boot, the state before #956. Another moment counts afresh,
+    /// and an op snapshot (`SetActive`) forgets every count.
+    #[test]
+    fn a_replan_backs_off_and_gives_up_after_its_cap() {
+        let once = Uuid::now_v7();
+        let at = rp(once, "2026-10-03T10:00:00Z");
+        let mut attempts = std::collections::HashMap::new();
+        let mut delays = Vec::new();
+        while let Some(d) = next_replan_delay(&mut attempts, &at) {
+            delays.push(d);
+            assert!(delays.len() <= 64, "a replan without end: {delays:?}");
+        }
+        assert_eq!(delays.len(), REPLAN_MAX_ATTEMPTS as usize);
+        assert_eq!(
+            delays[0], REPLAN_DELAY,
+            "the first retry keeps its one second"
+        );
+        assert!(
+            delays.windows(2).all(|w| w[0] <= w[1]),
+            "backs off: {delays:?}"
+        );
+        assert!(delays.iter().all(|d| *d <= REPLAN_MAX_DELAY));
+        assert_eq!(*delays.last().unwrap(), REPLAN_MAX_DELAY);
+        assert!(
+            !attempts.contains_key(&at),
+            "a moment given up leaves no count behind"
+        );
+        let other = rp(once, "2026-10-03T10:00:05Z");
+        assert_eq!(next_replan_delay(&mut attempts, &other), Some(REPLAN_DELAY));
     }
 }
