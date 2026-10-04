@@ -128,7 +128,27 @@ pub const ROUND_CONTEXT_KEYS: [&str; 2] = ["audience_set", "audience_now"];
 /// form being syntactic, the hop key it reads is guarded at the source: only a
 /// cell declaring `contract.parks_context` (the warden; refused for apps at the
 /// door) gets a `ctx_<stamped key>` past the colony's outputs arm (OR-NL-187).
-pub const STAMPED_CONTEXT_KEYS: [&str; 2] = ["turn_round", "speaker"];
+/// No config edge sets one per `set_hop` either (re-review of GH #981,
+/// `mutation::substitute::check_graph_edges`): its next edge could restore it.
+///
+/// GH #981 adds the keys of a RUN (an app hands a brain one turn and hears its
+/// tool results and its end): `run_id` and `run_app` say whose run a hop is --
+/// the result taps and the end edge route on them, and the answer edges to the
+/// surfaces exclude a hop that carries them -- and `run_chain` counts the runs
+/// of one causal chain, the bound of the run door that restores the routing
+/// budget (GH #82). An app that could write them would hand another app a
+/// forged tool result or end, or take a person's consult off its surface
+/// (review of #981, Major 2).
+pub const STAMPED_CONTEXT_KEYS: [&str; 5] =
+    ["turn_round", "speaker", "run_id", "run_app", "run_chain"];
+
+/// GH #981 (review, OR-LP.RW.10) -- the stamped keys that BOUND a loop: the
+/// counter a budget-restoring edge (`restore_ttl`) reads in its condition and
+/// increments in its own `set_context`, starting from 1 when the key is
+/// absent. Deleting one restarts the bound, so unlike the other stamped keys a
+/// config edge may not delete it either, exactly or by prefix
+/// (`mutation::substitute::check_graph_edges`, `edge_schema`).
+pub const BOUND_CONTEXT_KEYS: [&str; 1] = ["run_chain"];
 
 /// GH #979 (OR-NL-179) -- whether `expr` is the one form a config edge may
 /// write a stamped key ([`STAMPED_CONTEXT_KEYS`]) with: the restore of `key`

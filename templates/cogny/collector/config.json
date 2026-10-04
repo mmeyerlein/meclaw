@@ -9,7 +9,9 @@
         "*"
       ],
       "sidecar": "1",
-      "defer_turns": "0"
+      "defer_turns": "0",
+      "max_iter": 16,
+      "round_idle_ms": 630000
     }
   }
 }

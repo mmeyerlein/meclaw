@@ -5,8 +5,8 @@
   "description": {
     "purpose": "Scope marker of a file space: the files of one knowledge space as logical file hives over one store. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
     "use_when": "One per knowledge space whose files have to be read by line, versioned and changed by several writers.",
-    "not_in_scope": "No rights (a later wave); the disk projection lives in the child hive `./projection`, never in a cell of the space; no tool for `raw`, `ws_tree` or a projection op. The address of a file is its id, never the store it lives in.",
-    "contract_in": "Lanes on `hop.route`: in_read (`ask`, the semantic search and `dir_summary` to `./derive`, `dir_info` and every other read to `./read`), in_write (the content ops, and the structure ops `create_dir`, `remove_dir`, `move`, `copy`, `write_node`), in_ws (the projection operations `ws_materialize`, `ws_exec`, `ws_adopt`, `ws_export_git`, `ws_import_git`, `ws_push`, `ws_pull` go to the child hive `./projection`, every other one to `./ws`), in_model (a model package for `./summarizer`, unless `hop.subscriber` names another cell); in_schemas and in_tool, the tool menu and a tool call (`./schemas`, `./tools`); in_ingest (a turn carrying a document as a blob reference in `attachments`, GH #907).",
+    "not_in_scope": "No rights (a later wave); the disk projection lives in the child hive `./projection`, never in a cell of the space; no tool for `raw`, `ws_tree` or a projection op other than `ws_exec`, `ws_export_git` and `ws_push` (GH #980). The address of a file is its id, never the store it lives in.",
+    "contract_in": "Lanes on `hop.route`: in_read (`ask`, the semantic search and `dir_summary` to `./derive`, `dir_info` and every other read to `./read`), in_write (the content ops, and the structure ops `create_dir`, `remove_dir`, `move`, `copy`, `write_node`), in_ws (the projection operations `ws_materialize`, `ws_exec`, `ws_adopt`, `ws_export_git`, `ws_import_git`, `ws_push`, `ws_pull` go to the child hive `./projection`, every other one to `./ws`), in_model (a model package for `./summarizer`, unless `hop.subscriber` names another cell); in_schemas and in_tool, the tool menu and a tool call (`./schemas`, `./tools`; the three projection tools reach `./projection` on `in_proj`, GH #980); in_ingest (a turn carrying a document as a blob reference in `attachments`, GH #907).",
     "contract_out": "Routes on `hop.route`, leaving through the hive path: answer, model_refused (a refused `in_model` push), derived (`{file, version, ok, oneline}` after an `in_derive` with `notify`, only for an empty `caller`); source_changed (the node source contract, GH #944: `{source, version, path, fmt, parser, mark, nodes, links, tomb: false}` once per head move of a file, `{source, path, tomb: true}` once per removed file; always leaves, whatever the `caller`); source_described (GH #947: `{source, version, path, oneline, tags}` once per summary stored for a living head, after its one line and tags are written; none without a summary, none for a version that is no longer head; always leaves, whatever the `caller`); tool_schemas and tool_result, their answers; turn (the turn of an `in_ingest` without its `attachments`, the file's address line after the caption)."
   },
   "params": {
@@ -35,7 +35,7 @@
         },
         {
           "route": "in_tool",
-          "because": "one tool call of a model: hop `tool_name` (`file_*`), `tool_call_id`, the arguments as JSON text in the one turn of the body, and `context.tool_caller` the surface the assistant level stamped (only 'cogny' may write). Translated by `./tools` into a request under `caller` 'tools' and answered by exactly one `tool_result`"
+          "because": "one tool call of a model: hop `tool_name` (`file_*`), `tool_call_id`, the arguments as JSON text in the one turn of the body, and `context.tool_caller` the surface the assistant level stamped (only 'cogny' may write). Translated by `./tools` into a request under `caller` 'tools' -- `file_ws_exec`, `file_ws_export`, `file_ws_push` into `ws_exec`, `ws_export_git`, `ws_push` of `./projection` (GH #980), whose answer comes back to `./tools` -- and answered by exactly one `tool_result`"
         },
         {
           "route": "in_ingest",
@@ -69,7 +69,7 @@
         },
         {
           "route": "tool_result",
-          "because": "the answer to `in_tool`: one turn under the call's id, its text the space's answer as JSON without `op_id` and `caller`; `hop.error_code` names a refusal (`bad_request` for an argument its schema refuses, `read_only` for a write from a surface that only reads, or the space's own code)"
+          "because": "the answer to `in_tool`: one turn under the call's id, its text the space's answer as JSON without `op_id` and `caller`; `hop.error_code` names a refusal (`bad_request` for an argument its schema refuses, `read_only` for a write, workspace or projection op from a surface that only reads, or the space's or the projection's own code)"
         },
         {
           "route": "turn",
@@ -592,7 +592,15 @@
         {
           "from": "./tools",
           "to": "./ws",
-          "condition": "has(hop.route) && hop.route == 'in_ws'"
+          "condition": "has(hop.route) && hop.route == 'in_ws' && !(has(hop.op) && hop.op in ['ws_materialize', 'ws_exec', 'ws_adopt', 'ws_export_git', 'ws_import_git', 'ws_push', 'ws_pull'])"
+        },
+        {
+          "from": "./tools",
+          "to": "./projection",
+          "condition": "has(hop.route) && hop.route == 'in_proj'",
+          "modifier": {
+            "restore_ttl": true
+          }
         },
         {
           "from": "./read",
@@ -635,6 +643,19 @@
         },
         {
           "from": "./ws",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'tools'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./projection",
           "to": "./tools",
           "condition": "has(hop.route) && hop.route == 'answer' && has(hop.caller) && hop.caller == 'tools'",
           "modifier": {

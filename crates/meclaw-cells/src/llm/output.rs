@@ -46,6 +46,7 @@ pub const HOP_KEYS: &[(&str, &str)] = &[
     ("model", "string"),
     ("cache_expires_at", "string"),
     ("context_window", "number"),
+    ("dropped", "array"),
 ];
 
 /// The usage block of one provider call, as it travels into the hop header.
@@ -114,8 +115,9 @@ impl HopUsage {
 /// GH #890: what the cell states about its own cache and window, stamped on a
 /// SUCCESSFUL answer only. An error carries none of it: a call that failed
 /// wrote no prefix, so there is nothing that could go cold, and the error
-/// path keeps the header it has had since GH #463.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// path keeps the header it has had since GH #463. GH #993 adds the sampling
+/// fields the request left out because the model does not take them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct HopCache {
     /// Seconds the provider keeps the written prefix warm. `Some` only with
     /// `cache_mode` not `off` and `cache_ttl_s > 0`: `off` marks nothing, and
@@ -123,6 +125,11 @@ pub(crate) struct HopCache {
     pub(crate) ttl_s: Option<u64>,
     /// The model's context window in tokens, `Some` only above 0.
     pub(crate) context_window: Option<u64>,
+    /// GH #993: the sampling fields the request did not carry because the
+    /// model's `supported_params` does not name them
+    /// (`translate::dropped_params`). Empty = nothing dropped and no key, so
+    /// the hop of a cell without a list stays the hop it always was.
+    pub(crate) dropped: Vec<String>,
 }
 
 impl HopCache {
@@ -132,6 +139,7 @@ impl HopCache {
             ttl_s: (params.cache_mode != CacheMode::Off && params.cache_ttl_s > 0)
                 .then_some(params.cache_ttl_s),
             context_window: (params.context_window > 0).then_some(params.context_window),
+            dropped: crate::llm::translate::dropped_params(params),
         }
     }
 
@@ -154,6 +162,12 @@ impl HopCache {
         }
         if let Some(window) = self.context_window {
             header.insert("context_window".into(), Value::from(window));
+        }
+        if !self.dropped.is_empty() {
+            header.insert(
+                "dropped".into(),
+                Value::Array(self.dropped.iter().cloned().map(Value::String).collect()),
+            );
         }
     }
 }
@@ -619,6 +633,7 @@ mod tests {
         HopCache {
             ttl_s,
             context_window,
+            dropped: Vec::new(),
         }
     }
 
@@ -725,7 +740,11 @@ mod tests {
             tokens_cache_write: Some(1),
             cost: Some(0.1),
         };
-        let success = header_of(full, cache(Some(60), Some(1)), 1, 1).await;
+        let all = HopCache {
+            dropped: vec!["temperature".into()],
+            ..cache(Some(60), Some(1))
+        };
+        let success = header_of(full, all, 1, 1).await;
         let (sink, mut rx) = mk_sink();
         emit_error(
             &sink,
@@ -767,6 +786,7 @@ mod tests {
                 let fits = match *ty {
                     "string" => value.is_string(),
                     "number" => value.is_number(),
+                    "array" => value.is_array(),
                     other => panic!("{key}: unknown type {other}"),
                 };
                 assert!(fits, "{key} is declared {ty} but written as {value}");

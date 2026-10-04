@@ -94,6 +94,10 @@
         "context_window": {
           "type": "number",
           "required": false
+        },
+        "dropped": {
+          "type": "array",
+          "required": false
         }
       }
     },

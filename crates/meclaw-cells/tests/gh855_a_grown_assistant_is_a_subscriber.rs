@@ -285,7 +285,7 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
 
     // A template that is not the shipped generation names its own brains, and
     // the recipe does not guess them.
-    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.2");
+    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.3");
     assert_eq!(other.len(), 1, "{other:?}");
     // And a scope the generation does not lie under renders nothing either.
     let elsewhere = render(json!({"model_registry_scope": "/elsewhere"}), &template);

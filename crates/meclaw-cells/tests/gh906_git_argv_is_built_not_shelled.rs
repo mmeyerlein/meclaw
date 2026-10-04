@@ -183,6 +183,75 @@ fn a_remote_is_a_name_or_an_absolute_path() {
 }
 
 #[test]
+fn a_push_target_under_base_path_is_inside() {
+    // Welle Loop NV2 (the class of GH #980 M1): `run` writes all of
+    // `base_path`, so a local remote there can carry a planted receive hook.
+    // A local path or `file://` URL under, at or above `base_path` -- lexical
+    // or after a symlink -- is inside; another transport never is.
+    if !shipped() {
+        return;
+    }
+    let t = tempfile::TempDir::new().expect("a temp dir");
+    let base = t.path().join("proj");
+    let beside = t.path().join("remotes");
+    std::fs::create_dir_all(&base).expect("base");
+    std::fs::create_dir_all(&beside).expect("beside");
+    let link = t.path().join("link.git");
+    std::os::unix::fs::symlink(base.join("r.git"), &link).expect("a symlink");
+    let b = base.to_str().unwrap().to_string();
+    let rows = [
+        ("under base_path", format!("{b}/r.git"), json!(true)),
+        ("base_path itself", b.clone(), json!(true)),
+        (
+            "above base_path",
+            t.path().to_str().unwrap().to_string(),
+            json!(true),
+        ),
+        (
+            "climbing back in",
+            format!("{}/../proj/r.git", beside.display()),
+            json!(true),
+        ),
+        (
+            "a file URL under it",
+            format!("file://{b}/r.git"),
+            json!(true),
+        ),
+        (
+            "a symlink into it",
+            link.to_str().unwrap().to_string(),
+            json!(true),
+        ),
+        (
+            "beside base_path",
+            format!("{}/r.git", beside.display()),
+            json!(false),
+        ),
+        ("a prefix sibling", format!("{b}-other/r.git"), json!(false)),
+        (
+            "a network URL",
+            "https://example.com/r.git".to_string(),
+            json!(false),
+        ),
+        (
+            "an ssh URL",
+            "ssh://example.com/r.git".to_string(),
+            json!(false),
+        ),
+    ];
+    let args: Vec<Value> = rows.iter().map(|(_, a, _)| json!(a)).collect();
+    let got = pure_with(
+        json!({"base_path": b}),
+        "",
+        "[remote_inside_base(a, P['base_path']) for a in ARGS]",
+        json!(args),
+    );
+    for ((label, _, want), got) in rows.iter().zip(got.as_array().unwrap()) {
+        assert_eq!(got, want, "{label}");
+    }
+}
+
+#[test]
 fn a_remote_with_userinfo_is_refused() {
     // OR-FJ-71: B2 has no credential path. A URL that carries a user (with or
     // without a secret) is `credentials_unsupported`, never used.
@@ -229,8 +298,10 @@ fn every_call_is_an_argv_without_force() {
     if !shipped() {
         return;
     }
-    let got = pure(
-        "[argv_push('/r', '/srv/x.git', 'main'), argv_fetch('/r', '/srv/x.git', 'main'), \
+    let got = pure_with(
+        json!({"git_dir": "/g"}),
+        "",
+        "[argv_push('/r', '/srv/x.git', 'main', 'c0ffee'), argv_fetch('/r', '/srv/x.git', 'main'), \
           argv_commit_tree('/r', 't', ['p1', 'p2'], 'a note; rm -rf /')]",
         json!(null),
     );
@@ -242,7 +313,13 @@ fn every_call_is_an_argv_without_force() {
             .iter()
             .map(|x| x.as_str().unwrap())
             .collect();
-        assert_eq!(&l[..3], &["git", "-C", "/r"], "{l:?}");
+        // GH #980 M1: the repository under `git_dir`, the work tree named --
+        // no `.git` in the work tree is ever discovered.
+        assert_eq!(
+            &l[..3],
+            &["git", "--git-dir=/g/r", "--work-tree=/r"],
+            "{l:?}"
+        );
         assert!(l.contains(&"core.autocrlf=false"), "{l:?}");
         // OR-FJ-72: a foreign tree must not run code through git itself.
         assert!(l.contains(&"core.hooksPath=/dev/null"), "{l:?}");
@@ -261,7 +338,7 @@ fn every_call_is_an_argv_without_force() {
         .collect();
     assert_eq!(
         &push[push.len() - 3..],
-        &["--", "/srv/x.git", "HEAD:refs/heads/main"]
+        &["--", "/srv/x.git", "c0ffee:refs/heads/main"]
     );
     let fetch: Vec<&str> = lists[1]
         .as_array()
@@ -569,7 +646,9 @@ fn export_import_and_push_work_on_a_real_git() {
     std::fs::write(ws.join("target/junk"), "j").unwrap();
     std::fs::write(ws.join(".gitignore"), "x.md\n").unwrap();
 
-    let over = json!({"base_path": base, "remotes": {"origin": bare}, "import_max_files": 3});
+    let gd = t.join("git-dirs");
+    let over = json!({"base_path": base, "git_dir": gd, "remotes": {"origin": bare},
+                      "import_max_files": 3});
     let probe = r#"[
         _code(do_push, _job("ws_push", "B", remote="origin", branch="main")),
         do_export(_job("ws_export_git", "B", note="first"),
@@ -599,17 +678,21 @@ fn export_import_and_push_work_on_a_real_git() {
     // Only the manifest landed: `.gitignore` did not keep `x.md` out, the
     // tool's `target/` and the `.gitignore` itself stayed out, the removed
     // `y.md` left the index.
-    assert_eq!(git(&ws, &["ls-files"]), "x.md");
-    assert_eq!(git(&ws, &["log", "--format=%s"]), "y gone\nfirst");
+    let repo_b = gd.join("B");
+    assert_eq!(
+        git(&repo_b, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        "x.md"
+    );
+    assert_eq!(git(&repo_b, &["log", "--format=%s"]), "y gone\nfirst");
     assert_eq!(git(&bare, &["log", "--format=%s", "main"]), "y gone\nfirst");
     // The fetch holds its commit as `incoming`; the upstream waits for the
     // last write of the pull (review I-1).
     assert_eq!(
-        git(&base.join("A"), &["rev-parse", "refs/meclaw/incoming"]),
+        git(&gd.join("A"), &["rev-parse", "refs/meclaw/incoming"]),
         git(&src, &["rev-parse", "HEAD"])
     );
     assert_eq!(
-        git(&base.join("A"), &["for-each-ref", "refs/meclaw/upstream"]),
+        git(&gd.join("A"), &["for-each-ref", "refs/meclaw/upstream"]),
         ""
     );
 
@@ -626,12 +709,13 @@ fn export_import_and_push_work_on_a_real_git() {
     );
     assert_eq!(got, json!("too_many_files"));
     assert_ne!(
-        git(&base.join("A"), &["rev-parse", "refs/meclaw/incoming"]),
+        git(&gd.join("A"), &["rev-parse", "refs/meclaw/incoming"]),
         git(&src, &["rev-parse", "HEAD"])
     );
 
     // A remote that moved on: the push is refused, never forced; after a pull
-    // the export has both heads as parents and the push fast-forwards.
+    // an unchanged tree fast-forwards HEAD (L-8), a changed one is a merge of
+    // both heads, and the push fast-forwards.
     let clone = t.join("clone");
     git(
         t,
@@ -659,6 +743,49 @@ fn export_import_and_push_work_on_a_real_git() {
     assert_eq!(got[0], json!("push_rejected"));
     assert_eq!(got[1], json!(remote_head));
     std::fs::write(ws.join("x.md"), "remote\n").unwrap();
+    // GH #980 L-8: the workspace now holds exactly the upstream's tree and the
+    // old head is an ancestor of the upstream -- the export moves HEAD onto
+    // the upstream and commits nothing (before: a merge commit over an
+    // unchanged tree), the push has nothing to move.
+    let got = pure_with(
+        over.clone(),
+        PLUMBING,
+        r#"[_code(do_export, _job("ws_export_git", "B", note="merge"),
+                  {"manifest": json.dumps({"/x.md": {}})}),
+            _code(do_push, _job("ws_push", "B", remote="origin", branch="main"))]"#,
+        json!(null),
+    );
+    assert_eq!(got, json!(["nothing_to_commit", "ok"]));
+    assert_eq!(git(&repo_b, &["rev-parse", "HEAD"]), remote_head);
+    assert_eq!(git(&bare, &["rev-parse", "main"]), remote_head);
+    // A real merge: a local export the remote never saw, the remote moves on,
+    // a pull, then a tree that is neither side -- the export has both heads
+    // as parents and the push fast-forwards.
+    std::fs::write(ws.join("x.md"), "local\n").unwrap();
+    let got = pure_with(
+        over.clone(),
+        PLUMBING,
+        r#"_code(do_export, _job("ws_export_git", "B", note="local"),
+                 {"manifest": json.dumps({"/x.md": {}})})"#,
+        json!(null),
+    );
+    assert_eq!(got, json!("ok"));
+    git(&clone, &["pull", "-q", "origin", "main"]);
+    std::fs::write(clone.join("x.md"), "remote two\n").unwrap();
+    git(&clone, &["commit", "-qam", "remote two"]);
+    git(&clone, &["push", "-q", "origin", "main"]);
+    let remote_two = git(&bare, &["rev-parse", "main"]);
+    let got = pure_with(
+        over.clone(),
+        PLUMBING,
+        r#"(lambda c: next_write(dict(_job("ws_pull", "B"), id="gj-t", steps=[], i=0,
+                 tally={"created": 0, "modified": 1, "removed": 0}, skipped=[],
+                 upstream=c))[1]["upstream"])(
+                 do_fetch(_job("ws_pull", "B", remote="origin", branch="main"))[0])"#,
+        json!(null),
+    );
+    assert_eq!(got, json!(remote_two));
+    std::fs::write(ws.join("x.md"), "merged\n").unwrap();
     let got = pure_with(
         over,
         PLUMBING,
@@ -674,7 +801,7 @@ fn export_import_and_push_work_on_a_real_git() {
             .split(' ')
             .count(),
         3,
-        "the export after a pull is a merge of the head and the upstream"
+        "the export after a pull over a changed tree is a merge of the head and the upstream"
     );
 }
 
@@ -738,7 +865,8 @@ fn a_foreign_tree_runs_no_code_and_brings_no_credentials() {
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(ws.join("x.md"), "x\n").unwrap();
     let marker = t.join("ran");
-    let over = json!({"base_path": base, "remotes": {
+    let gd = t.join("git-dirs");
+    let over = json!({"base_path": base, "git_dir": gd, "remotes": {
         "origin": bare, "hub": "https://bot:ghp_secret@example.invalid/r.git",
         "scp": "git@example.invalid:r.git"}});
     let first = pure_with(
@@ -749,11 +877,28 @@ fn a_foreign_tree_runs_no_code_and_brings_no_credentials() {
         json!(null),
     );
     assert_eq!(first, json!("ok"));
-    let hook = ws.join(".git/hooks/pre-push");
+    std::fs::create_dir_all(gd.join("B/hooks")).unwrap();
+    let hook = gd.join("B/hooks/pre-push");
     std::fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    git(&ws, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
+    git(
+        &gd.join("B"),
+        &["config", "core.fsmonitor", hook.to_str().unwrap()],
+    );
+    // GH #980 M1: a `.git` a program leaves in the work tree is a directory
+    // like any other -- its filter never runs, git never reads it.
+    let planted = t.join("planted");
+    std::fs::create_dir_all(ws.join(".git/info")).unwrap();
+    std::fs::write(
+        ws.join(".git/config"),
+        format!(
+            "[filter \"x\"]\n\tclean = touch {} && cat\n",
+            planted.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(ws.join(".git/info/attributes"), "* filter=x\n").unwrap();
     std::fs::write(ws.join("x.md"), "x2\n").unwrap();
 
     let got = pure_with(
@@ -785,6 +930,7 @@ fn a_foreign_tree_runs_no_code_and_brings_no_credentials() {
         !marker.exists(),
         "a hook or fsmonitor of the repository ran"
     );
+    assert!(!planted.exists(), "a filter of a .git in the work tree ran");
     assert!(!got.to_string().contains("ghp_secret"), "{got}");
 
     // A workspace rooted at `/proj`: the commit holds `a.md`, not `proj/a.md`.
@@ -792,7 +938,7 @@ fn a_foreign_tree_runs_no_code_and_brings_no_credentials() {
     std::fs::create_dir_all(&wr).unwrap();
     std::fs::write(wr.join("a.md"), "a\n").unwrap();
     let got = pure_with(
-        json!({"base_path": base}),
+        json!({"base_path": base, "git_dir": gd}),
         PLUMBING,
         r#"(lambda j: (j.update(root="/proj"), _code(do_export, j,
              {"manifest": json.dumps({"/proj/a.md": {}, "/other.md": {}})}))[1])(
@@ -800,7 +946,10 @@ fn a_foreign_tree_runs_no_code_and_brings_no_credentials() {
         json!(null),
     );
     assert_eq!(got, json!("ok"));
-    assert_eq!(git(&wr, &["ls-files"]), "a.md");
+    assert_eq!(
+        git(&gd.join("R"), &["ls-tree", "-r", "--name-only", "HEAD"]),
+        "a.md"
+    );
 }
 
 /// Review I-1 (Fix-Runde 2): `refs/meclaw/upstream` moves only once a pull
@@ -826,7 +975,8 @@ fn a_failed_pull_never_moves_the_upstream() {
     let ws = base.join("B");
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(ws.join("n.md"), "old\n").unwrap();
-    let over = json!({"base_path": base, "remotes": {"origin": bare}});
+    let gd = t.join("git-dirs");
+    let over = json!({"base_path": base, "git_dir": gd, "remotes": {"origin": bare}});
     let got = pure_with(
         over.clone(),
         PLUMBING,
@@ -854,7 +1004,7 @@ fn a_failed_pull_never_moves_the_upstream() {
     let upstream = || -> String {
         let out = Command::new("git")
             .arg("-C")
-            .arg(&ws)
+            .arg(gd.join("B"))
             .args(["rev-parse", "--verify", "--quiet", "refs/meclaw/upstream"])
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -915,4 +1065,124 @@ fn a_failed_pull_never_moves_the_upstream() {
     assert_eq!(got, json!(["ok", "ok"]));
     assert_eq!(git(&bare, &["show", "main:n.md"]), "merged");
     git(&bare, &["merge-base", "--is-ancestor", &foreign, "main"]);
+}
+
+/// GH #980 m1 (review): L-8 with a HEAD BESIDE the upstream -- a local export
+/// nobody pushed, a pull of the remote's own line, and a workspace that now
+/// holds exactly the upstream's tree. HEAD moves onto the upstream and nothing
+/// is committed; the old head leaves HEAD's line but never the repository: it
+/// stays as `refs/meclaw/superseded/<sha>`, and the answer names it as
+/// `previous`. (A HEAD behind the upstream loses nothing; the round trip of
+/// gh906 holds that case.)
+#[test]
+fn an_export_beside_the_upstream_keeps_the_old_head() {
+    if !shipped() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("a temp dir under TMPDIR");
+    let t = tmp.path();
+    let base = t.join("proj");
+    let src = t.join("src");
+    let bare = t.join("bare.git");
+    std::fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("x.md"), "remote\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-qm", "remote"]);
+    git(
+        t,
+        &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()],
+    );
+    git(&src, &["push", "-q", bare.to_str().unwrap(), "main"]);
+    let upstream = git(&bare, &["rev-parse", "main"]);
+    let ws = base.join("B");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("x.md"), "local\n").unwrap();
+
+    let over = json!({"base_path": base, "git_dir": t.join("git-dirs"),
+                      "remotes": {"origin": bare}});
+    let got = pure_with(
+        over.clone(),
+        PLUMBING,
+        r#"[do_export(_job("ws_export_git", "B", note="local"),
+                      {"manifest": json.dumps({"/x.md": {}})}).get("commit"),
+            (lambda c: next_write(dict(_job("ws_pull", "B"), id="gj-t", steps=[], i=0,
+                 tally={"created": 0, "modified": 1, "removed": 0}, skipped=[],
+                 upstream=c))[1]["upstream"])(
+                 do_fetch(_job("ws_pull", "B", remote="origin", branch="main"))[0])]"#,
+        json!(null),
+    );
+    let local = got[0]
+        .as_str()
+        .expect("the local export commits")
+        .to_string();
+    assert_eq!(got[1], json!(upstream), "{got}");
+    // The pull wrote the remote's file: the tree is the upstream's.
+    std::fs::write(ws.join("x.md"), "remote\n").unwrap();
+    let got = pure_with(
+        over,
+        PLUMBING,
+        r#"(lambda r, repo: [r.get("error", {}).get("code"), r.get("commit"),
+                             r.get("previous"),
+                             rev(repo, "refs/meclaw/superseded/" + str(r.get("previous"))),
+                             rev(repo, "HEAD")])(
+               do_export(_job("ws_export_git", "B", note="again"),
+                         {"manifest": json.dumps({"/x.md": {}})}),
+               repo_of(_job("ws_export_git", "B")))"#,
+        json!(null),
+    );
+    assert_eq!(
+        got,
+        json!(["nothing_to_commit", upstream, local, local, upstream]),
+        "expected HEAD on the upstream and the local export kept as superseded"
+    );
+}
+
+/// GH #980 m3 (review): the `subject` an export answers is what `git log -1
+/// --format=%s` shows for its commit, read from git and not rebuilt -- git
+/// joins the lines of the first paragraph, so `two\nlines\n\nbody` is the
+/// subject `two lines`.
+#[test]
+fn the_subject_is_what_git_logs() {
+    if !shipped() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("a temp dir under TMPDIR");
+    let t = tmp.path();
+    let base = t.join("proj");
+    std::fs::create_dir_all(base.join("B")).unwrap();
+    let over = json!({"base_path": base, "git_dir": t.join("git-dirs")});
+    let setup = format!(
+        "{PLUMBING}\n{}",
+        r#"
+def _subjects(notes):
+    got = []
+    for i, n in enumerate(notes):
+        with open(os.path.join(P["base_path"], "B", "a.md"), "w") as f:
+            f.write("v%d\n" % i)
+        r = do_export(_job("ws_export_git", "B", note=n),
+                      {"manifest": json.dumps({"/a.md": {}})})
+        logged = out(argv(repo_of(_job("ws_export_git", "B")), "log", "-1", "--format=%s",
+                          r.get("commit") or "HEAD"))
+        got.append([r.get("subject"), logged])
+    return got
+"#
+    );
+    let notes = json!([
+        "one line",
+        "two\nlines\n\nbody",
+        "  padded  \nnext",
+        "P-1: add ops\n\nbody"
+    ]);
+    let got = pure_with(over, &setup, "_subjects(ARGS)", notes.clone());
+    let rows = got.as_array().expect("one row per note");
+    assert_eq!(rows.len(), 4, "{got}");
+    for (note, row) in notes.as_array().unwrap().iter().zip(rows) {
+        assert!(
+            row[1].as_str().is_some_and(|s| !s.is_empty()),
+            "note {note}: git logged no subject: {row}"
+        );
+        assert_eq!(row[0], row[1], "note {note}: answer vs git log");
+    }
+    assert_eq!(rows[1][1], json!("two lines"), "{got}");
 }

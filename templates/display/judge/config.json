@@ -36,7 +36,8 @@
               "tokens_cache_write": {"type": "number", "required": false},
               "cost": {"type": "number", "required": false},
               "cache_expires_at": {"type": "string", "required": false},
-              "context_window": {"type": "number", "required": false}}
+              "context_window": {"type": "number", "required": false},
+              "dropped": {"type": "array", "required": false}}
     },
     "consumes": {"body": {"messages": {"type": "array", "required": true}, "system": {"type": "object", "required": false}}},
     "capabilities": ["network:llm", "db:own"]

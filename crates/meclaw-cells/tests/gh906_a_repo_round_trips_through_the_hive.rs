@@ -20,9 +20,10 @@
 //!    old head and the upstream).
 //!
 //! Every answer is read where it arrives -- at a capture cell behind the
-//! hive path -- and the run leaves no dead letter. The source repository and
-//! the remote live under `base_path` (the sandbox reads and writes nothing
-//! else), everything under the test's temporary directory; no network.
+//! hive path -- and the run leaves no dead letter. The source repository
+//! lives under `base_path`, the remote beside it (a push target under
+//! `base_path` is `remote_inside_base`), both granted to the sandbox and
+//! nothing else, everything under the test's temporary directory; no network.
 //! Every request carries the colony's own TTL (`MESSAGE_DEFAULT_TTL`): each
 //! file step of a projection job enters the space through a door that
 //! restores it (GH #975), so no request needs a budget of its own.
@@ -178,6 +179,17 @@ fn owner_overrides(
         }
         if dir.ends_with("projection/git") {
             cfg["params"]["remotes"] = json!({"origin": bare});
+            // GH #980 M1: the repositories live beside `base_path`, granted
+            // to the git cell alone.
+            let gd = base
+                .parent()
+                .expect("base_path has a parent")
+                .join("git-dirs");
+            cfg["params"]["git_dir"] = json!(gd);
+            // The remote beside `base_path` is the owner's grant to the git
+            // cell too (one under it would be `remote_inside_base`).
+            let remotes = bare.parent().expect("a remote's directory");
+            cfg["params"]["sandbox"]["filesystem"]["write"] = json!([base, gd, remotes]);
         }
         if dir.ends_with("derive") {
             cfg["params"]["summary_on_commit"] = json!("0");
@@ -364,7 +376,7 @@ async fn a_repo_round_trips_through_the_hive() {
     let td = tempfile::TempDir::new().expect("a temp dir under TMPDIR");
     let base = td.path().join("projection");
     let src = base.join("source");
-    let bare = base.join("remote.git");
+    let bare = td.path().join("remotes").join("remote.git");
     // The source: twelve entries -- README, nine text files, one binary, one
     // symlink.
     std::fs::create_dir_all(src.join("notes")).unwrap();
@@ -382,6 +394,8 @@ async fn a_repo_round_trips_through_the_hive() {
         &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()],
     );
 
+    std::fs::create_dir_all(td.path().join("git-dirs"))
+        .expect("git_dir exists before the cells spawn");
     let granted = build(&td, &base, &bare);
     assert!(granted >= 1, "at least `git` carries a base_path");
     let mut run = boot(&td).await;
@@ -472,7 +486,7 @@ async fn a_repo_round_trips_through_the_hive() {
         )
         .await);
     assert_eq!(ex["files"], json!(11), "{ex}");
-    let proj_b = base.join("B");
+    let proj_b = td.path().join("git-dirs").join("B");
     assert_eq!(git(&proj_b, &["log", "--format=%s"]), "export one");
     ok(run
         .ask(
@@ -533,15 +547,51 @@ async fn a_repo_round_trips_through_the_hive() {
         .ask("in_read", "read", Some("/notes/n3.md"), json!({}), "B")
         .await);
     assert!(n3.to_string().contains("changed outside"), "{n3}");
-    ok(run
+    // GH #980 L-8: right after the pull the workspace IS the upstream's tree,
+    // and the old head is an ancestor of the upstream. The export moves HEAD
+    // onto the upstream and commits nothing -- before, it wrote a merge commit
+    // over an unchanged tree and pushed it.
+    let same = run
         .ask(
             "in_ws",
             "ws_export_git",
             None,
-            json!({"note": "merge outside"}),
+            json!({"note": "nothing new"}),
+            "B",
+        )
+        .await;
+    assert_eq!(same["error"]["code"], json!("nothing_to_commit"), "{same}");
+    assert_eq!(same["commit"], json!(outside), "{same}");
+    assert_eq!(git(&proj_b, &["rev-parse", "HEAD"]), outside);
+    // A real change after the pull commits on top of the upstream, and the
+    // push fast-forwards.
+    let rd = ok(run
+        .ask("in_read", "read", Some("/README.md"), json!({}), "B")
+        .await);
+    let base_v = rd["version"].as_str().expect("a version").to_string();
+    ok(run
+        .ask(
+            "in_write",
+            "replace",
+            Some("/README.md"),
+            json!({"old": "changed in the hive", "new": "changed after the pull", "base": base_v}),
             "B",
         )
         .await);
+    let after = ok(run
+        .ask(
+            "in_ws",
+            "ws_export_git",
+            None,
+            json!({"note": "after outside"}),
+            "B",
+        )
+        .await);
+    assert_eq!(
+        git(&proj_b, &["rev-parse", "HEAD^"]),
+        outside,
+        "the commit sits on the upstream: {after}"
+    );
     ok(run
         .ask(
             "in_ws",
@@ -553,7 +603,7 @@ async fn a_repo_round_trips_through_the_hive() {
         .await);
     assert_eq!(
         git(&bare, &["log", "-1", "--format=%s", "main"]),
-        "merge outside"
+        "after outside"
     );
     assert!(
         git(&bare, &["merge-base", "--is-ancestor", &outside, "main"]).is_empty(),

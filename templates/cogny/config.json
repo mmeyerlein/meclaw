@@ -194,7 +194,7 @@
         {
           "from": "./collector",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 12",
+          "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 20",
           "modifier": {
             "set_hop": {
               "route": "'in_curate'"
@@ -205,7 +205,7 @@
         {
           "from": "./curator",
           "to": "./brain",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",

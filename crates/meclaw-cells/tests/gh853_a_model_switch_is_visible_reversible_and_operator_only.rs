@@ -433,6 +433,9 @@ fn the_package_keys_are_the_contract() {
             "cache_mode",
             "cache_ttl_s",
             "context_window",
+            // GH #993: which sampling params the model takes -- a contract
+            // change, made on purpose.
+            "supported_params",
         ]
     );
     // Every package key is a known, run-time-mutable param.

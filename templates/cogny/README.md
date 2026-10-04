@@ -1,4 +1,4 @@
-# `cogny@5.7.1`
+# `cogny@5.8.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.7.0"},
+{"cell": {"type": "ref", "template": "curator@1.7.1"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.7.1` above it in its provenance chain.
+`cogny@5.8.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -498,7 +498,7 @@ So `4.4.0` takes the split out and moves the class boundary into the one place a
 reads before it decides -- the `consult_cogny` description this core now hands out itself:
 
 ```
-        curator ══(brain, iter < 12, restore_ttl)══> brain
+        curator ══(brain, iter < 20, restore_ttl)══> brain
                                                        │
                    dispatcher <──(stop | tool_calls)───┘
                           │
@@ -533,9 +533,9 @@ edges and are neither drawn nor wireable from here. Every edge below names `coll
 reads:
 
 ```
-collector  ==(curate, iter < 12, restore_ttl)==========> curator   in_curate  <- the whole
+collector  ==(curate, iter < 20, restore_ttl)==========> curator   in_curate  <- the whole
                                                                     round, #889
-curator    ==(brain, iter < 12, restore_ttl)===========> brain       <- THE SEAM
+curator    ==(brain, iter < 20, restore_ttl)===========> brain       <- THE SEAM
 collector  --(menu)------------------------------------> curator   in_slots   <- the answered
                                                                     menu, #464
 collector  --(schemas)----------------------------------> curator   in_schemas <- the curator
@@ -595,15 +595,20 @@ consulted only after every ordinary edge out of `dispatcher` has declined. From 
 (GH #889) no ordinary edge claimed a tool name; since #894 one does again,
 `dispatcher -> ask` for `ask_requester`.
 
-**The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
+**The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 20` is a safety
 belt, not the policy: the round is bounded by `max_iter`, which ends a runaway
 round with a message on the `answer` lane instead of a silence. The edge number only has
-to be larger. Env substitution does not reach edge conditions -- a `${VAR}` there would be
+to be larger -- it was `12` until [#980](https://github.com/mmeyerlein/meclaw/issues/980),
+which raised this template's `max_iter` to `16`, and a literal at or under the knob cuts the
+round off without the capped answer (the talky keeps `12` over its `8`). Env substitution does not reach edge conditions -- a `${VAR}` there would be
 registered verbatim and fail to parse as CEL -- so raising it is a mutation:
 `remove_edges` first, `add_edges` second, in **two** mutations.
 
-**`max_iter` is a knob, and a thorough errand can reach it.** The shipped default is
-`8` -- the collector's own, and generous for a question that takes two or three lookups.
+**`max_iter` is a knob, and a thorough errand can reach it.** The collector's own default
+is `8`, generous for a question that takes two or three lookups; this template ships `16`
+([#980](https://github.com/mmeyerlein/meclaw/issues/980)): a core that changes code reads,
+writes, runs the tests, commits, exports, pushes and notes in one round, ten to thirteen
+tool calls.
 A core told to research something in depth spends an iteration per search, and one that
 reaches the bound does not fail: the seam leaves on `answer` with
 `hop.round_capped == "1"` and, since `collector@3.5.0`, `hop.partial == "1"` beside it,
@@ -642,8 +647,8 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 
 | knob | where | default | unit |
 |---|---|---|---|
-| `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` with `hop.round_capped == "1"`, `hop.partial == "1"` and a named partial answer as its last turn ([#570](https://github.com/mmeyerlein/meclaw/issues/570)). Raise it per instance for research-sized errands -- see above |
-| `round_idle_ms` | param | `120000` | collector -- idle window of one tool round |
+| `max_iter` | param | `16` (collector default `8`, [#980](https://github.com/mmeyerlein/meclaw/issues/980)) | collector -- **the loop bound**; at the cap the seam leaves on `answer` with `hop.round_capped == "1"`, `hop.partial == "1"` and a named partial answer as its last turn ([#570](https://github.com/mmeyerlein/meclaw/issues/570)). Raise it per instance for research-sized errands -- see above |
+| `round_idle_ms` | param | `630000` (collector default `120000`, [#980](https://github.com/mmeyerlein/meclaw/issues/980)) | collector -- idle window of one tool round; one program run of a file space's projection may take `exec_timeout_ms` (600000), so the window is that plus 30 s |
 | `memory_tier` | param | `""` | collector -- the AMBIENT memory leg, and it stays **empty** at this template since 4.4.0: a problem solver asks on purpose. Setting it gives the core a bundle before it has read the question, and pays for it every consult |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `interim` | param | `""` | dispatcher -- **off at this template since 4.4.0** ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). On (the shipped default, and what a channel voice keeps) a sentence standing next to a tool bundle leaves on the `answer` lane at once. This core has no channel, and its `answer` lane is the asking voice's advice lane, so such a sentence arrives as an advice nobody gave. Off it does not leave the dispatcher at all, and therefore does not enter this core's own window either -- a sentence nobody could hear was never said. The FINAL answer is untouched |
@@ -675,7 +680,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.7.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.8.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

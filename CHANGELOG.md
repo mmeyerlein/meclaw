@@ -12,6 +12,22 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.61.0] — 2026-10-04
+
+### Added
+
+- **A writer tests, exports and pushes its workspace with one call each** ([#980](https://github.com/mmeyerlein/meclaw/issues/980)). `file-space@1.4.0` offers `file_ws_exec`, `file_ws_export` and `file_ws_push` to the core where the owner set `projection_tools`; `projection@1.1.0` takes the root form (`root` instead of a workspace, a push names only a configured remote), echoes `argv`, `ws`, `root` and the commit `subject`, keeps its bare repositories under an owner-granted `git_dir` outside `base_path`, refuses a push to a local remote under `base_path` (`remote_inside_base`), and an export right after a pull commits nothing. `cogny@5.8.0` runs longer rounds (`hop.iter < 20`, `max_iter` 16).
+- **An app can hand the core a run and hear it to the end** ([#981](https://github.com/mmeyerlein/meclaw/issues/981)). A tool offer may name its `callers` (the core among them), and an app's `runs` key draws one edge from the app onto the brain's rim, a tap for every tool result (`run_tool_result`) and the end (`run_answer`); `builder@1.26.0` draws it and `assistant@3.7.0` carries the two lanes. A run is keyed on `run_id`, its session is `run:<app>:<run_id>`, and a chain of runs is bounded at 16 (`run_chain_exhausted`).
+- **An `llm` cell sends a sampling param only when its model takes it** ([#993](https://github.com/mmeyerlein/meclaw/issues/993)). A model package may name the sampling fields its model accepts (`supported_params`, by request-body name: `temperature`, `top_p`, `reasoning`, `reasoning_effort`, `thinking_token_budget`); the cell leaves every other sampling field out of the request and names each one in `hop.dropped` of the answer. Without a list the request is byte for byte the one of before, and a key in `provider_extra` is never dropped. `supported_params` is a model-package key, so `llm-registry@2.6.0` pushes it from a catalogue row's `package`; every shipped `llm` cell declares `hop.dropped`.
+
+### Changed
+
+- **Wiring keys are the colony's, never a template's** ([#981](https://github.com/mmeyerlein/meclaw/issues/981)). `run_id`, `run_app` and `run_chain` join `turn_round` and `speaker` as stamped context keys: the `edge_schema` check refuses a config edge that writes one per `set_context` or sets `ctx_<key>` per `set_hop`, and refuses a delete of the loop counter `run_chain`, exactly or by prefix. A tree that breaks the rule does not boot.
+
+### Fixed
+
+- **A page number on a file without pages no longer refuses the read** ([#994](https://github.com/mmeyerlein/meclaw/issues/994)). Models that fill every optional field sent `file_read` with `page: 0` or `1` beside `from`/`to` for a source file, and `page` took precedence, so every such read answered `page_unknown`. On a version without pages `page` 0 or 1 is now ignored (the range or the whole file is read, the answer says `ignored: ["page"]`); any other page number there stays `page_unknown`, and a paged document pages as before. The `file_read` tool description says so.
+
 ## [0.60.1] — 2026-10-04
 
 ### Fixed

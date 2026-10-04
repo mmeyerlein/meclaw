@@ -132,6 +132,10 @@
           "type": "number",
           "required": false
         },
+        "dropped": {
+          "type": "array",
+          "required": false
+        },
         "refused_subscriber": {
           "type": "string",
           "required": false

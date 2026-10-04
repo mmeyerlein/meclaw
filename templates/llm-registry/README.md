@@ -1,4 +1,4 @@
-# `llm-registry@2.5.1`
+# `llm-registry@2.6.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -61,6 +61,12 @@ per composite beside its push edges (since `builder@1.15.1`). A generation grown
 none; draw one per composite at `/os/orgs` -- `{"from": "./<…>/talky", "to": ".", "condition":
 "has(hop.route) && hop.route == 'model_refused'"}` -- or its refusals dead-letter `no_route`, as
 loudly as before and still not in `show`. No op and no command changed.
+
+Since [#993](https://github.com/mmeyerlein/meclaw/issues/993) a row's `package` may carry
+`supported_params`, the sampling fields its model takes (`temperature`, `top_p`, `reasoning`,
+`reasoning_effort`, `thinking_token_budget`). The push hands it to the cell, which then sends only
+those and names every sampling field it left out in `hop.dropped`; a row without it pushes a
+`$reset` of the key, and the cell sends what it always sent.
 
 ## Two layers: the start value and the registry
 

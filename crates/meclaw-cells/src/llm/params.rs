@@ -346,6 +346,18 @@ pub struct LlmParams {
     /// computes its compression point from it. A package key.
     #[serde(default)]
     pub context_window: u64,
+    /// GH #993: the sampling params the model takes, by their request-body
+    /// name (`temperature`, `top_p`, `reasoning`, `reasoning_effort`,
+    /// `thinking_token_budget`). `None` (the default) = the request of before:
+    /// the cell sends every sampling field it has a value for. A list = the
+    /// cell sends a sampling field only when the list names it, and every one
+    /// it leaves out is named in `hop.dropped` of the answer -- a model that
+    /// refuses an unknown field (measured: one refused `temperature`) is then
+    /// called without it instead of failing. A key in `provider_extra` is
+    /// never dropped: the pass-through stays the operator's last word. A
+    /// package key: the registry pushes it with the model it belongs to.
+    #[serde(default)]
+    pub supported_params: Option<Vec<String>>,
 }
 
 /// GH #890: the values `cache_mode` takes, as the refusal names them.
@@ -417,6 +429,7 @@ pub const REQUIREMENT_MAX_BYTES: usize = 2 * 1024;
 /// the contract the registry pushes against — a change here is a contract
 /// change. GH #890 adds the three that belong to a model as much as its name
 /// does: how its provider caches, for how long, and how large its window is.
+/// GH #993 adds which sampling params the model takes at all.
 pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "model",
     "base_url",
@@ -433,6 +446,7 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "cache_mode",
     "cache_ttl_s",
     "context_window",
+    "supported_params",
 ];
 
 /// GH #853: the absolute floor of the backstop margin, in ms.
@@ -847,6 +861,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "cache_mode",
     "cache_ttl_s",
     "context_window",
+    // GH #993: the sampling params the model takes, a package key.
+    "supported_params",
     // P10 auth dimension.
     "auth",
     "auth_ref",

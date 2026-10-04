@@ -66,7 +66,12 @@ pub(crate) fn build_responses_request(
     // ARE valid on the official Responses API, so the cut belongs on `auth`,
     // not on `wire_dialect` — the metered lane keeps its sampling control.
     if params.auth != AuthMode::OauthSubscription {
-        body.insert("temperature".into(), json!(params.temperature));
+        // GH #993: the sampling field only when the model takes it.
+        for (key, value) in sampling_fields(params) {
+            if crate::llm::translate::takes_param(params, key) {
+                body.insert(key.into(), value);
+            }
+        }
         body.insert("max_output_tokens".into(), json!(params.max_tokens));
     }
     if !tools_extracted.is_empty() {
@@ -80,6 +85,16 @@ pub(crate) fn build_responses_request(
         body.insert(k.clone(), v.clone());
     }
     Ok(Value::Object(body))
+}
+
+/// GH #993: the sampling fields of a Responses request, before the model's
+/// `supported_params` is laid over them: `temperature`, except on the
+/// subscription lane, which never carries it (P14 above).
+pub(crate) fn sampling_fields(params: &LlmParams) -> Vec<(&'static str, Value)> {
+    if params.auth == AuthMode::OauthSubscription {
+        return Vec::new();
+    }
+    vec![("temperature", serde_json::json!(params.temperature))]
 }
 
 /// GH #890: lay the cache wire over a built Responses request.

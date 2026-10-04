@@ -15,7 +15,7 @@
       "accepts": [
         {
           "route": "in_proj",
-          "because": "a projection operation: body `{op, args}`, hop `op`, `op_id`, `ws` (a workspace name or id), `caller?`. `ws_materialize(force?)`, `ws_exec(argv, timeout_ms?)`, `ws_adopt(run, ids | 'all')` (cell `mat`); `ws_export_git(note)`, `ws_import_git(source, ref?)`, `ws_push(remote, branch?)`, `ws_pull(remote, branch?)` (cell `git`, GH #906). Answered by exactly one `answer`"
+          "because": "a projection operation: body `{op, args}`, hop `op`, `op_id`, `ws` (a workspace name or id), `caller?`. `ws_materialize(force?)`, `ws_exec(argv, timeout_ms?)`, `ws_adopt(run, ids | 'all')` (cell `mat`); `ws_export_git(note)`, `ws_import_git(source, ref?)`, `ws_push(remote, branch?)`, `ws_pull(remote, branch?)` (cell `git`, GH #906); `ws_export_git(root, note)` and `ws_push(root, remote)` without `hop.ws` address the git projection of a root (GH #980). Answered by exactly one `answer`"
         },
         {
           "route": "in_answer",

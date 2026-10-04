@@ -1,4 +1,4 @@
-# `assistant@3.6.2`
+# `assistant@3.7.0`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and ninety-seven edges.
@@ -193,9 +193,9 @@ to reason about.
 
 ## Lanes
 
-Twenty-six, all at the assistant's own path (`in_pin` is the twenty-first, #916; `in_stats` and its answer `stats` the next two, #926; `in_candidate`, `in_read` and `thing_seen` the last three, #949) — plus **eleven that name
-a connect point**, three more than before 2.5.1, two more than before 2.9.0 and two more since #949 (`candidate_ack` and `read`, which dock at the three brains). Nine of the
-eleven never reach this rim at all: `brief` and `in_briefing`
+Twenty-six, all at the assistant's own path (`in_pin` is the twenty-first, #916; `in_stats` and its answer `stats` the next two, #926; `in_candidate`, `in_read` and `thing_seen` the last three, #949) — plus **thirteen that name
+a connect point**, three more than before 2.5.1, two more than before 2.9.0, two more since #949 (`candidate_ack` and `read`, which dock at the three brains) and two more since #981 (`run_answer` at `./cogny`, `run_tool_result` at `./tools`). Eleven of the
+thirteen never reach this rim at all, the two run lanes among them (§ *A run*): `brief` and `in_briefing`
 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)), both
 `at: ["./talky", "./talky-chat"]`, and five older ones: `in_pack` and `pack_ack`
 ([#561](https://github.com/mmeyerlein/meclaw/issues/561)), `recall` and
@@ -246,7 +246,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.6.0` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.6.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out -- three since [#895](https://github.com/mmeyerlein/meclaw/issues/895), when the recipe drew the typed surface's road too |
 | `brief` | the brief of a turn about its counterpart, for the member's `affinity`: raised by a surface's collector when its `brief_slots` is set and the turn carries `context.counterpart`, leaving on a v-lane with `context.brief_surface` stamped. The member stamps the asker. Since 2.9.0 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `error` | a normalised failure from anything inside this generation — the surface or the reasoning core. A **channel's** failure is no longer among them: since #454 the connector stands in the member's `channels` container and its failures leave beside this lane, one level up |
@@ -257,6 +257,8 @@ door `. -> <generation>` every growth recipe draws.
 | `pack_ack` | the receipt one `in_pack` answers with — **three times** per pack since #877, once per occupant rim, and that is the fan-out's arithmetic rather than a defect (`./cogny` answers once for both of its brains). A caller here counts occupants, not packs; the sender reads its own delivery off `hop.pack_owner` and `hop.error_code`, which every receipt carries. Joining the two would need a cell at this level to hold them, and this level holds no state of any kind. Since 2.4.0 it rides the road it came in on: the same `"at"` connect points, one v-lane per rim, back out to whoever drew the corridor — a v-lane is judged at BOTH ends, so the level that vouches for the push vouches for the receipt too (#561). Since 2.1.0 (#458) |
 | `export_done` | the keeper inside `./talky` wrote its whole session ledger itself and says where: `hop.seed_dir` (relative to the fence its store declares), `hop.export_hive`, `hop.export_of`, `hop.rows_written`. Carried out of this level unchanged. Since 2.5.0 ([#555](https://github.com/mmeyerlein/meclaw/issues/555)) |
 | `dump` | the receipt of one applied import part (`hop.rows_written`, `hop.export_final == "1"` on the last). Since #555 that is all this lane carries. **Drain it with a PLAIN `hop.route == 'dump'` test** — an edge that also tested a second hop key reads as no drain under the `required_drains` probe. The member does exactly that and carries it out of the level. A refusal never travels here: the surface normalises a porter refusal into `error` before it reaches this level. Since 2.1.0 (#475) |
+| `run_answer` | the end of a run, `at: ["./cogny"]`: the brain's `answer`, `error` or `model_refused` of a turn with a non-empty `context.run_id`, onto the cell of the app that handed the run. Docks at the brain and never reaches this rim (§ *A run*) |
+| `run_tool_result` | a tool result of a run, `at: ["./tools"]`: a tap beside `./tools -> ./cogny`, onto the same cell. Docks at the tool hive (§ *A run*) |
 
 **GH #552 moved four.** Until `assistant@2.5.0` the memory road crossed this level
 only as `recall` / `in_bundle` — the AMBIENT leg, fired once per turn before the model
@@ -447,6 +449,43 @@ goes through ([`../member/README.md`](../member/README.md) § *What transits
 `templates/member/config.json` off the tree and fails until this level moves with
 them; `§ the_boundary_matches_the_member_this_level_is_instantiated_into` is the
 half that admits no drift between this contract and the member's.
+
+## A run
+
+An installed app may hand a brain of this generation a **run**
+([#981](https://github.com/mmeyerlein/meclaw/issues/981)): one turn whose tool
+results and end the app hears. The app declares `runs: {at, brain}` (builder
+README § *An app is a declaration*), and its installation draws the whole road;
+three pieces of it touch this level, which declares two and draws none.
+
+- **The door is not this level's.** The run enters the brain's rim directly,
+  on ONE edge the app's installation draws at the member
+  (`./apps/<app> -> ./assistants/<generation>/cogny`), `run_turn` restamped
+  `in_turn` with the routing budget restored -- a door like the consult, one
+  model call on the core's side. This level draws no edge for it and declares
+  no lane: an entry lane here would have to be one an occupant takes, and the
+  brain takes the run as the `in_turn` it already accepts. The edge carries no
+  `lane` either -- its other end sits in the member's app container, which
+  declares no contract to dock at. The context the door writes is the builder's word, not the app's: `run_id`,
+  `run_app`, `run_chain` (the run's place in its causal chain; the door
+  passes at most 16 runs of one chain, GH #82), `session_id =
+  run:<app>:<run_id>` (one session per run and app -- this level holds no run
+  state), the generation, the member's round in `audience_set`, `audience_now`
+  and `turn_round`, and an empty `speaker`. `run_id`, `run_app` and
+  `run_chain` are stamped keys: no edge of an app writes them. `consult_class = 'run'` is a label; the first tool call deletes it.
+- **The end.** The run's `answer` -- or `error`, or `model_refused` -- leaves
+  the brain's rim on the v-lane `run_answer` straight to the app's cell. The
+  four edges that carry a core's `answer` and `ask` to the surfaces carry no
+  turn with a non-empty `context.run_id`: a run is keyed on `run_id`, never on
+  `consult_class`, and it never reaches a surface.
+- **The tool results.** `run_tool_result` docks at `./tools`: a tap beside
+  `./tools -> ./cogny`, so the tool hive's result reaches the brain AND the
+  app. The results that enter this level on its rim (`in_tool`, from the
+  member's holders) are tapped one level up, on the member's own edges that
+  hand them down.
+
+`context.run_id` survives every edge of a tool round: no `delete_context` list
+of this level names it (`crates/meclaw-cells/tests/gh981_run_id_survives_the_tool_path.rs`).
 
 ## Two edges to the tool surface, and neither names a tool
 
@@ -739,7 +778,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.6.2",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.0",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

@@ -1370,6 +1370,27 @@ impl Colony {
             .collect()
     }
 
+    /// The trace of every strike. A timer emits its strike as a source message, so each
+    /// strike opens a trace of its own, and whatever its pass sends carries that trace.
+    pub async fn strike_traces(&self) -> Vec<String> {
+        self.to_child("compose")
+            .await
+            .iter()
+            .filter(|row| hop_of(row)["route"] == "in_tick")
+            .map(|row| row.trace_id.clone())
+            .collect()
+    }
+
+    /// The trace of every store bundle, in the order of `store_bundles`.
+    pub async fn store_bundle_traces(&self) -> Vec<String> {
+        self.to_child("views")
+            .await
+            .iter()
+            .filter(|row| calls_of(row).is_some())
+            .map(|row| row.trace_id.clone())
+            .collect()
+    }
+
     /// Every event that reached the pass, as `(name, value)`. This is the one place a
     /// gesture becomes a message: the `web` cell sends it, the hive's edge carries it to
     /// `compose`. A gesture that has no wire never shows up here.

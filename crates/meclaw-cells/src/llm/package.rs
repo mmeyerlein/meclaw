@@ -112,6 +112,12 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             "context_window" => {
                 (params.context_window > 0).then(|| params.context_window.to_string())
             }
+            // GH #993: shown only when the model names its params, so the
+            // line of a cell without a list stays the line it always was.
+            "supported_params" => params
+                .supported_params
+                .as_ref()
+                .map(|names| format!("[{}]", names.join(","))),
             _ => None,
         };
         if let Some(v) = value {

@@ -76,6 +76,10 @@
           "type": "number",
           "required": false
         },
+        "dropped": {
+          "type": "array",
+          "required": false
+        },
         "latency_ms": {
           "type": "number",
           "required": false

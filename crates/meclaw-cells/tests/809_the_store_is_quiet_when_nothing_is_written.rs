@@ -43,6 +43,17 @@ async fn the_store_is_quiet_when_nothing_is_written() {
     .await;
     let note = colony.oid(APP, "note");
 
+    // The strokes are counted from HERE, before the first write. A fresh window orders
+    // the next pass one second ahead (`now + 1000` in the compose script) and, once
+    // everything is settled, the next one only at `since + linger_ms` -- 60 s here. The
+    // count used to be taken after both writes and two log reads; under the load of an
+    // integration pass the fresh second had already struck by then, the next stroke lay
+    // beyond the 30 s marker, and the lock went red without the screen doing anything
+    // wrong (welle-loop Z1, integration run 88d9410e: "the clock strikes a pass nobody
+    // wrote did not hold within 30s; DLQ []"). Both writes order their stroke after
+    // this line, so the wait below cannot miss one.
+    let strikes = colony.strikes().await.len();
+
     // Two windows, one of them pinned (§ 7.6): a pinned window is the one that lives on.
     colony
         .put(
@@ -62,7 +73,6 @@ async fn the_store_is_quiet_when_nothing_is_written() {
         .await;
     let bundles = colony.store_bundles().await.len();
     let rest = colony.rest_rows().await;
-    let strikes = colony.strikes().await.len();
 
     // Nobody writes. The fresh second the curator ordered strikes, and its pass runs: the
     // note is `settled` at `web` afterwards.
@@ -90,6 +100,22 @@ async fn the_store_is_quiet_when_nothing_is_written() {
         colony.rest_rows().await,
         rest,
         "and the rest row was not written again"
+    );
+    // The same claim without a window: a stroke opens a trace of its own, so a store
+    // bundle a stroke's pass sent carries a stroke's trace. This holds even when a stroke
+    // landed before the two counts above were taken.
+    let stroke_traces = colony.strike_traces().await;
+    let asked = colony
+        .store_bundle_traces()
+        .await
+        .into_iter()
+        .filter(|t| stroke_traces.contains(t))
+        .count();
+    assert_eq!(
+        asked,
+        0,
+        "{} strokes ran and {asked} store bundles came out of their passes (GH #809)",
+        stroke_traces.len()
     );
     assert_eq!(
         colony.writes_taken().await.len(),

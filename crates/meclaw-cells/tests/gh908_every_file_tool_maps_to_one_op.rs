@@ -4,12 +4,14 @@
 //! the whole space in one process for the calls (the shipped edges evaluated by
 //! the colony's CEL, the store behind its own dispatcher).
 //!
-//! 1. **One list, one op per name.** `FILE_OFFER` holds 37 tools (30 of GH
-//!    #908, the seven directory and node tools of GH #947), every name is
-//!    `file_<op>` of an op the space's own cells serve (`./read` `OPS`,
-//!    `./write` `WRITE_OPS`, `./ws` `OPS`; `ask` and `dir_summary` `./derive`),
-//!    the lane follows from the name, and `raw`, `ws_tree` and the projection
-//!    ops are on no menu (OR-FJ-G4).
+//! 1. **One list, one op per name.** `FILE_OFFER` holds 40 tools (30 of GH
+//!    #908, the seven directory and node tools of GH #947, the three
+//!    projection tools of GH #980), every name is `file_<op>` of an op the
+//!    space's own cells serve (`./read` `OPS`, `./write` `WRITE_OPS`, `./ws`
+//!    `OPS`; `ask` and `dir_summary` `./derive`) or one of the three
+//!    `PROJECTION_TOOLS` of an op the projection serves (`mat`/`git` `OPS`),
+//!    the lane follows from the name, and `raw`, `ws_tree` and the other
+//!    projection ops are on no menu (OR-FJ-G4).
 //! 2. **Two copies, one value.** `./schemas` hands the list out and `./tools`
 //!    checks every call against it; a code cell shares no library, so the two
 //!    literals are held equal here.
@@ -89,10 +91,12 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
     let ws_ops: BTreeSet<String> = strings(&pure("ws", "list(OPS)", json!(null)))
         .into_iter()
         .collect();
+    let proj_ops: BTreeSet<String> = projection_ops();
+    let proj_map = pure("tools", "PROJECTION_TOOLS", json!(null));
     let rows = map.as_array().unwrap();
-    assert_eq!(rows.len(), 37, "37 file tools: {map}");
+    assert_eq!(rows.len(), 40, "40 file tools: {map}");
     let mut seen = BTreeSet::new();
-    let (mut r, mut w, mut s) = (Vec::new(), 0, 0);
+    let (mut r, mut w, mut s, mut p) = (Vec::new(), 0, 0, Vec::new());
     for row in rows {
         let name = row[0].as_str().unwrap();
         let op = row[1]
@@ -100,7 +104,16 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
             .unwrap_or_else(|| panic!("{name} maps to no op"));
         let lane = row[2].as_str().unwrap();
         assert!(seen.insert(name.to_string()), "{name} twice");
-        assert_eq!(name, format!("file_{op}"), "the name IS the mapping");
+        if lane == "in_proj" {
+            // GH #980: the one other rule, a table of three names.
+            assert_eq!(
+                proj_map[name],
+                json!(op),
+                "{name}: PROJECTION_TOOLS names {op}"
+            );
+        } else {
+            assert_eq!(name, format!("file_{op}"), "the name IS the mapping");
+        }
         match lane {
             "in_read" => {
                 assert!(
@@ -117,18 +130,56 @@ fn every_file_tool_maps_to_one_op_the_space_serves() {
                 assert!(ws_ops.contains(op), "{op} is no op of ./ws");
                 s += 1;
             }
+            "in_proj" => {
+                assert!(proj_ops.contains(op), "{op} is no op of ./projection");
+                p.push(name.to_string());
+            }
             other => panic!("{name}: lane {other}"),
         }
-        for banned in ["raw", "ws_tree", "ws_materialize", "ws_exec", "ws_adopt"] {
+        for banned in [
+            "raw",
+            "ws_tree",
+            "ws_materialize",
+            "ws_adopt",
+            "ws_import_git",
+            "ws_pull",
+        ] {
             assert_ne!(op, banned, "{banned} is on no menu (OR-FJ-G4)");
         }
     }
     assert_eq!(r, READS.to_vec(), "the fourteen reads, in menu order");
     assert_eq!((w, s), (16, 7), "sixteen writes, seven workspace ops");
+    assert_eq!(
+        p,
+        ["file_ws_exec", "file_ws_export", "file_ws_push"],
+        "the three projection tools, in menu order (GH #980)"
+    );
     // `ask` (B1 E) and `dir_summary` (GH #947) are the reads `./read` does not
     // serve: `./derive` does.
     assert!(!read_ops.contains("ask"));
     assert!(!read_ops.contains("dir_summary"));
+}
+
+/// The ops the projection's `mat` and `git` cells serve (their `OPS`
+/// literals; the scripts run no pure loader of their own here).
+fn projection_ops() -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for cell in ["mat", "git"] {
+        let cfg = read_json(&repo(&format!("templates/projection/{cell}/config.json")));
+        let script = cfg["params"]["script_inline"].as_str().unwrap_or_default();
+        let line = script
+            .lines()
+            .find(|l| l.starts_with("OPS = ("))
+            .unwrap_or_else(|| panic!("projection/{cell} declares OPS"));
+        for part in line.split('"').skip(1).step_by(2) {
+            out.insert(part.to_string());
+        }
+    }
+    assert!(
+        out.contains("ws_exec") && out.contains("ws_push"),
+        "{out:?}"
+    );
+    out
 }
 
 #[test]

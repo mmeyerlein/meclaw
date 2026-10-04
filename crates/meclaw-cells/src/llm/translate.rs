@@ -154,15 +154,24 @@ pub(crate) fn build_openai_request(
         prev_was_tool_call = is_tool_call;
     }
 
+    // GH #993: only the sampling fields the model takes; the field order of
+    // the request before stays (temperature first, the reasoning after tools).
+    let mut sampling: Vec<(&'static str, Value)> = chat_sampling_fields(params)
+        .into_iter()
+        .filter(|(key, _)| takes_param(params, key))
+        .collect();
     let mut body = Map::new();
     body.insert("model".into(), json!(params.model));
     body.insert("messages".into(), Value::Array(messages));
-    body.insert("temperature".into(), json!(params.temperature));
+    if let Some(i) = sampling.iter().position(|(key, _)| *key == "temperature") {
+        let (key, value) = sampling.remove(i);
+        body.insert(key.into(), value);
+    }
     body.insert("max_tokens".into(), json!(params.max_tokens));
     if !tools_extracted.is_empty() {
         body.insert("tools".into(), Value::Array(tools_extracted.to_vec()));
     }
-    for (key, value) in reasoning_fields(params) {
+    for (key, value) in sampling {
         body.insert(key.into(), value);
     }
     // provider_extra overlay (wins on conflict per cell-types.md:145).
@@ -170,6 +179,62 @@ pub(crate) fn build_openai_request(
         body.insert(k.clone(), v.clone());
     }
     Ok(Value::Object(body))
+}
+
+/// GH #993: the request-body fields a model's `supported_params` governs --
+/// every field the cell writes from a sampling param, plus `top_p`, which no
+/// param writes (it reaches a request only through `provider_extra`, and that
+/// is never dropped) but which a catalogue row may well name.
+pub(crate) const SAMPLING_PARAMS: &[&str] = &[
+    "temperature",
+    "top_p",
+    "reasoning",
+    "reasoning_effort",
+    "thinking_token_budget",
+];
+
+/// GH #993: whether the model takes the request-body field `name`. No list =
+/// it takes everything (the request of before); a list = only what it names.
+/// A field outside [`SAMPLING_PARAMS`] (`model`, `max_tokens`, …) is never
+/// the list's business.
+pub(crate) fn takes_param(params: &crate::llm::params::LlmParams, name: &str) -> bool {
+    !SAMPLING_PARAMS.contains(&name)
+        || params
+            .supported_params
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|n| n == name))
+}
+
+/// GH #993: the sampling fields of a chat-completions request, before the
+/// model's list is laid over them -- `temperature` and the reasoning fields.
+fn chat_sampling_fields(params: &crate::llm::params::LlmParams) -> Vec<(&'static str, Value)> {
+    use meclaw_core::serde_json::json;
+    let mut out = vec![("temperature", json!(params.temperature))];
+    out.extend(reasoning_fields(params));
+    out
+}
+
+/// GH #993: the sampling fields this cell's request would carry and does not,
+/// because the model's `supported_params` leaves them out -- the list the
+/// answer names in `hop.dropped`. Read from the same field lists the two
+/// request builders use, by the cell's wire dialect. A field `provider_extra`
+/// sets is not dropped: the overlay writes it into the request regardless.
+/// Empty without a list, and on the decisions wire (it carries no sampling).
+pub(crate) fn dropped_params(params: &crate::llm::params::LlmParams) -> Vec<String> {
+    use crate::llm::params::WireDialect;
+    if params.supported_params.is_none() || params.is_decisions() {
+        return Vec::new();
+    }
+    let fields = match params.effective_wire_dialect() {
+        WireDialect::ChatCompletions => chat_sampling_fields(params),
+        WireDialect::Responses => crate::llm::translate_responses::sampling_fields(params),
+    };
+    fields
+        .into_iter()
+        .map(|(key, _)| key)
+        .filter(|key| !takes_param(params, key) && !params.provider_extra.contains_key(*key))
+        .map(String::from)
+        .collect()
 }
 
 /// The request body's `reasoning` block from the two reasoning params (GH #124).
@@ -2201,5 +2266,74 @@ mod tests {
             translate_error_to_code(&TranslateError::ResponseShape("missing".into())),
             "provider_error"
         );
+    }
+}
+
+#[cfg(test)]
+mod gh993_tests {
+    use super::*;
+    use crate::llm::params::LlmParams;
+    use meclaw_core::serde_json::json;
+
+    fn params(extra: Value) -> LlmParams {
+        let mut raw = json!({"provider": "openai", "model": "model-a", "api_key": "k",
+                             "temperature": 0.3});
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            raw[k] = v;
+        }
+        LlmParams::parse(&raw).unwrap()
+    }
+
+    fn responses(mut extra: Value) -> Value {
+        let turns = [json!({"origin": "user", "type": "text", "text": "Hi"})];
+        extra["wire_dialect"] = json!("responses");
+        crate::llm::translate_responses::build_responses_request(&params(extra), "", &turns, &[])
+            .unwrap()
+    }
+
+    #[test]
+    fn gh993_the_responses_wire_drops_temperature_by_the_same_list() {
+        let without = responses(json!({"supported_params": ["top_p"]}));
+        assert!(without.get("temperature").is_none(), "{without}");
+        assert_eq!(without["max_output_tokens"], 4096, "not a sampling field");
+        let with = responses(json!({"supported_params": ["temperature"]}));
+        assert_eq!(with["temperature"], 0.3, "{with}");
+        let before = responses(json!({}));
+        assert_eq!(before["temperature"], 0.3, "{before}");
+    }
+
+    #[test]
+    fn gh993_dropped_names_what_the_builders_left_out() {
+        assert!(dropped_params(&params(json!({}))).is_empty(), "no list");
+        assert_eq!(
+            dropped_params(&params(json!({"supported_params": [],
+                                          "reasoning_effort": "low"}))),
+            vec!["temperature".to_string(), "reasoning".to_string()]
+        );
+        assert_eq!(
+            dropped_params(&params(json!({"wire_dialect": "responses",
+                                          "supported_params": []}))),
+            vec!["temperature".to_string()]
+        );
+        // The subscription lane never sends temperature, so it never drops it.
+        assert!(
+            dropped_params(&params(json!({"auth": "oauth_subscription",
+                                          "api_key": null, "auth_ref": "/tmp/a.json",
+                                          "supported_params": []})))
+            .is_empty()
+        );
+        // An unset knob is no field, so nothing to drop.
+        assert_eq!(
+            dropped_params(&params(json!({"supported_params": ["reasoning"]}))),
+            vec!["temperature".to_string()]
+        );
+    }
+
+    #[test]
+    fn gh993_takes_param_governs_only_sampling_fields() {
+        let p = params(json!({"supported_params": []}));
+        assert!(!takes_param(&p, "temperature"));
+        assert!(takes_param(&p, "max_tokens"), "outside SAMPLING_PARAMS");
+        assert!(takes_param(&params(json!({})), "temperature"), "no list");
     }
 }

@@ -754,6 +754,52 @@ fn check_graph_edges(
                 )));
             }
         }
+        // Re-review of GH #981 -- nor parks one: the restore above reads
+        // `hop.ctx_<key>`, which only a cell that really parked the turn may
+        // hand back (`contract.parks_context`; the colony drops it from every
+        // other cell's emission). A config edge that SETS that hop key would
+        // let its next edge -- an inner hive's, from its rim -- restore a
+        // value the config chose: a forged run, round or speaker.
+        if let Some(hop) = edge
+            .get("modifier")
+            .and_then(|m| m.get("set_hop"))
+            .and_then(JsonValue::as_object)
+        {
+            for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+                let parked = format!("ctx_{key}");
+                if hop.contains_key(&parked) {
+                    return Err(MutationError::EdgeSchema(format!(
+                        "{at}graph.edges[{i}].modifier.set_hop.{parked}: `{parked}` is the \
+                         parked form of the stamped key `{key}`, handed back only by a cell \
+                         that parked the turn (`contract.parks_context`) -- an edge a config \
+                         draws for itself never sets it, or its next edge could restore a \
+                         `{key}` the config chose"
+                    )));
+                }
+            }
+        }
+        // GH #981 (review, OR-LP.RW.10) -- nor deletes a bound counter
+        // (`BOUND_CONTEXT_KEYS`): the run door counts from 1 when the key is
+        // absent, so a deleted counter would restart the bound of a chain whose
+        // every crossing restores its routing budget.
+        if let Some(deletes) = edge
+            .get("modifier")
+            .and_then(|m| m.get("delete_context"))
+            .and_then(JsonValue::as_array)
+        {
+            for entry in deletes.iter().filter_map(JsonValue::as_str) {
+                if let Some(key) = crate::cel_eval::BOUND_CONTEXT_KEYS
+                    .into_iter()
+                    .find(|k| crate::cel_eval::delete_entry_matches(entry, k))
+                {
+                    return Err(MutationError::EdgeSchema(format!(
+                        "{at}graph.edges[{i}].modifier.delete_context: `{entry}` deletes \
+                         `{key}`, the counter that bounds a budget-restoring edge -- only the \
+                         wiring writes it, and no edge a config draws for itself deletes it"
+                    )));
+                }
+            }
+        }
         for (slot, src) in edge_cel_slots(edge) {
             let slot = format!("{at}graph.edges[{i}].{slot}");
             let quoting = token_quoting(src);
@@ -2181,13 +2227,19 @@ mod tests {
                 &HashMap::new(),
             )
             .expect("the wiring stamps it");
-            substitute_env_only(
-                &json!({"params": {"graph": {"edges": [
-                    {"from": "./a", "to": ".", "modifier": {"delete_context": [key]}}
-                ]}}}),
-                &HashMap::new(),
-            )
-            .expect("deleting proves nothing and is not refused");
+            let deleting = json!({"params": {"graph": {"edges": [
+                {"from": "./a", "to": ".", "modifier": {"delete_context": [key]}}
+            ]}}});
+            if crate::cel_eval::BOUND_CONTEXT_KEYS.contains(&key) {
+                // GH #981: a bound counter is the exception -- deleting it
+                // would restart the bound it carries.
+                let err = substitute_env_only(&deleting, &HashMap::new()).unwrap_err();
+                assert_eq!(err.error_code(), "edge_schema", "{key}");
+                assert!(err.message().contains(key), "{err:?}");
+            } else {
+                substitute_env_only(&deleting, &HashMap::new())
+                    .expect("deleting proves nothing and is not refused");
+            }
         }
     }
 
@@ -2247,6 +2299,52 @@ mod tests {
         }
     }
 
+    /// Re-review of GH #981 -- `a_config_edge_never_parks_a_stamped_key`: the
+    /// restore form reads `hop.ctx_<key>`, so a config edge that SETS that hop
+    /// key (`set_hop`) would let the next edge -- an inner hive's, from its
+    /// rim -- restore whatever the config chose. Refused at the door and at
+    /// boot for every stamped key; a `ctx_` hop key of an unstamped name and
+    /// the same `set_hop` on the wiring pass.
+    #[test]
+    fn a_config_edge_never_parks_a_stamped_key() {
+        for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+            let parked = format!("ctx_{key}");
+            let params = json!({"graph": {"edges": [
+                {"from": ".", "to": "./inner", "modifier": {"set_hop": {(parked.clone()): "'x'"}}}
+            ]}});
+            for diff in [
+                json!({"add_nodes": [{"name": "apps/x", "template": "x@1.0.0",
+                                      "override_params": params}]}),
+                json!({"swap_nodes": [{"match": {"name": "a"},
+                                       "with": {"template": "x@1.0.0", "params": params}}]}),
+            ] {
+                let err = substitute_mutation_diff(&diff, &HashMap::new(), &HashMap::new())
+                    .expect_err("a config parked a stamped key on its own edge");
+                assert_eq!(err.error_code(), "edge_schema", "{diff}");
+                assert!(err.message().contains(&parked), "{err:?}");
+            }
+            for cfg in [json!({"params": params.clone()}), params.clone()] {
+                let err = substitute_env_only(&cfg, &HashMap::new()).unwrap_err();
+                assert_eq!(err.error_code(), "edge_schema", "boot: {cfg}");
+                assert!(err.message().contains(&parked), "{err:?}");
+            }
+            substitute_mutation_diff(
+                &json!({"add_edges": [{"from": "./ch", "to": ".",
+                                       "modifier": {"set_hop": {(parked): "'x'"}}}]}),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .expect("the wiring is not a config's own edge");
+        }
+        substitute_env_only(
+            &json!({"params": {"graph": {"edges": [
+                {"from": ".", "to": "./inner", "modifier": {"set_hop": {"ctx_channel": "'x'"}}}
+            ]}}}),
+            &HashMap::new(),
+        )
+        .expect("an unstamped parked key is not a claim");
+    }
+
     /// GH #979 (OR-NL-179) -- every shipped template boots past the stamped-key
     /// check: the firewall's release edge restores `speaker` and `turn_round`
     /// in the one allowed form, and no other template's own edge writes them.
@@ -2273,7 +2371,11 @@ mod tests {
         let firewall = root.join("firewall/config.json");
         assert!(files.contains(&firewall));
         let raw = std::fs::read_to_string(&firewall).expect("the firewall");
-        for key in crate::cel_eval::STAMPED_CONTEXT_KEYS {
+        // The keys of a person's turn, which the warden parks. The run keys
+        // (GH #981) are stamped too, but a run enters the core's rim from an
+        // app and never passes the firewall, so it restores none of them.
+        for key in ["turn_round", "speaker"] {
+            assert!(crate::cel_eval::STAMPED_CONTEXT_KEYS.contains(&key));
             assert!(
                 raw.contains(&format!(
                     "\"{key}\": \"has(hop.ctx_{key}) ? hop.ctx_{key} : ''\""

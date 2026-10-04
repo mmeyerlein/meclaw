@@ -449,8 +449,8 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // 1.24.0 takes `reads_residents` in `install_app` (GH #965) and pins its
         // librarian at `builder-librarian@2.2.19`.
         // 1.25.0 takes `residents_present` in `install_app` (GH #983) and pins its
-        // librarian at `builder-librarian@2.2.20`.
-        "builder@1.25.0"
+        // librarian at `builder-librarian@2.2.21`.
+        "builder@1.26.0"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

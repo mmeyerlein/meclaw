@@ -114,7 +114,7 @@ fn render(present: Option<Value>) -> Value {
     let block = read_json(&repo("templates/presenter/template.json"))["app"].clone();
     let declaration = json!({"reads_residents": block["reads_residents"]});
     let mut params = json!({"scope": "/alex", "app": "presenter",
-                            "template": "presenter@1.2.0", "screen": "display-main",
+                            "template": "presenter@1.2.1", "screen": "display-main",
                             "generation": GENERATION, "declaration": declaration,
                             "ctx": {"member_person": PERSON}});
     if let Some(p) = present {

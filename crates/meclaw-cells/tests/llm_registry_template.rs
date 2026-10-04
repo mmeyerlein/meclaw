@@ -861,6 +861,7 @@ const PACKAGE_KEYS: &[&str] = &[
     "cache_mode",
     "cache_ttl_s",
     "context_window",
+    "supported_params",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins

@@ -259,6 +259,20 @@ const SEAMS: &[Row] = &[
         None,
         Seam::Door,
     ),
+    // A projection job of a tool call (GH #980): `file_ws_exec`,
+    // `file_ws_export` and `file_ws_push` of a writer leave `./tools` for the
+    // child hive once per call -- one model call, bounded by the round's own
+    // counter at the curator entry -- and nothing in the job returns to
+    // `./tools` but its one answer. An export of six files ran out of the
+    // budget the call arrived with.
+    row(
+        FILE_SPACE,
+        "./tools",
+        "./projection",
+        "in_proj",
+        None,
+        Seam::Door,
+    ),
     // An index job in a graph space (GH #945): each `source_changed` is one
     // head move of one source, and the graph space answers it with a constant
     // number of pulls and two store bundles -- nothing in it returns to the

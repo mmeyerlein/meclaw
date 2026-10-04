@@ -30,8 +30,9 @@
 //! One line `gh975 pull: deliveries=<n> min_ttl=<n> doors=<n>` is the
 //! evidence.
 //!
-//! The source repository and the remote live under `base_path`, everything
-//! under the test's temporary directory; no network, no provider. Guarded
+//! The source repository lives under `base_path`, the remote beside it (a
+//! push target under `base_path` is `remote_inside_base`), everything under
+//! the test's temporary directory; no network, no provider. Guarded
 //! like every template-reading test (GH #49).
 
 use meclaw_cells::LlmCellFactory;
@@ -203,6 +204,17 @@ fn owner_overrides(
         }
         if dir.ends_with("projection/git") {
             cfg["params"]["remotes"] = json!({"origin": bare});
+            // GH #980 M1: the repositories live beside `base_path`, granted
+            // to the git cell alone.
+            let gd = base
+                .parent()
+                .expect("base_path has a parent")
+                .join("git-dirs");
+            cfg["params"]["git_dir"] = json!(gd);
+            // The remote beside `base_path` is the owner's grant to the git
+            // cell too (one under it would be `remote_inside_base`).
+            let remotes = bare.parent().expect("a remote's directory");
+            cfg["params"]["sandbox"]["filesystem"]["write"] = json!([base, gd, remotes]);
         }
         if dir.ends_with("derive") {
             cfg["params"]["summary_on_commit"] = json!("0");
@@ -484,7 +496,7 @@ async fn a_projection_job_of_six_files_fits_ttl_64() {
     let td = tempfile::TempDir::new().expect("a temp dir under TMPDIR");
     let base = td.path().join("projection");
     let src = base.join("source");
-    let bare = base.join("remote.git");
+    let bare = td.path().join("remotes").join("remote.git");
     std::fs::create_dir_all(&src).unwrap();
     git(&src, &["init", "-q", "-b", "main"]);
     for i in 0..FILES {
@@ -497,6 +509,8 @@ async fn a_projection_job_of_six_files_fits_ttl_64() {
         &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()],
     );
 
+    std::fs::create_dir_all(td.path().join("git-dirs"))
+        .expect("git_dir exists before the cells spawn");
     let granted = build(&td, &base, &bare);
     assert!(granted >= 1, "at least `git` carries a base_path");
     let mut run = boot(&td).await;

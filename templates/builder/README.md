@@ -1,4 +1,4 @@
-# `builder@1.25.0`
+# `builder@1.26.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -465,7 +465,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.1",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.0"}], "…": "…"}}]}
@@ -1068,10 +1068,10 @@ names and versions, never with a block — so whoever places the wish reads
 beside `scope` (the member), `app` (the instance name, which is the template's
 name), `template` and `screen` (the node in `./channels` the app draws on).
 `generation` joins them whenever the declaration offers something, observes
-tool calls or tool results, or pins, and the switch refuses the wish without it
+tool calls or tool results, pins, or hands a run, and the switch refuses the wish without it
 (`recipe_params_incomplete`, `missing: ["generation"]`).
 
-**`pins`, `candidates`, `reads`, `reads_residents` and the results of a `tool` offer travel in the
+**`pins`, `candidates`, `reads`, `reads_residents`, `runs` and the results of a `tool` offer travel in the
 member's round, never the app's** (GH #949, GH #965). The context an app's message carries is written by the app's
 own template, and nothing stops an edge inside it from setting `audience_set` to
 any round -- `["agent:<a>"]` alone covers every row the agent is part of. So the
@@ -1106,8 +1106,8 @@ passes the same check; otherwise the wish goes to the design lane, which asks.
 `view` and `withdraw` (`error` always travels with them), `screen.back` is
 `["event", "receipt"]`, `listens` from `turn`, `answer`, `partial`,
 `mutation_committed` and `close`, `pins` names a cell `./<name>` inside the app,
-an offer is a `tool` (with its `tools`) or a `sidecar`
-(with its `section`) at a cell `./<name>` inside the app, and a drive names a
+an offer is a `tool` (with its `tools` and, optionally, its `callers`) or a `sidecar`
+(with its `section`) at a cell `./<name>` inside the app, `runs` is `{at, brain}`, and a drive names a
 cell of the member with the lanes it sends and hears back. An app that
 "listens to gossip" would otherwise install green and hear nothing.
 
@@ -1165,7 +1165,7 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 |---|---|
 | `screen` | the view edge out of the app, every declared lane plus `error`, stamped `channel_node`/`channel` with the screen; the owner edge back in on `event`/`receipt` — the two `grow_level level=app` draws |
 | `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer: the member draws `. -> ./apps` itself. `close` observes the close batch of a session (`write` off `./assistants`, the batch the member's close pass takes) and restamps it `in_close` with the close pass's context (`session_id`, `audience_set`, `channel`); the body travels unchanged (`messages[]`, `rounds`, `hop.turn_count`), and `write` has a regular exit at the member, so this observer suppresses no default |
-| `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each surface of the generation, guarded on the tool names; every offering cell answers the menu tick on a `schemas` v-lane from each surface; the `tool_schemas` exit stamps `tool_answerer`. A result leaves in the words of its CALL and of the builder, never the app's: the call edge stamps `offer_tool` (the called name), and the `tool_result` exit lets a result out only when `offer_tool` is one of the offered names, restamping `hop.tool_name` from it and `context.assistant` (the generation), `context.audience_set` (the member's round, as for `reads` -- a round parked in the app's context could be rewritten by its inner edges, so a `tool` offer needs `ctx.member_person`) and `tool_answerer` as literals (GH #963 review N-1, GH #965) |
+| `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each of its callers, guarded on the tool names -- `callers` names brains of the generation (`talky`, `talky-chat`, `cogny`; GH #981), and an offer without it is offered to the two surfaces; a tool name reaches one cell per caller, so two offers may name the same tool only for disjoint callers; every offering cell answers the menu tick on a `schemas` v-lane, once per caller it offers something (a surface ticks a sidecar's cell too) -- which names a caller's menu shows is the app's to decide by `context.tool_caller`; the `tool_schemas` exit stamps `tool_answerer`. A result leaves in the words of its CALL and of the builder, never the app's: the call edge stamps `offer_tool` (the called name), and the `tool_result` exit lets a result out only when `offer_tool` is one of the offered names, restamping `hop.tool_name` from it and `context.assistant` (the generation), `context.audience_set` (the member's round, as for `reads` -- a round parked in the app's context could be rewritten by its inner edges, so a `tool` offer needs `ctx.member_person`) and `tool_answerer` as literals (GH #963 review N-1, GH #965) |
 | `observes_tool_calls` | per surface of the generation one `tool` v-lane into `at` — the offer's own edge (same guard on the tool names, same stamp) with another target, restamped `route` (default `in_tool_call`), drawn as a tap |
 | `observes_tool_results` | as a string: two `tool_result` v-lanes into the named cell, from the generation's `./tools` and from `./memory-hive`. As an object: the same two, guarded on the tool names and restamped `route` (default `in_tool_result`), plus one off `./apps` for the other apps' results — the container as source so the install order does not matter, `context.tool_answerer` excluding the observer's own results; all three taps, and the two shared producers guarded on `context.assistant` |
 | `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |
@@ -1173,6 +1173,7 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 | `reads` | FOUR edges: from the named cell onto the generation, `read` restamped `in_read` for the one brain `hop.organ` names (`talky`, `talky-chat` or `cogny`; none or another and no edge carries it), and the answer `read` back to that cell alone, bound to `context.read_caller` (GH #949). The question edge stamps the member's round (see below), so the curator reads only rows that round may see. |
 | `reads_residents` | a list of residents, each named once (GH #965): `memory-hive`, `file-space`, `graph-space`, `objects`, `librarian`, `affinity`, `colony-view`, and the member's apps `daily-digest` and `research-assistant` (GH #976: `./apps/<name>`, `in_read` op `last`, every row with the round it was made for). Per resident ONE edge from the app's RIM onto the resident's own read lane (`in_query`, `in_read`, `in_graph`, `in_tool` for `object_find`/`object_brief` only, `in_lib`, `in_brief`, the colony view's, the digest's and the research assistant's `in_read`), on `resident_read` with `hop.resident` naming it and `hop.op_id` set; the edge stamps the asker (`context.resident_caller`), its id (`context.resident_op`) and the member's round in BOTH `audience_now` and `audience_set` for every resident (a resident's own pulls carry the context on: the library asks the graph space), both reply-to marks (`recall_caller`, `brief_caller`; `resident` for the memory and affinity read, blank otherwise; memory-hive also gets the five recall keys and the screen as `channel`), and prefixes a mirrored `op_id` with `res:`. Per answering route ONE edge back onto the rim, guarded on the asker AND on the mark of this read (a `res:` `op_id` or `tool_call_id`, or the `resident` reply-to token), so the answers of a resident's inner pulls never leave the member; it deletes every context key the question wrote and is restamped `resident_answer` with `resident`, `resident_status` (the route it answered on), the asker's own `op_id` and `resident_round`: the member's round, or `["*"]` for the colony's counts. Needs the generation and the person like `reads`; a sealed app keeps its seal. |
 | `shows` | `{"at": "./<cell>"}` (GH #960): the question off the container into the app's RIM, `in_show` naming no app (the topics call every such app hears) or naming this one in `hop.show_app` (the data call); and the answer `show_topics` / `show_data` from the rim onto the container, stamped `show_app` with the app and `show_at` with `at` over whatever the app wrote. The app routes its rim to `at` and back in its own graph, so a sealed app keeps its seal. No generation, no round: the round of a topic lies in its data. The presenter's half comes with the presenter (below) |
+| `runs` | `{"at": "./<cell>", "brain": "cogny"}` (GH #981): an app hands one brain of its generation a RUN -- one turn whose tool results and end it hears. `brain` is a brain that answers no channel (`cogny`). IN: ONE edge from the app's RIM straight onto the brain's rim (`./assistants/<generation>/<brain>`), `run_turn` restamped `in_turn` with the routing budget restored -- a door like the consult -- and no `lane` (the app container declares no contract a v-lane could dock at), taken only with a `hop.run_id` of `[a-z0-9-]{1,40}` and below the chain bound (a `run_turn` without one dead-letters, which is its audit; the door restores the budget, so it carries its own bound, GH #82: `context.run_chain` counts the runs of one causal chain, written `has(context.run_chain) ? int(context.run_chain) + 1 : 1`, and the condition passes only `< 16` -- the 17th `run_turn` of a chain dead-letters as well, class `run_chain_exhausted`: route `run_turn`, a valid `run_id`, `run_chain` 16, sent by the app); the body is the turn's text, one user turn. The edge writes `context.run_id`, `run_app` (the app), `run_chain`, `session_id` `run:<app>:<run_id>` (the app's own namespace: another app naming the same id never continues this session), `consult_class` `run` (a label only), `assistant` (the generation), the member's round in `audience_set`, `audience_now` (the graph space reads it first) and `turn_round`, and an empty `speaker`, `channel_node` and `channel`, over whatever the app's context carried -- one session per run, so meclaw holds no run state: how many runs are open is the app's. THE TOOL RESULTS: one TAP `run_tool_result` per road a tool result takes into the generation -- off the member's holders (`./memory-hive`, `./file-space`, `./objects`, `./librarian`, the first four as far as `residents_present` names them, and `./apps`, `./channels`) and off the generation's `./tools` -- guarded on `run_app`, a non-empty `run_id` and the brain as `tool_caller`, restamped `run_tool_result` with `run_id`, `answerer` and `ok`; `tool_name`, `tool_call_id` and the body travel as the answerer wrote them. THE END: one v-lane `run_answer` off the brain's rim for its `answer`, `error` or `model_refused` of the run, restamped `run_answer` with `run_id`, `capped` and `error` (empty, `round_stale`, or the failure's code). `context.run_id` and `run_app` stay on both. `run_id`, `run_app` and `run_chain` are stamped keys (`STAMPED_CONTEXT_KEYS`): an app's own edge that writes one is refused (`edge_schema`, at the door and at boot), and none may delete `run_chain`. The app declares `run_tool_result` and `run_answer` at that cell in its contract (`{"route": "run_answer", "at": ["./<cell>"]}` under `params.contract.accepts`). Needs the generation and the person like `reads` |
 | `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
 
 **The presenter is known by its name, and a presenter alone stays quiet.**
@@ -1205,7 +1206,10 @@ leave the member exactly once.
 surface, and a generation has two — `talky` for speech and `talky-chat` for the
 typed conversation. The recipe draws every offer from both (`SURFACE_CALLERS`,
 a property of the assistant level the way the credential askers are): a tool
-only the spoken surface could call is a tool the typed one never sees.
+only the spoken surface could call is a tool the typed one never sees. An offer
+that names its `callers` (GH #981) is drawn from those brains instead -- the
+core among them, which is how an app gives the brain it hands a run the tools
+of that run.
 
 **A device has to stand first.** The edges of `drives` end on a node the
 declaration does not create; an edge onto a node that is not there routes into
