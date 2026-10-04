@@ -1,4 +1,4 @@
-# `assistant@3.7.0`
+# `assistant@3.7.1`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and ninety-seven edges.
@@ -483,6 +483,16 @@ three pieces of it touch this level, which declares two and draws none.
   app. The results that enter this level on its rim (`in_tool`, from the
   member's holders) are tapped one level up, on the member's own edges that
   hand them down.
+- **The tool's name.** Every edge a brain's tool call leaves by -- the three
+  default edges onto `./tools` and the edges that hand `memory_recall`,
+  `file_*`, `object_*` and `lib_*` calls out of the level -- stamps
+  `context.called_tool` with the call's `hop.tool_name`, beside
+  `tool_caller` ([#995](https://github.com/mmeyerlein/meclaw/issues/995)).
+  The context rides through the answerer unchanged, so every tap of a run
+  writes `tool_name` on its `run_tool_result` -- the answerer's own
+  `hop.tool_name` when it writes one, else this stamp. The file space, the
+  library and the object hive write none on their results; without the stamp
+  an app heard their results nameless.
 
 `context.run_id` survives every edge of a tool round: no `delete_context` list
 of this level names it (`crates/meclaw-cells/tests/gh981_run_id_survives_the_tool_path.rs`).
@@ -778,7 +788,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.1",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

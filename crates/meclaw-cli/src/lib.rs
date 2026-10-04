@@ -1240,6 +1240,11 @@ pub async fn run_with_hooks_tuned(
     // its registry and by definition it is not answering — so the trip line
     // carries the honest number it can have: the one the boot produced.
     let cells_at_boot;
+    // The SIGTERM listener, registered by the boot (below) and awaited by the
+    // shutdown select at the end of this function. `None` until then, and
+    // `None` for the `--apply` one-shot, which ends on its own.
+    #[cfg(unix)]
+    let mut early_term: Option<std::io::Result<tokio::signal::unix::Signal>> = None;
     match meclaw_colony::bootstrap_from_filesystem_with_env(
         &root_path,
         &factories,
@@ -1249,6 +1254,25 @@ pub async fn run_with_hooks_tuned(
     .await
     {
         Ok(report) => {
+            // The boot line promises an orderly SIGTERM, so the listener is
+            // registered BEFORE it is written. It used to be registered only
+            // when the shutdown select below was first polled -- after the
+            // keep round-trip to the colony, the watchdog arming and
+            // `--apply`. A SIGTERM in that window met the default disposition:
+            // the process died by signal 15, no destructor ran, and the root
+            // lease stayed behind for the next boot to reclaim. Measured in a
+            // strand gate under load (`gh121_root_lease`
+            // `a_lease_from_a_dead_holder_is_taken_over_with_a_loud_log`:
+            // `ExitStatus(unix_wait_status(15))`). A signal that arrives now is
+            // held by the listener and answered by the select once it runs.
+            // Not for the `--apply` one-shot: it ends on its own, and a hung
+            // one would otherwise ignore SIGTERM.
+            #[cfg(unix)]
+            if cli.daemon || cli.api.is_some() || cli.apply.is_none() {
+                early_term = Some(tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                ));
+            }
             tracing::info!(
                 hives = report.hive_count,
                 cells = report.cell_count,
@@ -1538,16 +1562,22 @@ pub async fn run_with_hooks_tuned(
         let trip_tx = trip_tx;
         // Issue #40: SIGTERM exists only on unix. Elsewhere the arm below is
         // compiled out and ctrl_c alone carries the shutdown.
+        // The listener the boot registered (see the boot line); registering
+        // here instead would reopen the window between the boot line and the
+        // first poll of this future.
         #[cfg(unix)]
-        let mut term =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::warn!(error = %e, "SIGTERM-signal init failed; using ctrl_c only");
-                    let _ = tokio::signal::ctrl_c().await;
-                    return;
-                }
-            };
+        let early_term = early_term;
+        #[cfg(unix)]
+        let mut term = match early_term.unwrap_or_else(|| {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        }) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = %e, "SIGTERM-signal init failed; using ctrl_c only");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
         let shutdown_future = async {
             match shutdown_hook {
                 Some(rx) => {

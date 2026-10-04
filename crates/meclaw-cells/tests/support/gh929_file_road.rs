@@ -21,9 +21,10 @@
 //!
 //! - `Shipped`: the graph as shipped -- `./ingest -> ./extract`
 //!   (`in_extract`) and `./ingest -> ./write` (`in_write`, caller `ingest`)
-//!   restore, `./ingest -> .` (`turn`) does not: the generation's `in_turn`
-//!   door restores a few decisions later (OR-BD-65);
-//! - `NoRestores`: none of the space's four road edges restores;
+//!   restore, and so does `./write -> ./derive` (`in_derive`, the derive job
+//!   of the stored document, GH #995); `./ingest -> .` (`turn`) does not: the
+//!   generation's `in_turn` door restores a few decisions later (OR-BD-65);
+//! - `NoRestores`: none of the space's five road edges restores;
 //! - `DoorOnly`: only the space's door `. -> ./ingest` (`in_ingest`) restores,
 //!   a hive out-edge that restores in the transit (S0).
 //!
@@ -116,7 +117,8 @@ pub struct FileTurn {
     /// Every segment of the document turn between two seams, oldest first,
     /// named `S5 <opening seam> -> <closing seam>`: `root` (the connector's
     /// emission), `ingest` (the space's door, `DoorOnly`), `extract`, `write`,
-    /// `turn` (the restoring edges out of `./ingest`), `door` (the
+    /// `turn` (the restoring edges out of `./ingest`), `derive` (the derive
+    /// job, `./write -> ./derive`), `door` (the
     /// generation's door, [`TO_THE_DOOR`] behind the arrival at the double).
     pub segments: Vec<(String, Segment)>,
     /// The ttl of every arrival at the double on `in_turn`.
@@ -678,7 +680,7 @@ fn build_tree(root: &std::path::Path, base: &str) {
 
 // ══════════════════════════════════════════════════════════════ the variants
 
-/// The four edges of the space's graph on the document road that can carry a
+/// The five edges of the space's graph on the document road that can carry a
 /// seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpaceEdge {
@@ -691,14 +693,18 @@ enum SpaceEdge {
     Write,
     /// `./ingest -> .` on `turn`: the released turn leaves the space.
     Turn,
+    /// `./write -> ./derive` on `in_derive`: the derive job of the stored
+    /// document, whose `derived` releases the turn (GH #995).
+    Derive,
 }
 
 impl SpaceEdge {
-    const ALL: [SpaceEdge; 4] = [
+    const ALL: [SpaceEdge; 5] = [
         SpaceEdge::Door,
         SpaceEdge::Extract,
         SpaceEdge::Write,
         SpaceEdge::Turn,
+        SpaceEdge::Derive,
     ];
 
     /// `from`, `to` and route of the edge as the space's graph declares it.
@@ -708,6 +714,7 @@ impl SpaceEdge {
             SpaceEdge::Extract => ("./ingest", "./extract", "in_extract"),
             SpaceEdge::Write => ("./ingest", "./write", "in_write"),
             SpaceEdge::Turn => ("./ingest", ".", "turn"),
+            SpaceEdge::Derive => ("./write", "./derive", "in_derive"),
         }
     }
 
@@ -718,6 +725,7 @@ impl SpaceEdge {
             SpaceEdge::Extract => "extract",
             SpaceEdge::Write => "write",
             SpaceEdge::Turn => "turn",
+            SpaceEdge::Derive => "derive",
         }
     }
 
@@ -736,20 +744,26 @@ impl SpaceEdge {
 }
 
 /// The index of `e` in the space's edge list: exactly one edge with its
-/// `from` and `to`, conditioned on its route. Anything else means the shipped
-/// graph changed shape under this road.
+/// `from` and `to` conditioned on its route (`./write -> ./derive` has a
+/// sibling on `in_dirs`). Anything else means the shipped graph changed shape
+/// under this road.
 fn edge_index(edges: &[Value], e: SpaceEdge) -> usize {
     let (from, to, route) = e.declared();
+    let lane = format!("hop.route == '{route}'");
     let hits: Vec<usize> = edges
         .iter()
         .enumerate()
-        .filter(|(_, x)| x["from"].as_str() == Some(from) && x["to"].as_str() == Some(to))
+        .filter(|(_, x)| {
+            x["from"].as_str() == Some(from)
+                && x["to"].as_str() == Some(to)
+                && x["condition"].as_str().is_some_and(|c| c.contains(&lane))
+        })
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
         hits.len(),
         1,
-        "the file space declares exactly one edge {from} -> {to}: {hits:?}"
+        "the file space declares exactly one edge {from} -> {to} on `{route}`: {hits:?}"
     );
     let condition = edges[hits[0]]["condition"].as_str().unwrap_or_default();
     assert!(

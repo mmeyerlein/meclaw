@@ -228,6 +228,27 @@ const SEAMS: &[Row] = &[
         None,
         Seam::Door,
     ),
+    // A derive job of one file (GH #995): each `in_derive` is the derive of
+    // ONE head a write or a commit moved, sent once per swing of the main
+    // line; its steps (store reads, the summary, the embedding) are bounded by
+    // the derive script, and nothing in it sends `in_derive` again. Behind a
+    // long tool chain of a run it had no budget left for its own steps.
+    row(
+        FILE_SPACE,
+        "./write",
+        "./derive",
+        "in_derive",
+        None,
+        Seam::Door,
+    ),
+    row(
+        FILE_SPACE,
+        "./ws",
+        "./derive",
+        "in_derive",
+        None,
+        Seam::Door,
+    ),
     // A file step of a projection job (GH #975): every request the child
     // hive `./projection` sends into its space -- a workspace op, a read, a
     // write -- is one step of one job for one file, the job's request to the

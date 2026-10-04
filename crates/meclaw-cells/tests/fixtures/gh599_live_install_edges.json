@@ -130,7 +130,8 @@
             "col_phase",
             "consult_class",
             "consult_id",
-            "tool_answerer"
+            "tool_answerer",
+            "called_tool"
           ]
         }
       },
@@ -160,7 +161,8 @@
             "col_phase",
             "consult_class",
             "consult_id",
-            "tool_answerer"
+            "tool_answerer",
+            "called_tool"
           ]
         }
       },
@@ -316,7 +318,8 @@
             "col_phase",
             "consult_class",
             "consult_id",
-            "tool_answerer"
+            "tool_answerer",
+            "called_tool"
           ]
         }
       },
@@ -334,7 +337,8 @@
             "col_phase",
             "consult_class",
             "consult_id",
-            "tool_answerer"
+            "tool_answerer",
+            "called_tool"
           ]
         }
       },
@@ -353,7 +357,8 @@
             "col_phase",
             "consult_class",
             "consult_id",
-            "tool_answerer"
+            "tool_answerer",
+            "called_tool"
           ]
         }
       },
@@ -371,7 +376,8 @@
             "col_phase",
             "consult_class",
             "consult_id",
-            "tool_answerer"
+            "tool_answerer",
+            "called_tool"
           ]
         }
       }

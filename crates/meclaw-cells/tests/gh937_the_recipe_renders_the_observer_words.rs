@@ -9,7 +9,9 @@
 //! `in_tool_call`. The object form of `observes_tool_results` guards the two
 //! producers on the tool names and adds a third, the other apps (`./apps`, the
 //! container, so the install order does not matter; `context.tool_answerer`
-//! keeps an app from hearing its own results). The string form must keep
+//! keeps an app from hearing its own results). Since GH #995 it taps every
+//! holder a result enters the generation from, on the effective name. The
+//! string form must keep
 //! drawing byte for byte what it drew, because installed apps carry those
 //! edges.
 //!
@@ -157,30 +159,57 @@ fn an_observed_call_is_one_tool_lane_per_surface() {
     }
 }
 
-/// **The object form guards the results and hears the other apps.** Three
-/// producers, all on the `tool_result` lane, all guarded on the names,
-/// restamped `in_tool_result`; the `./apps` edge excludes the observer itself.
+/// **The object form guards the results and hears every holder.** The
+/// generation's tool hive and every holder a result enters the generation
+/// from (GH #995: the memory, the file space, the objects, the library, the
+/// other apps, the channels), all on the `tool_result` lane, all guarded on
+/// the EFFECTIVE name (the answerer's `tool_name`, else the name the call
+/// carried out), restamped `in_tool_result` and named; the `./apps` edge
+/// excludes the observer itself.
 #[test]
-fn an_observed_result_object_draws_three_guarded_lanes() {
+fn an_observed_result_object_draws_a_guarded_lane_per_holder() {
     if skip() {
         return;
     }
     let got = edges(json!({"observes_tool_results":
                            {"at": "./ear", "tools": ["probe_timer", "probe_alarm"]}}));
-    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(got.len(), 7, "{got:?}");
     let mut froms: Vec<&str> = got.iter().map(|e| e["from"].as_str().unwrap()).collect();
     froms.sort();
     let tools = format!("./assistants/{GEN}/tools");
-    assert_eq!(froms, ["./apps", tools.as_str(), "./memory-hive"]);
+    assert_eq!(
+        froms,
+        [
+            "./apps",
+            tools.as_str(),
+            "./channels",
+            "./file-space",
+            "./librarian",
+            "./memory-hive",
+            "./objects"
+        ]
+    );
     for e in &got {
         assert_eq!(e["to"], json!(format!("./apps/{APP}/ear")), "{e}");
         assert_eq!(e["lane"], json!("tool_result"), "{e}");
         assert_eq!(e["tap"], json!(true), "{e}");
         let cond = e["condition"].as_str().expect("a condition");
         assert!(cond.contains("hop.route == 'tool_result'"), "{e}");
-        assert!(cond.contains("hop.tool_name == 'probe_timer'"), "{e}");
-        assert!(cond.contains("hop.tool_name == 'probe_alarm'"), "{e}");
-        // Review Important 1: the two producers that serve EVERY generation of
+        assert!(
+            cond.contains("in ['probe_timer', 'probe_alarm']"),
+            "the filter names both tools: {e}"
+        );
+        assert!(
+            cond.contains("context.called_tool"),
+            "the filter reads the effective name: {e}"
+        );
+        assert!(
+            e["modifier"]["set_hop"]["tool_name"]
+                .as_str()
+                .is_some_and(|x| x.contains("context.called_tool")),
+            "the observer hears the effective name: {e}"
+        );
+        // Review Important 1: the holders that serve EVERY generation of
         // the member are bounded to the one the observer was installed for, on
         // the stamp the generation's exit and the offer's call edge set. The
         // generation's own `./tools` is bounded by its path already.

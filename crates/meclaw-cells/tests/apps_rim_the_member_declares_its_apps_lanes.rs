@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.5.3",
+            v, "2.5.4",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -431,12 +431,14 @@ fn the_versions_moved_with_the_declarations() {
              `file-space@1.3.1`, `librarian@1.0.1`, `memory-hive@3.8.2` and `firewall@2.4.0` \
              and derives `./assistants` from `assistant@3.6.2` (GH #979), the third digit; \
              2.5.3 only pins `file-space@1.4.0` and `memory-hive@3.8.3` and derives \
-             `./assistants` from `assistant@3.7.0` (GH #980, GH #981, GH #993), the third digit"
+             `./assistants` from `assistant@3.7.0` (GH #980, GH #981, GH #993), the third digit; \
+             2.5.4 only pins `file-space@1.4.1` and derives `./assistants` from \
+             `assistant@3.7.1` (GH #995), the third digit"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.7.0",
+            v, "3.7.1",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -481,7 +483,9 @@ fn the_versions_moved_with_the_declarations() {
              3.6.1 only pins `tools@1.4.5` (GH #937), the third digit; 3.6.2 only pins \
              `talky@6.6.0` and `cogny@5.7.1`, the third digit; GH #981 makes it 3.7.0, the \
              second digit: `run_answer` and `run_tool_result` leave the level for the app \
-             that handed a run, and it pins `talky@6.6.1` and `cogny@5.8.0`"
+             that handed a run, and it pins `talky@6.6.1` and `cogny@5.8.0`; 3.7.1 only \
+             stamps the call's name as `context.called_tool` on the brains' tool edges \
+             (GH #995), the third digit"
         );
     }
 }

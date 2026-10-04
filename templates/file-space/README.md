@@ -1,4 +1,4 @@
-# `file-space@1.4.0`
+# `file-space@1.4.1`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -60,7 +60,7 @@ A line reads as `<n>:<h4>|<text>`, `h4` the first 4 hex digits of the sha256 of 
 | `in_check` / `checked` | `write` → `guard` → `write` | the hook check and its verdict |
 | `in_put` / `put` | `ws` → `write` → `ws` | ops `merge3`, `patch`, `create` |
 | `in_recover` | `write` → `ws` | `{commit}`; no answer |
-| `in_derive` | `write`, `ws` → `derive` | `{file, version}`, hop `notify`/`caller` of the causing write; no answer |
+| `in_derive` | `write`, `ws` → `derive` | `{file, version}`, hop `notify`/`caller` of the causing write; no answer; a door (`restore_ttl`): the derive job of one file starts with the full colony TTL, however long the tool chain that wrote it ([#995](https://github.com/mmeyerlein/meclaw/issues/995)) |
 | `in_extract` / `in_write` | `ingest` → `extract` → `write` | a PDF: `{attachments: [ref], path, mime}`, hop `op_id`; `extract` reads the blob (`consumes.body.attachments`), runs `pdftotext -layout - -` (no shell, no disk) and sends the one `create` on, the pages as `args.derived`, caller `ingest` -- without `derived` when there is no text (`no_extractor`, `extract_failed`, `timeout`, a reader error; stderr names it) |
 | `in_write` / `answer`, `derived` | `ingest` (or `extract`) → `write` → `ingest`, `derive` → `ingest` | `create` of a document under `/inbox/<YYYY-MM-DD>/<name>` (a taken name gets ` (2)`, ` (3)` …; two of one name in one batch are two files, a claim row per document in `pending`; `path_taken` searches again, a PDF through `extract` once more), `args.attachment` 0 with `attachments: [ref]`, caller `ingest`, `notify` '1'; `pending` holds the reference, never the bytes or the pages; the turn waits for `derived` |
 

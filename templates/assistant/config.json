@@ -499,7 +499,8 @@
               "route": "'tool_call'"
             },
             "set_context": {
-              "tool_caller": "'talky'"
+              "tool_caller": "'talky'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             }
           }
         },
@@ -513,7 +514,8 @@
               "route": "'tool_call'"
             },
             "set_context": {
-              "tool_caller": "'talky-chat'"
+              "tool_caller": "'talky-chat'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             }
           }
         },
@@ -632,7 +634,8 @@
               "route": "'tool_call'"
             },
             "set_context": {
-              "tool_caller": "'cogny'"
+              "tool_caller": "'cogny'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             }
           },
           "default": true
@@ -828,7 +831,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky'"
+              "tool_caller": "'talky'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -847,7 +851,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky-chat'"
+              "tool_caller": "'talky-chat'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -866,7 +871,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
           "modifier": {
             "set_context": {
-              "tool_caller": "'cogny'"
+              "tool_caller": "'cogny'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -885,7 +891,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('file_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky'"
+              "tool_caller": "'talky'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -904,7 +911,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('file_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky-chat'"
+              "tool_caller": "'talky-chat'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -923,7 +931,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('file_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'cogny'"
+              "tool_caller": "'cogny'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -942,7 +951,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('object_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky'"
+              "tool_caller": "'talky'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -961,7 +971,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('object_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky-chat'"
+              "tool_caller": "'talky-chat'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -980,7 +991,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('object_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'cogny'"
+              "tool_caller": "'cogny'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -999,7 +1011,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('lib_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky'"
+              "tool_caller": "'talky'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -1018,7 +1031,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('lib_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'talky-chat'"
+              "tool_caller": "'talky-chat'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",
@@ -1037,7 +1051,8 @@
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('lib_')",
           "modifier": {
             "set_context": {
-              "tool_caller": "'cogny'"
+              "tool_caller": "'cogny'",
+              "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"
             },
             "delete_context": [
               "col_phase",

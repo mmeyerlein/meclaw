@@ -637,9 +637,11 @@ fn every_brain_stamps_its_own_name_on_a_library_call() {
         let m = &e["modifier"];
         assert_eq!(
             m["set_context"],
-            json!({"tool_caller": format!("'{brain}'")}),
-            "{brain}: the edge stamps the brain's own name and nothing else -- the \
-             `tool_result` finds its round by it: {e}"
+            json!({"tool_caller": format!("'{brain}'"),
+                   "called_tool": "has(hop.tool_name) ? hop.tool_name : ''"}),
+            "{brain}: the edge stamps the brain's own name -- the `tool_result` \
+             finds its round by it -- and the call's tool name (GH #995, the run \
+             tap reads it), nothing else: {e}"
         );
         assert_eq!(m["set_hop"], json!({"route": "'tool'"}), "{brain}: {e}");
         let twin: Vec<&Value> = file.iter().filter(|f| f["from"] == from).collect();

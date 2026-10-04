@@ -178,13 +178,21 @@ const SHARED: [&str; 35] = [
 /// it ([#528](https://github.com/mmeyerlein/meclaw/issues/528)): the core has one
 /// brain, so no edge inside it decides anything on a class and there is no key to
 /// carry across the rim.
-const CARRIED: [(&str, &str, &str); 3] = [
+const CARRIED: [(&str, &str, &str); 4] = [
     (
         "assistant",
         "tool_caller",
         "the `build` round trip leaves on `./tools -> .` and comes back on the \
          `in_build_result` door, which does not re-establish it — and \
          `./tools -> ./talky` against `./tools -> ./cogny` is decided on it",
+    ),
+    (
+        "assistant",
+        "called_tool",
+        "the name of a brain's tool call (GH #995): it leaves on the call's own \
+         exit edge to the member's holders, rides through the answerer, and the \
+         run tap one level up writes it on `run_tool_result` -- the file space \
+         and the library write no `tool_name` of their own",
     ),
     (
         "assistant",

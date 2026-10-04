@@ -12,6 +12,20 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.61.1] — 2026-10-04
+
+### Fixed
+
+- **Every tool result of a run names its tool** ([#995](https://github.com/mmeyerlein/meclaw/issues/995)). The file space, the library and the object hive write no `tool_name` on their results, so an app heard their `run_tool_result`s nameless. The assistant level now stamps the call's name as `context.called_tool` on every edge a brain's tool call leaves by, and the builder's run tap writes `tool_name` on each `run_tool_result`: the answerer's own `hop.tool_name` when it writes one, else the stamped name. The builder README documents the body: the envelope the brain gets, with the result as `messages[0].text`.
+- **An app observing tool results hears every holder** ([#995](https://github.com/mmeyerlein/meclaw/issues/995)). The object form of `observes_tool_results` tapped only the generation's tool hive, the memory and the other apps, and filtered on a `hop.tool_name` the residents never write, so an observer of a file, library, object or channel tool installed green and heard nothing. It now taps every holder a result enters the generation from (a resident only if the member has it), filters on the effective name (the answerer's, else the called one) and restamps `tool_name` with it. The string form is unchanged.
+- **An app cannot offer a tool the assistant level answers itself** ([#995](https://github.com/mmeyerlein/meclaw/issues/995)). An offer of `memory_recall`, `consult_cogny`, `reply_to_consult` or any `file_*`, `object_*`, `lib_*` name would have drawn a second road for the same call; it is refused as `app_declaration_invalid` on `offers[<i>].tools[<j>]`. The call stamp an app's tool call carries now also drops `called_tool`, so an app never sees the name of an earlier built-in call.
+- **A derive job keeps its budget behind a long tool chain** ([#995](https://github.com/mmeyerlein/meclaw/issues/995)). The file space's `in_derive` edges (`./write` and `./ws` to `./derive`) now restore the colony TTL like their `in_dirs` siblings. Before, a derive job after a write from a run's tool chain inherited what the chain had left and sank to a TTL of 11 between derive and store.
+- **A SIGTERM right after the boot line is an orderly stop.** The daemon registered its SIGTERM listener only when its shutdown select was first polled, after the boot line, the keep round-trip, the watchdog arming and `--apply`. A SIGTERM in that window met the default disposition: the process died by signal 15 and left its root lease behind for the next boot to reclaim. The listener is now registered before the boot line is written; a signal that arrives early is held and answered once the select runs. The `--apply` one-shot keeps the old behaviour.
+
+### Changed
+
+- **Template versions, third digit** ([#995](https://github.com/mmeyerlein/meclaw/issues/995)): `assistant@3.7.1`, `builder@1.26.1` and `file-space@1.4.1` for the repairs above, and the levels that pin them, `member@2.5.4`, `org@2.1.8`, `meclaw-os@2.2.9` and `builder-librarian@2.2.22` (corpus). No lane moved.
+
 ## [0.61.0] — 2026-10-04
 
 ### Added

@@ -179,7 +179,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call"
-            ]
+            ],
+            "restore_ttl": true
           }
         },
         {
@@ -262,7 +263,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call"
-            ]
+            ],
+            "restore_ttl": true
           }
         },
         {

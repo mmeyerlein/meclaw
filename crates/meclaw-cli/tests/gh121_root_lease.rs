@@ -90,7 +90,7 @@ impl Proc {
     /// SIGTERM, then wait for the exit status.
     ///
     /// Only call this once [`wait_for_boot`] has seen the daemon finish booting:
-    /// `meclaw` installs its SIGTERM handler after the filesystem bootstrap, and
+    /// `meclaw` registers its SIGTERM listener right before the boot line, and
     /// a signal that arrives before that runs the DEFAULT disposition — the
     /// process dies by signal, no destructor runs, and the stop is not orderly
     /// at all. That is a property of the boot, not of the lease.
@@ -185,10 +185,12 @@ fn expect_refusal(root: &Path) -> (std::process::ExitStatus, String) {
 
 /// Wait until the daemon has finished booting.
 ///
-/// The marker is the boot's own log line. `tracing-appender` writes it
-/// non-blocking, so by the time the line is readable the process is already
-/// past it and into the shutdown select — which is exactly the guarantee a
-/// SIGTERM needs.
+/// The marker is the boot's own log line. The daemon registers its SIGTERM
+/// listener BEFORE it writes that line, so a SIGTERM sent once the line is
+/// readable is an orderly stop, however far the process still is from the
+/// shutdown select. (It used to rest on the process being "already past it":
+/// under load it was not, and the stop died by signal 15 — see
+/// [`a_sigterm_right_after_the_boot_line_is_an_orderly_stop`].)
 ///
 /// GH #984: the wait ends on one of two events -- the boot line, or the daemon
 /// gone (then at once, with its exit and its stderr, instead of 30 s later
@@ -379,6 +381,64 @@ fn a_lease_from_a_dead_holder_is_taken_over_with_a_loud_log() {
     wait_for_boot(td.path(), &mut daemon);
     let status = daemon.stop();
     assert!(status.success(), "SIGTERM is an orderly stop: {status:?}");
+    assert!(
+        !td.path().join(LEASE_DIR).exists(),
+        "an orderly shutdown releases the root"
+    );
+}
+
+/// The boot line promises an orderly SIGTERM, wherever the process is between
+/// that line and the shutdown select.
+///
+/// A strand gate under load measured the gap: the SIGTERM listener used to be
+/// registered only when the shutdown select was first polled, so a SIGTERM
+/// sent right after the boot line met the default disposition and the daemon
+/// died by signal 15, lease and all
+/// (`a_lease_from_a_dead_holder_is_taken_over_with_a_loud_log`,
+/// `ExitStatus(unix_wait_status(15))`). Load makes that window wide by chance;
+/// this test makes it wide by construction. `--daemon --apply -` reads its
+/// manifest from stdin AFTER the boot line and BEFORE the select, and stdin
+/// stays open until the SIGTERM is sent — the process is provably inside the
+/// window when the signal lands. No timing, no retry.
+#[test]
+fn a_sigterm_right_after_the_boot_line_is_an_orderly_stop() {
+    use std::io::Write as _;
+    let td = tempfile::TempDir::new().unwrap();
+    bootable_root(td.path());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_meclaw"))
+        .arg("--root")
+        .arg(td.path())
+        .arg("--daemon")
+        .arg("--apply")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn meclaw daemon");
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let drained = Drained::of(&mut child);
+    let mut daemon = Proc(Some(child), drained);
+
+    wait_for_boot(td.path(), &mut daemon);
+    daemon.sigterm();
+    // Release the manifest read. A daemon the signal already killed breaks the
+    // pipe; that write error is not the verdict, the exit status below is.
+    let _ = stdin.write_all(br#"{"manifest": []}"#);
+    drop(stdin);
+
+    let mut status = None;
+    wait_until("the signalled daemon to exit", || {
+        status = daemon.exited();
+        status.is_some()
+    });
+    let status = status.expect("exited");
+    assert!(
+        status.success(),
+        "a SIGTERM after the boot line is an orderly stop: {status:?}\nstderr:\n{}",
+        daemon.stderr(true)
+    );
     assert!(
         !td.path().join(LEASE_DIR).exists(),
         "an orderly shutdown releases the root"

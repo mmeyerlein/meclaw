@@ -1,4 +1,4 @@
-# `member@2.5.3`
+# `member@2.5.4`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and three edges.
@@ -879,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.3` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.4` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.3"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.4"}]
 }}
 ```
 
@@ -1124,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.1"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1550,10 +1550,10 @@ It renders this declaration, and a test holds the two blocks together
     {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')", "modifier": {"set_context": {"channel_node": "'<screen>'", "channel": "'<screen>'"}}},
     {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && hop.route == 'tool_schemas'", "modifier": {"set_context": {"tool_answerer": "'<app>'"}}},
     {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && hop.route == 'tool_result' && has(context.offer_tool) && (context.offer_tool == 'show')", "modifier": {"set_hop": {"tool_name": "context.offer_tool"}, "set_context": {"tool_answerer": "'<app>'", "assistant": "'<gen>'", "audience_set": "'[\"agent:<gen>\",\"member:<person>\"]'"}, "delete_context": ["offer_tool"]}},
-    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'", "offer_tool": "hop.tool_name"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
-    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
-    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'", "offer_tool": "hop.tool_name"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
-    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'", "offer_tool": "hop.tool_name"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer", "called_tool"]}},
+    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer", "called_tool"]}},
+    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'", "offer_tool": "hop.tool_name"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer", "called_tool"]}},
+    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer", "called_tool"]}},
     {"from": "./assistants/<gen>/tools", "to": "./apps/<app>/stage", "lane": "tool_result", "condition": "has(hop.route) && hop.route == 'tool_result'"},
     {"from": "./memory-hive", "to": "./apps/<app>/stage", "lane": "tool_result", "condition": "has(hop.route) && hop.route == 'tool_result'"},
     {"from": "./apps/<app>", "to": "./<device>", "condition": "has(hop.route) && hop.route == 'open'", "modifier": {"set_hop": {"route": "'in_open'"}}},

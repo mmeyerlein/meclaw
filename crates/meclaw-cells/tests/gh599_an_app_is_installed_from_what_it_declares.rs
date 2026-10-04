@@ -466,6 +466,47 @@ fn an_offer_with_a_key_its_kind_has_no_rule_for_is_refused_by_name() {
     }
 }
 
+/// **An app does not offer a tool the assistant level answers itself** (GH
+/// #995 review). The level routes a brain's `memory_recall`, `consult_cogny`,
+/// `reply_to_consult` and every `file_*`, `object_*`, `lib_*` call to the
+/// member's residents on edges of its own; an app offering one of those names
+/// would draw a second road for the same call -- two results on one
+/// `tool_call_id`. Refused by the field of the name, with the reserved words
+/// as what is known; a name that only CONTAINS such a word installs.
+#[test]
+fn an_offer_of_a_built_in_tool_name_is_refused_by_name() {
+    let base = json!({"scope": MEMBER, "app": "showcase", "template": "showcase@1.0.0",
+                      "screen": "display", "generation": "sam", "ctx": {"member_person": "alex"}});
+    for (tools, at) in [
+        (json!(["file_ws_push"]), 0),
+        (json!(["probe_ok", "memory_recall"]), 1),
+        (json!(["lib_symbol"]), 0),
+        (json!(["object_find"]), 0),
+        (json!(["file_anything"]), 0),
+        (json!(["consult_cogny"]), 0),
+    ] {
+        let mut p = base.clone();
+        p["declaration"] =
+            json!({"offers": [{"kind": "tool", "at": "./show", "tools": tools.clone()}]});
+        let (code, payload) = refusal("install_app", &p);
+        assert_eq!(code, "app_declaration_invalid", "{tools}: {payload}");
+        assert_eq!(
+            payload["field"],
+            json!(format!("offers[0].tools[{at}]")),
+            "{tools}: {payload}"
+        );
+        assert!(
+            payload["known"].as_array().is_some_and(
+                |k| k.contains(&json!("memory_recall")) && k.contains(&json!("file_*"))
+            ),
+            "{tools}: the refusal names the reserved words: {payload}"
+        );
+    }
+    let mut p = base.clone();
+    p["declaration"] = json!({"offers": [{"kind": "tool", "at": "./show", "tools": ["probe_file_ws", "my_lib_tool"]}]});
+    manifest("install_app", &p);
+}
+
 /// **The switch and the renderer name the same five declaration keys** (T4
 /// review minor 2). `classify` refuses a declaration that is no object and
 /// lists the keys a declaration may carry; the renderer refuses a foreign key
