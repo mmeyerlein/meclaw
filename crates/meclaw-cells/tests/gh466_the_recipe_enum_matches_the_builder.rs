@@ -253,7 +253,7 @@ fn the_door_extra_is_known_in_all_three_copies() {
             "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
                           "text": json!({"request": "…", "recipe": "grow_level",
                                          "params": {"scope": "/os", "level": "org",
-                                                    "name": "acme", "template": "org@2.1.8",
+                                                    "name": "acme", "template": "org@2.1.9",
                                                     "door": true}}).to_string()}],
         }),
     );

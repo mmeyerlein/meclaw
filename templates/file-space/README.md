@@ -1,4 +1,4 @@
-# `file-space@1.4.1`
+# `file-space@1.4.2`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -168,7 +168,7 @@ The three projection tools ([#980](https://github.com/mmeyerlein/meclaw/issues/9
 | `bad_pattern` / `bad_range` / `page_unknown` | a pattern of the wrong size or no regex / a range with no line / no such page (on a version without pages: a `page` other than 0 or 1) |
 | `store_error` | the store refused a read (or, in `./derive`, a write) |
 | `base_moved` | a write overlaps what moved since `base`; with the current lines (`lines`, read form) and the new token (`current`). `use_replace` is no refusal: it is the `hint` of an `overwrite` that landed |
-| `base_required` / `not_text` / `out_of_range` | a write without `args.base` / a line op on a binary file / a line number outside the base (`lines` = its count) |
+| `base_required` / `not_text` / `out_of_range` | a write without `args.base` / a line op on a binary file / a line number outside the base (`lines` = its count; `insert` at the count + 1, `before` or `after`, appends instead, [#996](https://github.com/mmeyerlein/meclaw/issues/996)) |
 | `path_taken` / `too_large` | `create` on a path a living file holds (`file` names it) / content over `write.max_bytes` |
 | `ambiguous` | `replace`: `old` matches other than `expected` times on the first stage with a hit (`stage`, `count`, `lines`); no hit on any stage is `not_found` with `count: 0` |
 | `stale_lines` | `replace_lines`: an `h4` of `hashes` no longer names its line (`lines` = the current ones, read form) |

@@ -419,7 +419,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
 fn a_level_the_table_does_not_carry_is_refused_by_name() {
     let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.8"}}));
+                   "template": "org@2.1.9"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("level_unknown"),
@@ -435,7 +435,7 @@ fn a_level_the_table_does_not_carry_is_refused_by_name() {
     // and the switch refuses it one cell earlier, before an inference is bought
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.8"}}));
+                   "template": "org@2.1.9"}}));
     assert_eq!(early["header"]["error_code"], json!("level_unknown"));
     assert_eq!(early["header"]["route"], json!("error"));
 }
@@ -587,7 +587,7 @@ fn the_door_is_one_edge_more_and_the_readme_counts_it() {
 #[test]
 fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
     let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
-                        "template": "member@2.5.4", "door": true});
+                        "template": "member@2.5.5", "door": true});
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
                                     "params": params.clone()}));
     assert_eq!(early["header"]["route"], json!("error"));
@@ -743,7 +743,7 @@ fn the_grow_sentence_hears_the_door() {
     // A MEMBER sentence is untouched by the new words: "member" still means the
     // level, and only "member's door" means the switch.
     let member = run_classify(json!({
-        "request": "grow a member named alex from member@2.5.4 under /os/orgs/acme"}));
+        "request": "grow a member named alex from member@2.5.5 under /os/orgs/acme"}));
     let payload: Value =
         meclaw_core::serde_json::from_str(member["messages"][0]["text"].as_str().expect("payload"))
             .expect("json payload");

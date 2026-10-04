@@ -571,8 +571,8 @@ fn replace_lines_checks_its_hashes_and_its_range() {
 }
 
 /// README § 2.8: `insert` puts its text before or after a line of the base;
-/// after 0 is the top, after the last line (or before n+1) the end; anything
-/// else is out of range.
+/// after 0 is the top, after the last line (or after or before n+1, GH #996)
+/// the end; anything else is out of range.
 #[test]
 fn insert_goes_before_after_to_the_top_and_to_the_end() {
     if !shipped() {
@@ -627,13 +627,24 @@ fn insert_goes_before_after_to_the_top_and_to_the_end() {
             "first",
             json!({"text": "first\n"}),
         ),
+        // GH #996: `after` n+1 appends as `after` n does; only n+1.
         (
-            "after n+1",
+            "after n+1 = end",
             FOUR,
             5,
             "after",
+            "END",
+            json!({"text": "one\ntwo\nthree\nfour\nEND\n"}),
+        ),
+        // GH #996: a line outside the file names the ways to append.
+        (
+            "after n+2",
+            FOUR,
+            6,
+            "after",
             "X",
-            json!({"error": "out_of_range", "lines": 4}),
+            json!({"error": "out_of_range", "lines": 4,
+                   "message": "line 6 is outside the file of 4 lines; to append, insert after line 4 or 5, or before line 5"}),
         ),
         (
             "before 0",
@@ -641,7 +652,8 @@ fn insert_goes_before_after_to_the_top_and_to_the_end() {
             0,
             "before",
             "X",
-            json!({"error": "out_of_range", "lines": 4}),
+            json!({"error": "out_of_range", "lines": 4,
+                   "message": "line 0 is outside the file of 4 lines; to append, insert after line 4 or 5, or before line 5"}),
         ),
         (
             "unknown where",

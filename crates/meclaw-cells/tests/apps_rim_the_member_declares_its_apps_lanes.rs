@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.5.4",
+            v, "2.5.5",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -433,7 +433,8 @@ fn the_versions_moved_with_the_declarations() {
              2.5.3 only pins `file-space@1.4.0` and `memory-hive@3.8.3` and derives \
              `./assistants` from `assistant@3.7.0` (GH #980, GH #981, GH #993), the third digit; \
              2.5.4 only pins `file-space@1.4.1` and derives `./assistants` from \
-             `assistant@3.7.1` (GH #995), the third digit"
+             `assistant@3.7.1` (GH #995), the third digit; 2.5.5 only pins \
+             `file-space@1.4.2` (GH #996), the third digit"
         );
     }
     if let Some(v) = declared_version("assistant") {

@@ -12,6 +12,16 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.61.2] — 2026-10-04
+
+### Fixed
+
+- **Inserting at the line after the last one appends, and a miss says how** ([#996](https://github.com/mmeyerlein/meclaw/issues/996)). Models append with `file_insert` and `line` = number of lines + 1, mostly with `where: after` or no `where` at all, and every such call answered a bare `out_of_range`, one lost tool call per append in every measured run. `after` line N+1 now appends at the end, as `before` line N+1 and `after` line N already did: an empty file included (`after` 1), and a last line without its line end keeps its own line. Only N+1: any other line outside the file stays `out_of_range` with `lines: N`, which now comes with a message naming the ways to append, and the `file_insert` description says how to append.
+
+### Changed
+
+- **Template versions, third digit** ([#996](https://github.com/mmeyerlein/meclaw/issues/996)): `file-space@1.4.2` for the repair above, and the levels that pin it, `member@2.5.5`, `org@2.1.9` and `meclaw-os@2.2.10`, with `builder-librarian@2.2.23` (corpus) and `builder@1.26.2`, which pins it. No lane moved.
+
 ## [0.61.1] — 2026-10-04
 
 ### Fixed
