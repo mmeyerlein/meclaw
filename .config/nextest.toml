@@ -160,3 +160,16 @@ success-output = "immediate-final"
 [[profile.default.overrides]]
 filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# GH #990: the curator's scenario proof is a long serial scenario set, not a
+# wedge. Run alone on lane build01 its binary takes 137 s; inside a strand gate
+# (~9 900 tests) it took 209.8 - 237.5 s across the strands of welle-nachlese
+# and hit the four-minute kill once (240.0 s, strand CI, 3c789894). Six minutes
+# for THIS test alone, in both profiles -- still no retry, no quarantine.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::710_the_scenarios_run_against_the_curator)'
+slow-timeout = { period = "60s", terminate-after = 6 }
+
+[[profile.ci.overrides]]
+filter = 'binary_id(=meclaw-cells::710_the_scenarios_run_against_the_curator)'
+slow-timeout = { period = "60s", terminate-after = 6 }

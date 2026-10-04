@@ -78,17 +78,37 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
     }
 }
 
-/// Everything under `src`, every file (the cells' `cell.db` and its WAL
-/// included) -- the colony's tree as a restart finds it.
+/// Everything under `src` -- the colony's tree as a restart finds it.
+///
+/// GH #991: a SQLite database is copied as one consistent snapshot
+/// (`VACUUM INTO`, which reads through the WAL under SQLite's own locks), and
+/// its `-wal` / `-shm` / `-journal` sidecars are not copied as files. The
+/// connections of the stopped colony close on blocking threads after
+/// `shutdown` returns; the last one checkpoints and deletes the WAL. A
+/// file-by-file copy met that as `NotFound` (release gate, 4.10.) -- or,
+/// worse, took the main file before the checkpoint and lost the WAL frames.
+/// Every other file is copied as before, and a missing one stays an error.
 fn copy_all(src: &std::path::Path, dst: &std::path::Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
         let from = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
         if from.is_dir() {
-            copy_all(&from, &dst.join(entry.file_name()));
+            copy_all(&from, &dst.join(&name));
+        } else if ["-wal", "-shm", "-journal"]
+            .iter()
+            .any(|sidecar| name_str.ends_with(sidecar))
+        {
+            // Part of its database's snapshot below.
+        } else if name_str.ends_with(".db") {
+            let conn = rusqlite::Connection::open(&from).unwrap();
+            conn.busy_timeout(Duration::from_secs(10)).unwrap();
+            conn.execute("VACUUM INTO ?1", [dst.join(&name).to_string_lossy()])
+                .unwrap();
         } else {
-            std::fs::copy(&from, dst.join(entry.file_name())).unwrap();
+            std::fs::copy(&from, dst.join(&name)).unwrap();
         }
     }
 }

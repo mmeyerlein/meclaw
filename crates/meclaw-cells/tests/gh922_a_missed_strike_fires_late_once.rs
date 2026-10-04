@@ -319,6 +319,13 @@ async fn a_strike_before_its_edge_is_not_lost() {
 /// still `active` and nothing was emitted after the failed step; after the
 /// lock is gone the I/O task strikes the same moment again, and that strike
 /// emits once, late. Red before the fix: the second strike never comes.
+///
+/// GH #989: a retry under load may time out as well and is struck once
+/// more; the test takes strikes until one emits, and each strike that does
+/// not emit must leave the row `active` -- before the fix a step that had
+/// landed but outlasted the timeout in the blocking pool's queue was
+/// reported `Interrupted`, the row was `completed` without its strike, and
+/// public CI waited for an emission that never came.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_persist_plans_the_one_shot_again() {
     for (lock, step) in [("BEGIN EXCLUSIVE", "load"), ("BEGIN IMMEDIATE", "mark")] {
@@ -330,9 +337,12 @@ async fn next_strike(
     rx: &mut mpsc::Receiver<meclaw_cells::timer::io::TimerEvent>,
     step: &str,
 ) -> meclaw_cells::timer::io::TimerEvent {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+    // The backstop is a watchdog, not the condition: a replanned strike
+    // waits up to `REPLAN_MAX_DELAY` once its retries back off (GH #989).
+    let backstop = meclaw_cells::timer::io::REPLAN_MAX_DELAY + Duration::from_secs(30);
+    tokio::time::timeout(backstop, rx.recv())
         .await
-        .unwrap_or_else(|_| panic!("[{step}] no strike within 30s"))
+        .unwrap_or_else(|_| panic!("[{step}] no strike within {backstop:?}"))
         .expect("events channel closed")
 }
 
@@ -398,23 +408,44 @@ async fn failed_step_is_planned_again(lock: &str, step: &str) {
     );
     locker.execute_batch("COMMIT").unwrap();
 
-    // 2. The same moment is struck again, and this time it takes.
-    let again = next_strike(&mut events_rx, step).await;
-    let TimerEvent::Fire {
-        schedule_id,
-        scheduled_at,
-        forced,
-    } = again.clone();
-    assert_eq!(
-        (schedule_id, scheduled_at, forced),
-        (id, at, false),
-        "[{step}] the strike again is for the moment that failed"
-    );
-    cell.handle_event(again, &sink, &mut db).await;
-    let out = tokio::time::timeout(Duration::from_secs(30), origin_rx.recv())
-        .await
-        .unwrap_or_else(|_| panic!("[{step}] no emission within 30s"))
-        .expect("origin channel closed");
+    // 2. The same moment is struck again until a state step takes; that
+    //    strike emits once. Event-bound: `handle_event` emits before it
+    //    returns, so each strike is judged on its own -- no fixed window. A
+    //    loaded host may make a retry's step run past the 50 ms timeout as
+    //    well; the I/O task then strikes the moment once more (GH #989), and
+    //    a step reported as failed must never have completed the row.
+    let mut out = None;
+    for attempt in 1..=meclaw_cells::timer::io::REPLAN_MAX_ATTEMPTS {
+        let again = next_strike(&mut events_rx, step).await;
+        let TimerEvent::Fire {
+            schedule_id,
+            scheduled_at,
+            forced,
+        } = again.clone();
+        assert_eq!(
+            (schedule_id, scheduled_at, forced),
+            (id, at, false),
+            "[{step}] strike {attempt} again is for the moment that failed"
+        );
+        cell.handle_event(again, &sink, &mut db).await;
+        if let Ok(emitted) = origin_rx.try_recv() {
+            out = Some(emitted);
+            break;
+        }
+        let status: String = locker
+            .query_row(
+                "SELECT status FROM schedules WHERE schedule_id = ?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "active",
+            "[{step}] strike {attempt} again did not emit, so it left the row active \
+             (a completed row without its strike is a lost one-shot)"
+        );
+    }
+    let out = out.unwrap_or_else(|| panic!("[{step}] no strike again emitted"));
     assert_eq!(out.content["header"]["schedule_id"], id.to_string());
     assert_eq!(
         out.content["header"]["late"], true,

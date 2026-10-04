@@ -1,7 +1,9 @@
 //! Phase-9 DbConn — wraps rusqlite::Connection so that blocking calls
 //! run via tokio::task::spawn_blocking and query timeouts use the
 //! rusqlite InterruptHandle (Send+Sync, rusqlite-own cross-thread
-//! cancellation mechanism — NOT a Mutex-around-cell-state).
+//! cancellation mechanism — NOT a Mutex-around-cell-state). A per-call phase
+//! word (`AtomicU8`, GH #989) decides whether the timeout interrupted the
+//! closure; it lives for one call and holds no cell state.
 
 /// Wraps a rusqlite Connection so blocking calls run via
 /// `tokio::task::spawn_blocking`. The Connection is single-owned (taken
@@ -220,15 +222,24 @@ pub enum QueryTimeout {
     Interrupted,
 }
 
+/// GH #989: phases of one `call_with_timeout`, see there.
+const PHASE_QUEUED: u8 = 0;
+const PHASE_RUNNING: u8 = 1;
+const PHASE_DONE: u8 = 2;
+const PHASE_INTERRUPTED: u8 = 3;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+
 impl DbConn {
     /// Like `call`, but cancels the running query via SQLite's
     /// `interrupt` mechanism if `query_timeout` elapses first.
     ///
     /// If `query_timeout` is `None`, behaves like `call` and returns
-    /// `Ok(f(...))`. Otherwise: races the blocking call against a
-    /// `tokio::time::sleep(query_timeout)` task that calls
-    /// `interrupt()` on elapse. Returns `Err(Interrupted)` if the
-    /// timer fired.
+    /// `Ok(f(...))`. Otherwise: races the closure against a
+    /// `tokio::time::sleep(query_timeout)` task that calls `interrupt()` on
+    /// elapse. The clock starts when the closure starts (time spent waiting
+    /// for a blocking thread is not query time, GH #989). Returns
+    /// `Err(Interrupted)` only if the interrupt was sent while the closure
+    /// still ran.
     ///
     /// Shares `call`'s shutdown contract: a blocking task cancelled by
     /// runtime shutdown parks the call forever rather than panicking (see
@@ -251,28 +262,64 @@ impl DbConn {
         // InterruptHandle: Send. Single handle, moved into the timer task.
         // No Clone needed — once moved, only the timer can call interrupt().
         let interrupt = conn.get_interrupt_handle();
+        // GH #989: the clock starts when the closure does, and `Interrupted`
+        // means the interrupt was sent while the closure still ran. The timer
+        // used to start at the call and win whenever the closure finished
+        // after the deadline -- a write that waited for a blocking thread
+        // past the timeout and then committed in a moment was reported as
+        // timed out, and the caller took a landed write for a failed one.
+        // The phase word decides who came first: the closure marks itself
+        // done, the timer marks it interrupted, and only one of them can
+        // move it off `RUNNING`. The wait for a blocking thread has no upper
+        // bound, as before this fix: the old timer only reported the elapsed
+        // deadline, it never ended that wait; `query_timeout` bounds the
+        // query's run.
+        let phase = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(PHASE_QUEUED));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let timer_phase = phase.clone();
         let timer = tokio::spawn(async move {
+            // A closure that never starts (cancelled blocking task) drops
+            // the sender: no clock, no interrupt.
+            if started_rx.await.is_err() {
+                return;
+            }
             tokio::time::sleep(timeout).await;
-            interrupt.interrupt();
-            true // fired
+            if timer_phase
+                .compare_exchange(PHASE_RUNNING, PHASE_INTERRUPTED, AcqRel, Acquire)
+                .is_ok()
+            {
+                interrupt.interrupt();
+            }
         });
+        let run_phase = phase.clone();
         let joined = tokio::task::spawn_blocking(move || {
+            run_phase.store(PHASE_RUNNING, Release);
+            let _ = started_tx.send(());
             let out = f(&mut conn);
+            let _ = run_phase.compare_exchange(PHASE_RUNNING, PHASE_DONE, AcqRel, Acquire);
             (conn, out)
         })
         .await;
+        // The timer is joined, not only aborted, before this call returns:
+        // `abort` cannot stop it between its CAS and `interrupt()` (no await
+        // point there), and an interrupt sent after the return would hit the
+        // caller's NEXT statement on this connection. Joined, it is either
+        // cancelled before its clock ran out or has sent its interrupt.
         let Some((conn, out)) = join_blocking(joined) else {
             timer.abort();
+            let _ = timer.await;
             return connection_lost().await;
         };
         self.conn = Some(conn);
-        // Race-window (benign, accepted): the query may finish a few
-        // nanoseconds before the timer fires `interrupt()`. We detect
-        // that via timer.abort() before .await — if the timer already
-        // returned its `true`, we honor it as a timeout; if it was
-        // aborted before firing, JoinError::is_cancelled → not fired.
         timer.abort();
-        let fired = matches!(timer.await, Ok(true));
+        let _ = timer.await;
+        // Residual window (accepted, documented): the interrupt can still
+        // land after the closure's last statement returned and before the
+        // closure marked itself done -- a few instructions, against the
+        // whole queue wait before this fix. An interrupt sent to an idle
+        // connection is a no-op for the next statement (SQLite clears it
+        // when a statement starts with none running).
+        let fired = phase.load(Acquire) == PHASE_INTERRUPTED;
         if fired {
             Err(QueryTimeout::Interrupted)
         } else {
@@ -578,6 +625,58 @@ mod tests {
             next.is_pending(),
             "a lost in-memory connection has nothing to reopen and must park, got {next:?}"
         );
+    }
+
+    /// GH #989: the clock of `query_timeout` is the query's, not the blocking
+    /// pool's queue. A write that waited for a blocking thread longer than the
+    /// timeout and then ran (and committed) in a moment was reported
+    /// `Interrupted`: the timer cell took its `mark_completed` for failed,
+    /// planned the strike again, and the retry found the row `completed` --
+    /// a catch-up one-shot completed without its strike (public CI, gh922,
+    /// on a loaded runner). Deterministic: the pool has one thread, held
+    /// until the old clock has run out.
+    #[test]
+    fn a_query_that_waited_for_a_blocking_thread_is_not_reported_as_interrupted() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            conn.execute_batch("CREATE TABLE t (n INTEGER)").unwrap();
+            let timeout = std::time::Duration::from_millis(50);
+            let mut db = DbConn::wrap(conn, Some(timeout));
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
+            let occupier = tokio::task::spawn_blocking(move || {
+                let _ = held_tx.send(());
+                let _ = release_rx.recv();
+            });
+            held_rx.await.unwrap();
+            let call = tokio::spawn(async move {
+                let res = db
+                    .call_with_timeout(|c| c.execute("INSERT INTO t VALUES (1)", []))
+                    .await;
+                (db, res)
+            });
+            // The write is queued behind the occupier; the old clock, started
+            // at the call, runs out meanwhile.
+            tokio::time::sleep(timeout * 4).await;
+            release_tx.send(()).unwrap();
+            occupier.await.unwrap();
+            let (mut db, res) = call.await.unwrap();
+            let n: i64 = db
+                .call(|c| c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)))
+                .await
+                .unwrap();
+            assert_eq!(n, 1, "the write ran and committed");
+            assert!(
+                matches!(res, Ok(Ok(1))),
+                "a write that landed is not a timeout: {res:?}"
+            );
+        });
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

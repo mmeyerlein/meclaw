@@ -96,9 +96,14 @@ async fn the_cap_ends_a_section_the_model_never_answers() {
     let (mut client, _hello) = live.connect("session=quiet-2&mode=auto").await;
     let _session = live.session().await;
 
+    // GH #992: the clock starts BEFORE the speak is sent. The cap is armed
+    // when the cell takes the speak, never earlier, so time since the send
+    // is never shorter than time since arming -- `>= 300 ms` holds without a
+    // tolerance. Started after `control()`, it missed the time the cap had
+    // already run and read 299.15 ms in a release gate under load.
+    let opened = Instant::now();
     live.send(speak_msg("quiet-2", "Tell him anything.")).await;
     let _ = live.control().await;
-    let opened = Instant::now();
     client
         .next_frame_of_type("speak_start", MARKER)
         .await

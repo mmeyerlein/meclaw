@@ -12,6 +12,13 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.60.1] — 2026-10-04
+
+### Fixed
+
+- **A query that waited for a blocking thread is no longer reported as timed out** ([#989](https://github.com/mmeyerlein/meclaw/issues/989)). `query_timeout_ms` now counts from the moment the query starts, so a timer one-shot whose completion mark landed after a wait in the queue is no longer withheld as a failed mark and then lost on the retry.
+- **The curator's scenario proof gets a six-minute test timeout of its own** ([#990](https://github.com/mmeyerlein/meclaw/issues/990)). Under a full suite run it took up to 237.5 s against the four-minute kill; it is a long serial scenario set, not a hang.
+
 ## [0.60.0] — 2026-10-03
 
 ### Added
