@@ -83,9 +83,11 @@ fn a_duplicate_route_an_empty_route_and_a_relative_emit_to_are_each_refused() {
     // Nine since GH #828: `auth`, the credential, is a key of the boundary too.
     // Ten since GH #833: whose header the mount believes is part of who may cross.
     // Eleven since GH #840: where the cell may send is part of the boundary too.
+    // Twelve since GH #1012: how long the outbox keeps a message is the
+    // boundary's promise, not a message's to change.
     assert_eq!(
         IMMUTABLE_KEYS.len(),
-        11,
+        12,
         "every key of the variant, and no more"
     );
     assert!(IMMUTABLE_KEYS.contains(&"lanes") && IMMUTABLE_KEYS.contains(&"mount"));

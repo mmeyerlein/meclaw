@@ -294,6 +294,8 @@ fn make_build(
                 viewer_events: o.viewer_events,
                 backlog_high_bytes: o.backlog_high_bytes,
                 backlog_high_ms: o.backlog_high_ms,
+                join_chunk_bytes: o.join_chunk_bytes,
+                join_timeout_ms: o.join_timeout_ms,
             },
             Err(e) => {
                 tracing::error!(
@@ -348,9 +350,14 @@ fn make_build(
         io.link_mounts = Arc::new(parsed.link_mounts.clone());
         // GH #1006: the registry is where every connection reads what to meter
         // and report; set before the cell clones it for the `viewers` op.
-        io.viewers = Arc::new(crate::web::io::ViewerRegistry::with_policy(
-            parsed.backlog_policy(),
-        ));
+        io.viewers = Arc::new(
+            crate::web::io::ViewerRegistry::with_policy(parsed.backlog_policy())
+                .with_screen_events(parsed.viewer_events.iter().any(|e| e == "screen")),
+        );
+        // GH #1002: the join's piece limit and the timeout the shell states,
+        // set after `new` for the same reason as the two lists above.
+        io.join_chunk = parsed.join_chunk();
+        io.join_timeout_ms = parsed.join_timeout_ms;
         let cell = WebCell::new(
             path_cap.as_str().to_string(),
             io,

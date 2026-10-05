@@ -11,9 +11,12 @@
 // `toString` with change tracking), and the tracked output of every step is
 // printed, so a test can see which parts the client skipped. `full` is the
 // end state rendered without tracking: the whole markup, with the client's
-// `data-phx-id` attributes on every root part.
+// `data-phx-id` attributes on every root part. `fulls` is that untracked
+// rendering after every step, so a test can follow one part's `data-phx-id`
+// across a frame: the browser's patch keys its nodes by that id (GH #1009).
 //
-// Prints one JSON object {"steps": [html, ...], "full": html} on stdout.
+// Prints one JSON object {"steps": [html, ...], "fulls": [html, ...],
+// "full": html} on stdout.
 // Exit 3 with SKIP on stderr when the bundle does not have the expected shape.
 
 import fs from "node:fs";
@@ -39,13 +42,18 @@ vm.runInContext(src + "\n;globalThis.LiveView = LiveView;", context);
 const Rendered = context.LiveView.__Rendered;
 
 const steps = JSON.parse(fs.readFileSync(stepsPath, "utf8"));
-const out = { steps: [] };
+const out = { steps: [], fulls: [] };
 const r = new Rendered("lab", steps.join);
+const untracked = () => {
+  const rendered = r.get();
+  return r.recursiveToString(rendered, rendered.c, null, false, {}, null).buffer;
+};
 out.steps.push(r.toString().buffer);
+out.fulls.push(untracked());
 for (const diff of steps.diffs) {
   r.mergeDiff(diff);
   out.steps.push(r.toString().buffer);
+  out.fulls.push(untracked());
 }
-const rendered = r.get();
-out.full = r.recursiveToString(rendered, rendered.c, null, false, {}, null).buffer;
+out.full = untracked();
 process.stdout.write(JSON.stringify(out));

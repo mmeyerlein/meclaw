@@ -4,7 +4,8 @@
     "mount": "web",
     "identity_header": "",
     "link_mounts": [],
-    "external_timeout_ms": 5000
+    "external_timeout_ms": 5000,
+    "viewer_events": []
   },
   "contract": {
     "version": "2.0.0",
@@ -32,6 +33,12 @@
         "secret": false,
         "default": 5000,
         "description": "Operation timeout for I/O this cell initiates, in milliseconds."
+      },
+      "viewer_events": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "Viewer events the app opts in to: \"backlog\" reports viewer:backlog when a viewer's socket falls behind and when it caught up, \"screen\" reports viewer:screen on join and leave. Empty, the default, reports neither."
       }
     },
     "ingress": { "context": ["session_id"] },

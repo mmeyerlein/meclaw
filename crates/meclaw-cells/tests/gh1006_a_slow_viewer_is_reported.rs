@@ -16,20 +16,27 @@
 //! frames per second, the counting cost — is measured once, alone, by
 //! `gh1006_a_slow_viewer_is_reported_measure.rs` (`#[ignore]`). The
 //! edge-trigger bound itself is a unit lock on the meter with an injected clock
-//! (`web::backlog`), and so is the resync lock (`web::io`).
+//! (`web::backlog`), and so are "exactly once until the repeat" for the slow
+//! viewer (GH #1011), "exactly one clear" once the reader catches up
+//! (GH #1008) and the resync lock (`web::io`).
 
 #[path = "support/web_fixture.rs"]
 mod web_fixture;
 
 use meclaw_core::serde_json::json;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use web_fixture::backlog_lab::{
-    App, Heard, MOUNT, SLOW, Until, drive, drive_until, join, lab, num, opted_in, row_of, start,
+    App, MOUNT, SLOW, Until, drive, drive_until, join, lab, num, opted_in, row_of, start,
 };
 
-/// T1: one slow viewer among three is reported `high` — exactly once until the
-/// one-second repeat — and the two fast ones never are.
+/// T1, function: one slow viewer among three is reported `high`, and the two
+/// fast ones never are; its reports start with `high` and alternate — never a
+/// `clear` without a `high` before it, never two in a row. The plan's
+/// "exactly once until the one-second repeat" is the meter lock of the same
+/// name on an injected clock (`web::backlog`): the age threshold reads the
+/// wall clock, so on a loaded host a starved write loop makes real
+/// high/clear cycles inside the second (GH #1011, as #1008).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gh1006_a_slow_viewer_raises_backlog_high() {
     let mut live = start(opted_in()).await;
@@ -37,8 +44,8 @@ async fn gh1006_a_slow_viewer_raises_backlog_high() {
     let b = join(live.port, 0).await;
     let slow = join(live.port, SLOW).await;
     let mut round = 0;
-    // Past the first `high` by more than the repeat interval, so a second
-    // report inside it would show.
+    // Past the first `high` by more than the repeat interval, so the fast
+    // viewers had time to show up if they were ever reported.
     let _ = drive_until(
         &mut live,
         &slow.session,
@@ -49,51 +56,71 @@ async fn gh1006_a_slow_viewer_raises_backlog_high() {
     .await;
 
     let heard = live.heard().await;
-    let first = heard
-        .iter()
-        .find(|h| h.session == slow.session && h.high)
-        .expect("a high for the slow viewer");
-    // The repeat is gated by the cell's own clock (≥ 1 s since the last
-    // report), so this window does not depend on the host's load.
-    let early = heard
-        .iter()
-        .filter(|h| h.session == slow.session && h.at < first.at + Duration::from_millis(900))
-        .count();
-    assert_eq!(
-        early, 1,
-        "exactly one report until the 1 s repeat: {heard:?}"
-    );
     assert!(
         heard
             .iter()
             .all(|h| h.session != a.session && h.session != b.session),
         "the fast viewers are never reported: {heard:?}"
     );
+    let mine: Vec<bool> = heard
+        .iter()
+        .filter(|h| h.session == slow.session)
+        .map(|h| h.high)
+        .collect();
+    assert_eq!(
+        mine.first(),
+        Some(&true),
+        "a high for the slow viewer first: {heard:?}"
+    );
+    assert!(
+        mine.windows(2).all(|w| w[0] || w[1]),
+        "a clear only after a high, never two in a row: {heard:?}"
+    );
     live.join.abort();
 }
 
-/// T2: once the slow viewer catches up, exactly one `clear`, and quiet after.
-/// The app keeps writing the full tranche: only the reader changes.
+/// T2, function: once the slow viewer catches up it is reported `clear`.
+/// The app keeps writing the full tranche for a while (only the reader
+/// changes), then stops; the last report for the viewer is `clear`, and the
+/// reports alternate — never a `clear` without a `high` before it, never two
+/// in a row. How many cycles a loaded host adds is not this lock's question:
+/// the age threshold reads the wall clock, so a starved write loop makes real
+/// high/clear cycles (GH #1008). The plan's "exactly one clear" is the meter
+/// lock of the same name on an injected clock (`web::backlog`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn gh1006_backlog_clears_when_the_viewer_catches_up() {
+async fn gh1006_a_caught_up_viewer_is_reported_clear() {
     let mut live = start(opted_in()).await;
     let slow = join(live.port, SLOW).await;
     let mut round = 0;
     let _ = drive_until(&mut live, &slow.session, true, Duration::ZERO, &mut round).await;
     slow.rate.store(0, Ordering::Relaxed);
-    let _ = drive_until(
-        &mut live,
-        &slow.session,
-        false,
-        Duration::from_secs(2),
-        &mut round,
-    )
-    .await;
-    let heard = live.heard().await;
-    let clears: Vec<&Heard> = heard.iter().filter(|h| !h.high).collect();
-    assert_eq!(clears.len(), 1, "exactly one clear: {heard:?}");
-    let last = heard.last().expect("reports");
-    assert!(!last.high, "and nothing after it but quiet: {heard:?}");
+    let _ = drive(&mut live, Duration::from_secs(1), &mut round).await;
+    // The app stops: the reader drains the queue and the write after the last
+    // frame reports the level. Bounded wait, a failure marker.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let heard = loop {
+        let heard = live.heard().await;
+        if heard.last().is_some_and(|h| !h.high) || Instant::now() >= deadline {
+            break heard;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        heard.iter().all(|h| h.session == slow.session),
+        "only the slow viewer is reported: {heard:?}"
+    );
+    let mut level = false;
+    for h in &heard {
+        assert!(
+            h.high || level,
+            "a clear only after a high, never two in a row: {heard:?}"
+        );
+        level = h.high;
+    }
+    assert!(
+        heard.last().is_some_and(|h| !h.high),
+        "the caught-up viewer ends clear: {heard:?}"
+    );
     live.join.abort();
 }
 

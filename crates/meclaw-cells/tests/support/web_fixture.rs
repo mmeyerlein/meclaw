@@ -301,7 +301,13 @@ impl Lab {
         let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
             .spawn_cell(
                 Path::new(CELL),
-                json!({ "mount": MOUNT }),
+                // The lab measures what a WRITE costs, and its viewer reads the
+                // join as one reply. The default 4 000 figures are above the
+                // join cut of GH #1002 (`CUT_ABOVE_BYTES`), so at the default
+                // piece limit the first frames after the reply are join pieces,
+                // not the write's diff (seen: a 92 882-byte "child update").
+                // At the largest piece the lab's join fits one frame, as before.
+                json!({ "mount": MOUNT, "join_chunk_bytes": 4 * 1024 * 1024 }),
                 out_tx,
                 cell_dir.clone(),
                 ContractView::default(),
@@ -403,41 +409,55 @@ impl Lab {
 
     /// Open a socket and join the page of `route`.
     pub async fn viewer_at(&self, route: &str) -> Viewer {
-        let body = self.get_page_at(route).await;
-        let marker = "data-phx-session=\"";
-        let start = body
-            .find(marker)
-            .expect("the shell carries a session token")
-            + marker.len();
-        let end = start + body[start..].find('"').expect("token is quoted");
-        let token = body[start..end].to_string();
-        let container = meclaw_surface::session::container_id(CELL);
-        let topic = format!("lv:{container}");
-        let (ws, _) = tokio_tungstenite::connect_async(format!(
-            "ws://127.0.0.1:{}/{MOUNT}/live/websocket",
-            self.port
-        ))
-        .await
-        .expect("the cell accepts a websocket");
-        let mut v = Viewer {
-            ws,
-            topic: topic.clone(),
-            join_bytes: 0,
-            rendered: Value::Null,
-            frames: 0,
-            bytes: 0,
-        };
-        v.send(json!(["1", "1", topic, "phx_join", {
-            "session": token,
-            "url": self.url_of(route)
-        }]))
-        .await;
-        let (n, reply) = v.recv_raw().await;
-        assert_eq!(reply[4]["status"], json!("ok"), "join reply: {reply}");
-        v.join_bytes = n;
-        v.rendered = reply[4]["response"]["rendered"].clone();
-        v
+        viewer_on(self.port, route).await
     }
+}
+
+/// Open a socket on the lab listener at `port` and join the page of `route`
+/// like the client does (the body of [`Lab::viewer_at`], shared with
+/// [`held::HeldLab`]).
+pub async fn viewer_on(port: u16, route: &str) -> Viewer {
+    let url_of = |route: &str| {
+        let tail = route.trim_start_matches('/');
+        format!("http://127.0.0.1:{port}/{MOUNT}/{tail}")
+    };
+    let body = reqwest::get(url_of(route))
+        .await
+        .expect("get")
+        .text()
+        .await
+        .expect("text");
+    let marker = "data-phx-session=\"";
+    let start = body
+        .find(marker)
+        .expect("the shell carries a session token")
+        + marker.len();
+    let end = start + body[start..].find('"').expect("token is quoted");
+    let token = body[start..end].to_string();
+    let container = meclaw_surface::session::container_id(CELL);
+    let topic = format!("lv:{container}");
+    let (ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/{MOUNT}/live/websocket"))
+            .await
+            .expect("the cell accepts a websocket");
+    let mut v = Viewer {
+        ws,
+        topic: topic.clone(),
+        join_bytes: 0,
+        rendered: Value::Null,
+        frames: 0,
+        bytes: 0,
+    };
+    v.send(json!(["1", "1", topic, "phx_join", {
+        "session": token,
+        "url": url_of(route)
+    }]))
+    .await;
+    let (n, reply) = v.recv_raw().await;
+    assert_eq!(reply[4]["status"], json!("ok"), "join reply: {reply}");
+    v.join_bytes = n;
+    v.rendered = reply[4]["response"]["rendered"].clone();
+    v
 }
 
 /// The `duration_ms` an answer reports.
@@ -535,7 +555,7 @@ pub mod backlog_lab {
     /// See [`HIGH_BYTES`].
     pub const HIGH_MS: u64 = 250;
 
-    fn seed(cell_dir: &std::path::Path) {
+    fn seed(cell_dir: &std::path::Path, routes: &[&str]) {
         let seed = cell_dir.join("seed");
         std::fs::create_dir_all(&seed).expect("seed dir");
         std::fs::write(
@@ -565,16 +585,15 @@ pub mod backlog_lab {
             objects.push('\n');
         }
         std::fs::write(seed.join("objects.jsonl"), objects).expect("objects");
-        std::fs::write(
-            seed.join("pages.jsonl"),
-            concat!(
-                r#"{"schema":{"route":"text","root":"text","title":"text"}}"#,
-                "\n",
-                r#"{"route":"/","root":"root","title":"Home"}"#,
-                "\n"
-            ),
-        )
-        .expect("pages");
+        // GH #1003: one page per route, all of the same tree — the screen
+        // classes of one member (display-hive § 6.1).
+        let mut pages = String::from(r#"{"schema":{"route":"text","root":"text","title":"text"}}"#);
+        pages.push('\n');
+        for route in routes {
+            pages.push_str(&json!({"route": route, "root": "root", "title": "Home"}).to_string());
+            pages.push('\n');
+        }
+        std::fs::write(seed.join("pages.jsonl"), pages).expect("pages");
     }
 
     /// One `viewer:backlog` as the app hears it, with when it heard it.
@@ -601,6 +620,8 @@ pub mod backlog_lab {
         mailbox: mpsc::Sender<meclaw_core::Message>,
         replies: mpsc::Receiver<Value>,
         heard: Arc<Mutex<Vec<Heard>>>,
+        /// Every `viewer:screen` value, in order (GH #1003).
+        screens: Arc<Mutex<Vec<Value>>>,
         /// Every emission that is not a reply: the log-growth witness.
         pub emitted: Arc<AtomicU64>,
         _stop: tokio::sync::oneshot::Sender<()>,
@@ -610,10 +631,15 @@ pub mod backlog_lab {
 
     /// Spawn the cell with `params` and wait until it serves its page.
     pub async fn start(params: Value) -> Live {
+        start_routes(params, &["/"]).await
+    }
+
+    /// [`start`] with one page per route, all of the same tree (GH #1003).
+    pub async fn start_routes(params: Value, routes: &[&str]) -> Live {
         let td = TempDir::new().expect("td");
         let cell_dir = td.path().join("web");
         std::fs::create_dir_all(&cell_dir).expect("dir");
-        seed(&cell_dir);
+        seed(&cell_dir, routes);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(256);
         let (inbox_tx, _inbox_rx) = mpsc::channel(8);
@@ -657,10 +683,12 @@ pub mod backlog_lab {
 
         // Sort what the cell emits: replies to the app's calls, and events.
         let heard = Arc::new(Mutex::new(Vec::new()));
+        let screens = Arc::new(Mutex::new(Vec::new()));
         let emitted = Arc::new(AtomicU64::new(0));
         let (reply_tx, replies) = mpsc::channel(64);
         {
             let heard = Arc::clone(&heard);
+            let screens = Arc::clone(&screens);
             let emitted = Arc::clone(&emitted);
             tokio::spawn(async move {
                 while let Some(e) = out_rx.recv().await {
@@ -676,6 +704,11 @@ pub mod backlog_lab {
                                 bytes: v["bytes"].as_u64().unwrap_or(0),
                                 oldest_ms: v["oldest_ms"].as_u64().unwrap_or(0),
                             });
+                        } else if header["event_name"] == json!("viewer:screen") {
+                            screens
+                                .lock()
+                                .await
+                                .push(e.content["event"]["value"].clone());
                         }
                     } else if reply_tx.send(e.content).await.is_err() {
                         return;
@@ -690,6 +723,7 @@ pub mod backlog_lab {
             mailbox: sender,
             replies,
             heard,
+            screens,
             emitted,
             _stop: stop_tx,
             join,
@@ -742,6 +776,11 @@ pub mod backlog_lab {
         pub async fn heard(&self) -> Vec<Heard> {
             self.heard.lock().await.clone()
         }
+
+        /// Every `viewer:screen` value heard so far (GH #1003).
+        pub async fn screens(&self) -> Vec<Value> {
+            self.screens.lock().await.clone()
+        }
     }
 
     /// The `viewers` array wherever the reply shape put it.
@@ -787,7 +826,8 @@ pub mod backlog_lab {
         pub task: tokio::task::JoinHandle<()>,
     }
 
-    async fn token(port: u16) -> String {
+    /// The page's LiveView token, as a client reads it from the shell.
+    pub async fn token(port: u16) -> String {
         let body = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
             .await
             .expect("get")
@@ -988,6 +1028,9 @@ pub mod backlog_lab {
         /// when age crossed first; 0 when bytes crossed first, because the
         /// enqueue that crossed is the check that reported).
         pub first_high_lag_ms: Option<u64>,
+        /// Seconds into the run of the cell's first `high` for the slow
+        /// viewer: where the backlog window of T3 begins (W6 review N1).
+        pub first_high_secs: Option<f64>,
         /// The tranche after each reaction of the app: (heard `high`, new k).
         pub reactions: Vec<(bool, usize)>,
     }
@@ -1040,6 +1083,7 @@ pub mod backlog_lab {
                     if h.high {
                         if lab.highs == 0 {
                             lab.first_high_lag_ms = Some(h.oldest_ms.saturating_sub(HIGH_MS));
+                            lab.first_high_secs = Some(started.elapsed().as_secs_f64());
                         }
                         lab.highs += 1;
                     } else {
@@ -1101,5 +1145,399 @@ pub mod backlog_lab {
         }
         live.join.abort();
         lab
+    }
+}
+
+/// GH #1004: one tool-call bundle as the message the lab's `call` sends.
+pub fn bundle_message(ops: Vec<Value>) -> meclaw_core::Message {
+    let turns: Vec<Value> = ops
+        .into_iter()
+        .enumerate()
+        .map(|(i, op)| leg(i, op))
+        .collect();
+    MessageBuilder::new(Path::new(CELL))
+        .reply_to(Path::new("/caller"))
+        .body(Body::Inline(json!({ "messages": turns })))
+        .build()
+}
+
+/// GH #1004: whether an emission is a semantic browser event (`hop.route =
+/// "event"`) rather than a bundle's answer.
+pub fn is_event(emission: &CellEmission) -> bool {
+    emission.content["header"]["route"] == json!("event")
+}
+
+/// GH #1004: queue bundles without waiting for their answers, and read the
+/// cell's emissions (answers and semantic events) one by one. Added beside
+/// `call`, which reads one emission per bundle and so cannot be mixed with
+/// browser events on the same lab.
+impl Lab {
+    /// Put one bundle into the cell's mailbox and return at once.
+    pub async fn enqueue(&self, ops: Vec<Value>) {
+        self.sender
+            .send(bundle_message(ops))
+            .await
+            .expect("the cell takes messages");
+    }
+
+    /// A handle on the mailbox, for a task that writes at its own cadence.
+    pub fn mailbox(&self) -> mpsc::Sender<meclaw_core::Message> {
+        self.sender.clone()
+    }
+
+    /// The next emission, within the failure-marker window.
+    pub async fn next_emission(&mut self) -> CellEmission {
+        tokio::time::timeout(Duration::from_secs(30), self.out_rx.recv())
+            .await
+            .expect("an emission within the failure-marker window")
+            .expect("the cell is alive")
+    }
+
+    /// Every emission already waiting, without waiting for more.
+    pub fn emitted_so_far(&mut self) -> Vec<CellEmission> {
+        let mut out = Vec::new();
+        while let Ok(e) = self.out_rx.try_recv() {
+            out.push(e);
+        }
+        out
+    }
+
+    /// Take the emission stream away from the lab, for a reader task. `call`
+    /// and `next_emission` see nothing afterwards.
+    pub fn take_emissions(&mut self) -> mpsc::Receiver<CellEmission> {
+        std::mem::replace(&mut self.out_rx, mpsc::channel(1).1)
+    }
+}
+
+/// GH #1004: a browser event from this socket, and every frame read raw.
+impl Viewer {
+    /// Push one `event` frame (`phx-click` shape) under `msg_ref`.
+    pub async fn push_event(&mut self, msg_ref: &str, name: &str, value: Value) {
+        let frame = json!(["1", msg_ref, self.topic.clone(), "event", {
+            "type": "click",
+            "event": name,
+            "value": value,
+        }]);
+        self.send(frame).await;
+    }
+
+    /// The next frame of any kind (a `diff`, a `phx_reply`, …), counted like
+    /// `next_diff` counts when it is a diff.
+    pub async fn next_frame(&mut self) -> Value {
+        let (n, frame) = self.recv_raw().await;
+        if frame[3] == json!("diff") {
+            self.frames += 1;
+            self.bytes += n;
+        }
+        frame
+    }
+}
+
+/// The colony log of a `web` cell by class (GH #1005, moved here from the W5
+/// test per OR-H4-15): what a bundle's request, its answer and the cell's
+/// events cost in the log, read the way an operator reads it.
+pub mod log_lab {
+    use meclaw_core::serde_json::json;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    /// Bytes of the log, by class. A row counts what the log stores of it: ids,
+    /// paths, headers and body.
+    #[derive(Default, Debug, Clone, Copy)]
+    pub struct LogClasses {
+        pub request: u64,
+        pub answer: u64,
+        pub event: u64,
+        pub other: u64,
+        pub rows: u64,
+    }
+
+    impl LogClasses {
+        pub fn total(&self) -> u64 {
+            self.request + self.answer + self.event + self.other
+        }
+    }
+
+    /// The colony's own `message_log`, through its read message (`GET
+    /// /colony/messages` of a running meclaw) — never the database file: a test
+    /// reads the log the way an operator does (`display_colony.rs` `log`).
+    pub async fn read_classes(
+        inbox: &mpsc::Sender<meclaw_colony::ColonyMsg>,
+        web: &str,
+        caller: &str,
+    ) -> LogClasses {
+        use meclaw_colony::api_dto::MessageLogFilter;
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        inbox
+            .send(meclaw_colony::ColonyMsg::ReadMessages {
+                filter: MessageLogFilter {
+                    limit: 1000,
+                    scan_budget: 50_000,
+                    ..Default::default()
+                },
+                ack: ack_tx,
+            })
+            .await
+            .expect("inbox alive");
+        let reply = tokio::time::timeout(Duration::from_secs(30), ack_rx)
+            .await
+            .expect("the log answers")
+            .expect("ack");
+        assert!(!reply.scan_truncated, "the lab outgrew the scan budget");
+        assert!(
+            reply.entries.len() < 1000,
+            "the lab outgrew one page of the log"
+        );
+        let mut c = LogClasses::default();
+        for e in &reply.entries {
+            // What the log stores of a row: ids, paths, headers, body, two ints.
+            let bytes = (e.id.len()
+                + e.trace_id.len()
+                + e.parent_message_id.as_deref().map_or(0, str::len)
+                + e.correlation_id.as_deref().map_or(0, str::len)
+                + e.from_path.len()
+                + e.to_path.len()
+                + e.reply_to.as_deref().map_or(0, str::len)
+                + e.headers_json.len()
+                + e.body_kind.len()
+                + e.body_payload.as_deref().map_or(0, str::len)
+                + 16) as u64;
+            c.rows += 1;
+            if e.to_path == web {
+                c.request += bytes;
+            } else if e.from_path == web && e.to_path == caller {
+                c.answer += bytes;
+            } else if e.from_path == web && e.headers_json.contains("\"event\"") {
+                c.event += bytes;
+            } else {
+                c.other += bytes;
+            }
+        }
+        c
+    }
+
+    pub fn file_bytes(dir: &std::path::Path) -> u64 {
+        ["colony.db", "colony.db-wal"]
+            .iter()
+            .map(|f| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
+            .sum()
+    }
+
+    pub fn seed_figures(cell_dir: &std::path::Path, n: usize) {
+        let seed = cell_dir.join("seed");
+        std::fs::create_dir_all(&seed).expect("seed dir");
+        std::fs::write(
+            seed.join("components.jsonl"),
+            concat!(
+                r#"{"schema":{"name":"text","template":"text","prop_schema":"text","editable":"text","layer":"text"}}"#,
+                "\n",
+                r#"{"name":"screen","template":"<main>{{children}}</main>","prop_schema":"{}","editable":"[]","layer":"content"}"#,
+                "\n",
+                r#"{"name":"fig","template":"<i data-x=\"{{x}}\" data-y=\"{{y}}\"></i>","prop_schema":"{\"x\":\"text\",\"y\":\"text\"}","editable":"[]","layer":"content"}"#,
+                "\n"
+            ),
+        )
+        .expect("components");
+        let mut objects = String::from(
+            r#"{"schema":{"id":"text","parent":"text","component":"text","ord":"int","props":"text"}}"#,
+        );
+        objects.push('\n');
+        objects
+            .push_str(r#"{"id":"root","parent":null,"component":"screen","ord":0,"props":"{}"}"#);
+        objects.push('\n');
+        for i in 0..n {
+            objects.push_str(
+                &json!({"id": format!("fig-{i}"), "parent": "root", "component": "fig", "ord": i, "props": r#"{"x":"0","y":"0"}"#})
+                    .to_string(),
+            );
+            objects.push('\n');
+        }
+        std::fs::write(seed.join("objects.jsonl"), objects).expect("objects");
+        std::fs::write(
+            seed.join("pages.jsonl"),
+            concat!(
+                r#"{"schema":{"route":"text","root":"text","title":"text"}}"#,
+                "\n",
+                r#"{"route":"/","root":"root","title":"Lab"}"#,
+                "\n"
+            ),
+        )
+        .expect("pages");
+    }
+}
+
+/// GH #1013 (C1 of the review): the lab with the fan-out held in the test's
+/// hand.
+///
+/// A real `web` cell publishes its pages BEFORE its diffs reach the fan-out;
+/// in between, a join reads a snapshot that already holds the write, and the
+/// write's diff follows it. That window is a few microseconds on an idle cell
+/// and as long as the push backlog on a busy one, so the lock cannot wait for
+/// it: here the cell's push channel ends in the test, and a write's pushes
+/// reach the I/O half only when the test hands them over ([`HeldLab::release`]).
+/// Same rows as [`Lab::start`] (from [`memory_db`]), same mount and cell path,
+/// so [`viewer_on`] and the GET helpers work unchanged.
+pub mod held {
+    use super::{CELL, MOUNT, Shape, Viewer, leg, memory_db, viewer_on};
+    use meclaw_cells::web::AssetMap;
+    use meclaw_cells::web::cell::{WebCell, WebReconfig};
+    use meclaw_cells::web::io::{WebIo, run_io};
+    use meclaw_cells::web::params::WebParams;
+    use meclaw_cells::web::render::materialize_all;
+    use meclaw_colony::{DbConn, LongRunningCell, SurfaceRegistry};
+    use meclaw_core::serde_json::{Value, json};
+    use meclaw_core::{Body, CellEmission, Headers, MessageBuilder, OutputSink, Path, Uuid};
+    use meclaw_testing::{surface_listener, wait_for_mount};
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, watch};
+
+    /// The cell, its database, the pushes it sent, and the I/O half's way in.
+    pub struct HeldLab {
+        /// The port of the listener in front of the I/O half.
+        pub port: u16,
+        cell: WebCell,
+        db: DbConn,
+        /// What the cell pushed — held until [`HeldLab::release`].
+        pushes: mpsc::Receiver<WebReconfig>,
+        /// Into the I/O half's fan-out.
+        fan_out: mpsc::Sender<WebReconfig>,
+        _assets: watch::Sender<Arc<AssetMap>>,
+        _ready: watch::Sender<bool>,
+        _reconfig: mpsc::Sender<WebReconfig>,
+        _events: mpsc::Receiver<meclaw_cells::web::cell::WebEvent>,
+        _listener: tokio::task::JoinHandle<()>,
+        io: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for HeldLab {
+        fn drop(&mut self) {
+            self.io.abort();
+        }
+    }
+
+    impl HeldLab {
+        /// Seed, publish, serve. `params` are the cell's (the mount is set
+        /// here); the join piece limit is the I/O half's default unless
+        /// `join_chunk_bytes` names one.
+        pub async fn start(shape: Shape, params: Value) -> HeldLab {
+            let conn = memory_db(shape);
+            let boot = materialize_all(&conn).expect("the lab renders");
+            let (pages_tx, pages_rx) = watch::channel(Arc::new(boot));
+            let (assets_tx, assets_rx) = watch::channel(Arc::new(AssetMap::new()));
+            let (ready_tx, ready_rx) = watch::channel(true);
+            let (push_tx, pushes) = mpsc::channel::<WebReconfig>(64);
+            let (fan_out, fan_out_rx) = mpsc::channel::<WebReconfig>(64);
+            let mut params = params;
+            params["mount"] = json!(MOUNT);
+            let params = WebParams::parse(&params).expect("params");
+            let surfaces = Arc::new(SurfaceRegistry::new());
+            let mut io = WebIo::new(
+                MOUNT.to_string(),
+                String::new(),
+                CELL,
+                pages_rx,
+                assets_rx,
+                ready_rx,
+                fan_out_rx,
+                Arc::clone(&surfaces),
+            );
+            io.join_chunk = params.join_chunk();
+            let cell = WebCell::new(
+                CELL.to_string(),
+                io.clone(),
+                &params,
+                pages_tx,
+                assets_tx.clone(),
+                ready_tx.clone(),
+                push_tx,
+            );
+            let (events_tx, events_rx) = mpsc::channel(64);
+            let (reconfig_tx, reconfig_rx) = mpsc::channel(8);
+            let io_task = tokio::spawn(run_io(io, events_tx, reconfig_rx));
+            wait_for_mount(&surfaces, MOUNT).await;
+            let (addr, listener) = surface_listener(surfaces).await;
+            HeldLab {
+                port: addr.port(),
+                cell,
+                db: DbConn::wrap(conn, None),
+                pushes,
+                fan_out,
+                _assets: assets_tx,
+                _ready: ready_tx,
+                _reconfig: reconfig_tx,
+                _events: events_rx,
+                _listener: listener,
+                io: io_task,
+            }
+        }
+
+        /// Apply one bundle of tool-call ops: its pages are published, its
+        /// pushes are held and returned — the window a join can fall into.
+        pub async fn write(&mut self, ops: Vec<Value>) -> Vec<WebReconfig> {
+            let turns: Vec<Value> = ops
+                .into_iter()
+                .enumerate()
+                .map(|(i, op)| leg(i, op))
+                .collect();
+            let msg = MessageBuilder::new(Path::new(CELL))
+                .reply_to(Path::new("/caller"))
+                .body(Body::Inline(json!({ "messages": turns })))
+                .build();
+            let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(64);
+            let sink = OutputSink::new(
+                out_tx,
+                Path::new(CELL),
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                64,
+                Headers::new(),
+                None,
+            );
+            let (rc_tx, _rc_rx) = mpsc::channel(8);
+            self.cell.handle(msg, &sink, &mut self.db, &rc_tx).await;
+            let answer = out_rx.try_recv().expect("the cell answers").content;
+            assert!(
+                !answer.to_string().contains("\"error_code\""),
+                "the write was refused: {answer}"
+            );
+            let mut held = Vec::new();
+            while let Ok(push) = self.pushes.try_recv() {
+                held.push(push);
+            }
+            held
+        }
+
+        /// Hand held pushes to the fan-out, in order.
+        pub async fn release(&self, pushes: Vec<WebReconfig>) {
+            for p in pushes {
+                self.fan_out.send(p).await.expect("the fan-out is alive");
+            }
+        }
+
+        /// Open a socket and join `/`.
+        pub async fn viewer(&self) -> Viewer {
+            viewer_on(self.port, "/").await
+        }
+
+        /// The whole body of `/` as the database holds it now, rendered
+        /// afresh. A GET of a page above the join cut (GH #1002) serves only
+        /// its first picture, so a join in pieces is compared with this.
+        pub async fn whole_body(&mut self) -> String {
+            self.db
+                .call(|conn| meclaw_cells::web::render::materialize(conn, "/"))
+                .await
+                .expect("the lab renders")
+                .rendered_body()
+        }
+
+        /// The page as served on a GET (shell included).
+        pub async fn get_page(&self) -> String {
+            reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", self.port))
+                .await
+                .expect("get")
+                .text()
+                .await
+                .expect("text")
+        }
     }
 }

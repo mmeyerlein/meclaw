@@ -163,7 +163,7 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
         }),
     );
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.2.0`, so the template it grows from has to be on
+    // The display refs `web@2.3.0`, so the template it grows from has to be on
     // disk before the boot resolves the ref (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {
@@ -328,7 +328,7 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.10.2",
+        template["version"], "2.10.3",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
@@ -370,7 +370,9 @@ fn the_template_says_it_carries_a_microphone() {
          tiles, a field and a mark, and blocks slide in from their target state \
          (GH #961, GH #964): a caller can name what it could not before, the \
          SECOND digit again, and to 2.10.1 because `./judge` declares the hop key \
-         `dropped` the `llm` cell writes (GH #993), a repair"
+         `dropped` the `llm` cell writes (GH #993), a repair, and to 2.10.2 for \
+         the hop key `unverified` (GH #999), a repair, and to 2.10.3 because it \
+         refs `web@2.3.0` (GH #1001), only the pin"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -385,7 +387,7 @@ fn the_template_says_it_carries_a_microphone() {
     // own.
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.10.2`"),
+        readme.starts_with("# `display@2.10.3`"),
         "the README heads with the version it describes"
     );
     assert!(

@@ -230,16 +230,22 @@ fn materialize_splits_the_root_template_at_its_children() {
     assert!(m.slots[0].1.html().contains(">0<"));
     assert_eq!(m.slots[1].0, "c1");
 
-    // The wire shape: {"s": statics, "p": shared statics, "0": …, "1": …}.
-    // GH #1001: `<p>{{body}}</p>` is one element, so each slot is a part
-    // naming the shared statics, with `"r": 1` for the client's skip path.
+    // The wire shape: {"s": [first, last], "p": shared statics, "0": the
+    // root's children as a keyed list}. GH #1001: `<p>{{body}}</p>` is one
+    // element, so each child is a part naming the shared statics, with
+    // `"r": 1` for the client's skip path. GH #1013: the children are one
+    // keyed list, so a create, delete or move under the root is a list
+    // difference and the root's statics never change with the child count.
     assert_eq!(
         m.packed_tree(),
         json!({
-            "s": ["<main>", "", "</main>"],
-            "p": {"0": ["<p>", "</p>"]},
-            "0": {"s": 0, "0": "0", "r": 1},
-            "1": {"s": 0, "0": "1", "r": 1}
+            "s": ["<main>", "</main>"],
+            "p": {"0": ["<p>", "</p>"], "1": ["", ""]},
+            "0": {"s": 1, "k": {
+                "0": {"0": {"s": 0, "0": "0", "r": 1}},
+                "1": {"0": {"s": 0, "0": "1", "r": 1}},
+                "kc": 2
+            }}
         })
     );
     assert_eq!(
@@ -271,22 +277,28 @@ fn a_root_with_three_children_keeps_all_three_inside_it() {
         "<main><p>0</p><p>1</p><p>2</p></main>",
         "all three children render inside the root element, in `ord` order"
     );
+    // GH #1013: on the wire the root is two statics around one keyed list.
     assert_eq!(
         m.packed_tree(),
         json!({
-            "s": ["<main>", "", "", "</main>"],
-            "p": {"0": ["<p>", "</p>"]},
-            "0": {"s": 0, "0": "0", "r": 1},
-            "1": {"s": 0, "0": "1", "r": 1},
-            "2": {"s": 0, "0": "2", "r": 1}
+            "s": ["<main>", "</main>"],
+            "p": {"0": ["<p>", "</p>"], "1": ["", ""]},
+            "0": {"s": 1, "k": {
+                "0": {"0": {"s": 0, "0": "0", "r": 1}},
+                "1": {"0": {"s": 0, "0": "1", "r": 1}},
+                "2": {"0": {"s": 0, "0": "2", "r": 1}},
+                "kc": 3
+            }}
         })
     );
 }
 
 #[test]
-fn a_root_with_one_child_is_the_shape_it_always_was() {
-    // The case that worked before the fix, and has to keep working byte for
-    // byte: one slot, two statics, the served body wrapping the one child.
+fn a_root_with_one_child_keeps_its_statics_and_body() {
+    // The case that worked before the fix: one slot, two statics, the served
+    // body wrapping the one child. Statics and body stay byte for byte what
+    // they were; the wire tree does not (GH #1013: the child is entry 0 of
+    // the root's keyed list).
     let conn = page_with_children(1);
     let m = materialize(&conn, "/").expect("materialize");
 
@@ -295,12 +307,13 @@ fn a_root_with_one_child_is_the_shape_it_always_was() {
     assert_eq!(m.rendered_body(), "<main><p>0</p></main>");
     assert_eq!(
         m.packed_tree(),
-        // GH #1001: the one slot is a part; the statics and the served body
-        // are byte for byte what they were.
+        // GH #1001: the one slot is a part. GH #1013: it stands in the
+        // root's keyed list, so this tree is the new wire shape, not the
+        // old one.
         json!({
             "s": ["<main>", "</main>"],
-            "p": {"0": ["<p>", "</p>"]},
-            "0": {"s": 0, "0": "0", "r": 1}
+            "p": {"0": ["<p>", "</p>"], "1": ["", ""]},
+            "0": {"s": 1, "k": {"0": {"0": {"s": 0, "0": "0", "r": 1}}, "kc": 1}}
         })
     );
 }
@@ -338,9 +351,9 @@ fn a_slot_index_addresses_the_same_child_in_the_diff_and_in_the_tree() {
             "slot_of({id}) must name the child's own position"
         );
         // GH #1001: the tree carries the slot as a part; its markup is the
-        // slot's markup.
+        // slot's markup. GH #1013: the part is entry `i` of the root's list.
         assert_eq!(
-            meclaw_cells::web::render::wire_html(&tree[i.to_string()], &tree["p"]),
+            meclaw_cells::web::render::wire_html(&tree["0"]["k"][i.to_string()]["0"], &tree["p"]),
             html.html(),
             "the diff key {i} and the tree's dynamic {i} are the same child"
         );

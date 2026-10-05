@@ -1,4 +1,4 @@
-# `web@2.2.0`
+# `web@2.3.0`
 
 A display as one cell, with a name of its own. One `web` cell, one `cell.db`,
 one mount on the colony's listener, and a token stylesheet in the visionOS
@@ -160,7 +160,7 @@ second display takes its own. The template is one cell, so `override_params`
 takes the flat form -- there is no path inside it to address:
 
 ```json
-{"name": "web-two", "template": "web@2.2.0",
+{"name": "web-two", "template": "web@2.3.0",
  "override_params": {"mount": "screen"}}
 ```
 

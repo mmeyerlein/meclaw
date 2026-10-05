@@ -81,11 +81,52 @@ use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-/// Every route this cell serves, rendered.
+/// Every route this cell serves, rendered, with the generation it was
+/// published as.
 ///
 /// A `BTreeMap` rather than a `HashMap` so a listing of routes is stable — an
-/// operator comparing two dumps should not have to sort them first.
-pub type PageMap = BTreeMap<String, Materialized>;
+/// operator comparing two dumps should not have to sort them first. It reads
+/// as that map (`Deref`); the one thing beside it is [`PageMap::generation`].
+#[derive(Debug, Clone, Default)]
+pub struct PageMap {
+    /// GH #1013: which publish this is. The handler, the only writer, counts
+    /// it up by one per publish, and every diff it fans out carries the
+    /// generation of the pages it leads to (`WebReconfig::Push`). A join
+    /// remembers the generation of its snapshot, and a diff of that
+    /// generation or older is not sent to it: the snapshot holds it already,
+    /// and a keyed-list diff applied twice is not the same page (its moves
+    /// copy entries the client holds).
+    pub generation: u64,
+    routes: BTreeMap<String, Materialized>,
+}
+
+impl PageMap {
+    /// No routes, generation 0.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl std::ops::Deref for PageMap {
+    type Target = BTreeMap<String, Materialized>;
+    fn deref(&self) -> &Self::Target {
+        &self.routes
+    }
+}
+
+impl std::ops::DerefMut for PageMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.routes
+    }
+}
+
+impl<'a> IntoIterator for &'a PageMap {
+    type Item = (&'a String, &'a Materialized);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, Materialized>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.routes.iter()
+    }
+}
 
 /// Render every declared route.
 ///
@@ -176,6 +217,10 @@ pub struct Materialized {
     /// the client reads wants one more static than there are dynamics. A root
     /// with no children at all (no `{{children}}`, or a marker with nothing to
     /// show) holds exactly one piece, and the page is entirely static.
+    ///
+    /// On the wire the root is two statics — the first and the last piece —
+    /// around ONE dynamic, the children as a keyed list (GH #1013,
+    /// [`Self::packed_tree`]); the empty separators are never sent.
     pub statics: Vec<String>,
     /// One `(object_id, part)` per **direct child** of the page root, in order.
     pub slots: Vec<(String, Part)>,
@@ -184,22 +229,40 @@ pub struct Materialized {
 }
 
 impl Materialized {
-    /// The LiveView packed tree: `{"s": statics, "p": shared, "0": slot0, …}`.
+    /// The LiveView packed tree: `{"s": [first, last], "0": <root children>,
+    /// "p": shared}`.
     ///
-    /// Every component's statics stand once in `"p"` and every part names them
-    /// by number; a page whose slots are all strings has no `"p"`.
+    /// The root's children are one keyed list (`"k"`), keyed by object id like
+    /// every `{{children}}` below the root (GH #1009). A create, delete or move
+    /// directly under the root is then a list difference that keeps every
+    /// other child's node: with one slot per child the root's statics changed
+    /// with every such op, the page went out whole, and the browser re-created
+    /// all of it (GH #1013: 1 002 of 1 002 nodes on a root of 1 000 children,
+    /// frame 107 693 B). Every component's statics stand once in `"p"` and
+    /// every part names them by number. A page without children is its one
+    /// static.
     pub fn packed_tree(&self) -> Value {
         let mut shared = SharedStatics::default();
         let mut m = Map::new();
-        m.insert(
-            "s".to_string(),
-            Value::Array(self.statics.iter().map(|s| json!(s)).collect()),
-        );
-        for (i, (_id, part)) in self.slots.iter().enumerate() {
-            m.insert(i.to_string(), full_value(part, &mut shared));
+        m.insert("s".to_string(), self.wire_statics());
+        if !self.slots.is_empty() {
+            m.insert("0".to_string(), list_value(&self.slots, &mut shared));
         }
         shared.attach(&mut m);
         Value::Object(m)
+    }
+
+    /// The root's statics on the wire: the first and the last piece around
+    /// the children, or the one piece of a page without children.
+    fn wire_statics(&self) -> Value {
+        match (
+            self.slots.is_empty(),
+            self.statics.first(),
+            self.statics.last(),
+        ) {
+            (false, Some(first), Some(last)) if self.statics.len() > 1 => json!([first, last]),
+            _ => Value::Array(self.statics.iter().map(|s| json!(s)).collect()),
+        }
     }
 
     /// The index of the slot holding `object_id`, if it is a root child.
@@ -222,6 +285,253 @@ impl Materialized {
         }
         out
     }
+
+    /// GH #1002: the bytes of slot HTML this page carries, statics excluded.
+    pub fn slot_bytes(&self) -> usize {
+        self.slots.iter().map(|(_, part)| part.html_len()).sum()
+    }
+
+    /// GH #1002: whether this page is large enough to be cut at all — more
+    /// than [`CUT_ABOVE_BYTES`] of slot HTML.
+    ///
+    /// The page's GET body and its join are cut only then. A display page is
+    /// below, so not one byte of what a display serves moves: the inline
+    /// budget alone cut a display's screen out of the GET (GH #553 twice: the
+    /// topology picture never arrived in the page).
+    pub fn is_large(&self) -> bool {
+        self.slot_bytes() > CUT_ABOVE_BYTES
+    }
+
+    /// GH #1002: what the GET shell embeds — the first `inline` bytes of slot
+    /// HTML for a large page ([`Self::rendered_body_cut`]), the whole body for
+    /// every other one ([`Self::rendered_body`], byte for byte as before).
+    pub fn page_body(&self, inline: usize) -> String {
+        if self.is_large() {
+            self.rendered_body_cut(inline)
+        } else {
+            self.rendered_body()
+        }
+    }
+
+    /// GH #1002: the join of this page — head and pieces cut at `chunk` for a
+    /// large page ([`Self::cut_frames`]), the whole tree in one frame for
+    /// every other one, as before.
+    pub fn join_frames(&self, chunk: usize) -> (Value, Vec<Value>) {
+        if self.is_large() {
+            self.cut_frames(chunk)
+        } else {
+            (self.packed_tree(), Vec::new())
+        }
+    }
+
+    /// GH #1002: the page as one HTML string, with every root slot after the
+    /// first `limit` bytes of slot HTML left empty.
+    ///
+    /// What the GET shell embeds. The join fills the rest (its pieces are
+    /// cut at their own, larger limit), so the page carries the first screen
+    /// and not the whole tree a second time — the measured city's page was
+    /// 636 KB, the same tree its join carried again. A page whose slots fit is
+    /// [`Self::rendered_body`] byte for byte.
+    pub fn rendered_body_cut(&self, limit: usize) -> String {
+        let mut out = String::new();
+        let mut used = 0usize;
+        let mut open = true;
+        for (i, s) in self.statics.iter().enumerate() {
+            out.push_str(s);
+            if let Some((_, part)) = self.slots.get(i) {
+                // A prefix in document order: once one slot is left out, every
+                // later one is too, so the page never shows a hole between two
+                // drawn slots.
+                let len = part.html_len();
+                open = open && used + len <= limit;
+                if open {
+                    used += len;
+                    part.write_html(&mut out);
+                }
+            }
+        }
+        out
+    }
+
+    /// GH #1002: the packed tree cut into a head and pieces, none above
+    /// `limit` encoded bytes (except a piece holding a single entry that alone
+    /// is larger).
+    ///
+    /// The cut runs between entries of the root's keyed list (GH #1013): the
+    /// **head** is the tree with the list's first entries, as many as fit,
+    /// and `"kc"` their count; every **piece** is a list difference that
+    /// appends the next entries (`{"0": {"k": {"<i>": …, "kc": <i + 1>}}}`).
+    /// The client merges an entry it does not hold into a fresh one and sets
+    /// the count from `"kc"` (`phoenix_live_view.min.js`, `mergeKeyed`), so the
+    /// list grows piece by piece to the page's, every entry keyed like the
+    /// writes after it. Every frame — head and each piece — carries its own
+    /// `"p"`, numbered from 0 and holding only the statics its own parts name:
+    /// the client resolves a numeric `"s"` against the table of the frame it
+    /// arrives in and deletes the table after rendering it (GH #1001), so a
+    /// piece cannot lean on the head's.
+    ///
+    /// A tree that fits comes back as [`Self::packed_tree`] with no pieces.
+    /// The page handlers reach this only for a large page
+    /// ([`Self::join_frames`]): a display's join never does.
+    ///
+    /// Measured on a large page: a 0.69 MB join reply in ONE frame does
+    /// not arrive within the client's 10 s join timeout below ~70 KB/s; in
+    /// pieces the reply is ≤ the limit and the rest streams behind it. Every
+    /// viewer of a route gets the same cut — no per-viewer state (R-H4-1).
+    pub fn cut_frames(&self, limit: usize) -> (Value, Vec<Value>) {
+        let whole = self.packed_tree();
+        if self.slots.is_empty() || whole.to_string().len() <= limit {
+            return (whole, Vec::new());
+        }
+        let total = self.slots.len();
+
+        // The head: the root's statics and the longest prefix of entries that
+        // fits; a document-order prefix, so the page never shows a hole.
+        let mut head = Frame::head(self.wire_statics(), total);
+        let mut first_out = total;
+        for (i, (_, part)) in self.slots.iter().enumerate() {
+            if !head.try_add(i, part, limit) {
+                first_out = i;
+                break;
+            }
+        }
+
+        // The pieces: greedy, in document order, each with a table of its own.
+        let mut pieces: Vec<Value> = Vec::new();
+        let mut piece = Frame::piece(total);
+        for (i, (_, part)) in self.slots.iter().enumerate().skip(first_out) {
+            if !piece.try_add(i, part, limit) {
+                pieces.push(std::mem::replace(&mut piece, Frame::piece(total)).into_value());
+                // Alone in a fresh piece an entry always goes in.
+                let added = piece.try_add(i, part, limit);
+                debug_assert!(added);
+            }
+        }
+        if !piece.entries.is_empty() {
+            pieces.push(piece.into_value());
+        }
+        (head.into_value(), pieces)
+    }
+}
+
+/// GH #1002: one frame of a cut join, built entry by entry with its own `"p"`.
+///
+/// The head carries the root's statics and the list in full form; a piece the
+/// list's difference. Either way the entries stand in the list's `"k"`
+/// (GH #1013).
+struct Frame {
+    /// The root's statics, for the head; `None` for a piece.
+    statics: Option<Value>,
+    /// The list's `"k"` so far, without `"kc"`.
+    entries: Map<String, Value>,
+    /// One past the last entry: the list's `"kc"` once this frame is merged.
+    count: usize,
+    shared: SharedStatics,
+    /// Encoded bytes so far, the frame's wrapper and its `"p"` included.
+    used: usize,
+}
+
+impl Frame {
+    /// The head: `{"s": statics, "0": {"s": <list>, "k": {"kc": n}}}`, its
+    /// table already naming the list's statics (number 0).
+    fn head(statics: Value, total: usize) -> Self {
+        let mut shared = SharedStatics::default();
+        let list = shared.id(&list_statics());
+        let wrapper = json!({"s": statics, "0": {"s": list, "k": {"kc": total}}});
+        Self {
+            used: wrapper.to_string().len() + shared.encoded_from(0),
+            statics: Some(statics),
+            entries: Map::new(),
+            count: 0,
+            shared,
+        }
+    }
+
+    /// A piece: `{"0": {"k": {"kc": n}}}`. `total` bounds the digits of the
+    /// count it will carry.
+    fn piece(total: usize) -> Self {
+        Self {
+            statics: None,
+            entries: Map::new(),
+            count: 0,
+            used: json!({"0": {"k": {"kc": total}}}).to_string().len(),
+            shared: SharedStatics::default(),
+        }
+    }
+
+    /// Add entry `i` if the frame stays within `limit` (or, for a piece,
+    /// holds no entry yet: an entry larger than the limit then goes alone).
+    fn try_add(&mut self, i: usize, part: &Part, limit: usize) -> bool {
+        let mark = self.shared.table.len();
+        let key = i.to_string();
+        let value = entry(full_value(part, &mut self.shared));
+        let grow = slot_len(&key, &value) + self.shared.encoded_from(mark);
+        let fits = self.used + grow <= limit;
+        let alone = self.statics.is_none() && self.entries.is_empty();
+        if fits || alone {
+            self.used += grow;
+            self.entries.insert(key, value);
+            self.count = i + 1;
+            true
+        } else {
+            self.shared.truncate(mark);
+            false
+        }
+    }
+
+    fn into_value(self) -> Value {
+        let mut k = self.entries;
+        k.insert("kc".to_string(), json!(self.count));
+        let mut list = Map::new();
+        let mut map = Map::new();
+        if let Some(statics) = self.statics {
+            list.insert("s".to_string(), json!(0));
+            map.insert("s".to_string(), statics);
+        }
+        list.insert("k".to_string(), Value::Object(k));
+        map.insert("0".to_string(), Value::Object(list));
+        self.shared.attach(&mut map);
+        Value::Object(map)
+    }
+}
+
+/// GH #1002: a page with at most this many bytes of slot HTML is never cut —
+/// neither its GET body nor its join.
+///
+/// The cut exists for the measured city (about 600 KB of slot HTML, a 645 KB
+/// join on one route) and must not touch a display. Measured on the largest
+/// shipped display page (`examples/display-colony-view`, lock
+/// `gh1002_the_display_example_is_served_whole`): 130 968 bytes of slot HTML
+/// in 4 slots, a 238 KB page and a 245 KB join reply. Factor 2 of headroom
+/// (OR-H4-7) is 262 KB; 320 KB keeps that factor with room for the picture to
+/// vary, and the city stays nearly twice above it.
+pub const CUT_ABOVE_BYTES: usize = 320 * 1024;
+
+/// The bytes `s` takes as a JSON string, quotes included, without building it.
+///
+/// The limit of a join piece is a limit on the frame, and a frame is JSON:
+/// HTML is full of `"`, which the encoder doubles to `\"`, so the raw length
+/// under-counts by about a tenth on the measured city.
+fn json_str_len(s: &str) -> usize {
+    let mut n = 2 + s.len();
+    for b in s.bytes() {
+        n += match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 1,
+            0x00..=0x1f => 5,
+            _ => 0,
+        };
+    }
+    n
+}
+
+/// The encoded size of one slot value, key and separators included.
+fn slot_len(key: &str, value: &Value) -> usize {
+    let v = match value {
+        Value::String(s) => json_str_len(s),
+        other => meclaw_core::serde_json::to_string(other).map_or(0, |t| t.len()),
+    };
+    // `"<key>":<value>,`
+    key.len() + 4 + v
 }
 
 /// One rendered object, or one piece of one: LiveView's "rendered" shape.
@@ -232,6 +542,27 @@ pub enum Part {
     Text(String),
     /// Statics and dynamics.
     Node(Arc<Node>),
+    /// An object's children, each under its object id: a keyed comprehension
+    /// on the wire (GH #1009).
+    List(Arc<List>),
+}
+
+/// The children of one object, in order.
+///
+/// On the wire a keyed comprehension (`"k"`): its statics are two empty
+/// strings whatever the count, so a list that grows or shrinks is a
+/// difference and not a new part, and an entry the client holds can be
+/// moved to another index with everything it carries. The client keys every
+/// root part's node by the `data-phx-id` it gave that part
+/// (`phoenix_live_view.min.js`, `getNodeKey` in `DOMPatch`) and keeps the id
+/// only while frames merge into the part: a list sent whole, as the n + 1
+/// statics of GH #1001 forced on every create and delete, re-created every
+/// child's node, and a reorder diffed by position handed one object's node
+/// to the next (GH #1009: the display's motion lock, `replaced: 6`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct List {
+    /// `(object_id, part)`, in `ord` order.
+    pub items: Vec<(String, Part)>,
 }
 
 /// The statics of a template and the values that go between them.
@@ -273,6 +604,19 @@ impl Part {
         out
     }
 
+    /// GH #1002: the length of [`Self::html`], without building it.
+    pub fn html_len(&self) -> usize {
+        match self {
+            Part::Text(t) => t.len(),
+            Part::Node(n) => {
+                n.statics.iter().map(String::len).sum::<usize>()
+                    + n.dynamics.iter().map(Part::html_len).sum::<usize>()
+            }
+            // A list's markup is its entries back to back (`write_html`).
+            Part::List(l) => l.items.iter().map(|(_, part)| part.html_len()).sum(),
+        }
+    }
+
     fn write_html(&self, out: &mut String) {
         match self {
             Part::Text(t) => out.push_str(t),
@@ -282,6 +626,11 @@ impl Part {
                     if let Some(d) = n.dynamics.get(i) {
                         d.write_html(out);
                     }
+                }
+            }
+            Part::List(l) => {
+                for (_, part) in &l.items {
+                    part.write_html(out);
                 }
             }
         }
@@ -307,6 +656,28 @@ impl SharedStatics {
         self.table.push(Arc::clone(statics));
         self.index.insert(Arc::clone(statics), i);
         i
+    }
+
+    /// GH #1002: the encoded bytes the entries from `mark` on add to `"p"`,
+    /// the `"p":{}` itself included when they are its first.
+    fn encoded_from(&self, mark: usize) -> usize {
+        let entries: usize = self.table[mark..]
+            .iter()
+            .enumerate()
+            .map(|(k, statics)| {
+                let key = (mark + k).to_string().len() + 4;
+                key + 2 + statics.iter().map(|s| json_str_len(s) + 1).sum::<usize>()
+            })
+            .sum();
+        let opened = if mark == 0 && entries > 0 { 7 } else { 0 };
+        entries + opened
+    }
+
+    /// GH #1002: forget the entries from `mark` on (a slot that did not fit).
+    fn truncate(&mut self, mark: usize) {
+        for statics in self.table.drain(mark..) {
+            self.index.remove(&statics);
+        }
     }
 
     /// Put the table on the frame, if any part used it.
@@ -340,14 +711,97 @@ fn full_value(part: &Part, shared: &mut SharedStatics) -> Value {
             }
             Value::Object(m)
         }
+        Part::List(l) => list_value(&l.items, shared),
     }
+}
+
+/// A keyed list in full: `{"s": <list statics>, "k": {"0": {"0": …}, …,
+/// "kc": n}}` — an object's children, or the root's (GH #1013).
+fn list_value(items: &[(String, Part)], shared: &mut SharedStatics) -> Value {
+    let mut k = Map::new();
+    for (i, (_, part)) in items.iter().enumerate() {
+        k.insert(i.to_string(), entry(full_value(part, shared)));
+    }
+    k.insert("kc".to_string(), json!(items.len()));
+    let mut m = Map::new();
+    m.insert("s".to_string(), json!(shared.id(&list_statics())));
+    m.insert("k".to_string(), Value::Object(k));
+    Value::Object(m)
+}
+
+/// The statics of every list entry: the child stands alone between them.
+fn list_statics() -> Arc<[String]> {
+    Arc::from(vec![String::new(), String::new()])
+}
+
+/// One list entry: its one dynamic, the child.
+fn entry(child: Value) -> Value {
+    let mut m = Map::new();
+    m.insert("0".to_string(), child);
+    Value::Object(m)
+}
+
+/// What a viewer holding the list `old` needs to hold `new`, by object id.
+///
+/// An index whose object is the one the viewer holds there carries the
+/// child's difference, if any; an object the viewer holds at another index is
+/// moved from there (`[from, diff]`, or `from` alone — the client clones the
+/// entry it held, the part's `data-phx-id` with it, `mergeKeyed`); an object
+/// new to the list comes in full. `"kc"` is the new length and is always
+/// there: the client sets the count from it, and truncates what lies past it.
+fn diff_list(
+    old: &[(String, Part)],
+    new: &[(String, Part)],
+    shared: &mut SharedStatics,
+) -> Option<Value> {
+    let held: HashMap<&str, usize> = old
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _))| (id.as_str(), i))
+        .collect();
+    let mut k = Map::new();
+    let mut moved = false;
+    for (j, (id, part)) in new.iter().enumerate() {
+        let v = match held.get(id.as_str()) {
+            Some(&i) => {
+                let d = diff_value(&old[i].1, part, shared);
+                if i == j {
+                    match d {
+                        Some(d) => entry(d),
+                        None => continue,
+                    }
+                } else {
+                    moved = true;
+                    match d {
+                        Some(d) => json!([i, entry(d)]),
+                        None => json!(i),
+                    }
+                }
+            }
+            None => entry(full_value(part, shared)),
+        };
+        k.insert(j.to_string(), v);
+    }
+    if k.is_empty() && old.len() == new.len() {
+        return None;
+    }
+    k.insert("kc".to_string(), json!(new.len()));
+    if moved {
+        // The client reads a moved entry from a copy of the list it held, and
+        // makes that copy only when the frame says so.
+        k.insert("km".to_string(), json!(1));
+    }
+    let mut m = Map::new();
+    m.insert("k".to_string(), Value::Object(k));
+    Some(Value::Object(m))
 }
 
 /// What a viewer holding `old` needs to hold `new`, or `None` if nothing.
 ///
 /// The same statics: only the dynamics that changed, by index, each again as
 /// a difference — the client merges an object without `"s"` into the part it
-/// has. Anything else: the new part in full, which the client puts in place.
+/// has. Two lists: by object id ([`diff_list`]). Anything else: the new part
+/// in full, which the client puts in place.
 fn diff_value(old: &Part, new: &Part, shared: &mut SharedStatics) -> Option<Value> {
     match (old, new) {
         (Part::Text(a), Part::Text(b)) => (a != b).then(|| Value::String(b.clone())),
@@ -361,6 +815,8 @@ fn diff_value(old: &Part, new: &Part, shared: &mut SharedStatics) -> Option<Valu
             }
             (!m.is_empty()).then_some(Value::Object(m))
         }
+        (Part::List(a), Part::List(b)) if Arc::ptr_eq(a, b) => None,
+        (Part::List(a), Part::List(b)) => diff_list(&a.items, &b.items, shared),
         _ => (old != new).then(|| full_value(new, shared)),
     }
 }
@@ -388,6 +844,16 @@ pub fn wire_html(part: &Value, shared: &Value) -> String {
                 _ => Vec::new(),
             };
             let mut out = String::new();
+            if let Some(k) = m.get("k") {
+                let n = k["kc"].as_u64().unwrap_or_default();
+                for e in 0..n {
+                    out.push_str(&wire_html(
+                        &json!({"s": statics, "0": k[e.to_string()]["0"]}),
+                        shared,
+                    ));
+                }
+                return out;
+            }
             for (i, s) in statics.iter().enumerate() {
                 out.push_str(s);
                 if let Some(d) = m.get(&i.to_string()) {
@@ -615,17 +1081,11 @@ impl<'c> Renderer<'c> {
                 Dyn::Raw { name, slot } => Part::Text(raw_text(props, schema, name, slot)),
                 Dyn::Children => {
                     let ids = tree.kids.get(id).map(Vec::as_slice).unwrap_or_default();
-                    let mut parts = Vec::with_capacity(ids.len());
+                    let mut items = Vec::with_capacity(ids.len());
                     for child in ids {
-                        parts.push(self.part(tree, child, depth + 1)?);
+                        items.push((child.clone(), self.part(tree, child, depth + 1)?));
                     }
-                    // Statics n+1 empty strings: the children stand side by
-                    // side, and there is no single root to skip.
-                    Part::Node(Arc::new(Node {
-                        statics: vec![String::new(); parts.len() + 1].into(),
-                        root: false,
-                        dynamics: parts,
-                    }))
+                    Part::List(Arc::new(List { items }))
                 }
                 Dyn::If { prop, body } => {
                     if prop_truthy(props, prop) {
@@ -798,17 +1258,16 @@ pub struct Rerendered {
 /// `old` is what the viewers hold — the pages last published, every frame
 /// computed against it. Three answers:
 ///
-/// - the root-object case (structural, no slot): every route whole, every
-///   route its packed tree, as before;
+/// - the root-object case (structural, no slot): every route whole;
 /// - a route `old` does not have, or a write that names the page root
 ///   (`page.set`, `component.define`), or a root template that folds its
-///   children into its statics: that route whole; the frame is the packed
-///   tree for a structural write, a route `old` does not have or a slot the
-///   page does not have, and the named slots in full otherwise;
+///   children into its statics: that route whole;
 /// - everything else: the named slots re-rendered (a structural write re-reads
 ///   the root's child list; a slot new to it is rendered too), every other
-///   slot taken over. If the root's child list is the one the viewers hold,
-///   the frame is each named slot's difference; otherwise the packed tree.
+///   slot taken over.
+///
+/// Every frame is [`page_frame`]: the root list's difference when the viewers
+/// hold the same root statics, the packed tree otherwise.
 ///
 /// A route that does not render is left out of the pages with its reason
 /// logged, as [`materialize_all`] does.
@@ -822,7 +1281,7 @@ pub fn rerender(
         let pages = r.all()?;
         let frames = pages
             .iter()
-            .map(|(route, page)| (route.clone(), page.packed_tree()))
+            .map(|(route, page)| (route.clone(), page_frame(old.get(route), page)))
             .collect();
         return Ok(Rerendered {
             pages,
@@ -873,12 +1332,7 @@ pub fn rerender(
             // A route the viewers hold no page for gets its packed tree: the
             // named slots alone would land beside neighbours from before the
             // render error that dropped the route (review M1, GH #1001).
-            Ok(None) => whole(
-                &mut r,
-                route,
-                &ids,
-                touched.structural || !old.contains_key(route),
-            ),
+            Ok(None) => whole(&mut r, route, old.get(route)),
             Err(e) => Err(e),
         };
         match result {
@@ -899,31 +1353,64 @@ pub fn rerender(
     })
 }
 
-/// A route rendered whole after a write, and its frame: the packed tree when
-/// `packed` (a structural write, or a route the viewers hold no page for) or
-/// when a named slot is not on the page, the named slots in full otherwise.
+/// A route rendered whole after a write, and its frame against `prev`, the
+/// page the viewers hold ([`page_frame`]).
 fn whole(
     r: &mut Renderer<'_>,
     route: &str,
-    ids: &HashSet<&str>,
-    packed: bool,
+    prev: Option<&Materialized>,
 ) -> Result<(Materialized, Value), RenderError> {
     let page = r.page(route)?;
-    let addressable = ids.iter().all(|id| page.slot_of(id).is_some());
-    let frame = if packed || !addressable {
-        page.packed_tree()
-    } else {
-        let mut shared = SharedStatics::default();
-        let mut m = Map::new();
-        for (i, (id, part)) in page.slots.iter().enumerate() {
-            if ids.contains(id.as_str()) {
-                m.insert(i.to_string(), full_value(part, &mut shared));
-            }
-        }
-        shared.attach(&mut m);
-        Value::Object(m)
-    };
+    let frame = page_frame(prev, &page);
     Ok((page, frame))
+}
+
+/// The frame that takes a viewer from `prev` to `page`.
+///
+/// When the viewer holds a page with the same root statics, the frame is the
+/// difference of the root's keyed list ([`diff_list`]): a child the write did
+/// not change is not in it, a child created, deleted or moved directly under
+/// the root is an entry added, cut off or moved (GH #1013), and every part the
+/// client holds is merged into, never replaced — the client keys a part's
+/// node by the `data-phx-id` it gave the part and keeps it only then
+/// (GH #1009). The root-object case is the common one: a curator pass writes
+/// a root prop the shell does not even draw (`due`), and that sent every
+/// viewer the packed tree, so the browser re-created every node on the page.
+///
+/// Anything else is the packed tree, with `"s"` at the top: the root's
+/// statics changed (a root prop the template draws, a page that gains its
+/// first child or loses its last), or the viewer holds no page.
+fn page_frame(prev: Option<&Materialized>, page: &Materialized) -> Value {
+    let Some(prev) = prev else {
+        return page.packed_tree();
+    };
+    if prev.slots.is_empty() != page.slots.is_empty() || prev.wire_statics() != page.wire_statics()
+    {
+        return page.packed_tree();
+    }
+    let mut shared = SharedStatics::default();
+    let mut m = Map::new();
+    if let Some(v) = diff_list(&prev.slots, &page.slots, &mut shared) {
+        m.insert("0".to_string(), v);
+    }
+    shared.attach(&mut m);
+    Value::Object(m)
+}
+
+/// The frame of a root list difference that names entries by index:
+/// `{"0": {"k": {"<i>": {"0": diff}, …, "kc": n}}}`, or `{}` with none.
+/// `"kc"` is always there: the client sets the count from it unchecked.
+fn root_entries(entries: Map<String, Value>, count: usize, shared: SharedStatics) -> Value {
+    let mut m = Map::new();
+    if !entries.is_empty() {
+        let mut k = entries;
+        k.insert("kc".to_string(), json!(count));
+        let mut list = Map::new();
+        list.insert("k".to_string(), Value::Object(k));
+        m.insert("0".to_string(), Value::Object(list));
+    }
+    shared.attach(&mut m);
+    Value::Object(m)
 }
 
 /// Whether a write below `root` may be answered slot by slot (see
@@ -972,11 +1459,10 @@ fn in_place(
         let new = r.part(&tree, &id, 1)?;
         let old = std::mem::replace(&mut page.slots[i].1, new);
         if let Some(v) = diff_value(&old, &page.slots[i].1, &mut shared) {
-            m.insert(i.to_string(), v);
+            m.insert(i.to_string(), entry(v));
         }
     }
-    shared.attach(&mut m);
-    Ok(Some(Value::Object(m)))
+    Ok(Some(root_entries(m, page.slots.len(), shared)))
 }
 
 /// A structural write re-rendered slot by slot, or `None` when the route has
@@ -1021,28 +1507,9 @@ fn incremental(
         slots,
         title,
     };
-
-    let same_list = page.slots.len() == prev.slots.len()
-        && page
-            .slots
-            .iter()
-            .zip(&prev.slots)
-            .all(|((a, _), (b, _))| a == b);
-    let frame = if same_list {
-        let mut shared = SharedStatics::default();
-        let mut m = Map::new();
-        for (i, ((id, new), (_, old))) in page.slots.iter().zip(&prev.slots).enumerate() {
-            if ids.contains(id.as_str())
-                && let Some(v) = diff_value(old, new, &mut shared)
-            {
-                m.insert(i.to_string(), v);
-            }
-        }
-        shared.attach(&mut m);
-        Value::Object(m)
-    } else {
-        page.packed_tree()
-    };
+    // The slots taken over are the parts the viewer holds (`Arc` for `Arc`),
+    // so the difference walks only the named ones.
+    let frame = page_frame(Some(prev), &page);
     Ok(Some((page, frame)))
 }
 
@@ -1618,6 +2085,274 @@ pub fn materialize(conn: &Connection, route: &str) -> Result<Materialized, Rende
 mod tests {
     use super::*;
 
+    /// A frame as the client holds it after rendering it (GH #1001): every
+    /// numeric `"s"` replaced by the statics it names in that frame's own
+    /// `"p"`, and the table gone.
+    fn resolved(frame: &Value) -> Value {
+        fn walk(v: &Value, p: &Value) -> Value {
+            match v {
+                Value::Object(m) => Value::Object(
+                    m.iter()
+                        .filter(|(k, _)| k.as_str() != "p")
+                        .map(|(k, x)| {
+                            let y = match (k.as_str(), x) {
+                                ("s", Value::Number(n)) => {
+                                    let t = p[n.to_string()].clone();
+                                    assert!(t.is_array(), "statics {n} are not in this frame's p");
+                                    t
+                                }
+                                ("s", other) => other.clone(),
+                                _ => walk(x, p),
+                            };
+                            (k.clone(), y)
+                        })
+                        .collect(),
+                ),
+                other => other.clone(),
+            }
+        }
+        walk(frame, &frame["p"])
+    }
+
+    /// The client's merge of a cut join: each frame resolved against its own
+    /// table, then every entry of a piece's root list goes into the list the
+    /// head brought and the count is the piece's (`mergeKeyed`, GH #1013).
+    fn merge_all(head: &Value, pieces: &[Value]) -> Value {
+        let mut t = resolved(head);
+        for p in pieces {
+            let piece = resolved(p);
+            assert!(piece.get("s").is_none(), "a piece is a diff");
+            assert!(
+                piece["0"].get("s").is_none(),
+                "a piece merges into the list"
+            );
+            let k = t["0"]["k"].as_object_mut().expect("the head's list");
+            for (key, v) in piece["0"]["k"].as_object().expect("a list diff") {
+                k.insert(key.clone(), v.clone());
+            }
+        }
+        t
+    }
+
+    /// The root list entries a frame carries, by index (`"kc"` left out).
+    fn entries(frame: &Value) -> Vec<usize> {
+        let mut out: Vec<usize> = frame["0"]["k"]
+            .as_object()
+            .expect("a root list")
+            .keys()
+            .filter(|k| *k != "kc")
+            .map(|k| k.parse().expect("an index"))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// The markup of a resolved tree.
+    fn html_of(tree: &Value) -> String {
+        wire_html(tree, &Value::Null)
+    }
+
+    fn page_of(sizes: &[usize]) -> Materialized {
+        Materialized {
+            statics: std::iter::repeat_n(String::new(), sizes.len() + 1).collect(),
+            slots: sizes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    (
+                        format!("o{i}"),
+                        format!("<p a=\"{i}\">{}</p>", "x".repeat(*n)).into(),
+                    )
+                })
+                .collect(),
+            title: "t".into(),
+        }
+    }
+
+    /// Slots of nested parts: two components alternate, each slot holds a
+    /// list (W1b, GH #1009: `{{children}}` is a keyed comprehension) of two
+    /// children of a third, so every frame names shared statics.
+    fn nested_page(slots: usize, text: usize) -> Materialized {
+        let st = |v: &[&str]| -> Arc<[String]> { v.iter().map(|s| s.to_string()).collect() };
+        let (a, b, kid) = (
+            st(&["<div class=\"a\" data-k=\"", "\">", "</div>"]),
+            st(&["<section data-k=\"", "\">", "</section>"]),
+            st(&["<i>", "</i>"]),
+        );
+        let node = |statics: &Arc<[String]>, dynamics: Vec<Part>| {
+            Part::Node(Arc::new(Node {
+                statics: Arc::clone(statics),
+                root: true,
+                dynamics,
+            }))
+        };
+        Materialized {
+            statics: std::iter::once("<main>".to_string())
+                .chain(std::iter::repeat_n(String::new(), slots - 1))
+                .chain(std::iter::once("</main>".to_string()))
+                .collect(),
+            slots: (0..slots)
+                .map(|i| {
+                    let kids = Part::List(Arc::new(List {
+                        items: ["a", "b"]
+                            .iter()
+                            .map(|k| {
+                                let text = format!("{i}{k}{}", "y".repeat(text));
+                                (format!("o{i}{k}"), node(&kid, vec![text.into()]))
+                            })
+                            .collect(),
+                    }));
+                    let outer = if i % 2 == 0 { &a } else { &b };
+                    (
+                        format!("o{i}"),
+                        node(outer, vec![i.to_string().into(), kids]),
+                    )
+                })
+                .collect(),
+            title: "t".into(),
+        }
+    }
+
+    /// Every piece fits, or holds one entry; and the pieces append in
+    /// document order, each one's `"kc"` one past its last entry.
+    fn assert_pieces_fit(pieces: &[Value], limit: usize) {
+        for p in pieces {
+            let n = p.to_string().len();
+            let at = entries(p);
+            assert!(
+                n <= limit || at.len() == 1,
+                "a piece of {n} bytes holds {} entries",
+                at.len()
+            );
+            assert_eq!(
+                p["0"]["k"]["kc"],
+                json!(at.last().expect("an entry") + 1),
+                "kc"
+            );
+        }
+    }
+
+    #[test]
+    fn gh1002_the_client_builds_the_same_html_from_chunks() {
+        for sizes in [
+            vec![10; 3],
+            vec![900; 40],
+            vec![5000, 10, 10, 10],
+            vec![10, 10, 5000, 10, 10],
+            vec![300; 500],
+        ] {
+            let page = page_of(&sizes);
+            let whole = page.packed_tree();
+            let (head, pieces) = page.cut_frames(2048);
+            assert_eq!(
+                merge_all(&head, &pieces),
+                resolved(&whole),
+                "sizes {:?}",
+                &sizes[..3]
+            );
+            assert_pieces_fit(&pieces, 2048);
+            assert!(
+                head.to_string().len() <= 2048
+                    || pieces.is_empty()
+                    || head.to_string().len() < whole.to_string().len()
+            );
+        }
+    }
+
+    /// W1 shares statics through a frame-local `"p"`, and the client deletes
+    /// the table once it rendered the frame: a piece naming statics only the
+    /// head's table holds is a piece the client cannot build. Every frame of
+    /// a cut join carries the statics its own parts name, and only those.
+    #[test]
+    fn gh1002_every_piece_carries_its_own_statics() {
+        // 200 slots: their 200 emptied keys alone are about 1.7 KB, so every
+        // limit here leaves the head room for slots of its own.
+        let page = nested_page(200, 40);
+        let whole = page.packed_tree();
+        for limit in [4096, 8192] {
+            let (head, pieces) = page.cut_frames(limit);
+            assert!(!pieces.is_empty(), "limit {limit}: the page is cut");
+            assert!(head.to_string().len() <= limit, "limit {limit}: head");
+            assert_pieces_fit(&pieces, limit);
+            for f in std::iter::once(&head).chain(&pieces) {
+                let used = f["p"].as_object().map_or(0, Map::len);
+                // The three components and the list entries' statics.
+                assert!(used <= 4, "a frame names at most four statics");
+            }
+            let tree = merge_all(&head, &pieces);
+            assert_eq!(tree, resolved(&whole), "limit {limit}");
+            assert_eq!(html_of(&tree), page.rendered_body(), "limit {limit}");
+        }
+    }
+
+    #[test]
+    fn gh1002_a_tree_that_fits_is_not_touched() {
+        let page = page_of(&[10, 20, 30]);
+        let (head, pieces) = page.cut_frames(96 * 1024);
+        assert_eq!(head.to_string(), page.packed_tree().to_string());
+        assert!(pieces.is_empty());
+    }
+
+    #[test]
+    fn gh1002_the_head_is_a_prefix_and_never_over_the_limit() {
+        for page in [page_of(&[300; 100]), nested_page(100, 300)] {
+            let (head, _) = page.cut_frames(4096);
+            assert!(head.to_string().len() <= 4096, "{}", head.to_string().len());
+            // A prefix of the root list: entries 0..kc and nothing else.
+            let kc = head["0"]["k"]["kc"].as_u64().expect("kc") as usize;
+            assert!(kc < 100, "something was cut");
+            assert_eq!(entries(&head), (0..kc).collect::<Vec<_>>(), "no hole");
+        }
+    }
+
+    /// The inline budget and the join limit apply only above the cut
+    /// threshold. One byte below it a page is served and joined whole -- a
+    /// display's screen alone is larger than the 48 KB budget.
+    #[test]
+    fn gh1002_only_a_page_above_the_threshold_is_cut() {
+        let page = |bytes: usize| Materialized {
+            statics: vec!["<main>".into(), String::new(), "</main>".into()],
+            slots: vec![
+                ("a".into(), "x".repeat(bytes / 2).into()),
+                ("b".into(), "y".repeat(bytes - bytes / 2).into()),
+            ],
+            title: "t".into(),
+        };
+        let below = page(CUT_ABOVE_BYTES);
+        assert!(!below.is_large());
+        assert_eq!(below.page_body(48 * 1024), below.rendered_body());
+        let (head, pieces) = below.join_frames(96 * 1024);
+        assert_eq!(head, below.packed_tree());
+        assert!(pieces.is_empty());
+
+        let above = page(CUT_ABOVE_BYTES + 1);
+        assert!(above.is_large());
+        assert_ne!(above.page_body(48 * 1024), above.rendered_body());
+        assert!(!above.join_frames(96 * 1024).1.is_empty());
+    }
+
+    /// Slot HTML counts the markup of nested parts, statics and all.
+    #[test]
+    fn gh1002_the_html_length_of_a_part_is_its_markup() {
+        let page = nested_page(7, 5);
+        for (_, part) in &page.slots {
+            assert_eq!(part.html_len(), part.html().len());
+        }
+        let cut = page.rendered_body_cut(usize::MAX);
+        assert_eq!(cut, page.rendered_body());
+    }
+
+    #[test]
+    fn gh1002_json_length_counts_the_escapes() {
+        for s in ["", "abc", "a\"b", "x\\y", "line\nnext", "\u{1}", "ü"] {
+            assert_eq!(
+                json_str_len(s),
+                meclaw_core::serde_json::to_string(s).expect("json").len(),
+                "{s:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_four_forms_parse() {
         let p = parse_template("a{{x}}b{{&y}}c{{children}}d{{#if z}}e{{/if}}").unwrap();
@@ -1925,5 +2660,56 @@ mod tests {
             wire_html(&json!({"s": 0, "0": "y"}), &frame["p"]),
             "<i>y</i>"
         );
+    }
+
+    fn list(items: &[(&str, &Part)]) -> Part {
+        Part::List(Arc::new(List {
+            items: items
+                .iter()
+                .map(|(id, p)| (id.to_string(), (*p).clone()))
+                .collect(),
+        }))
+    }
+
+    /// GH #1009: a list is diffed by object id, never by position, and never
+    /// sent whole because it grew or shrank.
+    #[test]
+    fn a_list_diff_moves_what_the_viewer_holds_and_sends_only_what_is_new() {
+        let p = |v: &str| node(&["<b>", "</b>"], vec![v.into()]);
+        let (a, b, c, d) = (p("a"), p("b"), p("c"), p("d"));
+        let old = list(&[("a", &a), ("b", &b), ("c", &c)]);
+        let mut shared = SharedStatics::default();
+
+        // A reorder with one changed value: moves, no statics.
+        let new = list(&[("c", &c), ("b", &b), ("a", &p("A"))]);
+        assert_eq!(
+            diff_value(&old, &new, &mut shared),
+            Some(json!({"k": {"0": 2, "2": [0, {"0": {"0": "A"}}], "kc": 3, "km": 1}}))
+        );
+        // Grown by one in the middle: the entries behind it move, the new one
+        // comes in full.
+        let new = list(&[("a", &a), ("d", &d), ("b", &b), ("c", &c)]);
+        assert_eq!(
+            diff_value(&old, &new, &mut shared),
+            Some(
+                json!({"k": {"1": {"0": {"s": 0, "0": "d", "r": 1}}, "2": 1, "3": 2,
+                              "kc": 4, "km": 1}})
+            )
+        );
+        // Shrunk at the end: the count alone.
+        let new = list(&[("a", &a), ("b", &b)]);
+        assert_eq!(
+            diff_value(&old, &new, &mut shared),
+            Some(json!({"k": {"kc": 2}}))
+        );
+        assert_eq!(diff_value(&old, &old.clone(), &mut shared), None);
+
+        // In full: one statics pair for every entry, the markup unchanged.
+        let mut shared = SharedStatics::default();
+        let full = full_value(&old, &mut shared);
+        let mut frame = Map::new();
+        shared.attach(&mut frame);
+        assert_eq!(wire_html(&full, &frame["p"]), "<b>a</b><b>b</b><b>c</b>");
+        assert_eq!(old.html(), "<b>a</b><b>b</b><b>c</b>");
     }
 }

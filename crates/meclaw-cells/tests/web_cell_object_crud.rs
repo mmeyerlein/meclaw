@@ -489,15 +489,19 @@ async fn a_root_update_republishes_the_page_and_pushes_every_viewer() {
     )
     .await;
 
-    // The viewer hears about it: one push, carrying the packed tree (statics
-    // included — the whole page is the slot, so the whole page travels).
+    // The viewer hears about it: one push. The whole page is re-rendered, and
+    // the frame is its difference against what the viewer holds — this root
+    // draws no prop, so its statics are the same and no packed tree travels:
+    // a packed tree makes the client re-create every node of the page
+    // (GH #1009). A root that draws a changed prop still sends the packed
+    // tree (`718_a_bundle_is_pushed_once`).
     let frame = next_frame(&mut ws, Duration::from_secs(5))
         .await
         .expect("a root update reaches the joined viewer");
     assert_eq!(frame[3], json!("diff"), "{frame}");
     assert!(
-        frame[4].get("s").is_some(),
-        "the root's diff is the packed tree, statics and all: {frame}"
+        frame[4].get("s").is_none(),
+        "the root's statics did not change, so the diff is no packed tree: {frame}"
     );
 
     // And a fresh GET serves the re-materialised page rather than a snapshot

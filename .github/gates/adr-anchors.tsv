@@ -156,3 +156,9 @@ adr	status	anchor_home	target
 0047-a-file-is-an-address-not-a-place.md	accepted	self	test:a_moved_file_answers_every_op_the_same_and_names_no_place
 0047-a-file-is-an-address-not-a-place.md	accepted	self	test:a_block_hash_two_files_share_never_carries_the_other_files_bytes
 0047-a-file-is-an-address-not-a-place.md	accepted	self	test:the_space_is_sealed_its_store_cold_and_an_unknown_op_never_reaches_it
+0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	file:crates/meclaw-cells/tests/gh1001_web_child_delta.rs
+0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	test:gh1001_the_client_builds_the_served_html_from_join_and_diffs
+0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	file:crates/meclaw-cells/tests/gh1009_web_an_update_keeps_the_node.rs
+0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	test:gh1009_a_root_write_keeps_every_node
+0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	test:gh1009_a_reorder_keeps_each_objects_node
+0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	test:gh1013_a_create_under_the_root_keeps_every_other_node

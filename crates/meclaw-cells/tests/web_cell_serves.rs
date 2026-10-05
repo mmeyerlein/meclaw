@@ -278,7 +278,7 @@ async fn a_web_cell_serves_its_shell_under_its_mount() {
         "the socket URL is the mount's; body was:\n{body}"
     );
     assert!(
-        body.contains("src=\"/screen/@client/phoenix.min.js\""),
+        body.contains("src=\"/screen/@client/phoenix.min.js?v="),
         "and so are the bundles; body was:\n{body}"
     );
     assert!(
@@ -410,8 +410,8 @@ async fn a_forwarded_prefix_moves_every_link_of_the_shell() {
         "the socket URL carries the prefix; body was:\n{body}"
     );
     assert!(
-        body.contains("src=\"/egon/screen/@client/phoenix.min.js\"")
-            && body.contains("src=\"/egon/screen/@client/phoenix_live_view.min.js\""),
+        body.contains("src=\"/egon/screen/@client/phoenix.min.js?v=")
+            && body.contains("src=\"/egon/screen/@client/phoenix_live_view.min.js?v="),
         "and so do the bundles; body was:\n{body}"
     );
     assert!(

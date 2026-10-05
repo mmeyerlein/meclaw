@@ -82,6 +82,34 @@ pub fn push(join_ref: &Value, topic: &str, event: &str, payload: Value) -> Strin
         .unwrap_or_default()
 }
 
+/// [`push`] around a payload that is already JSON text (GH #1003).
+///
+/// A fan-out sends the same diff to every viewer of a route; only the frame
+/// around it is the socket's. Encoding the payload once and wrapping it per
+/// viewer is what keeps the cost of a diff flat in the number of screens —
+/// measured before: one `serde_json` pass of the whole diff per viewer, 76 %
+/// daemon CPU at three viewers of a panning 2-D world. The bytes are those of
+/// [`push`] exactly: the compact encoder writes `[a,b,c,d,e]` with no
+/// whitespace, so the frame is the four encoded heads and the payload joined by
+/// commas (lock `push_raw_is_push_byte_for_byte`).
+pub fn push_raw(join_ref: &Value, topic: &str, event: &str, payload_json: &str) -> String {
+    let join_ref = meclaw_core::serde_json::to_string(join_ref).unwrap_or_default();
+    let topic = meclaw_core::serde_json::to_string(topic).unwrap_or_default();
+    let event = meclaw_core::serde_json::to_string(event).unwrap_or_default();
+    let mut out =
+        String::with_capacity(join_ref.len() + topic.len() + event.len() + payload_json.len() + 10);
+    out.push('[');
+    out.push_str(&join_ref);
+    out.push_str(",null,");
+    out.push_str(&topic);
+    out.push(',');
+    out.push_str(&event);
+    out.push(',');
+    out.push_str(payload_json);
+    out.push(']');
+    out
+}
+
 /// The kind byte of a client push in the v2 serializer.
 const KIND_PUSH: u8 = 0;
 /// The kind byte of a server broadcast in the v2 serializer.
@@ -250,5 +278,26 @@ mod tests {
         let v: Value = meclaw_core::serde_json::from_str(&s).unwrap();
         assert_eq!(v[1], Value::Null);
         assert_eq!(v[3], json!("diff"));
+    }
+
+    /// GH #1003: a frame built around an encoded payload is the frame
+    /// [`push`] builds, byte for byte — the display must not see the change.
+    #[test]
+    fn push_raw_is_push_byte_for_byte() {
+        let payloads = [
+            json!({"0": "<i>a</i>", "1": {"0": "x \"q\" \u{e9} \u{1F98A}", "s": ["<b>", "</b>"]}}),
+            json!({"p": {"0": ["<a href=\"/x?a=1&b=2\">", "</a>"]}, "0": {"d": [["k", 1, -2.5, null, true]]}}),
+            json!([]),
+            json!("\n\t</script>"),
+        ];
+        for join_ref in [json!("4"), json!(null), json!(17)] {
+            for payload in &payloads {
+                let text = meclaw_core::serde_json::to_string(payload).expect("encode");
+                assert_eq!(
+                    push_raw(&join_ref, "lv:c\"1", "diff", &text),
+                    push(&join_ref, "lv:c\"1", "diff", payload.clone()),
+                );
+            }
+        }
     }
 }

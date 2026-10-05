@@ -216,8 +216,12 @@ async fn a_join_is_answered_from_the_materialised_page() {
     // children, one slot per direct child.
     assert_eq!(rendered["s"], json!(["<main>", "</main>"]));
     // GH #1001: one slot per direct child, as a part naming shared statics.
-    assert_eq!(rendered["0"], json!({"s": 0, "0": "on home", "r": 1}));
-    assert_eq!(rendered["p"], json!({"0": ["<p>", "</p>"]}));
+    // GH #1013: the slots are the entries of one keyed list.
+    assert_eq!(
+        rendered["0"],
+        json!({"s": 1, "k": {"0": {"0": {"s": 0, "0": "on home", "r": 1}}, "kc": 1}})
+    );
+    assert_eq!(rendered["p"], json!({"0": ["<p>", "</p>"], "1": ["", ""]}));
     assert_eq!(
         reply[4]["response"]["liveview_version"],
         json!(meclaw_surface::LIVEVIEW_VERSION),
@@ -270,8 +274,9 @@ async fn the_join_url_decides_which_page_the_socket_is_on() {
     let reply = recv(&mut ws).await;
     assert_eq!(reply[4]["status"], json!("ok"), "{reply}");
     assert_eq!(
-        // GH #1001: the slot is a part naming the shared statics.
-        reply[4]["response"]["rendered"]["0"],
+        // GH #1001: the slot is a part naming the shared statics; GH #1013:
+        // entry 0 of the root's keyed list.
+        reply[4]["response"]["rendered"]["0"]["k"]["0"]["0"],
         json!({"s": 0, "0": "on other", "r": 1}),
         "the socket answered with the OTHER page"
     );

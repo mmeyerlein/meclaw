@@ -12,6 +12,33 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.61.4] — 2026-10-05
+
+### Breaking
+
+- **Peer receipts: `deferred` and `expired`** ([#1012](https://github.com/mmeyerlein/meclaw/issues/1012)). A carrier failure of a `meclaw` proxy (no connection, timeout, 5xx) reads `deferred` instead of `refused`, and a message past `peer_retry_deadline_s` reads `expired` and lands as the dead letter `peer_expired`; a final refusal after booking is the dead letter `peer_refused`. Migration: a contract that lists `peer_event` values needs `deferred` and `expired`. In mixed operation a newer sender retries after a timeout also against an older receiver, which does not deduplicate — a timed-out first attempt can arrive twice there.
+
+### Changed
+
+- **A `web` page travels in parts** ([#1001](https://github.com/mmeyerlein/meclaw/issues/1001), [#1009](https://github.com/mmeyerlein/meclaw/issues/1009), [#1013](https://github.com/mmeyerlein/meclaw/issues/1013)). A write re-renders only the routes it touches, a join sends the rendered page as nested parts, and an update carries only the parts that changed instead of the whole root-child slot. `{{children}}` is a keyed list, so updating one child patches that child and keeps its DOM node; the root children are a keyed list too, so a structure op under the root patches instead of re-creating every node.
+- **First load and large joins** ([#1002](https://github.com/mmeyerlein/meclaw/issues/1002)). The page shell and the client files carry validators (`ETag`, `Cache-Control`) and are served gzip-compressed when the browser accepts it, so a second visit re-fetches nothing. The join reply of a large page arrives in pieces instead of one frame of the whole tree.
+- **A frame is encoded once** ([#1003](https://github.com/mmeyerlein/meclaw/issues/1003)). An update is serialised once per route and the same bytes go to every viewer of that route, so the cost of a write no longer grows with the number of viewers.
+- **Browser events do not wait** ([#1004](https://github.com/mmeyerlein/meclaw/issues/1004)). An event from a viewer is handed on without queueing behind the cell's outgoing writes.
+- **Template versions:** `web@2.3.0` (second digit: new opt-in abilities, no new `error_code`); third digit for the pins that follow it, `display@2.10.3`, `canvy@2.3.4`, `builder@1.26.5`, `builder-librarian@2.2.26` (regenerated corpus, including peer delivery) and `meclaw-os@2.2.13`.
+
+### Added
+
+- **Peer delivery loses nothing** ([#1012](https://github.com/mmeyerlein/meclaw/issues/1012)): a `meclaw` proxy now delivers at-least-once with an idempotent receive. Every POST carries the headers `X-Meclaw-Frame-Id` (a UUIDv7, the same on every retry) and `X-Meclaw-Sent-Ms`; the frame itself is unchanged, so a reverse proxy in front of a mount has to pass both headers through. The sender books every message in an ordered per-target outbox in its `cell.db` and retries carrier failures (no connection, timeout, 5xx) with a backoff of 1 s doubling to 300 s, reading one `deferred` receipt per waiting message and `crossed` with `deferred_ms` once through; past the new param `peer_retry_deadline_s` (default 86400) the message is the new dead letter `peer_expired` plus an `expired` receipt; a final refusal after booking (a 3xx or 4xx, the far side's own refusal) is the new dead letter `peer_refused` plus its `refused` receipt. The mount commits each frame to its inbox before it answers `200` and hands it on independently of the request, answers a repeated id from the same sender with `duplicate: true` and no second arrival, and replays what was not handed on after a restart; arrivals carry `hop.peer_frame_id`, `hop.peer_sent_ms` and `hop.peer_arrived_ms`. The receipt contract changes are listed under Breaking.
+- **`web` params `join_chunk_bytes` and `join_timeout_ms`** ([#1002](https://github.com/mmeyerlein/meclaw/issues/1002)): the size of one join piece and the join timeout the page shell states. Both optional; absent keeps the defaults.
+- **The client reports its screen** ([#1003](https://github.com/mmeyerlein/meclaw/issues/1003)): the join carries `_screen` (`w`, `h`, `dpr`, `orientation`, `coarse`, the viewport in CSS pixels), the `viewers` op lists it per viewer, and with `viewer_events: ["screen"]` the app hears `viewer:screen` on join and leave. Every viewer of a route still gets the same bytes.
+- **A compact bundle answer** ([#1005](https://github.com/mmeyerlein/meclaw/issues/1005)): a bundle that sets `"answer": "errors"` gets a turn and a result for its refused legs only, with the leg count on the header. The full answer stays the default.
+- **Viewer backlog and the `viewers` op** ([#1006](https://github.com/mmeyerlein/meclaw/issues/1006)): the `viewers` op lists the connected viewers of a `web` cell, and with `viewer_events: ["backlog"]` the cell reports `viewer:backlog` when a viewer's socket falls behind and again when it has caught up. The cell reports and does not throttle; the app decides. `templates/web` now carries `viewer_events: []`, so an app sets it with `override_params`.
+
+### Fixed
+
+- **A browser that never answered is reported as a failed spawn reliably** ([#1007](https://github.com/mmeyerlein/meclaw/issues/1007)): the reaper waits up to 500 ms for the exit status instead of racing the pipe's end.
+- **A backlog report can no longer end on a stale `high`** when two checks race ([#1010](https://github.com/mmeyerlein/meclaw/issues/1010)). The backlog locks that miscounted under a parallel test suite now hold function and edge only; the timing is locked in a unit test with an injected clock ([#1008](https://github.com/mmeyerlein/meclaw/issues/1008), [#1011](https://github.com/mmeyerlein/meclaw/issues/1011)).
+
 ## [0.61.3] — 2026-10-05
 
 ### Added

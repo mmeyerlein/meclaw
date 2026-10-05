@@ -1,6 +1,6 @@
 //! W8 (GH #380): the `web` cell's params.
 //!
-//! Eight keys, and none of them is immutable.
+//! Ten keys, and none of them is immutable.
 //!
 //! # A named removal
 //!
@@ -74,6 +74,54 @@ pub struct WebParams {
     /// GH #1006: age in ms of the oldest outstanding frame at which
     /// `viewer:backlog` reports `high`.
     pub backlog_high_ms: u64,
+    /// GH #1002: the most bytes one join frame carries; `None` (absent) is
+    /// [`JOIN_CHUNK_DEFAULT`]. See [`WebParams::join_chunk`].
+    pub join_chunk_bytes: Option<u64>,
+    /// GH #1002: how long the browser gives a join, stated to the client in the
+    /// shell; `None` (absent) states nothing and the client keeps its own
+    /// 10 s.
+    pub join_timeout_ms: Option<u64>,
+}
+
+/// GH #1002: the default join piece, 96 KB.
+///
+/// Measured on a large page: Slow 3G moves ~50 KB/s, and the client
+/// gives a join 10 s; a 96 KB reply arrives in ~2 s there, the old 0.69 MB
+/// one never did. A display's join is not cut at all, whatever this says:
+/// only a page above [`crate::web::render::CUT_ABOVE_BYTES`] is.
+pub const JOIN_CHUNK_DEFAULT: usize = 96 * 1024;
+
+/// The range `join_chunk_bytes` may take: below 16 KB a city would be a
+/// hundred frames for no gain, above 4 MB the key would only restore the
+/// single frame that never arrived.
+pub const JOIN_CHUNK_RANGE: std::ops::RangeInclusive<u64> = 16 * 1024..=4 * 1024 * 1024;
+
+/// The range `join_timeout_ms` may take: under 5 s is shorter than the
+/// client's own default ever was, over 120 s is a browser waiting on a page
+/// that will not come.
+pub const JOIN_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 5_000..=120_000;
+
+/// One optional integer param inside its range: absent (or `null`) is `None`,
+/// anything else outside the range is refused by name.
+fn ranged(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    key: &str,
+    range: &std::ops::RangeInclusive<u64>,
+) -> Result<Option<u64>, String> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .filter(|n| range.contains(n))
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "{key}: must be an integer from {} to {}, got {v}",
+                    range.start(),
+                    range.end()
+                )
+            }),
+    }
 }
 
 /// The per-viewer events a display may report (GH #1006).
@@ -245,6 +293,8 @@ impl WebParams {
             10..=60_000,
             crate::web::backlog::DEFAULT_HIGH_MS,
         )?;
+        let join_chunk_bytes = ranged(obj, "join_chunk_bytes", &JOIN_CHUNK_RANGE)?;
+        let join_timeout_ms = ranged(obj, "join_timeout_ms", &JOIN_TIMEOUT_RANGE)?;
 
         Ok(Self {
             mount: mount.to_string(),
@@ -255,6 +305,15 @@ impl WebParams {
             viewer_events,
             backlog_high_bytes,
             backlog_high_ms,
+            join_chunk_bytes,
+            join_timeout_ms,
+        })
+    }
+
+    /// GH #1002: the join piece limit in effect, in bytes.
+    pub fn join_chunk(&self) -> usize {
+        self.join_chunk_bytes.map_or(JOIN_CHUNK_DEFAULT, |n| {
+            usize::try_from(n).unwrap_or(JOIN_CHUNK_DEFAULT)
         })
     }
 
@@ -281,7 +340,7 @@ impl WebParams {
 
 /// The runtime params-update overlay of a `web` cell.
 ///
-/// It carries all eight keys, because `apply_update` merges the update over the
+/// It carries all ten keys, because `apply_update` merges the update over the
 /// **serialised current params**: a key that is not serialised here is missing
 /// from the merge base, so an update naming only `identity_header` would be
 /// re-parsed against a document with no `mount` in it and refused with
@@ -312,6 +371,14 @@ pub struct WebOverlay {
     pub link_mounts: Vec<String>,
     /// Operation-timeout for I/O this cell initiates. Mutable.
     pub external_timeout_ms: u64,
+    /// GH #1002: the join piece limit. Mutable; effect on the next life. Not
+    /// serialised when absent, so an overlay from before the key existed and
+    /// one that never named it read the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_chunk_bytes: Option<u64>,
+    /// GH #1002: the join timeout the shell states. As `join_chunk_bytes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_timeout_ms: Option<u64>,
     /// GH #1006: per-viewer events. Mutable; effect on the next life, read
     /// when the I/O half starts. Not serialised when empty, so an overlay
     /// written before the key existed and one that never named it read the
@@ -346,6 +413,8 @@ impl OverlayParams for WebOverlay {
         "viewer_events",
         "backlog_high_bytes",
         "backlog_high_ms",
+        "join_chunk_bytes",
+        "join_timeout_ms",
     ];
 
     /// **Empty.** No param of this cell type is fixed for its lifetime: a
@@ -367,6 +436,8 @@ impl OverlayParams for WebOverlay {
             viewer_events: p.viewer_events,
             backlog_high_bytes: p.backlog_high_bytes,
             backlog_high_ms: p.backlog_high_ms,
+            join_chunk_bytes: p.join_chunk_bytes,
+            join_timeout_ms: p.join_timeout_ms,
         })
     }
 }
@@ -471,6 +542,28 @@ mod tests {
                 .is_ok(),
             "a legal header name passes"
         );
+    }
+
+    #[test]
+    fn gh1002_join_params_default_to_todays_behaviour_and_round_trip() {
+        let p = WebParams::parse(&json!({"mount": "web"})).expect("parse");
+        assert_eq!((p.join_chunk_bytes, p.join_timeout_ms), (None, None));
+        assert_eq!(p.join_chunk(), 96 * 1024);
+        let o = WebOverlay::parse(&json!({"mount": "web"})).expect("overlay");
+        let text = meclaw_core::serde_json::to_string(&o).expect("json");
+        assert!(
+            !text.contains("join_"),
+            "an absent key stays absent: {text}"
+        );
+        let p = WebParams::parse(
+            &json!({"mount": "web", "join_chunk_bytes": 32768, "join_timeout_ms": 30000}),
+        )
+        .expect("in range");
+        assert_eq!(p.join_chunk(), 32768);
+        assert_eq!(p.join_timeout_ms, Some(30000));
+        let err =
+            WebParams::parse(&json!({"mount": "web", "join_timeout_ms": 200000})).unwrap_err();
+        assert!(err.starts_with("join_timeout_ms: "), "{err}");
     }
 
     #[test]

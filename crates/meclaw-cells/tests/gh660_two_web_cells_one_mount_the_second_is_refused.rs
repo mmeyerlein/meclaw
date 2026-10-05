@@ -174,6 +174,9 @@ async fn two_web_cells_one_mount_the_second_is_refused() {
         WebEvent::Backlog { session_id, .. } => {
             panic!("expected MountFailed; got a backlog report for {session_id:?}")
         }
+        WebEvent::Screen { session_id, .. } => {
+            panic!("expected MountFailed; got a screen report for {session_id:?}")
+        }
     }
 
     // The life goes on, and the receipt is positive rather than a clock: the
@@ -183,6 +186,7 @@ async fn two_web_cells_one_mount_the_second_is_refused() {
     let push = || WebReconfig::Push {
         route: "/".to_string(),
         diff: json!({}),
+        generation: 1,
     };
     push_tx.send(push()).await.expect("the half still listens");
     tokio::time::timeout(MARKER, push_tx.send(push()))

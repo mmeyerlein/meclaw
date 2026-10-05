@@ -273,7 +273,7 @@ async fn a_bundle_of_eight_legs_is_one_push_carrying_the_end_state() {
         "a bundle is one push — the live pass sent seven, four of them whole \
          trees from the middle of the bundle"
     );
-    let WebReconfig::Push { route, diff } = &pushes[0] else {
+    let WebReconfig::Push { route, diff, .. } = &pushes[0] else {
         panic!("a push, not a viewers request")
     };
     assert_eq!(route, ROUTE);
@@ -381,7 +381,7 @@ async fn a_bundle_that_moves_one_outputs_root_and_another_outputs_slot_reaches_b
     );
 
     for (route, diff) in pushes.iter().filter_map(|p| match p {
-        WebReconfig::Push { route, diff } => Some((route, diff)),
+        WebReconfig::Push { route, diff, .. } => Some((route, diff)),
         WebReconfig::Viewers { .. } => None,
     }) {
         if route == TV {

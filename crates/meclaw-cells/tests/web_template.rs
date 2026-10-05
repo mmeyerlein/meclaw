@@ -5,7 +5,7 @@
 //! PROMISES, and every question is asked of the **substrate's own reader**
 //! rather than of a second opinion written in this file:
 //!
-//! 1. **The descriptor resolves.** `web@2.2.0` — the reference a mutation
+//! 1. **The descriptor resolves.** `web@2.3.0` — the reference a mutation
 //!    writes down.
 //! 2. **The config is a persistent `web` cell with a mount of its own**, read
 //!    through `meclaw_colony::ParsedConfig` (the reader every boot and every
@@ -149,8 +149,10 @@ fn the_mount_is_a_declared_param_so_a_second_display_can_override_it() {
     let cfg = parsed_config();
     let params = cfg.params.as_object().expect("params is an object");
     // `link_mounts` (GH #869) is the key the display overrides with the mounts
-    // its curator speaks to.
-    for key in ["mount", "identity_header", "link_mounts"] {
+    // its curator speaks to. `viewer_events` (GH #1006) is the opt-in an app sets
+    // to hear `viewer:backlog` / `viewer:screen`; without the key here its
+    // override would be refused.
+    for key in ["mount", "identity_header", "link_mounts", "viewer_events"] {
         assert!(
             params.contains_key(key),
             "`{key}` must stand in params for an override to address it"

@@ -46,7 +46,7 @@ they sit here only because `bundle()` serves this directory's closed list under
 
 | File | What it is |
 |---|---|
-| `boot.js` | The page shell's boot: reads the socket path from `<meta name="meclaw-live">`, builds the `LiveSocket` with `window.SurfaceHooks`, sets `window.SurfaceSocket`. |
+| `boot.js` | The page shell's boot: reads the socket path from `<meta name="meclaw-live">` and an optional join timeout from `<meta name="meclaw-join-timeout">` (GH #1002), builds the `LiveSocket` with `window.SurfaceHooks`, sets `window.SurfaceSocket`. |
 | `display-mic-worklet.js` | The display microphone's capture worklet (processor `mic`, 20 ms PCM16 frames, a `flush` message), loaded with `audioWorklet.addModule`. |
 
 Both used to be inline -- the boot a `<script>` block in the shell, the worklet a

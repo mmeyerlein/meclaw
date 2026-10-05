@@ -13,6 +13,9 @@
 //! refusal is still in the answer — no fact is missing, only the repetition of
 //! the successes. Without the slot the answer is byte-for-byte what it was.
 
+#[path = "support/web_fixture.rs"]
+mod web_fixture;
+
 use meclaw_cells::web::cell::{WebCell, WebReconfig};
 use meclaw_cells::web::db::setup_web_schema;
 use meclaw_cells::web::params::WebParams;
@@ -26,6 +29,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 const MOUNT: &str = "screen";
+
+use web_fixture::log_lab::{LogClasses, file_bytes, read_classes, seed_figures};
 
 // ---------------------------------------------------------------- in-process harness
 // The 723 harness: the cell's `handle` driven directly, the reply read off the
@@ -319,131 +324,7 @@ async fn gh1005_an_unknown_answer_form_is_refused() {
 }
 
 // ---------------------------------------------------------------- lab: the colony log
-// A minimal helper of its own until the shared `tests/support/web_fixture.rs`
-// lands; it moves there additively.
-
-/// Bytes of the log, by class. A row counts what the log stores of it: ids,
-/// paths, headers and body.
-#[derive(Default, Debug, Clone, Copy)]
-struct LogClasses {
-    request: u64,
-    answer: u64,
-    event: u64,
-    other: u64,
-    rows: u64,
-}
-
-impl LogClasses {
-    fn total(&self) -> u64 {
-        self.request + self.answer + self.event + self.other
-    }
-}
-
-/// The colony's own `message_log`, through its read message (`GET
-/// /colony/messages` of a running meclaw) — never the database file: a test
-/// reads the log the way an operator does (`display_colony.rs` `log`).
-async fn read_classes(
-    inbox: &mpsc::Sender<meclaw_colony::ColonyMsg>,
-    web: &str,
-    caller: &str,
-) -> LogClasses {
-    use meclaw_colony::api_dto::MessageLogFilter;
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-    inbox
-        .send(meclaw_colony::ColonyMsg::ReadMessages {
-            filter: MessageLogFilter {
-                limit: 1000,
-                scan_budget: 50_000,
-                ..Default::default()
-            },
-            ack: ack_tx,
-        })
-        .await
-        .expect("inbox alive");
-    let reply = tokio::time::timeout(Duration::from_secs(30), ack_rx)
-        .await
-        .expect("the log answers")
-        .expect("ack");
-    assert!(!reply.scan_truncated, "the lab outgrew the scan budget");
-    assert!(
-        reply.entries.len() < 1000,
-        "the lab outgrew one page of the log"
-    );
-    let mut c = LogClasses::default();
-    for e in &reply.entries {
-        // What the log stores of a row: ids, paths, headers, body, two ints.
-        let bytes = (e.id.len()
-            + e.trace_id.len()
-            + e.parent_message_id.as_deref().map_or(0, str::len)
-            + e.correlation_id.as_deref().map_or(0, str::len)
-            + e.from_path.len()
-            + e.to_path.len()
-            + e.reply_to.as_deref().map_or(0, str::len)
-            + e.headers_json.len()
-            + e.body_kind.len()
-            + e.body_payload.as_deref().map_or(0, str::len)
-            + 16) as u64;
-        c.rows += 1;
-        if e.to_path == web {
-            c.request += bytes;
-        } else if e.from_path == web && e.to_path == caller {
-            c.answer += bytes;
-        } else if e.from_path == web && e.headers_json.contains("\"event\"") {
-            c.event += bytes;
-        } else {
-            c.other += bytes;
-        }
-    }
-    c
-}
-
-fn file_bytes(dir: &std::path::Path) -> u64 {
-    ["colony.db", "colony.db-wal"]
-        .iter()
-        .map(|f| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
-        .sum()
-}
-
-fn seed_figures(cell_dir: &std::path::Path, n: usize) {
-    let seed = cell_dir.join("seed");
-    std::fs::create_dir_all(&seed).expect("seed dir");
-    std::fs::write(
-        seed.join("components.jsonl"),
-        concat!(
-            r#"{"schema":{"name":"text","template":"text","prop_schema":"text","editable":"text","layer":"text"}}"#,
-            "\n",
-            r#"{"name":"screen","template":"<main>{{children}}</main>","prop_schema":"{}","editable":"[]","layer":"content"}"#,
-            "\n",
-            r#"{"name":"fig","template":"<i data-x=\"{{x}}\" data-y=\"{{y}}\"></i>","prop_schema":"{\"x\":\"text\",\"y\":\"text\"}","editable":"[]","layer":"content"}"#,
-            "\n"
-        ),
-    )
-    .expect("components");
-    let mut objects = String::from(
-        r#"{"schema":{"id":"text","parent":"text","component":"text","ord":"int","props":"text"}}"#,
-    );
-    objects.push('\n');
-    objects.push_str(r#"{"id":"root","parent":null,"component":"screen","ord":0,"props":"{}"}"#);
-    objects.push('\n');
-    for i in 0..n {
-        objects.push_str(
-            &json!({"id": format!("fig-{i}"), "parent": "root", "component": "fig", "ord": i, "props": r#"{"x":"0","y":"0"}"#})
-                .to_string(),
-        );
-        objects.push('\n');
-    }
-    std::fs::write(seed.join("objects.jsonl"), objects).expect("objects");
-    std::fs::write(
-        seed.join("pages.jsonl"),
-        concat!(
-            r#"{"schema":{"route":"text","root":"text","title":"text"}}"#,
-            "\n",
-            r#"{"route":"/","root":"root","title":"Lab"}"#,
-            "\n"
-        ),
-    )
-    .expect("pages");
-}
+// The log helpers live in the shared fixture (`web_fixture::log_lab`, OR-H4-15).
 
 /// One run of the village's pan: 300 figures, bundles of 75 legs, `bundles`
 /// of them, each answered before the next goes out. Returns the log classes
@@ -525,7 +406,20 @@ async fn lab_run(compact: bool, bundles: usize) -> (LogClasses, u64) {
         assert_eq!(turns, if compact { 0 } else { LEGS }, "bundle {b}");
     }
 
-    let after_classes = read_classes(&h.inbox_tx, "/web", "/caller").await;
+    // GH #1014: the colony logs each hop fire-and-forget through its writer
+    // thread, and `ReadMessages` reads without a write fence — the last answer
+    // reaches the caller before its row is committed. Wait (bounded, 30 s
+    // failure marker) until the log holds a request and an answer per bundle;
+    // a row that never comes still fails the count below.
+    let want = before_classes.rows + 2 * bundles as u64;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let after_classes = loop {
+        let c = read_classes(&h.inbox_tx, "/web", "/caller").await;
+        if c.rows >= want || tokio::time::Instant::now() >= deadline {
+            break c;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     let after_file = file_bytes(td.path());
     h.shutdown().await;
     let d = LogClasses {

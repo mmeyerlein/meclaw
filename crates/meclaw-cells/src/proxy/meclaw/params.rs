@@ -26,6 +26,7 @@ pub const IMMUTABLE_KEYS: &[&str] = &[
     "auth",
     "trusted_proxies",
     "egress",
+    "peer_retry_deadline_s",
 ];
 
 /// The refusal text for a runtime `params` update aimed at a `meclaw` proxy.
@@ -114,6 +115,15 @@ pub struct MeclawParams {
     /// [`Self::egress_origins`] is the parsed form.
     #[serde(default)]
     pub egress: Option<Vec<String>>,
+    /// GH #1012: how long the outbox keeps trying one message, in seconds,
+    /// before it is a `peer_expired` dead letter and an `expired` receipt.
+    #[serde(default = "default_retry_deadline_s")]
+    pub peer_retry_deadline_s: u64,
+}
+
+/// One day (OR-HV-5).
+fn default_retry_deadline_s() -> u64 {
+    86_400
 }
 
 impl MeclawParams {

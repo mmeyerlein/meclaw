@@ -11,6 +11,7 @@
 //!   unnamed `context` key falls away silently;
 //! - every crossing and every refusal leaves a receipt on both sides.
 
+pub mod book;
 pub mod cell;
 pub mod client;
 pub mod emit;

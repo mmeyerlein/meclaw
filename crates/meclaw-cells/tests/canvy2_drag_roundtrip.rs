@@ -366,11 +366,14 @@ fn misaddressed(join: &Value, diff: &Value, value: &str, slot_off: bool) -> Valu
         path_to(diff, value, &mut path),
         "{value} is in the diff: {diff}"
     );
-    let at = if slot_off { 0 } else { path.len() - 1 };
+    // GH #1013: the root's children are one keyed list, so a slot is the
+    // entry key under `"0"`, `"k"` — the third key of the path.
+    let at = if slot_off { 2 } else { path.len() - 1 };
     let k: usize = path[at].parse().expect("numeric key");
     path[at] = if slot_off {
-        join.as_object()
-            .expect("tree")
+        join["0"]["k"]
+            .as_object()
+            .expect("the root list")
             .keys()
             .filter_map(|x| x.parse::<usize>().ok())
             .find(|&x| x != k)

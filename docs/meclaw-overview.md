@@ -1840,7 +1840,7 @@ field, which is what the `?error_code=` filter matches: `unresolved_path`, `hive
 `no_route`, `cell_inactive`, `ttl_expired`, `colony_endpoint_unimplemented`,
 `colony_endpoint_invalid`, `blob_unavailable`, `blob_recursion_too_deep`, `invalid_ubf_body`,
 `consumes_violation`, `contract_violation`, `slot_unbound`, `slot_park_overflow`,
-`shutdown_draining`, `hive_boundary`, `mailbox_full`. These strings are part of the stable API contract; new reasons
+`shutdown_draining`, `hive_boundary`, `mailbox_full`, `peer_expired`, `peer_refused`. These strings are part of the stable API contract; new reasons
 extend the list, existing ones do not change their string form. `shutdown_draining` (GH #47) carries a new source
 emission that arrived during the shutdown drain; it is not routed, because that would start work the
 drain would then have to wait for.
@@ -1901,6 +1901,15 @@ Notes on the delivery-boundary codes:
   refused. `resolved_target` is the cell. The one other case carries `detail`
   `missing_from_log`: a persisted overflow row whose message is not in the log is dead-lettered
   rather than dropped.
+- `peer_expired` (GH #1012): a `meclaw` peer proxy kept a message in its outbox and did not get it
+  across within `params.peer_retry_deadline_s` (default one day). The cell dead-letters the
+  message it was handed (`resolved_target` is the cell) and emits an `expired` receipt next to it
+  (`cell-types.md` § `proxy`, the `meclaw` variant).
+- `peer_refused` (GH #1012): a `meclaw` peer proxy booked a message for delivery and got a final
+  answer that is not a crossing (a 3xx or 4xx, the far side's refusal, an answer that is no
+  receipt, a credential that cannot be had). Nothing is retried; the cell dead-letters the message
+  (`resolved_target` is the cell) next to its `refused` receipt. A refusal by a lane or by `egress`
+  falls before booking and is a receipt only.
 
 When processing a cell emission in the outputs arm, exactly one of three disjoint paths applies, in
 this order (ruling A1, 2026-06-12):

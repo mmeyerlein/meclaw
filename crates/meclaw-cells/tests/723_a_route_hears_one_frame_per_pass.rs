@@ -231,12 +231,15 @@ async fn run_on(db: rusqlite::Connection, turns: Vec<Value>) -> (Vec<WebReconfig
 /// The diff's keys, sorted, with the statics key `s` kept — a slot diff has
 /// none, a packed tree has one.
 fn keys(diff: &Value) -> Vec<String> {
-    let mut k: Vec<String> = diff
+    // GH #1013: the root's children are one keyed list (`"0"`, `"k"`); a
+    // frame names the entries it changes by index, beside the list's count
+    // (`"kc"`) and, for a move, `"km"`. GH #1001: the frame's shared statics
+    // (`"p"`) travel beside the list.
+    let mut k: Vec<String> = diff["0"]["k"]
         .as_object()
-        .expect("a diff is an object")
+        .unwrap_or_else(|| panic!("a diff names the root list: {diff}"))
         .keys()
-        // GH #1001: the frame's shared statics travel beside the slots.
-        .filter(|k| *k != "p")
+        .filter(|k| *k != "kc" && *k != "km")
         .cloned()
         .collect();
     k.sort();
@@ -250,14 +253,15 @@ fn slot(boot: &PageMap, route: &str, diff: &Value, key: &str) -> String {
     // changed in it; its markup is what the client builds by merging the
     // frame into the part it holds. A part that brings its statics (`"s"`)
     // stands on its own, against the frame's shared statics.
-    let part = diff
+    let part = diff["0"]["k"]
         .get(key)
+        .map(|entry| &entry["0"])
         .unwrap_or_else(|| panic!("no slot under {key}: {diff}"));
     if part.get("s").is_some() || part.is_string() {
         return wire_html(part, &diff["p"]);
     }
     let tree = boot[route].packed_tree();
-    let mut held = tree[key].clone();
+    let mut held = tree["0"]["k"][key]["0"].clone();
     merge(&mut held, part);
     wire_html(&held, &tree["p"])
 }
@@ -298,7 +302,7 @@ async fn a_pass_over_three_slots_of_one_route_is_one_frame() {
         "one route hears one frame per pass — the live twin sent one per slot, \
          and the frame without the main slot put the optimistic tap back"
     );
-    let WebReconfig::Push { route, diff } = &pushes[0] else {
+    let WebReconfig::Push { route, diff, .. } = &pushes[0] else {
         panic!("a push, not a viewers request")
     };
     assert_eq!(route, ROUTE);
@@ -334,7 +338,7 @@ async fn a_pass_over_two_routes_is_one_frame_each() {
     let mut by_route: Vec<(&str, &Value)> = pushes
         .iter()
         .filter_map(|p| match p {
-            WebReconfig::Push { route, diff } => Some((route.as_str(), diff)),
+            WebReconfig::Push { route, diff, .. } => Some((route.as_str(), diff)),
             WebReconfig::Viewers { .. } => None,
         })
         .collect();
@@ -357,7 +361,8 @@ async fn a_pass_over_two_routes_is_one_frame_each() {
 }
 
 /// A pass that leaves one root child for another is ONE frame, and that frame
-/// is the whole tree.
+/// is the root list's difference (GH #1013; it was the whole tree while the
+/// root was positional).
 ///
 /// `object.move` names two slots of the same route — the one it left and the
 /// one it reached — and it is structural, so each of them used to send that
@@ -381,18 +386,25 @@ async fn a_move_between_two_slots_of_one_route_is_one_frame_with_the_tree() {
         1,
         "the slot it left and the slot it reached are one route, so they are          one frame — not the same tree sent twice"
     );
-    let WebReconfig::Push { route, diff } = &pushes[0] else {
+    let WebReconfig::Push { route, diff, .. } = &pushes[0] else {
         panic!("a push, not a viewers request")
     };
     assert_eq!(route, ROUTE);
     assert!(
-        diff.get("s").is_some(),
-        "and the frame is the whole packed tree, because `aside` is no longer          a slot and nothing positional can address it: {diff}"
+        diff.get("s").is_none(),
+        "and the frame is no packed tree: the root's children are a keyed list, \
+         so `aside` leaving it is a difference of that list (GH #1013): {diff}"
     );
     assert_eq!(
-        keys(diff),
-        vec!["0", "1", "s"],
-        "the page is down to two slots, and the frame says so in one piece —          the old slot list is gone, which is why no positional patch would          have landed: {diff}"
+        diff["0"]["k"]["kc"],
+        json!(2),
+        "the page is down to two slots, and the frame says so in one piece: {diff}"
+    );
+    assert_eq!(
+        diff["0"]["k"]["1"],
+        json!(2),
+        "`dock` moves up from the index `aside` left, with the node the client \
+         holds for it: {diff}"
     );
 }
 

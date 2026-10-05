@@ -245,7 +245,7 @@ async fn the_web_shell_carries_no_inline_script() {
     );
     assert!(
         page.contains("<meta name=\"meclaw-live\" content=\"/screen/live\">")
-            && page.contains("src=\"/screen/@client/boot.js\""),
+            && page.contains("src=\"/screen/@client/boot.js?v="),
         "the socket URL is data the boot file reads: {page}"
     );
 

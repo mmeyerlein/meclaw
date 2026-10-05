@@ -290,7 +290,7 @@ mod web_session {
     const MEMBER: &str = "/os/orgs/acme/members/alex";
     const ROUND: &str = r#"["agent:scribe","member:alex"]"#;
     const SPEAKER: &str = "member:alex";
-    const WEB: &str = "web@2.2.0";
+    const WEB: &str = "web@2.3.0";
     /// The member's identity as the proxy spells it.
     const WEB_USER: &str = "alex@example.org";
 

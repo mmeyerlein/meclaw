@@ -518,6 +518,10 @@ BROWSER_LOCKS = frozenset({
     "crates/meclaw-cells/tests/gh867_a_display_runs_under_a_strict_csp_browser.rs",
     # GH #961: motion by target state, one colony, three pages per engine.
     "crates/meclaw-cells/tests/gh961_motion_by_target_state_browser.rs",
+    # GH #1002: a large page connects on Slow 3G and Fast 3G + CPU 4x.
+    "crates/meclaw-cells/tests/gh1002_slow_3g_connects_browser.rs",
+    # GH #1003: a turn of the phone sets `data-orientation` and sends nothing.
+    "crates/meclaw-cells/tests/gh1003_the_shell_marks_orientation_browser.rs",
 })
 
 # The CSP lock's command. `#[ignore]`d in the tree, like the colony half, so the
@@ -533,6 +537,20 @@ CSP_LOCK_CMD = ["scripts/test-tier.sh", "filter",
 MOTION_LOCK_CMD = ["scripts/test-tier.sh", "filter",
                    "binary(/gh961_motion_by_target_state/)",
                    "--run-ignored", "all"]
+
+# The slow-link lock's command (GH #1002): one `web` cell with a 4 400-object page,
+# loaded cold in Chromium on Slow 3G and on Fast 3G with the CPU slowed 4x -- two
+# page loads, about 45 s of browser time, so every mode that plans the station runs it.
+SLOW3G_LOCK_CMD = ["scripts/test-tier.sh", "filter",
+                   "binary(/gh1002_slow_3g_connects/)",
+                   "--run-ignored", "all"]
+
+# The orientation lock's command (GH #1003): one small `web` cell, one page in
+# Chromium as a phone, turned once -- a few seconds, so every mode that plans the
+# station runs it.
+ORIENTATION_LOCK_CMD = ["scripts/test-tier.sh", "filter",
+                        "binary(/gh1003_the_shell_marks_orientation/)",
+                        "--run-ignored", "all"]
 
 # The empty-diff floor. `plan()` turns it into `scripts/test-tier.sh t0`
 # rather than a `filter` run: the tier passes `--lib --bins` and builds only the
@@ -1828,6 +1846,8 @@ def plan(paths, mode, repo=None):
                          "binary(/710_the_colony_holds/)", "--run-ignored", "all"])
         cmds.append(list(CSP_LOCK_CMD))
         cmds.append(list(MOTION_LOCK_CMD))
+        cmds.append(list(SLOW3G_LOCK_CMD))
+        cmds.append(list(ORIENTATION_LOCK_CMD))
         out["browser:display"] = station(
             "browser:display", "sheet+colony" if colony else "sheet", True, cmds)
 

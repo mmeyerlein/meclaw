@@ -12,6 +12,24 @@
 //! emits. The one thing an answer waits for is the bounded send to that half,
 //! so backpressure crosses as slowness and, at worst, as the far side's
 //! `peer_timeout`.
+//!
+//! GH #1012: an accepted frame is committed to the inbox (`book::peer_inbox`)
+//! BEFORE the answer, so a `200` is a promise the next life keeps: a crash
+//! between the answer and the handler's work is replayed at the start. The
+//! delivery id and the sender's clock come from the request headers
+//! `X-Meclaw-Frame-Id` / `X-Meclaw-Sent-Ms` (`wire::read_delivery`), never
+//! from the frame, which stays the 0.47.1 frame (review C1). The inbox key is
+//! the sender and the id (review M5): an id already booked FOR THAT SENDER is
+//! answered `crossed` with `duplicate: true` and raises nothing; a request
+//! without an id is booked under a local key and never deduplicated. A mount
+//! whose inbox cannot be written answers `503`, which the sender retries.
+//!
+//! Commit and hand-on are one step of the inbox writer (`io::run_inbox`), not
+//! of the request (review C2): hyper drops a request future whose client went
+//! away, and a hand-on inside it could be dropped after the commit, leaving a
+//! committed row nobody raised until the next start while every retry read
+//! `duplicate`. Once the write is queued, the writer commits it and hands it
+//! on whether or not anyone still waits for the answer, in commit order.
 
 use axum::Router;
 use axum::body::Bytes;
@@ -48,6 +66,61 @@ pub struct MeclawIo {
     pub(crate) surfaces: Arc<SurfaceRegistry>,
     /// Set by `run_io`, because the channel exists only there.
     pub(crate) events_tx: Option<mpsc::Sender<PeerEvent>>,
+    /// GH #1012: the cell's own `cell.db`, home of the inbox. `None` keeps the
+    /// pre-#1012 mount (answer once the event is queued); the factory always
+    /// sets it.
+    pub(crate) cell_db: Option<std::path::PathBuf>,
+    /// GH #1012: the A-timeout around an inbox write (`query_timeout_ms`).
+    pub(crate) query_timeout_ms: u64,
+    /// GH #1012: the inbox writer, set by `run_io` once the book is open.
+    pub(crate) inbox: Option<mpsc::Sender<InboxWrite>>,
+}
+
+/// GH #1012: one inbox write, answered once the row is committed AND, for a
+/// new row, the arrival handed on: `Ok(true)` for a new row, `Ok(false)` for
+/// an id already booked (nothing handed on), `Err` when the row could not be
+/// written.
+#[derive(Debug)]
+pub struct InboxWrite {
+    pub(crate) key: String,
+    pub(crate) frame: String,
+    pub(crate) at_ms: i64,
+    /// The arrival the writer hands on after the commit (review C2).
+    pub(crate) event: PeerEvent,
+    pub(crate) done: tokio::sync::oneshot::Sender<Result<bool, String>>,
+}
+
+/// GH #1012: what one arrival carries besides its body: the sender's id and
+/// clock, this side's clock, and the inbox key the handler books it under.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Delivery {
+    /// The frame's `id`, when the sender set one.
+    pub frame_id: Option<Uuid>,
+    /// The frame's `sent_ms`, when the sender set one.
+    pub sent_ms: Option<u64>,
+    /// This side's clock (Unix ms) when the frame was judged.
+    pub arrived_ms: u64,
+    /// The inbox row of this arrival (the frame id, or a local key for a frame
+    /// without one); `None` on a mount without an inbox.
+    pub inbox_key: Option<String>,
+}
+
+/// GH #1012: the handler half asks the I/O half to deliver a `Retry` for
+/// `target` at `at_ms` (Unix ms). The earliest wake per target wins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wake {
+    /// The `hop.peer_url` whose outbox queue is due.
+    pub target: String,
+    /// When, in Unix ms.
+    pub at_ms: i64,
+}
+
+/// Unix ms of this side's clock.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 impl MeclawIo {
@@ -63,7 +136,16 @@ impl MeclawIo {
             lanes: Arc::new(p.lanes.clone()),
             surfaces,
             events_tx: None,
+            cell_db: None,
+            query_timeout_ms: p.query_timeout_ms,
+            inbox: None,
         }
+    }
+
+    /// GH #1012: keep the inbox in the cell's own `cell.db` at `path`.
+    pub fn with_cell_db(mut self, path: std::path::PathBuf) -> Self {
+        self.cell_db = Some(path);
+        self
     }
 
     /// The state one handed connection is served with: this mount's state,
@@ -101,6 +183,8 @@ pub enum PeerEvent {
         claims: Map<String, Value>,
         /// The projected body, every turn stamped `origin: "peer"`.
         body: Value,
+        /// GH #1012: id, clocks and inbox key of this arrival.
+        delivery: Delivery,
     },
     /// A frame was refused; the far side read the same verdict on the wire.
     Refused {
@@ -117,6 +201,11 @@ pub enum PeerEvent {
     },
     /// The name could not be taken; the cell stays up and serves nobody.
     MountFailed(String),
+    /// GH #1012: the outbox queue for this target is due another attempt.
+    Retry {
+        /// The `hop.peer_url` whose queue is due.
+        target: String,
+    },
 }
 
 /// Nothing travels on the reconfig channel: `params` of a `meclaw` proxy are
@@ -142,7 +231,69 @@ async fn post_frame(State(io): State<MeclawIo>, headers: HeaderMap, body: Bytes)
         // Only reachable if a router were built outside `run_io`.
         return (StatusCode::SERVICE_UNAVAILABLE, "no handler\n").into_response();
     };
-    let (receipt, event) = judge(&io, io.peer_trusted, &headers, &body);
+    let (mut receipt, mut event) = judge(&io, io.peer_trusted, &headers, &body);
+    // GH #1012: an arrival is committed before it is answered.
+    let booking = match (io.inbox.as_ref(), &mut event) {
+        (Some(inbox), PeerEvent::Arrived { peer, delivery, .. }) => {
+            // Review M5: the key is the sender AND its id, so two senders
+            // that happen to pick one id never swallow each other's frame.
+            // A request without an id gets a local key: booked and replayed
+            // like any other, but never equal to another's, so never a
+            // duplicate.
+            let key = match delivery.frame_id {
+                Some(id) => format!("{peer}:{id}"),
+                None => Uuid::now_v7().to_string(),
+            };
+            delivery.inbox_key = Some(key.clone());
+            let at_ms = i64::try_from(delivery.arrived_ms).unwrap_or(i64::MAX);
+            Some((inbox.clone(), key, at_ms))
+        }
+        _ => None,
+    };
+    if let Some((inbox, key, at_ms)) = booking {
+        let frame = arrival_to_json(&event);
+        let (done, answer) = tokio::sync::oneshot::channel();
+        // Review C2: from here on the writer owns the arrival. If this
+        // request is dropped (the sender gave up), the queued write is still
+        // committed and handed on.
+        let write = InboxWrite {
+            key,
+            frame,
+            at_ms,
+            event,
+            done,
+        };
+        let booked = match inbox.send(write).await {
+            Ok(()) => answer
+                .await
+                .unwrap_or_else(|_| Err("the inbox writer stopped".into())),
+            Err(_) => Err("the inbox writer stopped".into()),
+        };
+        match booked {
+            // Committed and handed on by the writer; a closed channel does
+            // not withhold the `200`, the next life replays the row.
+            Ok(true) => {}
+            Ok(false) => {
+                if let Some(obj) = receipt.as_object_mut() {
+                    obj.insert("duplicate".to_string(), Value::Bool(true));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "proxy/meclaw: the inbox write failed");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the inbox could not be written\n",
+                )
+                    .into_response();
+            }
+        }
+        return (
+            StatusCode::OK,
+            [(CONTENT_TYPE, "application/json")],
+            receipt.to_string(),
+        )
+            .into_response();
+    }
     // Both ways: the far side reads the receipt, this side keeps its own. An
     // answer the handler could not take would be a receipt nobody here holds,
     // so it is not given: the far side reads a non-200, i.e. `peer_unreachable`.
@@ -157,8 +308,9 @@ async fn post_frame(State(io): State<MeclawIo>, headers: HeaderMap, body: Bytes)
         .into_response()
 }
 
-/// The five checks, in this order: sender, parse, lane, budget, body (its
-/// fields, then whether what is left can be delivered at all).
+/// The five checks, in this order: sender, parse (the frame, then the
+/// delivery headers), lane, budget, body (its fields, then whether what is
+/// left can be delivered at all).
 ///
 /// `peer_trusted` is the connection's verdict, passed in rather than looked
 /// up, so the whole judgement stays a pure function of its arguments. The
@@ -213,6 +365,25 @@ fn judge(
         }
     };
     let trace = Some(frame.trace_id);
+    // (1a) GH #1012, review C1: the delivery id and the sender's clock, from
+    // the headers. Missing is the old way (no dedup); unreadable is a frame
+    // that does not parse.
+    let delivery_header = |name: &'static str| match headers.get(name) {
+        None => Ok(None),
+        Some(v) => v.to_str().map(Some).map_err(|_| {
+            Refusal::new(
+                wire::INVALID_FRAME,
+                format!("header {name}: not visible ASCII"),
+            )
+        }),
+    };
+    let read = delivery_header(wire::FRAME_ID_HEADER).and_then(|id| {
+        delivery_header(wire::SENT_MS_HEADER).and_then(|ms| wire::read_delivery(id, ms))
+    });
+    let (frame_id, sent_ms) = match read {
+        Ok(d) => d,
+        Err(r) => return refuse(io, frame.lane, Some(peer), trace, r, None),
+    };
     // (2) Lane: this side's own declaration, never the other side's.
     let Some(lane) = lanes::find_lane(&io.lanes, Direction::Accepts, &frame.lane) else {
         let r = Refusal::new(
@@ -275,6 +446,12 @@ fn judge(
     }
     let context = lanes::project_context(lane, &frame.context);
     let receipt = wire::crossed_receipt(&lane.route, &io.boundary, &lane.fields);
+    let delivery = Delivery {
+        frame_id,
+        sent_ms,
+        arrived_ms: now_ms(),
+        inbox_key: None,
+    };
     let event = PeerEvent::Arrived {
         lane: lane.route.clone(),
         peer,
@@ -284,8 +461,66 @@ fn judge(
         context,
         claims,
         body: projected,
+        delivery,
     };
     (receipt, event)
+}
+
+/// GH #1012: an arrival as the inbox keeps it. The verdict has fallen, so the
+/// row holds the judged arrival, not the raw frame: a replay re-emits exactly
+/// what this life would have emitted.
+pub(crate) fn arrival_to_json(event: &PeerEvent) -> String {
+    let PeerEvent::Arrived {
+        lane,
+        peer,
+        trace_id,
+        ttl,
+        fields,
+        context,
+        claims,
+        body,
+        delivery,
+    } = event
+    else {
+        return String::new();
+    };
+    serde_json::json!({
+        "lane": lane, "peer": peer, "trace_id": trace_id.to_string(), "ttl": ttl,
+        "fields": fields, "context": context, "claims": claims, "body": body,
+        "frame_id": delivery.frame_id.map(|u| u.to_string()),
+        "sent_ms": delivery.sent_ms, "arrived_ms": delivery.arrived_ms,
+    })
+    .to_string()
+}
+
+/// GH #1012: the inverse of [`arrival_to_json`], for the replay at the start;
+/// `None` for a row this build cannot read (it stays `pending` and is named in
+/// the log, never dropped silently).
+pub(crate) fn arrival_from_json(key: &str, row: &str) -> Option<PeerEvent> {
+    let v: Value = serde_json::from_str(row).ok()?;
+    let str_of = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let obj_of = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    Some(PeerEvent::Arrived {
+        lane: str_of("lane")?,
+        peer: str_of("peer")?,
+        trace_id: Uuid::parse_str(&str_of("trace_id")?).ok()?,
+        ttl: u32::try_from(v.get("ttl")?.as_u64()?).ok()?,
+        fields: serde_json::from_value(v.get("fields")?.clone()).ok()?,
+        context: obj_of("context"),
+        claims: obj_of("claims"),
+        body: v.get("body")?.clone(),
+        delivery: Delivery {
+            frame_id: str_of("frame_id").and_then(|s| Uuid::parse_str(&s).ok()),
+            sent_ms: v.get("sent_ms").and_then(Value::as_u64),
+            arrived_ms: v.get("arrived_ms").and_then(Value::as_u64).unwrap_or(0),
+            inbox_key: Some(key.to_string()),
+        },
+    })
 }
 
 /// The UBF central slots; a body must carry at least one of them.

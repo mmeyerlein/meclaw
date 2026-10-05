@@ -25,7 +25,10 @@ use serde_json::Value as JsonValue;
 
 use super::lanes::Refusal;
 use super::params::{OAuthAuth, PeerAuth};
-use super::wire::{AUTH_UNAVAILABLE, INVALID_FRAME, PEER_REFUSED, PEER_TIMEOUT, PEER_UNREACHABLE};
+use super::wire::{
+    AUTH_UNAVAILABLE, FRAME_ID_HEADER, INVALID_FRAME, PEER_REFUSED, PEER_TIMEOUT, PEER_UNREACHABLE,
+    SENT_MS_HEADER,
+};
 
 /// At most this much of a token's life is given up to clock skew and the time
 /// a request spends on the wire; a short-lived token gives up a tenth.
@@ -114,15 +117,45 @@ impl PeerClient {
         frame: &JsonValue,
         timeout_ms: u64,
     ) -> Result<JsonValue, Refusal> {
+        self.post_with(url, frame, None, timeout_ms).await
+    }
+
+    /// GH #1012: [`Self::post_frame`] with the delivery id and the sender's
+    /// clock as the headers [`FRAME_ID_HEADER`] and [`SENT_MS_HEADER`] on
+    /// every POST (also the one after a fresh token). Headers, not frame
+    /// keys: a receiver before #1012 ignores them and reads the frame it
+    /// always read (review C1, R-HV-3).
+    pub async fn post_delivery(
+        &self,
+        url: &str,
+        frame: &JsonValue,
+        id: &str,
+        sent_ms: u64,
+        timeout_ms: u64,
+    ) -> Result<JsonValue, Refusal> {
+        self.post_with(url, frame, Some((id, sent_ms)), timeout_ms)
+            .await
+    }
+
+    async fn post_with(
+        &self,
+        url: &str,
+        frame: &JsonValue,
+        delivery: Option<(&str, u64)>,
+        timeout_ms: u64,
+    ) -> Result<JsonValue, Refusal> {
         let body = frame.to_string();
         match self.credential.as_deref() {
             None => self
-                .post_once(url, &body, None, timeout_ms)
+                .post_once(url, &body, None, delivery, timeout_ms)
                 .await?
                 .json(url),
             Some(Credential::Header { name, value }) => {
                 let cred = Some((name.clone(), value.clone()));
-                match self.post_once(url, &body, cred, timeout_ms).await? {
+                match self
+                    .post_once(url, &body, cred, delivery, timeout_ms)
+                    .await?
+                {
                     Posted::Unauthorized(detail) => Err(Refusal::new(
                         PEER_REFUSED,
                         format!("{url} answered 401 to the credential in {name}: {detail}"),
@@ -133,13 +166,19 @@ impl PeerClient {
             Some(Credential::OAuth { grant, cache }) => {
                 let bearer = self.token(grant, cache, false, timeout_ms).await?;
                 let cred = Some((AUTHORIZATION, bearer));
-                match self.post_once(url, &body, cred, timeout_ms).await? {
+                match self
+                    .post_once(url, &body, cred, delivery, timeout_ms)
+                    .await?
+                {
                     Posted::Unauthorized(_) => {
                         // The far side may have revoked or rotated what we
                         // hold: one fresh token, one retry, never a loop.
                         let bearer = self.token(grant, cache, true, timeout_ms).await?;
                         let cred = Some((AUTHORIZATION, bearer));
-                        match self.post_once(url, &body, cred, timeout_ms).await? {
+                        match self
+                            .post_once(url, &body, cred, delivery, timeout_ms)
+                            .await?
+                        {
                             Posted::Unauthorized(detail) => Err(Refusal::new(
                                 PEER_REFUSED,
                                 format!(
@@ -164,6 +203,7 @@ impl PeerClient {
         url: &str,
         body: &str,
         credential: Option<(HeaderName, HeaderValue)>,
+        delivery: Option<(&str, u64)>,
         timeout_ms: u64,
     ) -> Result<Posted, Refusal> {
         let credential_sent = credential.is_some();
@@ -177,8 +217,14 @@ impl PeerClient {
             if let Some((name, value)) = credential {
                 req = req.header(name, value);
             }
+            if let Some((id, sent_ms)) = delivery {
+                req = req
+                    .header(FRAME_ID_HEADER, id)
+                    .header(SENT_MS_HEADER, sent_ms.to_string());
+            }
+            // GH #1012: no connection is worth another attempt.
             let resp = req.send().await.map_err(|e| {
-                Refusal::new(PEER_UNREACHABLE, format!("no answer from {url}: {e}"))
+                Refusal::new(PEER_UNREACHABLE, format!("no answer from {url}: {e}")).transient()
             })?;
             let status = resp.status();
             // A 401 is read for the caller to judge only where a credential
@@ -188,16 +234,26 @@ impl PeerClient {
             // (review M2 of the #828 strand).
             let judged = status == StatusCode::UNAUTHORIZED && credential_sent;
             if status != StatusCode::OK && !judged {
-                return Err(Refusal::new(
+                // GH #1012: the code stays `peer_unreachable` either way, but
+                // only a 5xx (the far mount's `503` while its cell is going
+                // away or its inbox cannot be written, a gateway's `502`) is
+                // retried. A 3xx or 4xx is the same answer next time.
+                let r = Refusal::new(
                     PEER_UNREACHABLE,
                     format!("{url} answered {status}, not 200"),
-                ));
+                );
+                return Err(if status.is_server_error() {
+                    r.transient()
+                } else {
+                    r
+                });
             }
             let bytes = resp.bytes().await.map_err(|e| {
                 Refusal::new(
                     PEER_UNREACHABLE,
                     format!("the answer from {url} broke off: {e}"),
                 )
+                .transient()
             })?;
             if judged {
                 return Ok(Posted::Unauthorized(excerpt(&bytes)));
@@ -209,7 +265,8 @@ impl PeerClient {
             Err(_) => Err(Refusal::new(
                 PEER_TIMEOUT,
                 format!("no receipt from {url} within {timeout_ms} ms"),
-            )),
+            )
+            .transient()),
         }
     }
 

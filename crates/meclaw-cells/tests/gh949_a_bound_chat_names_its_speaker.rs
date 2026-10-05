@@ -64,7 +64,7 @@ const SPEAKER: &str = "member:alex";
 const SELF_BOUND: [&str; 4] = [
     "chat-channel@1.0.1",
     "voice@2.5.0",
-    "web@2.2.0",
+    "web@2.3.0",
     "terminal@1.0.2",
 ];
 const TELEGRAM: &str = "telegram-connector@2.1.0";

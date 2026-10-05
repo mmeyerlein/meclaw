@@ -1,5 +1,11 @@
 //! The two frames that cross between colonies, and the eleven codes a crossing
 //! can fail with.
+//!
+//! GH #1012: the delivery id (a UUIDv7 the sender sets once and keeps across
+//! retries) and the sender's clock travel as the request headers
+//! [`FRAME_ID_HEADER`] and [`SENT_MS_HEADER`], both optional; the `message`
+//! frame itself is unchanged since 0.47.1. A receipt may carry
+//! `duplicate: true`, and only to a request that carried an id.
 
 use meclaw_core::{Message, Uuid};
 use serde::Deserialize;
@@ -42,6 +48,59 @@ pub const AUTH_UNAVAILABLE: &str = "auth_unavailable";
 /// (fail-closed). Decided before any token request and any connect: a policy
 /// verdict, not a carrier failure, so never `peer_unreachable`.
 pub const EGRESS_DENIED: &str = "egress_denied";
+
+/// GH #1012: the outbox gave up after `peer_retry_deadline_s`. The code of
+/// the `expired` receipt and of the dead letter the message becomes.
+pub const PEER_EXPIRED: &str = "peer_expired";
+
+/// GH #1012: a stored carrier code back to its constant. Only the two
+/// retried codes are ever stored; anything else reads as `peer_unreachable`.
+pub fn code_of(code: &str) -> &'static str {
+    match code {
+        PEER_TIMEOUT => PEER_TIMEOUT,
+        _ => PEER_UNREACHABLE,
+    }
+}
+
+/// GH #1012: the request header carrying the sender's delivery id (a
+/// UUIDv7, stable across its retries). A header, never a frame key: the
+/// frame body stays byte-identical to 0.47.1, whose parser refuses unknown
+/// keys, and a receiver before #1012 ignores headers it does not read
+/// (review C1, R-HV-3). Hyphens, because a reverse proxy may drop
+/// underscore names.
+pub const FRAME_ID_HEADER: &str = "X-Meclaw-Frame-Id";
+
+/// GH #1012: the request header carrying the sender's clock (Unix ms) when it
+/// booked the message; the same on every retry.
+pub const SENT_MS_HEADER: &str = "X-Meclaw-Sent-Ms";
+
+/// GH #1012: reads the two delivery headers. A missing header is `None` (a
+/// sender before #1012: accepted, never deduplicated); a present one that
+/// does not parse is `invalid_frame`.
+pub fn read_delivery(
+    frame_id: Option<&str>,
+    sent_ms: Option<&str>,
+) -> Result<(Option<Uuid>, Option<u64>), Refusal> {
+    let id = match frame_id {
+        None => None,
+        Some(raw) => Some(Uuid::parse_str(raw).map_err(|e| {
+            Refusal::new(
+                INVALID_FRAME,
+                format!("header {FRAME_ID_HEADER}: must be a UUID, got {raw:?} ({e})"),
+            )
+        })?),
+    };
+    let sent = match sent_ms {
+        None => None,
+        Some(raw) => Some(raw.parse::<u64>().map_err(|e| {
+            Refusal::new(
+                INVALID_FRAME,
+                format!("header {SENT_MS_HEADER}: must be Unix ms, got {raw:?} ({e})"),
+            )
+        })?),
+    };
+    Ok((id, sent))
+}
 
 /// The protocol integer every frame carries as `v`. This build speaks exactly one.
 pub const PROTOCOL_VERSION: u64 = 1;
@@ -107,6 +166,11 @@ struct ReceiptFrame {
     detail: String,
     #[serde(default)]
     because: Option<String>,
+    // GH #1012: a repeated frame id is answered `crossed` with this flag; the
+    // sender books it as the success it is.
+    #[allow(dead_code)]
+    #[serde(default)]
+    duplicate: bool,
 }
 
 /// The strict `v` test shared by both parsers: the protocol integer first and
@@ -293,5 +357,77 @@ fn quoted_or(value: &str, missing: &str) -> String {
         missing.to_string()
     } else {
         format!("`{value}`")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(extra: Value) -> Value {
+        let mut f = json!({"v": 1, "type": "message", "lane": "topic",
+            "trace_id": "0192f1b0-0000-7000-8000-000000000001", "ttl": 5, "context": {},
+            "body": {"messages": []}});
+        if let (Some(f), Some(extra)) = (f.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra {
+                f.insert(k.clone(), v.clone());
+            }
+        }
+        f
+    }
+
+    /// Review C1 (R-HV-3): the frame is the 0.47.1 frame. `id` and
+    /// `sent_ms` as frame keys are unknown fields, refused like any other,
+    /// so the parser of this build and of a receiver before #1012 agree.
+    #[test]
+    fn delivery_keys_in_the_frame_are_an_invalid_frame() {
+        let id = "0192f1b0-0000-7000-8000-0000000000aa";
+        assert!(parse_message_frame(&raw(json!({}))).is_ok());
+        for extra in [json!({"id": id}), json!({"sent_ms": 42})] {
+            let r = parse_message_frame(&raw(extra.clone())).expect_err("refused");
+            assert_eq!(r.error_code, INVALID_FRAME, "{extra}");
+        }
+    }
+
+    /// What one header case expects: the id and clock, or the refusal code.
+    type Want = Result<(Option<&'static str>, Option<u64>), &'static str>;
+    /// One header case: the two header values as sent.
+    type Sent = (Option<&'static str>, Option<&'static str>);
+
+    /// GH #1012 part a, review C1: both delivery headers are optional; a
+    /// present id must be a UUID, a present clock an unsigned integer.
+    #[test]
+    fn the_delivery_headers_read_back_or_refuse() {
+        let id = "0192f1b0-0000-7000-8000-0000000000aa";
+        let cases: [(Sent, Want); 6] = [
+            ((None, None), Ok((None, None))),
+            ((Some(id), None), Ok((Some(id), None))),
+            (
+                (Some(id), Some("1700000000123")),
+                Ok((Some(id), Some(1_700_000_000_123))),
+            ),
+            ((Some("not-a-uuid"), None), Err(INVALID_FRAME)),
+            ((None, Some("soon")), Err(INVALID_FRAME)),
+            ((None, Some("-1")), Err(INVALID_FRAME)),
+        ];
+        for ((hid, hms), want) in cases {
+            match (read_delivery(hid, hms), want) {
+                (Ok((got_id, got_ms)), Ok((id, ms))) => {
+                    assert_eq!(got_id.map(|u| u.to_string()).as_deref(), id, "{hid:?}");
+                    assert_eq!(got_ms, ms, "{hms:?}");
+                }
+                (Err(r), Err(code)) => assert_eq!(r.error_code, code, "{hid:?} {hms:?}"),
+                (got, want) => panic!("{hid:?} {hms:?}: got {got:?}, want {want:?}"),
+            }
+        }
+    }
+
+    /// GH #1012 part b: a duplicate answer still reads as a crossing, so a
+    /// sender that repeats after a lost answer books one success.
+    #[test]
+    fn a_duplicate_receipt_reads_as_crossed() {
+        let mut r = crossed_receipt("topic", "south", &[]);
+        r["duplicate"] = json!(true);
+        assert!(read_receipt(&r).is_ok(), "{r}");
     }
 }

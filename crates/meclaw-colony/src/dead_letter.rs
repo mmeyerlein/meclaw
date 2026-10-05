@@ -137,6 +137,20 @@ pub enum DeadLetterReason {
         /// The reason-specific fact, see above.
         detail: Option<String>,
     },
+    /// GH #1012: a `meclaw` peer proxy kept trying to deliver this message
+    /// and its `params.peer_retry_deadline_s` ran out (OR-HV-5, default one
+    /// day). The message was accepted into the cell's outbox and never
+    /// crossed; the cell dead-letters it here and emits an `expired` receipt
+    /// next to it, so a lost crossing is never silent. Canonical string
+    /// `peer_expired`.
+    PeerExpired,
+    /// GH #1012, OR-HV-51: a `meclaw` peer proxy booked this message for
+    /// delivery and the far side gave a final answer that is not a crossing
+    /// (a 3xx or 4xx, its own refusal, an answer that is no receipt), or the
+    /// credential could not be had. Nothing is retried; the cell dead-letters
+    /// the message here next to its `refused` receipt, so a non-delivery is
+    /// never only a receipt. Canonical string `peer_refused`.
+    PeerRefused,
 }
 
 impl DeadLetterReason {
@@ -162,6 +176,8 @@ impl DeadLetterReason {
             Self::ShutdownDraining => "shutdown_draining",
             Self::HiveBoundary { .. } => "hive_boundary",
             Self::MailboxFull { .. } => "mailbox_full",
+            Self::PeerExpired => "peer_expired",
+            Self::PeerRefused => "peer_refused",
         }
     }
 
@@ -189,6 +205,8 @@ impl DeadLetterReason {
             "shutdown_draining" => Self::ShutdownDraining,
             "hive_boundary" => Self::HiveBoundary { hive: None },
             "mailbox_full" => Self::MailboxFull { detail: None },
+            "peer_expired" => Self::PeerExpired,
+            "peer_refused" => Self::PeerRefused,
             _ => return None,
         })
     }
@@ -276,6 +294,10 @@ mod tests_3a {
             HiveBoundary { hive: None },
             // GH #850: same shape — the detail comes back from the row.
             MailboxFull { detail: None },
+            // GH #1012.
+            PeerExpired,
+            // GH #1012, OR-HV-51.
+            PeerRefused,
         ];
         // The compile-time half of "closed": this match names every variant and
         // has no catch-all, so a new one is a compiler error in this function.
@@ -298,13 +320,15 @@ mod tests_3a {
                 DeadLetterReason::ShutdownDraining => "shutdown_draining",
                 DeadLetterReason::HiveBoundary { .. } => "hive_boundary",
                 DeadLetterReason::MailboxFull { .. } => "mailbox_full",
+                DeadLetterReason::PeerExpired => "peer_expired",
+                DeadLetterReason::PeerRefused => "peer_refused",
             }
         }
 
         assert_eq!(
             all.len(),
-            17,
-            "the canonical set is 17 codes; a variant was added or removed \
+            19,
+            "the canonical set is 19 codes (GH #1012 added `peer_expired` and `peer_refused`); a variant was added or removed \
              without moving this count, and the spec list has to move with it"
         );
 

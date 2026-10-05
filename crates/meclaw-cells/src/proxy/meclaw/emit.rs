@@ -1,4 +1,5 @@
-//! The three emissions of a `meclaw` proxy.
+//! The emissions of a `meclaw` proxy: the arrival and the receipts `crossed`,
+//! `refused` and, since GH #1012, `deferred` and `expired`.
 //!
 //! Everything structural goes into the `header` slot, which the substrate lifts
 //! into `hop` (A8: the key is `peer_event`). A receipt does not choose its own
@@ -8,6 +9,8 @@
 use serde_json::{Map, Value, json};
 
 use super::lanes::Refusal;
+use super::mount::Delivery;
+use super::wire::PEER_EXPIRED;
 
 /// The `hop.route` every receipt carries (ADR-0025: a receipt lifts no turn).
 pub const RECEIPT_ROUTE: &str = "receipt";
@@ -43,6 +46,102 @@ pub fn refused_emission(lane: &str, boundary: &str, r: &Refusal) -> Value {
         ],
     })
 }
+
+/// GH #1012: a message could not cross yet and waits in the outbox; the code
+/// says why (its own failed attempt, or the one holding the queue in front of
+/// it), `id` names the frame. Exactly one per message.
+pub fn deferred_emission(lane: &str, boundary: &str, id: &str, r: &Refusal) -> Value {
+    json!({
+        "header": {
+            "route": RECEIPT_ROUTE,
+            "peer_event": "deferred",
+            "lane": lane,
+            "boundary": boundary,
+            "error_code": r.error_code,
+            "id": id,
+        },
+        "messages": [
+            { "origin": "assistant", "type": "text", "text": r.detail }
+        ],
+    })
+}
+
+/// GH #1012: the outbox gave up on a message after `deadline_s`; the same
+/// message is a `peer_expired` dead letter. `last_error` is the code of the
+/// last failed attempt.
+pub fn expired_emission(
+    lane: &str,
+    boundary: &str,
+    id: &str,
+    tries: i64,
+    last_error: Option<&str>,
+    deadline_s: u64,
+) -> Value {
+    let last = last_error.unwrap_or("none");
+    let mut out = json!({
+        "header": {
+            "route": RECEIPT_ROUTE,
+            "peer_event": "expired",
+            "lane": lane,
+            "boundary": boundary,
+            "error_code": PEER_EXPIRED,
+            "id": id,
+            "tries": tries,
+        },
+        "messages": [
+            { "origin": "assistant", "type": "text", "text": format!(
+                "the message did not cross within peer_retry_deadline_s ({deadline_s} s) after \
+                 {tries} attempt(s), the last one failing with {last}; it is a peer_expired dead \
+                 letter") }
+        ],
+    });
+    if let (Some(code), Some(h)) = (
+        last_error,
+        out.get_mut("header").and_then(Value::as_object_mut),
+    ) {
+        h.insert("last_error_code".to_string(), json!(code));
+    }
+    out
+}
+
+/// GH #1012: names the frame on a sender's receipt (`id`) and, on a success
+/// after a `deferred`, how long the message waited (`deferred_ms`).
+pub fn with_delivery(mut receipt: Value, id: &str, deferred_ms: Option<u64>) -> Value {
+    if let Some(h) = receipt.get_mut("header").and_then(Value::as_object_mut) {
+        h.insert("id".to_string(), Value::String(id.to_string()));
+        if let Some(ms) = deferred_ms {
+            h.insert("deferred_ms".to_string(), json!(ms));
+        }
+    }
+    receipt
+}
+
+/// GH #1012 part f: the arrival carries the frame id and both clocks in its
+/// header (lifted into `hop`): `peer_frame_id` and `peer_sent_ms` when the
+/// frame carried them, `peer_arrived_ms` always. Removed first, so a context
+/// key of the same name can never pose as one of them.
+pub fn stamp_arrival(arrival: &mut Value, d: &Delivery) {
+    let Some(h) = arrival.get_mut("header").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for k in [PEER_FRAME_ID, PEER_SENT_MS, PEER_ARRIVED_MS] {
+        h.remove(k);
+    }
+    if let Some(id) = d.frame_id {
+        h.insert(PEER_FRAME_ID.to_string(), Value::String(id.to_string()));
+    }
+    if let Some(ms) = d.sent_ms {
+        h.insert(PEER_SENT_MS.to_string(), json!(ms));
+    }
+    h.insert(PEER_ARRIVED_MS.to_string(), json!(d.arrived_ms));
+}
+
+/// GH #1012: the hop key naming the sender's frame id on an arrival.
+pub const PEER_FRAME_ID: &str = "peer_frame_id";
+/// GH #1012: the hop key carrying the sender's clock on an arrival.
+pub const PEER_SENT_MS: &str = "peer_sent_ms";
+/// GH #1012: the hop key carrying the receiver's clock on an arrival.
+pub const PEER_ARRIVED_MS: &str = "peer_arrived_ms";
 
 /// A frame arrived: the lane as `route`, the sender as `peer`, this side's
 /// boundary, the projected `context` keys, the sender's claims about its turns

@@ -554,9 +554,9 @@ fn make_build_slack(
 
 /// Build the closure that constructs a fresh `meclaw`-variant `proxy` cell-task.
 ///
-/// Mirrors `make_build_slack` position for position, with two differences: no
-/// DDL and no overlay restore, because the `cell.db` of this variant stays
-/// empty and every key is immutable (A9); and the mount table travels in, as
+/// Mirrors `make_build_slack` position for position, with two differences: the
+/// DDL is the peer books' (GH #1012) and there is no overlay restore, because
+/// every key is immutable (A9); and the mount table travels in, as
 /// for `web`, because the I/O half registers the mount at the top of each life.
 /// Everything between the `cell.db` open and `build_long_running_task` is sync
 /// and await-free (phase-5 respawn-corridor tripwire).
@@ -593,12 +593,19 @@ fn make_build_meclaw(
     let surfaces_cap = surfaces;
 
     Ok(move || -> SpawnTuple {
-        // 1. Open cell.db (sync). Nothing is written to it: no schema, no cursor.
-        let (conn, _status) = open_or_create_cell_db_with_status(&cell_dir_cap.join("cell.db"))
-            .expect("open cell.db");
-        // 2. The cell and its mount half (sync).
-        let io = MeclawIo::new(&parsed, path_cap.as_str(), Arc::clone(&surfaces_cap));
-        let cell = MeclawCell::with_client(&parsed, client.clone()).with_io(io);
+        // 1. Open cell.db (sync). GH #1012: the peer books (inbox, outbox) are
+        //    its only tables beyond the base; no cursor, no overlay.
+        let db_path = cell_dir_cap.join("cell.db");
+        let (conn, _status) = open_or_create_cell_db_with_status(&db_path).expect("open cell.db");
+        crate::proxy::meclaw::book::setup_peer_book(&conn).expect("setup_peer_book");
+        // 2. The cell and its mount half (sync). The mount keeps its inbox in
+        //    the same file; a `peer_expired` or `peer_refused` dead letter goes to
+        //    the colony.
+        let io = MeclawIo::new(&parsed, path_cap.as_str(), Arc::clone(&surfaces_cap))
+            .with_cell_db(db_path);
+        let cell = MeclawCell::with_client(&parsed, client.clone())
+            .with_io(io)
+            .with_colony_inbox(colony_inbox_cap.clone());
         let db = DbConn::wrap(conn, Some(Duration::from_millis(parsed.query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(
@@ -620,8 +627,8 @@ fn make_build_meclaw(
 
 /// Build the closure that constructs a fresh `webhook`-variant `proxy` cell-task.
 ///
-/// `make_build_meclaw` position for position: no DDL, no overlay (every key is
-/// immutable), the mount table travels in, and everything between the
+/// `make_build_meclaw` position for position, except that this variant keeps
+/// no book (no DDL): no overlay (every key is immutable), the mount table travels in, and everything between the
 /// `cell.db` open and `build_long_running_task` is sync and await-free
 /// (phase-5 respawn-corridor tripwire).
 #[allow(clippy::too_many_arguments)]

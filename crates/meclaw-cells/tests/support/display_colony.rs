@@ -739,7 +739,7 @@ async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Col
         &repo("templates/display"),
         &root.join("main/alex/channels/display"),
     );
-    // The display refs `web@2.2.0`, and a ref resolves against the templates table, which
+    // The display refs `web@2.3.0`, and a ref resolves against the templates table, which
     // is empty until somebody fills it (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     let screen = root.join("main/alex/channels/display");

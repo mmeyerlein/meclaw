@@ -152,13 +152,13 @@ async fn gh1006_measure_backlog_numbers() {
             "T1 high {lag} ms after the crossing (cell clock, threshold {HIGH_MS} ms), plan ≤ 500"
         ),
     );
+    // The window of T3 begins at the first `high` (W6 review N1): before it
+    // the viewer is not behind yet, so the run's wall time overstates it.
     let reports = minute.highs + minute.clears;
+    let window = minute.secs - minute.first_high_secs.unwrap_or(minute.secs);
     check(
         (1..=61).contains(&reports),
-        format!(
-            "T3 {reports} reports in {:.1} s of backlog, plan ≤ 61",
-            minute.secs
-        ),
+        format!("T3 {reports} reports in {window:.1} s of backlog, plan ≤ 61"),
     );
     check(
         deaf.fast_max_bytes <= 2 * deaf.frame_bytes,

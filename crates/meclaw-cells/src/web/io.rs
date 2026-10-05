@@ -42,14 +42,14 @@ use axum::extract::{State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use meclaw_surface::{bundle, session};
+use meclaw_surface::session;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::mount_guard::MountGuard;
-use crate::web::assets::{Asset, AssetMap};
-use crate::web::backlog::{BacklogPolicy, Outbox};
+use crate::web::assets::{Asset, AssetMap, client_file, client_files, etag_of};
+use crate::web::backlog::{BacklogPolicy, Outbox, PageStamp};
 use crate::web::cell::{WebEvent, WebReconfig};
 use crate::web::render::PageMap;
 use crate::web::socket::{Viewer, ViewerMsg, run_connection};
@@ -78,6 +78,9 @@ pub struct ViewerRegistry {
     /// every connection when it builds its meter. Fixed for the life, like the
     /// mount: a params update takes effect on the next one.
     policy: BacklogPolicy,
+    /// Whether joins and leaves are reported as `viewer:screen` (GH #1003,
+    /// `viewer_events` names `"screen"`). Fixed for the life, like `policy`.
+    screen_events: bool,
 }
 
 /// One viewer, as a fan-out addresses it.
@@ -105,7 +108,20 @@ impl ViewerRegistry {
         Self {
             inner: Mutex::default(),
             policy,
+            screen_events: false,
         }
+    }
+
+    /// The same registry, reporting each viewer's join and leave as
+    /// `viewer:screen` when `on` (GH #1003).
+    pub fn with_screen_events(mut self, on: bool) -> Self {
+        self.screen_events = on;
+        self
+    }
+
+    /// Whether joins and leaves are reported as `viewer:screen`.
+    pub fn screen_events(&self) -> bool {
+        self.screen_events
     }
 
     /// What this life reports about each viewer's backlog.
@@ -134,20 +150,21 @@ impl ViewerRegistry {
                     "bytes": r.bytes,
                     "oldest_ms": r.oldest_ms,
                     "resyncs_total": r.resyncs_total,
-                    "screen": meclaw_core::JsonValue::Null,
+                    "screen": v.screen,
                 })
             })
             .collect()
     }
 
-    /// Register a viewer under its connection id.
-    pub async fn insert(&self, id: String, viewer: Viewer) {
-        self.inner.lock().await.insert(id, viewer);
+    /// Register a viewer under its connection id; the one it replaces (a
+    /// second join on the same socket), if any.
+    pub async fn insert(&self, id: String, viewer: Viewer) -> Option<Viewer> {
+        self.inner.lock().await.insert(id, viewer)
     }
 
-    /// Forget a viewer whose connection ended.
-    pub async fn remove(&self, id: &str) {
-        self.inner.lock().await.remove(id);
+    /// Forget a viewer whose connection ended; the viewer it was, if joined.
+    pub async fn remove(&self, id: &str) -> Option<Viewer> {
+        self.inner.lock().await.remove(id)
     }
 
     /// Every viewer currently looking at `route`, ordered by id.
@@ -310,7 +327,47 @@ pub struct WebIo {
     /// somebody reloads the tab, which is what a respawn must not cost a wall
     /// screen.
     pub shutdown: Option<watch::Receiver<()>>,
+    /// GH #1002: the most bytes one join frame (and one resync frame)
+    /// carries. The default from [`WebIo::new`]; the factory sets the
+    /// effective param after it, like [`Self::trusted`].
+    pub join_chunk: usize,
+    /// GH #1002: the join timeout the shell states to the client, or `None`
+    /// to state nothing (the client's own 10 s). Set like [`Self::join_chunk`].
+    pub join_timeout_ms: Option<u64>,
+    /// GH #1002: each route's page validator, computed once per publish by
+    /// the I/O half (see [`watch_page_tags`]) — not per request, and not in
+    /// the handler, whose write path is the one that has to stay cheap.
+    pub page_tags: watch::Receiver<Arc<PageTags>>,
+    /// The sending end of [`Self::page_tags`]; only [`run_io`] sends.
+    pub page_tags_tx: Arc<watch::Sender<Arc<PageTags>>>,
 }
+
+/// GH #1002: the validators of one published page map, by route.
+///
+/// `of` is the snapshot they were computed from. A request that reads a newer
+/// map than the tags (the watcher has not run yet) computes its page's tag
+/// itself rather than answer with a validator of the previous content.
+#[derive(Default)]
+pub struct PageTags {
+    /// The page map these tags belong to.
+    pub of: Arc<PageMap>,
+    /// Route → the content hash of what the shell embeds for it.
+    pub tags: HashMap<String, [u8; 16]>,
+}
+
+/// GH #1002: a page's `Cache-Control`. `no-cache`, because a page is a live
+/// render; `private`, because it carries the session token of one load.
+pub const PAGE_CACHE_CONTROL: &str = "private, no-cache";
+
+/// GH #1002: what the GET shell embeds of a LARGE page: its slots up to here.
+///
+/// A6 (warm second visit ≤ 300 KB) left the page about 50 KB next to a join of
+/// about 230 KB; 48 KB is the first screen of the measured city (its full
+/// page was 636 KB, the same tree the join carries). The join's pieces fill
+/// the rest. It is a budget, not a threshold: only a page above
+/// [`crate::web::render::CUT_ABOVE_BYTES`] is cut at all, so a display page
+/// (whose screen alone is larger than 48 KB) is served whole as before.
+pub const PAGE_INLINE_BYTES: usize = 48 * 1024;
 
 impl WebIo {
     /// Build the I/O state for a cell at `cell_path`.
@@ -329,6 +386,7 @@ impl WebIo {
         pushes: mpsc::Receiver<WebReconfig>,
         surfaces: Arc<meclaw_colony::SurfaceRegistry>,
     ) -> Self {
+        let (tags_tx, tags_rx) = watch::channel(Arc::new(PageTags::default()));
         Self {
             mount,
             identity_header,
@@ -349,6 +407,10 @@ impl WebIo {
             // Minted by `run_io`, which is the only side that knows when this
             // half goes away.
             shutdown: None,
+            join_chunk: crate::web::params::JOIN_CHUNK_DEFAULT,
+            join_timeout_ms: None,
+            page_tags: tags_rx,
+            page_tags_tx: Arc::new(tags_tx),
         }
     }
 
@@ -542,9 +604,56 @@ const VIEWPORT: &str = "width=device-width, initial-scale=1, viewport-fit=cover"
 /// constructor reads it, exactly as the inline block did. The `<style>` stays:
 /// `style-src` needs `'unsafe-inline'` for the display's own attributes
 /// anyway, and a style block cannot run anything.
+#[cfg(test)]
 pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> String {
+    shell_with(base, cell_path, title, body, None)
+}
+
+/// [`shell`], with the join timeout the page states to its client (GH #1002).
+#[cfg(test)]
+pub(crate) fn shell_with(
+    base: &str,
+    cell_path: &str,
+    title: &str,
+    body: &str,
+    join_timeout_ms: Option<u64>,
+) -> String {
+    shell_for(
+        base,
+        cell_path,
+        title,
+        body,
+        join_timeout_ms,
+        &session::mint(cell_path),
+    )
+}
+
+/// The shell under a token the caller minted, with the join timeout the page
+/// states to its client (GH #1002). The page handler mints the token itself
+/// because the page's validator covers it.
+///
+/// Every client file is named with its `?v=<stamp>`: the stamp is the file's
+/// validator, so the URL changes exactly when the file does and the answer can
+/// be `immutable` — a second visit does not even ask. `join_timeout_ms` is
+/// written as `<meta name="meclaw-join-timeout">` only when set, so a page
+/// without the param is the page it was.
+fn shell_for(
+    base: &str,
+    cell_path: &str,
+    title: &str,
+    body: &str,
+    join_timeout_ms: Option<u64>,
+    token: &str,
+) -> String {
     let container = session::container_id(cell_path);
-    let token = session::mint(cell_path);
+    let stamp = |f: &str| {
+        client_file(f)
+            .map(|c| c.stamp().to_string())
+            .unwrap_or_default()
+    };
+    let timeout = join_timeout_ms
+        .map(|ms| format!("<meta name=\"meclaw-join-timeout\" content=\"{ms}\">\n"))
+        .unwrap_or_default();
 
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
@@ -553,17 +662,22 @@ pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> Str
          <base href=\"{base}/\">\n\
          <meta name=\"csrf-token\" content=\"{token}\">\n\
          <meta name=\"meclaw-live\" content=\"{base}/live\">\n\
+         {timeout}\
          <title>{title}</title>\n\
          <style>{states}</style>\n\
          </head>\n<body>\n\
          <div id=\"{container}\" data-phx-main data-phx-session=\"{token}\" data-phx-static=\"\">\n\
          {body}\n\
          </div>\n\
-         <script src=\"{base}/@client/phoenix.min.js\"></script>\n\
-         <script src=\"{base}/@client/phoenix_live_view.min.js\"></script>\n\
-         <script src=\"{base}/@client/boot.js\"></script>\n\
+         <script src=\"{base}/@client/phoenix.min.js?v={v_phx}\"></script>\n\
+         <script src=\"{base}/@client/phoenix_live_view.min.js?v={v_lv}\"></script>\n\
+         <script src=\"{base}/@client/boot.js?v={v_boot}\"></script>\n\
          </body>\n</html>\n",
-        token = esc(&token),
+        token = esc(token),
+        // Hex digits only: nothing to escape.
+        v_phx = stamp("phoenix.min.js"),
+        v_lv = stamp("phoenix_live_view.min.js"),
+        v_boot = stamp("boot.js"),
         title = esc(title),
         container = esc(&container),
         // Sanitised before it got here — the grammar in `prefix_is_usable`
@@ -586,23 +700,128 @@ pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> Str
 /// A closed list rather than a lookup (`meclaw_surface::bundle`): the file name
 /// comes from a URL, and a list makes traversal impossible rather than guarded.
 ///
-/// `no-cache`, like a page: since GH #867 the boot and the capture worklet are
-/// files here instead of text inside the page, and a heuristically cached copy
-/// would keep running a client the binary has long replaced -- the reason
-/// [`serve_path`] gives for the page itself. The response has no validators,
-/// so in practice it means "fetch"; the files are small.
-async fn get_client(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
-    match bundle(&file) {
-        Some((ctype, body)) => (
-            [
-                (header::CONTENT_TYPE, ctype),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            body,
-        )
-            .into_response(),
+/// GH #1002: with the stamp the shell writes (`?v=<stamp>` equal to this
+/// binary's), the answer is `immutable` — the URL changes when the file does,
+/// so a browser never has to ask again. Without it (the microphone worklet is
+/// loaded that way), or with a stamp that is not this binary's, it is
+/// `no-cache` plus an `ETag`: since GH #867 the boot and the worklet are files
+/// here, and a heuristically cached copy would keep running a client the
+/// binary has long replaced; the validator makes the check a `304`.
+/// Measured: the three client files were 148 KB on EVERY visit.
+async fn get_client(
+    axum::extract::Path(file): axum::extract::Path<String>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
+    match client_file(&file) {
+        Some(c) => cached_response(
+            header::HeaderValue::from_static(c.content_type),
+            c.body.as_bytes(),
+            c.gz.as_deref(),
+            &c.etag,
+            stamped(uri.query(), c.stamp()),
+            &headers,
+        ),
         None => miss(),
     }
+}
+
+/// Whether a query carries `v=<stamp>` for exactly this file's stamp.
+fn stamped(query: Option<&str>, stamp: &str) -> bool {
+    !stamp.is_empty()
+        && query.is_some_and(|q| q.split('&').any(|kv| kv.strip_prefix("v=") == Some(stamp)))
+}
+
+/// Whether the request accepts gzip (`q` above zero).
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|item| {
+            let mut parts = item.split(';');
+            let coding = parts.next().unwrap_or("").trim();
+            if !coding.eq_ignore_ascii_case("gzip") {
+                return false;
+            }
+            parts
+                .filter_map(|p| p.trim().strip_prefix("q="))
+                .all(|q| q.trim().parse::<f32>().map_or(true, |q| q > 0.0))
+        })
+}
+
+/// Whether `If-None-Match` names `etag` (or is `*`). A weak comparison, as
+/// RFC 9110 § 13.1.2 asks for this header.
+fn none_match(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|t| t.trim().trim_start_matches("W/"))
+        .any(|t| t == "*" || t == etag)
+}
+
+/// The validator of a gzip variant: the file's, with `-gz` inside the quotes.
+/// Two representations, two validators — a cache must never confirm a raw
+/// copy with the compressed one's tag.
+fn gz_tag(etag: &str) -> String {
+    format!("{}-gz\"", etag.trim_end_matches('"'))
+}
+
+/// GH #1002: one file as a response — validator, `304`, cache policy, and the
+/// precompressed variant when the client takes gzip.
+///
+/// Nothing is compressed here: `gz` was computed when the file was loaded
+/// (R-H4-3). `Vary: Accept-Encoding` goes on every answer of a file that HAS a
+/// variant, so a proxy in front never hands one client's encoding to another.
+fn cached_response(
+    content_type: header::HeaderValue,
+    body: &[u8],
+    gz: Option<&[u8]>,
+    etag: &str,
+    immutable: bool,
+    headers: &HeaderMap,
+) -> Response {
+    let use_gz = gz.filter(|_| accepts_gzip(headers));
+    let tag = match use_gz {
+        Some(_) => gz_tag(etag),
+        None => etag.to_string(),
+    };
+    let cache = if immutable {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    let mut resp = if none_match(headers, &tag) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        let mut r = use_gz.unwrap_or(body).to_vec().into_response();
+        r.headers_mut().insert(header::CONTENT_TYPE, content_type);
+        if use_gz.is_some() {
+            r.headers_mut().insert(
+                header::CONTENT_ENCODING,
+                header::HeaderValue::from_static("gzip"),
+            );
+        }
+        r
+    };
+    let h = resp.headers_mut();
+    if let Ok(v) = header::HeaderValue::from_str(&tag) {
+        h.insert(header::ETAG, v);
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static(cache),
+    );
+    if gz.is_some() {
+        h.insert(
+            header::VARY,
+            header::HeaderValue::from_static("Accept-Encoding"),
+        );
+    }
+    resp
 }
 
 /// `GET /` and `GET /*path` — a page, or a file, or the one 404.
@@ -637,7 +856,7 @@ async fn get_client(axum::extract::Path(file): axum::extract::Path<String>) -> R
 /// database, no cell call — a wedged colony still serves its pages and its
 /// files.
 async fn get_path(State(io): State<WebIo>, headers: HeaderMap, uri: axum::http::Uri) -> Response {
-    serve_path(&io, &headers, uri.path())
+    serve_path(&io, &headers, uri.path(), uri.query())
 }
 
 /// `GET /<mount>/` — the display's own root.
@@ -647,11 +866,11 @@ async fn get_path(State(io): State<WebIo>, headers: HeaderMap, uri: axum::http::
 /// and `/<mount>/` is exactly the URL a person types and a `<base href>`
 /// resolves against. It is the same handler over the route `/`.
 async fn get_root(State(io): State<WebIo>, headers: HeaderMap) -> Response {
-    serve_path(&io, &headers, "/")
+    serve_path(&io, &headers, "/", None)
 }
 
 /// The body of [`get_path`]: one path, both declared surfaces.
-fn serve_path(io: &WebIo, headers: &HeaderMap, path: &str) -> Response {
+fn serve_path(io: &WebIo, headers: &HeaderMap, path: &str, query: Option<&str>) -> Response {
     // Before the first publish this display has nothing to say about any route,
     // and saying `404` would be claiming it does (GH #395). The window closes on
     // its own; a caller that waits gets the page.
@@ -661,23 +880,62 @@ fn serve_path(io: &WebIo, headers: &HeaderMap, path: &str) -> Response {
 
     let pages = io.pages.borrow().clone();
     if let Some(page) = pages.get(path) {
+        // GH #1002: the validator is the route's content (computed once per
+        // publish), the base this request is served under AND the session
+        // token minted for this load -- together exactly the body below. The
+        // token is in it because its nonce is the `session_id` of every
+        // semantic event (`session.rs`: two loads of one surface never carry
+        // the same string): a `304` would hand a reload, a second tab or the
+        // next person behind a shared cache the old load's nonce. A fresh load
+        // therefore never matches an old validator and is always a `200`; the
+        // validators that pay are the client's and the assets' (A6), not the
+        // page's.
+        let base = base_of(headers, &io.mount);
+        let token = session::mint(&io.cell_path);
+        let tags = io.page_tags.borrow().clone();
+        let content = match tags.tags.get(path) {
+            Some(t) if Arc::ptr_eq(&tags.of, &pages) => *t,
+            _ => page_hash(page, io.join_timeout_ms),
+        };
+        let mut seed = content.to_vec();
+        seed.extend_from_slice(base.as_bytes());
+        seed.push(0);
+        seed.extend_from_slice(token.as_bytes());
+        let etag = etag_of(&seed);
+        if none_match(headers, &etag) {
+            let mut resp = StatusCode::NOT_MODIFIED.into_response();
+            if let Ok(v) = header::HeaderValue::from_str(&etag) {
+                resp.headers_mut().insert(header::ETAG, v);
+            }
+            resp.headers_mut().insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static(PAGE_CACHE_CONTROL),
+            );
+            return resp;
+        }
         return (
             [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
                 // A page is a live render and must never be served from a
                 // heuristic browser cache: it names the client files and
                 // carries a display's hook scripts inline, and a cached copy
                 // keeps running a client the cell has long replaced — seen as
                 // fixed bugs that will not die in one person's tab. `no-cache`
                 // still allows conditional reuse; the response has no
-                // validators, so in practice it means "fetch".
-                (header::CACHE_CONTROL, "no-cache"),
+                // validators, so in practice it means "fetch". Since GH #1002
+                // it has one, over the body with its token, and `private`: a
+                // page carries one load's session token, which no shared cache
+                // may hand to a second person.
+                (header::CACHE_CONTROL, PAGE_CACHE_CONTROL.to_string()),
+                (header::ETAG, etag),
             ],
-            shell(
-                &base_of(headers, &io.mount),
+            shell_for(
+                &base,
                 &io.cell_path,
                 &page.title,
-                &page.rendered_body(),
+                &page.page_body(PAGE_INLINE_BYTES),
+                io.join_timeout_ms,
+                &token,
             ),
         )
             .into_response();
@@ -685,8 +943,57 @@ fn serve_path(io: &WebIo, headers: &HeaderMap, path: &str) -> Response {
 
     let assets = io.assets.borrow().clone();
     match assets.get(path) {
-        Some(asset) => asset_response(asset),
+        Some(asset) => asset_response(asset, headers, query),
         None => miss(),
+    }
+}
+
+/// GH #1002: the content hash of what the shell embeds for `page` — the cut
+/// body, the title, the stated join timeout and the client stamps the shell
+/// names (a new binary is a new page even when the content is not).
+fn page_hash(page: &crate::web::render::Materialized, join_timeout_ms: Option<u64>) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(page.page_body(PAGE_INLINE_BYTES).as_bytes());
+    h.update([0]);
+    h.update(page.title.as_bytes());
+    h.update([0]);
+    h.update(join_timeout_ms.unwrap_or(0).to_le_bytes());
+    for c in client_files().values() {
+        h.update(c.etag.as_bytes());
+    }
+    let digest = h.finalize();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    out
+}
+
+/// GH #1002: keep [`WebIo::page_tags`] current — one hash per route per
+/// publish, in the I/O half, so a GET never hashes a page and the handler's
+/// write path never does either.
+async fn watch_page_tags(
+    mut pages: watch::Receiver<Arc<PageMap>>,
+    tags_tx: Arc<watch::Sender<Arc<PageTags>>>,
+    join_timeout_ms: Option<u64>,
+) {
+    loop {
+        let map = pages.borrow_and_update().clone();
+        // Off the worker, like the eager init in `run_io`: hashing every route
+        // is CPU work, and the first one waits for the client files' digests.
+        let of = Arc::clone(&map);
+        let Ok(tags) = tokio::task::spawn_blocking(move || {
+            of.iter()
+                .map(|(route, page)| (route.clone(), page_hash(page, join_timeout_ms)))
+                .collect::<HashMap<_, _>>()
+        })
+        .await
+        else {
+            return;
+        };
+        tags_tx.send_replace(Arc::new(PageTags { of: map, tags }));
+        if pages.changed().await.is_err() {
+            return;
+        }
     }
 }
 
@@ -698,7 +1005,7 @@ fn serve_path(io: &WebIo, headers: &HeaderMap, path: &str) -> Response {
 /// get to panic a request task, so an unusable one falls back to
 /// `application/octet-stream` — which is honestly what an unlabelled byte
 /// stream is.
-fn asset_response(asset: &Asset) -> Response {
+fn asset_response(asset: &Asset, headers: &HeaderMap, query: Option<&str>) -> Response {
     let value = header::HeaderValue::from_str(&asset.content_type).unwrap_or_else(|_| {
         tracing::warn!(
             content_type = %asset.content_type,
@@ -706,11 +1013,16 @@ fn asset_response(asset: &Asset) -> Response {
         );
         header::HeaderValue::from_static("application/octet-stream")
     });
-    // `Vec<u8>` answers as `application/octet-stream`; the row's type replaces
-    // that rather than joining it, so a file has exactly one content type.
-    let mut resp = asset.body.clone().into_response();
-    resp.headers_mut().insert(header::CONTENT_TYPE, value);
-    resp
+    // GH #1002: a validator, a `304`, and the variant computed at load. A
+    // request that names the file's own stamp (`?v=`) may keep it for good.
+    cached_response(
+        value,
+        &asset.body,
+        asset.gz.as_deref(),
+        &asset.etag,
+        stamped(query, asset.stamp()),
+        headers,
+    )
 }
 
 /// The one negative answer. Same body for "no such route", "no such file" and
@@ -857,6 +1169,7 @@ pub async fn run_io(
     // this is where the channel exists.
     let mut io = io;
     io.events_tx = Some(events_tx.clone());
+    let chunk = io.join_chunk;
     let viewers = io.viewers.clone();
     let mut pushes = io
         .pushes
@@ -916,6 +1229,23 @@ pub async fn run_io(
     let (shutdown_tx, shutdown_rx) = watch::channel(());
     io.shutdown = Some(shutdown_rx);
     let mut serving = tokio::task::JoinSet::new();
+    // GH #1002: the client files' validators and gzip variants, built now
+    // rather than by the first page request (eager init) -- but only AFTER the
+    // mount is on the table and off this worker. Hashing and gzip level 9 of
+    // about 150 KB of client script took longer than a test's half second
+    // in a debug build, and done inline before `surfaces.register` it held the
+    // mount back: GH #644 read a mount table without the display
+    // (`gh644_one_port_for_api_and_voice`, red after 0.50 s). Nothing
+    // awaits it; an early request waits at the `OnceLock` instead.
+    tokio::task::spawn_blocking(|| {
+        let _ = client_files();
+    });
+    // GH #1002: the page validators, in this half and dropped with it.
+    serving.spawn(watch_page_tags(
+        io.pages.clone(),
+        Arc::clone(&io.page_tags_tx),
+        io.join_timeout_ms,
+    ));
     if let Some(mut rx) = handoff {
         let io = io.clone();
         serving.spawn(async move {
@@ -984,7 +1314,7 @@ pub async fn run_io(
     // which is why there is none.
     tokio::select! {
         _ = wait_for_shutdown(&mut reconfig_rx) => {}
-        _ = fan_out(&mut pushes, &viewers, &pages, &mut dirty) => {}
+        _ = fan_out(&mut pushes, &viewers, &pages, &mut dirty, chunk) => {}
     }
     drop(shutdown_tx);
     drop(serving);
@@ -1013,12 +1343,121 @@ async fn wait_for_shutdown(reconfig_rx: &mut mpsc::Receiver<WebReconfig>) {
     }
 }
 
-/// The tree a viewer of `route` needs to be current again.
+/// The tree a viewer of `route` needs to be current again, as the frames'
+/// payloads: the head, then the pieces (GH #1002, cut at `chunk` like a join).
+///
+/// A tree with more pieces than a queue of `max_frames` can EVER hold goes as
+/// the one packed tree, as before. Not by gluing the pieces back together:
+/// every piece numbers its shared statics in a `"p"` of its own (GH #1001), so
+/// merged pieces would name each other's statics.
+///
+/// GH #1003: returned ENCODED, so the viewers of one route behind at the same
+/// state share one encoding (see [`Trees`]).
 fn whole_tree(
     pages: &watch::Receiver<Arc<PageMap>>,
     route: &str,
-) -> Option<meclaw_core::JsonValue> {
-    pages.borrow().get(route).map(|p| p.packed_tree())
+    chunk: usize,
+    max_frames: usize,
+) -> Option<Tree> {
+    let map = pages.borrow();
+    let page = map.get(route)?;
+    let (head, pieces) = page.join_frames(chunk);
+    if 1 + pieces.len() > max_frames {
+        return Some(Tree {
+            generation: map.generation,
+            frames: vec![encode_payload(&page.packed_tree())],
+        });
+    }
+    let mut out = Vec::with_capacity(1 + pieces.len());
+    out.push(encode_payload(&head));
+    out.extend(pieces.iter().map(encode_payload));
+    Some(Tree {
+        generation: map.generation,
+        frames: out,
+    })
+}
+
+/// One route's whole tree, encoded, with the generation of the pages it was
+/// cut from (GH #1013: the viewer that is written it holds that generation).
+struct Tree {
+    generation: u64,
+    frames: Vec<String>,
+}
+
+/// The whole trees one fan-out step has encoded, by route and queue size
+/// (GH #1003).
+///
+/// One step reads one `PageMap` state, so a second viewer of the same route
+/// that is owed the tree gets the same bytes without a second encoding — the
+/// tree of a measured 2-D world is ~230 KB of JSON, and the resync after a
+/// burst is owed by every slow screen at once.
+#[derive(Default)]
+struct Trees(HashMap<(String, usize), Option<Arc<Tree>>>);
+
+impl Trees {
+    /// The encoded tree of `route` for a queue of `max_frames`, encoded on
+    /// first ask.
+    fn get(
+        &mut self,
+        pages: &watch::Receiver<Arc<PageMap>>,
+        route: &str,
+        chunk: usize,
+        max_frames: usize,
+    ) -> Option<Arc<Tree>> {
+        self.0
+            .entry((route.to_string(), max_frames))
+            .or_insert_with(|| whole_tree(pages, route, chunk, max_frames).map(Arc::new))
+            .clone()
+    }
+}
+
+/// A frame payload as JSON text: the one encoding every viewer's frame wraps
+/// (GH #1003).
+///
+/// Before, every viewer's frame encoded the whole diff again
+/// (`frames::push` per viewer): at three viewers of a panning 2-D world the
+/// daemon ran at 76 % CPU (max 92) and the bundle answer at p95 233 ms. The
+/// frame around it is per socket (`frames::push_raw`); the payload is not.
+fn encode_payload(payload: &meclaw_core::JsonValue) -> String {
+    #[cfg(test)]
+    ENCODED.with(|n| n.set(n.get() + 1));
+    meclaw_core::serde_json::to_string(payload).unwrap_or_default()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many payloads this thread encoded: the lock's counter (GH #1003).
+    static ENCODED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// GH #1002: hand a viewer the whole tree in pieces — all of them or none.
+///
+/// All or none, because the queue is the viewer's and a partial resync would
+/// leave its empty slots to a later diff that may never come. A tree with more
+/// pieces than the queue can EVER hold goes as one frame, as before.
+///
+/// GH #1013: every frame is stamped with the tree's generation; the viewer
+/// holds that generation once it is written, and diffs it already contains
+/// stay away.
+fn send_tree(a: &Addressed, tree: &Tree) -> Result<(), bool> {
+    if a.tx.is_closed() {
+        return Err(false);
+    }
+    if a.tx.capacity() < tree.frames.len() {
+        return Err(true);
+    }
+    for payload in &tree.frames {
+        let frame = meclaw_surface::frames::push_raw(&a.join_ref, &a.topic, "diff", payload);
+        match a
+            .tx
+            .try_send_page(ViewerMsg::Frame(frame), PageStamp::Tree(tree.generation))
+        {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => return Err(true),
+            Err(mpsc::error::TrySendError::Closed(_)) => return Err(false),
+        }
+    }
+    Ok(())
 }
 
 /// Send one diff to every viewer of its route — and to a viewer that lost a
@@ -1035,9 +1474,14 @@ async fn push_one(
     viewers: &Arc<ViewerRegistry>,
     pages: &watch::Receiver<Arc<PageMap>>,
     dirty: &mut HashMap<String, Addressed>,
+    chunk: usize,
 ) {
-    let (route, diff) = match push {
-        WebReconfig::Push { route, diff } => (route, diff),
+    let (route, diff, generation) = match push {
+        WebReconfig::Push {
+            route,
+            diff,
+            generation,
+        } => (route, diff, generation),
         // GH #1006: the `viewers` op. Answered here, in order with the pushes
         // before it; a gone asker is nothing to report.
         WebReconfig::Viewers { respond } => {
@@ -1045,17 +1489,43 @@ async fn push_one(
             return;
         }
     };
+    // GH #1003: the diff is encoded at most once for all of the route's
+    // viewers, and so is the tree the ones behind are owed.
+    let mut encoded: Option<String> = None;
+    let mut trees = Trees::default();
     for a in viewers.on_route(&route).await {
         let behind = dirty.contains_key(&a.id);
-        let payload = match behind.then(|| whole_tree(pages, &a.route)).flatten() {
-            Some(tree) => tree,
-            None => diff.clone(),
-        };
+        if let Some(tree) = behind
+            .then(|| trees.get(pages, &a.route, chunk, a.tx.max_capacity()))
+            .flatten()
+        {
+            match send_tree(&a, &tree) {
+                Ok(()) => {
+                    dirty.remove(&a.id);
+                    a.tx.meter().resync_settled();
+                }
+                Err(false) => {
+                    dirty.remove(&a.id);
+                }
+                Err(true) => {
+                    // Still owed: keep the backlog report alive (its check
+                    // repeats `high` once a second) as the whole-frame path did.
+                    a.tx.meter().resync_owed();
+                    dirty.insert(a.id.clone(), a);
+                }
+            }
+            continue;
+        }
+        let payload = encoded.get_or_insert_with(|| encode_payload(&diff));
         // The tree rides BARE on the push lane (GH #413). The `{"diff": ...}`
         // wrapper is the *reply* shape; the client hands a push payload straight
         // to `Rendered.extract`, so a wrapper becomes one junk slot.
-        let frame = meclaw_surface::frames::push(&a.join_ref, &a.topic, "diff", payload);
-        match a.tx.try_send(ViewerMsg::Frame(frame)) {
+        let frame = meclaw_surface::frames::push_raw(&a.join_ref, &a.topic, "diff", payload);
+        // GH #1013: stamped, so a viewer whose snapshot holds it drops it.
+        match a
+            .tx
+            .try_send_page(ViewerMsg::Frame(frame), PageStamp::Diff(generation))
+        {
             Ok(()) => {
                 if dirty.remove(&a.id).is_some() {
                     a.tx.meter().resync_settled();
@@ -1088,16 +1558,18 @@ const RESYNC_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
 /// belongs to a browser that is gone, and a page that has no tree (its route was
 /// removed) cannot be resynced at all, so that mark is dropped rather than
 /// retried forever.
-fn resync(pages: &watch::Receiver<Arc<PageMap>>, dirty: &mut HashMap<String, Addressed>) {
+fn resync(
+    pages: &watch::Receiver<Arc<PageMap>>,
+    dirty: &mut HashMap<String, Addressed>,
+    chunk: usize,
+) {
+    let mut trees = Trees::default();
     dirty.retain(|_, a| {
-        let Some(tree) = whole_tree(pages, &a.route) else {
+        let Some(tree) = trees.get(pages, &a.route, chunk, a.tx.max_capacity()) else {
             return false;
         };
-        let frame = meclaw_surface::frames::push(&a.join_ref, &a.topic, "diff", tree);
-        let still_owed = matches!(
-            a.tx.try_send(ViewerMsg::Frame(frame)),
-            Err(mpsc::error::TrySendError::Full(_))
-        );
+        // GH #1002: in the join's pieces, and only once they all fit.
+        let still_owed = matches!(send_tree(a, &tree), Err(true));
         if !still_owed {
             a.tx.meter().resync_settled();
         }
@@ -1122,20 +1594,21 @@ async fn fan_out(
     viewers: &Arc<ViewerRegistry>,
     pages: &watch::Receiver<Arc<PageMap>>,
     dirty: &mut HashMap<String, Addressed>,
+    chunk: usize,
 ) {
     loop {
         if dirty.is_empty() {
             match pushes.recv().await {
-                Some(push) => push_one(push, viewers, pages, dirty).await,
+                Some(push) => push_one(push, viewers, pages, dirty, chunk).await,
                 None => return,
             }
         } else {
             tokio::select! {
                 p = pushes.recv() => match p {
-                    Some(push) => push_one(push, viewers, pages, dirty).await,
+                    Some(push) => push_one(push, viewers, pages, dirty, chunk).await,
                     None => return,
                 },
-                _ = tokio::time::sleep(RESYNC_RETRY) => resync(pages, dirty),
+                _ = tokio::time::sleep(RESYNC_RETRY) => resync(pages, dirty, chunk),
             }
         }
     }
@@ -1158,6 +1631,8 @@ mod tests {
                 route: route.to_string(),
                 join_ref: json!("1"),
                 topic: "lv:c".to_string(),
+                session_id: String::new(),
+                screen: meclaw_core::JsonValue::Null,
             },
             rx,
         )
@@ -1213,12 +1688,109 @@ mod tests {
         WebReconfig::Push {
             route: "/".to_string(),
             diff: json!({ slot: html }),
+            generation: 1,
         }
     }
 
     /// The whole of GH #414's second half: a viewer whose channel was full does
     /// NOT silently keep a picture the database has left behind. The next frame
     /// it can be sent is the whole tree, never the diff it would have had.
+    /// What a viewer's write loop lets through, in queue order (GH #1013):
+    /// the queue drained through [`Meter::admits`], payloads only.
+    fn written(rx: &mut mpsc::Receiver<Queued>, meter: &Meter) -> Vec<meclaw_core::JsonValue> {
+        let mut out = Vec::new();
+        while let Ok(q) = rx.try_recv() {
+            if meter.admits(q.page)
+                && let ViewerMsg::Frame(f) = q.msg
+            {
+                out.push(payload(&f));
+            }
+        }
+        out
+    }
+
+    async fn push_gen(
+        viewers: &Arc<ViewerRegistry>,
+        pages: &watch::Receiver<Arc<PageMap>>,
+        dirty: &mut HashMap<String, Addressed>,
+        generation: u64,
+        html: &str,
+    ) {
+        push_one(
+            WebReconfig::Push {
+                route: "/".to_string(),
+                diff: json!({ "0": html }),
+                generation,
+            },
+            viewers,
+            pages,
+            dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        )
+        .await;
+    }
+
+    /// GH #1013 (review C1): a diff the join snapshot already holds is not
+    /// written. The join read generation 4; the diffs of generations 3 and 4
+    /// were fanned out after it registered (published before the snapshot,
+    /// fanned out after it) and stay away, the one of generation 5 goes.
+    #[tokio::test]
+    async fn gh1013_a_diff_the_join_snapshot_holds_is_not_written() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = Arc::new(ViewerRegistry::default());
+        let (v, mut rx) = viewer("/", 8);
+        let meter = Arc::clone(v.tx.meter());
+        viewers.insert("v1".to_string(), v).await;
+        meter.holds_snapshot(4);
+        let mut dirty: HashMap<String, Addressed> = HashMap::new();
+        for (generation, html) in [(3, "three"), (4, "four"), (5, "five")] {
+            push_gen(&viewers, &pages_rx, &mut dirty, generation, html).await;
+        }
+        assert_eq!(written(&mut rx, &meter), vec![json!({"0": "five"})]);
+    }
+
+    /// GH #1013: the resync edge. A whole tree of generation 7 is written to
+    /// a viewer that held 2; a diff of generation 6 fanned out after it (the
+    /// tree contains it) stays away, the one of 8 goes. A tree older than the
+    /// viewer's snapshot (a second join on the socket) is not written at all.
+    #[tokio::test]
+    async fn gh1013_a_resync_tree_holds_its_generation() {
+        let mut m = (*page_map()).clone();
+        m.generation = 7;
+        let (_pages_tx, pages_rx) = watch::channel(Arc::new(m));
+        let viewers = Arc::new(ViewerRegistry::default());
+        let (v, mut rx) = viewer("/", 8);
+        let meter = Arc::clone(v.tx.meter());
+        viewers.insert("v1".to_string(), v).await;
+        meter.holds_snapshot(2);
+        let mut dirty: HashMap<String, Addressed> = HashMap::new();
+        let owed = viewers.on_route("/").await.remove(0);
+        dirty.insert(owed.id.clone(), owed);
+        resync(
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        );
+        assert!(dirty.is_empty(), "the tree fits");
+        push_gen(&viewers, &pages_rx, &mut dirty, 6, "six").await;
+        push_gen(&viewers, &pages_rx, &mut dirty, 8, "eight").await;
+        let tree = page_map().get("/").expect("route").packed_tree();
+        assert_eq!(written(&mut rx, &meter), vec![tree, json!({"0": "eight"})]);
+
+        meter.holds_snapshot(9);
+        let owed = viewers.on_route("/").await.remove(0);
+        dirty.insert(owed.id.clone(), owed);
+        resync(
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        );
+        assert!(
+            written(&mut rx, &meter).is_empty(),
+            "a tree older than the snapshot is not written"
+        );
+    }
+
     #[tokio::test]
     async fn a_viewer_that_lost_a_frame_gets_the_tree_and_not_the_next_diff() {
         let (_pages_tx, pages_rx) = watch::channel(page_map());
@@ -1229,10 +1801,24 @@ mod tests {
         viewers.insert("v1".to_string(), v).await;
         let mut dirty: HashMap<String, Addressed> = HashMap::new();
 
-        push_one(diff_push("0", "<i>a</i>"), &viewers, &pages_rx, &mut dirty).await;
+        push_one(
+            diff_push("0", "<i>a</i>"),
+            &viewers,
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        )
+        .await;
         assert!(dirty.is_empty(), "the first frame fits");
 
-        push_one(diff_push("0", "<i>b</i>"), &viewers, &pages_rx, &mut dirty).await;
+        push_one(
+            diff_push("0", "<i>b</i>"),
+            &viewers,
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        )
+        .await;
         assert!(
             dirty.contains_key("v1"),
             "a dropped frame must be remembered, not forgotten"
@@ -1244,7 +1830,14 @@ mod tests {
         };
         assert_eq!(payload(&first), json!({"0": "<i>a</i>"}));
 
-        push_one(diff_push("0", "<i>c</i>"), &viewers, &pages_rx, &mut dirty).await;
+        push_one(
+            diff_push("0", "<i>c</i>"),
+            &viewers,
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        )
+        .await;
         let ViewerMsg::Frame(second) = rx.recv().await.expect("the second frame").msg else {
             panic!("a frame, not a close")
         };
@@ -1278,7 +1871,11 @@ mod tests {
             .expect("prefill");
         let mut dirty = HashMap::from([("v1".to_string(), addressed)]);
 
-        resync(&pages_rx, &mut dirty);
+        resync(
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        );
         assert!(
             dirty.contains_key("v1"),
             "a viewer that is still wedged keeps its mark — the alternative is \
@@ -1286,7 +1883,11 @@ mod tests {
         );
 
         let _ = rx.recv().await.expect("the prefilled frame");
-        resync(&pages_rx, &mut dirty);
+        resync(
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        );
         assert!(dirty.is_empty(), "and the mark goes when the tree is sent");
         let ViewerMsg::Frame(f) = rx.recv().await.expect("the tree").msg else {
             panic!("a frame, not a close")
@@ -1319,12 +1920,21 @@ mod tests {
             route: "/".to_string(),
             join_ref: json!("1"),
             topic: "lv:c".to_string(),
+            session_id: String::new(),
+            screen: meclaw_core::JsonValue::Null,
         };
         v.tx.try_send(ViewerMsg::Frame("busy".to_string()))
             .expect("prefill");
         viewers.insert("v1".to_string(), v).await;
         let mut dirty = HashMap::new();
-        push_one(diff_push("0", "<b>x</b>"), &viewers, &pages_rx, &mut dirty).await;
+        push_one(
+            diff_push("0", "<b>x</b>"),
+            &viewers,
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        )
+        .await;
         assert!(dirty.contains_key("v1"), "the queue was full: marked");
 
         let Ok(WebEvent::Backlog {
@@ -1346,7 +1956,11 @@ mod tests {
         let q = rx.recv().await.expect("the prefilled frame");
         meter.writing(q.at);
         meter.written(q.at, q.bytes);
-        resync(&pages_rx, &mut dirty);
+        resync(
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        );
         assert!(dirty.is_empty(), "the tree fit");
         let q = rx.recv().await.expect("the tree");
         meter.writing(q.at);
@@ -1372,7 +1986,16 @@ mod tests {
         let mut dirty: HashMap<String, Addressed> = HashMap::new();
         let looping = {
             let viewers = Arc::clone(&viewers);
-            tokio::spawn(async move { fan_out(&mut pushes, &viewers, &pages_rx, &mut dirty).await })
+            tokio::spawn(async move {
+                fan_out(
+                    &mut pushes,
+                    &viewers,
+                    &pages_rx,
+                    &mut dirty,
+                    crate::web::params::JOIN_CHUNK_DEFAULT,
+                )
+                .await
+            })
         };
 
         let (respond, rows) = tokio::sync::oneshot::channel();
@@ -1392,6 +2015,86 @@ mod tests {
 
         drop(push_tx);
         looping.await.expect("the fan-out ends with its channel");
+    }
+
+    /// GH #1002 T11: a resync of a large page goes in the join's pieces — no
+    /// frame over the limit, all of them or none, and together the tree.
+    #[tokio::test]
+    async fn gh1002_a_resync_goes_in_chunks() {
+        // Large enough to be cut at all (`CUT_ABOVE_BYTES`), in 40 slots.
+        let slot = crate::web::render::CUT_ABOVE_BYTES / 40 + 100;
+        let big = Materialized {
+            statics: std::iter::once("<main>".to_string())
+                .chain(std::iter::repeat_n(String::new(), 39))
+                .chain(std::iter::once("</main>".to_string()))
+                .collect(),
+            slots: (0..40)
+                .map(|i| {
+                    (
+                        format!("n{i}"),
+                        format!("<p>{}</p>", "x".repeat(slot)).into(),
+                    )
+                })
+                .collect(),
+            title: "t".to_string(),
+        };
+        let whole = big.packed_tree();
+        let mut m = PageMap::new();
+        m.insert("/".to_string(), big);
+        let (_pages_tx, pages_rx) = watch::channel(Arc::new(m));
+        let limit = 3 * slot;
+
+        // Room for two frames: the tree needs more, so nothing is sent yet.
+        let (v, mut rx) = viewer("/", 64);
+        for _ in 0..62 {
+            v.tx.try_send(ViewerMsg::Frame("busy".to_string()))
+                .expect("prefill");
+        }
+        let addressed = |v: &Viewer| Addressed {
+            id: "v1".to_string(),
+            tx: v.tx.clone(),
+            join_ref: v.join_ref.clone(),
+            topic: v.topic.clone(),
+            route: v.route.clone(),
+        };
+        let mut dirty = HashMap::from([("v1".to_string(), addressed(&v))]);
+        resync(&pages_rx, &mut dirty, limit);
+        assert!(dirty.contains_key("v1"), "a partial resync is no resync");
+        assert_eq!(v.tx.capacity(), 2, "and not one piece went into the queue");
+        for _ in 0..62 {
+            let _ = rx.recv().await;
+        }
+
+        resync(&pages_rx, &mut dirty, limit);
+        assert!(dirty.is_empty());
+        let mut tree = meclaw_core::JsonValue::Null;
+        let mut frames = 0;
+        while let Ok(q) = rx.try_recv() {
+            let ViewerMsg::Frame(f) = q.msg else {
+                panic!("a frame, not a close")
+            };
+            assert!(
+                f.len() <= limit + 256,
+                "a resync frame of {} bytes",
+                f.len()
+            );
+            let p = payload(&f);
+            if tree.is_null() {
+                tree = p;
+            } else {
+                // GH #1013: a piece appends entries to the root's keyed list
+                // and carries its count.
+                for (k, val) in p["0"]["k"].as_object().expect("a list diff") {
+                    tree["0"]["k"][k] = val.clone();
+                }
+            }
+            frames += 1;
+        }
+        assert!(
+            frames > 1,
+            "a tree of 40 slots at a limit of three is several frames"
+        );
+        assert_eq!(tree, whole, "the pieces are the tree");
     }
 
     /// …and the loop actually runs it: one push, dropped, and NO further push.
@@ -1417,7 +2120,14 @@ mod tests {
         let pages_for_task = pages_rx.clone();
         let job = tokio::spawn(async move {
             let mut dirty: HashMap<String, Addressed> = HashMap::new();
-            fan_out(&mut push_rx, &viewers_for_task, &pages_for_task, &mut dirty).await;
+            fan_out(
+                &mut push_rx,
+                &viewers_for_task,
+                &pages_for_task,
+                &mut dirty,
+                crate::web::params::JOIN_CHUNK_DEFAULT,
+            )
+            .await;
         });
 
         push_tx
@@ -1536,8 +2246,8 @@ mod tests {
             "the socket URL rides the base; shell was:\n{html}"
         );
         assert!(
-            html.contains("src=\"/egon/screen/@client/phoenix.min.js\"")
-                && html.contains("src=\"/egon/screen/@client/phoenix_live_view.min.js\""),
+            html.contains("src=\"/egon/screen/@client/phoenix.min.js?v=")
+                && html.contains("src=\"/egon/screen/@client/phoenix_live_view.min.js?v="),
             "and so do the bundles; shell was:\n{html}"
         );
         assert!(
@@ -1546,7 +2256,7 @@ mod tests {
         );
         assert!(
             html.contains("<meta name=\"meclaw-live\" content=\"/egon/screen/live\">")
-                && html.contains("src=\"/egon/screen/@client/boot.js\""),
+                && html.contains("src=\"/egon/screen/@client/boot.js?v="),
             "the boot reads the socket URL from a meta the base wrote; shell was:\n{html}"
         );
     }
@@ -1616,5 +2326,171 @@ mod tests {
             None,
             "a header from outside trusted_proxies names nobody"
         );
+    }
+
+    /// Payloads this thread has encoded so far.
+    fn encoded() -> u64 {
+        ENCODED.with(std::cell::Cell::get)
+    }
+
+    /// Every frame text waiting in `rx`.
+    fn drain(rx: &mut mpsc::Receiver<Queued>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(q) = rx.try_recv() {
+            if let ViewerMsg::Frame(f) = q.msg {
+                out.push(f);
+            }
+        }
+        out
+    }
+
+    /// GH #1003 T1: ten screens of one route, 200 diffs — each diff is
+    /// encoded ONCE, not once per screen, and every screen gets the same bytes.
+    /// Before: `frames::push` per viewer, 10 encodings per diff.
+    #[tokio::test]
+    async fn gh1003_a_frame_is_encoded_once_for_many_viewers() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = Arc::new(ViewerRegistry::default());
+        let mut rxs = Vec::new();
+        for i in 0..10 {
+            let (v, rx) = viewer("/", 256);
+            viewers.insert(format!("v{i:02}"), v).await;
+            rxs.push(rx);
+        }
+        let mut dirty: HashMap<String, Addressed> = HashMap::new();
+        let before = encoded();
+        for n in 0..200 {
+            push_one(
+                diff_push("0", &format!("<i>{n}</i>")),
+                &viewers,
+                &pages_rx,
+                &mut dirty,
+                crate::web::params::JOIN_CHUNK_DEFAULT,
+            )
+            .await;
+        }
+        assert_eq!(encoded() - before, 200, "one encoding per diff");
+        let first = drain(&mut rxs[0]);
+        assert_eq!(first.len(), 200);
+        assert_eq!(
+            first[7],
+            meclaw_surface::frames::push(&json!("1"), "lv:c", "diff", json!({"0": "<i>7</i>"})),
+            "the frame is the one `frames::push` built"
+        );
+        for rx in &mut rxs[1..] {
+            assert_eq!(drain(rx), first, "every screen gets the same bytes");
+        }
+    }
+
+    /// GH #1003: the whole tree three screens of one route are owed after a
+    /// burst is encoded once for all three, and they get the same bytes.
+    #[tokio::test]
+    async fn gh1003_a_resync_encodes_the_tree_once_per_route() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = ViewerRegistry::default();
+        let mut dirty: HashMap<String, Addressed> = HashMap::new();
+        let mut rxs = Vec::new();
+        for i in 0..3 {
+            let (v, rx) = viewer("/", 4);
+            viewers.insert(format!("v{i}"), v).await;
+            rxs.push(rx);
+        }
+        for a in viewers.on_route("/").await {
+            dirty.insert(a.id.clone(), a);
+        }
+        let before = encoded();
+        resync(
+            &pages_rx,
+            &mut dirty,
+            crate::web::params::JOIN_CHUNK_DEFAULT,
+        );
+        assert!(dirty.is_empty(), "all three were given the tree");
+        assert_eq!(encoded() - before, 1, "one tree, one encoding");
+        let first = drain(&mut rxs[0]);
+        assert_eq!(
+            payload(&first[0]),
+            page_map().get("/").expect("route").packed_tree()
+        );
+        for rx in &mut rxs[1..] {
+            assert_eq!(drain(rx), first, "the same bytes on every screen");
+        }
+    }
+
+    /// GH #1003 T2, measured once and alone (`#[ignore]`, never in a gate
+    /// under a parallel suite — OR-H4-20): the cost of one diff's fan-out at
+    /// 1 vs. 10 screens of a route, against the per-viewer encoding before.
+    /// The diff is a tranche of 400 figures (~44 KB of JSON), the shape of the
+    /// measured 2-D world's pan.
+    #[tokio::test]
+    #[ignore = "measurement: run alone, numbers go to the report (GH #1003)"]
+    async fn gh1003_fan_out_cost_is_flat_in_viewers() {
+        let diff: meclaw_core::JsonValue = (0..400)
+            .map(|i| {
+                (
+                    i.to_string(),
+                    json!(format!(
+                        "<i data-x=\"{i}-17\" class=\"fig\">figure {i:04} round 000017 \u{2014} walking</i>"
+                    )),
+                )
+            })
+            .collect::<meclaw_core::serde_json::Map<_, _>>()
+            .into();
+        const ROUNDS: u32 = 400;
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let mut after = Vec::new();
+        let mut before = Vec::new();
+        for n in [1usize, 10] {
+            let viewers = Arc::new(ViewerRegistry::default());
+            let mut rxs = Vec::new();
+            for i in 0..n {
+                let (v, rx) = viewer("/", 4);
+                viewers.insert(format!("v{i:02}"), v).await;
+                rxs.push(rx);
+            }
+            let mut dirty: HashMap<String, Addressed> = HashMap::new();
+            let mut spent = std::time::Duration::ZERO;
+            for _ in 0..ROUNDS {
+                let push = WebReconfig::Push {
+                    route: "/".to_string(),
+                    diff: diff.clone(),
+                    generation: 1,
+                };
+                let t = std::time::Instant::now();
+                push_one(
+                    push,
+                    &viewers,
+                    &pages_rx,
+                    &mut dirty,
+                    crate::web::params::JOIN_CHUNK_DEFAULT,
+                )
+                .await;
+                spent += t.elapsed();
+                for rx in &mut rxs {
+                    let _ = drain(rx);
+                }
+            }
+            after.push(spent / ROUNDS);
+            // Before GH #1003: one `frames::push` (a whole encoding) per viewer.
+            let t = std::time::Instant::now();
+            for _ in 0..ROUNDS {
+                for _ in 0..n {
+                    std::hint::black_box(meclaw_surface::frames::push(
+                        &json!("1"),
+                        "lv:c",
+                        "diff",
+                        diff.clone(),
+                    ));
+                }
+            }
+            before.push(t.elapsed() / ROUNDS);
+        }
+        let ratio = after[1].as_secs_f64() / after[0].as_secs_f64();
+        let ratio_before = before[1].as_secs_f64() / before[0].as_secs_f64();
+        println!(
+            "GH1003 fan-out per diff: after 1={:?} 10={:?} ratio={ratio:.2}; \
+             before 1={:?} 10={:?} ratio={ratio_before:.2}",
+            after[0], after[1], before[0], before[1]
+        );
+        assert!(ratio <= 1.5, "flat in the number of screens: {ratio:.2}");
     }
 }

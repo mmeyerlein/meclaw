@@ -16,15 +16,26 @@ pub struct Refusal {
     pub error_code: &'static str,
     /// The human-readable detail, naming what was refused.
     pub detail: String,
+    /// GH #1012: whether the carrier failed in a way a later attempt can
+    /// cure (no connection, no answer in time, a 5xx). Only the client sets
+    /// it; every verdict of a lane, a far side or a policy is final.
+    pub transient: bool,
 }
 
 impl Refusal {
-    /// Builds a refusal from a code and a detail.
+    /// Builds a final refusal from a code and a detail.
     pub fn new(error_code: &'static str, detail: impl Into<String>) -> Self {
         Self {
             error_code,
             detail: detail.into(),
+            transient: false,
         }
+    }
+
+    /// GH #1012: the same refusal, marked as one the outbox retries.
+    pub fn transient(mut self) -> Self {
+        self.transient = true;
+        self
     }
 }
 

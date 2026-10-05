@@ -19,6 +19,11 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
+/// The one browser event that is a local write (R-W8-5) and whose verdict only
+/// the handler can give. Every other name is a semantic event: it leaves on
+/// the out-edge and is `ok` the moment the handler's channel takes it.
+pub const LOCAL_EVENT: &str = "object:set";
+
 /// What the I/O half tells the handler.
 ///
 /// Two things: the mount was refused, or a browser said something.
@@ -34,8 +39,9 @@ pub enum WebEvent {
     ///
     /// The I/O half does not decide what it means, and cannot: sorting an event
     /// into a local `editable` write or a semantic emission needs the database
-    /// and a sink, and the I/O half has neither. It forwards, and waits on
-    /// `respond` for the one answer the socket owes its client.
+    /// and a sink, and the I/O half has neither. It forwards, and — for
+    /// [`LOCAL_EVENT`] only — waits on `respond` for the one answer the socket
+    /// owes its client.
     Browser {
         /// Which connection sent it, so a reply can be addressed.
         viewer: String,
@@ -55,7 +61,12 @@ pub enum WebEvent {
         value: meclaw_core::JsonValue,
         /// Where the handler's verdict goes. The socket turns it into the
         /// `phx_reply` its client is waiting for.
-        respond: tokio::sync::oneshot::Sender<EventReply>,
+        ///
+        /// `None` for every semantic event (GH #1004): its verdict is fixed
+        /// the moment the channel takes it, so the socket answered already.
+        /// Waiting here put the reply behind every bundle queued ahead of it
+        /// (web p95 233–296 ms on the deployed pan, plan W4 § 1).
+        respond: Option<tokio::sync::oneshot::Sender<EventReply>>,
     },
     /// GH #1006: a viewer's socket crossed a backlog threshold, or fell back
     /// below half of both. Sent by the I/O half only when the cell opted in
@@ -77,10 +88,28 @@ pub enum WebEvent {
         /// `true` for `high`, `false` for `clear`.
         high: bool,
     },
+    /// GH #1003: a viewer joined a route, or its view ended. Sent by the I/O
+    /// half only when the cell opted in (`viewer_events: ["screen"]`); the
+    /// handler turns it into a `viewer:screen` emission. The route is the
+    /// screen class (display-hive § 6.1); `screen` is what the client
+    /// measured — a layout hint, never content of its own.
+    Screen {
+        /// The page load whose socket this is.
+        session_id: String,
+        /// The route it joined, i.e. its screen class.
+        route: String,
+        /// `{w, h, dpr, orientation, coarse}` from the client, or `null`.
+        screen: meclaw_core::JsonValue,
+        /// `true` on the join, `false` when the view ended.
+        joined: bool,
+    },
 }
 
 /// The event name a backlog report leaves under (GH #1006).
 pub const BACKLOG_EVENT: &str = "viewer:backlog";
+
+/// The event name a screen join or leave leaves under (GH #1003).
+pub const SCREEN_EVENT: &str = "viewer:screen";
 
 /// What the handler says about a browser event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +142,11 @@ pub enum WebReconfig {
         route: String,
         /// The LiveView diff payload, already packed.
         diff: Value,
+        /// GH #1013: the generation of the pages this diff leads to
+        /// ([`PageMap::generation`]). A viewer whose join snapshot (or last whole
+        /// tree) is of this generation or newer already holds it and is not
+        /// sent it.
+        generation: u64,
     },
     /// Answer the read-only `viewers` op (GH #1006): one row per joined
     /// viewer with its backlog counters.
@@ -193,6 +227,10 @@ pub struct WebCell {
     pub(crate) backlog_high_bytes: u64,
     /// GH #1006: `backlog_high_ms`, as written.
     pub(crate) backlog_high_ms: u64,
+    /// GH #1002: the join piece limit, as written. See [`WebCell::mount`].
+    pub(crate) join_chunk_bytes: Option<u64>,
+    /// GH #1002: the join timeout, as written. See [`WebCell::mount`].
+    pub(crate) join_timeout_ms: Option<u64>,
 }
 
 impl WebCell {
@@ -225,6 +263,8 @@ impl WebCell {
             trusted_proxies: params.trusted_proxies.clone(),
             link_mounts: params.link_mounts.clone(),
             external_timeout_ms: params.external_timeout_ms,
+            join_chunk_bytes: params.join_chunk_bytes,
+            join_timeout_ms: params.join_timeout_ms,
         }
     }
 
@@ -255,13 +295,15 @@ impl WebCell {
     /// inside a container ([`render::rerender`]). Measured on a deployed page
     /// before (`MESSUNG.md` § 6 L-W2): a re-render of every route after every
     /// write, ≈ 51 ms on 1 000 figures, 129–150 ms on 4 000. A change of the
-    /// root's child list (a root child created, moved or deleted) still sends
-    /// the whole packed tree: the slot list itself changed, so a positional
-    /// patch would address the wrong slot.
+    /// root's child list (a root child created, moved or deleted) is a
+    /// difference of the root's keyed list (GH #1013): it used to send the
+    /// whole packed tree, and the browser re-created every node of the page.
     async fn publish_and_push(&self, db: &mut DbConn, touched: &ops::Touched) {
         // The pages last published are the ones every frame was computed
         // against; the handler is their only writer, so the watch holds them.
         let old = self.pages_tx.borrow().clone();
+        // GH #1013: the generation these pages and their diffs go out as.
+        let generation = old.generation + 1;
         let touched = touched.clone();
         let Ok(done) = db
             .call(move |conn| render::rerender(conn, &old, &touched))
@@ -277,9 +319,18 @@ impl WebCell {
         tracing::trace!(path = %self.path, objects = done.objects, "web: re-rendered");
         // A send failure means the listener is gone, which happens during
         // shutdown and is not worth a line in the journal.
-        let _ = self.pages_tx.send(Arc::new(done.pages));
+        let mut pages = done.pages;
+        pages.generation = generation;
+        let _ = self.pages_tx.send(Arc::new(pages));
         for (route, diff) in done.frames {
-            let _ = self.push_tx.send(WebReconfig::Push { route, diff }).await;
+            let _ = self
+                .push_tx
+                .send(WebReconfig::Push {
+                    route,
+                    diff,
+                    generation,
+                })
+                .await;
         }
     }
 }
@@ -309,7 +360,7 @@ impl WebCell {
         sink: &OriginSink,
         db: &mut DbConn,
     ) -> (EventReply, ops::Touched) {
-        if name != "object:set" {
+        if name != LOCAL_EVENT {
             // The semantic lane (R-W8-5). Everything that is not a declared
             // local write is somebody else's business: it leaves as an ordinary
             // cell output on `hop.route = "event"`, exactly as the proxy emits a
@@ -373,6 +424,8 @@ impl WebCell {
             viewer_events: self.viewer_events.clone(),
             backlog_high_bytes: self.backlog_high_bytes,
             backlog_high_ms: self.backlog_high_ms,
+            join_chunk_bytes: self.join_chunk_bytes,
+            join_timeout_ms: self.join_timeout_ms,
         };
         let (merged, overlay) = match crate::params_overlay::apply_update(&current, update) {
             Ok(ok) => ok,
@@ -416,6 +469,8 @@ impl WebCell {
         self.viewer_events = merged.viewer_events.clone();
         self.backlog_high_bytes = merged.backlog_high_bytes;
         self.backlog_high_ms = merged.backlog_high_ms;
+        self.join_chunk_bytes = merged.join_chunk_bytes;
+        self.join_timeout_ms = merged.join_timeout_ms;
         db.set_query_timeout(Some(std::time::Duration::from_millis(
             self.external_timeout_ms,
         )));
@@ -510,9 +565,28 @@ impl LongRunningCell for WebCell {
         db: &'a mut DbConn,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // GH #1002: the files first. Loading them now computes their
+            // validators and gzip variants (a few ms for a 250 KB stylesheet in
+            // a release build, far more in a debug one), and the old order —
+            // pages, `ready`, then files — left a window in which the page
+            // answered and its stylesheet was a 404. `ready` now means both.
+            match db.call(|conn| load_assets(conn)).await {
+                Ok(a) => {
+                    let _ = self.assets_tx.send(Arc::new(a));
+                }
+                // A broken read here costs the files and nothing else: a
+                // display with no stylesheet is still a display.
+                Err(e) => tracing::error!(
+                    path = %self.path,
+                    error = %e,
+                    "web: could not read the assets table — this display serves no files"
+                ),
+            }
             let map = db.call(|conn| materialize_all(conn)).await;
             match map {
-                Ok(m) => {
+                Ok(mut m) => {
+                    // GH #1013: generations only grow, also across a re-read.
+                    m.generation = self.pages_tx.borrow().generation + 1;
                     let _ = self.pages_tx.send(Arc::new(m));
                     // The window GH #395 is about closes here, and only here:
                     // published first, then declared ready, so no request can
@@ -523,19 +597,6 @@ impl LongRunningCell for WebCell {
                     path = %self.path,
                     error = %e,
                     "web: initial render failed — this display serves nothing until a write lands"
-                ),
-            }
-            match db.call(|conn| load_assets(conn)).await {
-                Ok(a) => {
-                    let _ = self.assets_tx.send(Arc::new(a));
-                }
-                // A broken read here costs the files and nothing else: the
-                // pages are already published, and a display with no stylesheet
-                // is still a display.
-                Err(e) => tracing::error!(
-                    path = %self.path,
-                    error = %e,
-                    "web: could not read the assets table — this display serves no files"
                 ),
             }
         }
@@ -815,7 +876,9 @@ impl LongRunningCell for WebCell {
                     // client's reply open. A closed channel means the browser
                     // left mid-flight, which is ordinary.
                     let accepted = reply == EventReply::Ok;
-                    let _ = respond.send(reply);
+                    if let Some(respond) = respond {
+                        let _ = respond.send(reply);
+                    }
 
                     if accepted && !touched.slots.is_empty() {
                         // The write landed, so everyone looking at that page —
@@ -852,6 +915,24 @@ impl LongRunningCell for WebCell {
                         "level": if high { "high" } else { "clear" },
                     });
                     self.emit_semantic(BACKLOG_EVENT, &value, &route, &session_id, None, _sink)
+                        .await;
+                }
+                WebEvent::Screen {
+                    session_id,
+                    route,
+                    screen,
+                    joined,
+                } => {
+                    // GH #1003: same lane as `viewer:backlog`. Which layout a
+                    // screen class gets stays the app's call (display-hive
+                    // § 6.3); the cell only says who is looking, from where.
+                    let value = json!({
+                        "session_id": session_id,
+                        "route": route,
+                        "screen": screen,
+                        "joined": joined,
+                    });
+                    self.emit_semantic(SCREEN_EVENT, &value, &route, &session_id, None, _sink)
                         .await;
                 }
                 WebEvent::MountFailed(err) => {

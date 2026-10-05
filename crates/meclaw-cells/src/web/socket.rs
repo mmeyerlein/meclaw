@@ -48,7 +48,7 @@
 //! reaches exactly the viewers of that page (Task 7).
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use futures_util::stream::SplitSink;
+use futures_util::stream::{FuturesUnordered, SplitSink};
 use futures_util::{SinkExt, StreamExt};
 use meclaw_colony::{LinkFrame, LinkRequest};
 use meclaw_core::serde_json::{Value, json};
@@ -58,7 +58,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::web::backlog::{Meter, Outbox, Queued};
-use crate::web::cell::{EventReply, WebEvent};
+use crate::web::cell::{EventReply, LOCAL_EVENT, WebEvent};
 use std::time::Duration;
 
 /// How long a browser event may wait for the handler's verdict.
@@ -310,8 +310,20 @@ async fn write_out<S>(sink: &mut S, queued: Queued, meter: &Meter) -> bool
 where
     S: futures_util::Sink<WsMessage> + Unpin,
 {
-    let Queued { msg, at, bytes } = queued;
+    let Queued {
+        msg,
+        at,
+        bytes,
+        page,
+    } = queued;
     meter.writing(at);
+    // GH #1013: a page frame the viewer's snapshot already holds is counted
+    // out and dropped here — the one place that knows, in queue order, which
+    // snapshot the client holds (see [`Meter::admits`]).
+    if !meter.admits(page) {
+        meter.written(at, bytes);
+        return true;
+    }
     let open = match msg {
         ViewerMsg::Frame(text) => sink.send(WsMessage::Text(text)).await.is_ok(),
         ViewerMsg::Binary(b) => sink.send(WsMessage::Binary(b)).await.is_ok(),
@@ -335,6 +347,82 @@ pub struct Viewer {
     pub join_ref: Value,
     /// The topic this viewer joined.
     pub topic: String,
+    /// The page load it belongs to — the nonce half of its token.
+    pub session_id: String,
+    /// What the client measured of its screen at load (GH #1003): `w`, `h`,
+    /// `dpr`, `orientation`, `coarse` — or `null` from a client that sent none.
+    /// A hint for the app's layout per screen class, never state: every viewer
+    /// of a route is sent the same bytes.
+    pub screen: Value,
+}
+
+/// The longest edge, in CSS pixels, a `_screen` may claim (GH #1003): wider
+/// than any real screen, small enough that no app has to guard its arithmetic.
+const SCREEN_EDGE_MAX: u64 = 100_000;
+
+/// The `_screen` join param of a page, checked and normalised (GH #1003).
+///
+/// `boot.js` sends `{w, h, dpr, orientation, coarse}` at load: `w`/`h` the
+/// viewport size in CSS pixels (`innerWidth`/`innerHeight`), `coarse` from
+/// `matchMedia`. Absent is `null` (an older client, or a page shell
+/// without the boot); anything else that is not exactly that shape is `null`
+/// too, said once at debug level — a hint the client got wrong must never cost
+/// the viewer its join.
+fn screen_of(payload: &Value) -> Value {
+    let Some(raw) = payload.get("params").and_then(|p| p.get("_screen")) else {
+        return Value::Null;
+    };
+    let edge = |k: &str| {
+        raw.get(k)
+            .and_then(Value::as_u64)
+            .filter(|n| (1..=SCREEN_EDGE_MAX).contains(n))
+    };
+    // Kept as the client wrote it (`3` stays `3`, `1.5` stays `1.5`), checked
+    // as a number.
+    let dpr = raw.get("dpr").filter(|d| {
+        d.as_f64()
+            .is_some_and(|d| d.is_finite() && d > 0.0 && d <= 16.0)
+    });
+    let orientation = raw
+        .get("orientation")
+        .and_then(Value::as_str)
+        .filter(|o| matches!(*o, "portrait" | "landscape"));
+    let coarse = raw.get("coarse").and_then(Value::as_bool);
+    match (edge("w"), edge("h"), dpr, orientation, coarse) {
+        (Some(w), Some(h), Some(dpr), Some(orientation), Some(coarse)) => json!({
+            "w": w, "h": h, "dpr": dpr, "orientation": orientation, "coarse": coarse,
+        }),
+        _ => {
+            tracing::debug!(screen = %raw, "web: a join's _screen param was not understood");
+            Value::Null
+        }
+    }
+}
+
+/// Tell the app a viewer came or went (GH #1003), when it opted in.
+///
+/// The same lane as every browser event: the handler emits it as
+/// `viewer:screen` on the out-edge. Awaited like a browser event, so a join and
+/// its leave reach the app in that order.
+async fn report_screen(
+    viewers: &crate::web::io::ViewerRegistry,
+    events_tx: &mpsc::Sender<WebEvent>,
+    session_id: &str,
+    route: &str,
+    screen: &Value,
+    joined: bool,
+) {
+    if !viewers.screen_events() {
+        return;
+    }
+    let _ = events_tx
+        .send(WebEvent::Screen {
+            session_id: session_id.to_string(),
+            route: route.to_string(),
+            screen: screen.clone(),
+            joined,
+        })
+        .await;
 }
 
 /// Resolve when the cell's I/O half is gone, or never when there is none.
@@ -348,6 +436,107 @@ async fn closed(shutdown: &mut Option<tokio::sync::watch::Receiver<()>>) {
         }
         None => std::future::pending().await,
     }
+}
+
+/// A reply this socket owes and only the handler can give (GH #1004): the
+/// verdict of a [`LOCAL_EVENT`], already rendered as the `phx_reply` text.
+type Verdict = std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>;
+
+/// What a browser event is owed once the handler's channel took it.
+enum Forwarded {
+    /// The reply, now: a semantic event (its verdict is fixed at hand-over),
+    /// a refusal, or a cell that is shutting down.
+    Now(String),
+    /// The reply, once the handler has written — waited for beside the loop,
+    /// never in it.
+    Later(Verdict),
+}
+
+/// Hand one `event` frame to the handler and say what its client is owed.
+///
+/// The hand-over itself stays an `await` on the bounded channel, in the loop:
+/// that keeps one viewer's events in the order it sent them, and a full
+/// channel (64) holding the loop is the intended backpressure. What does NOT
+/// stay in the loop is the wait for a verdict (GH #1004). Measured on the
+/// deployed pan (plan W4 § 1): with the loop parked on the handler's answer
+/// it read neither the browser's next frame nor its own outbound queue, so a
+/// viewer's diffs stood behind its own event — 0 frames for 2–5 s on a
+/// zoom-out while the cell answered 8–10 bundles a second, and event gaps of
+/// p95 317–600 ms against a 150-ms hook.
+async fn forward_event(
+    frame: &frames::Frame,
+    events_tx: &mpsc::Sender<WebEvent>,
+    viewer_id: &str,
+    route: String,
+    session_id: String,
+    user_id: Option<&str>,
+) -> Forwarded {
+    let name = frame
+        .payload
+        .get("event")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let value = frame.payload.get("value").cloned().unwrap_or(json!({}));
+    let local = name == LOCAL_EVENT;
+    let (respond, verdict) = if local {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    if events_tx
+        .send(WebEvent::Browser {
+            viewer: viewer_id.to_string(),
+            route,
+            session_id,
+            user_id: user_id.map(str::to_string),
+            name,
+            value,
+            respond,
+        })
+        .await
+        .is_err()
+    {
+        return Forwarded::Now(frames::error_reply(
+            &frame.join_ref,
+            &frame.msg_ref,
+            &frame.topic,
+            "the cell is shutting down".to_string(),
+        ));
+    }
+    let Some(verdict) = verdict else {
+        // A semantic event leaves on the out-edge whatever the handler is
+        // doing now; there is no verdict left to wait for.
+        return Forwarded::Now(frames::ok_reply(
+            &frame.join_ref,
+            &frame.msg_ref,
+            &frame.topic,
+            json!({}),
+        ));
+    };
+    let (join_ref, msg_ref, topic) = (
+        frame.join_ref.clone(),
+        frame.msg_ref.clone(),
+        frame.topic.clone(),
+    );
+    Forwarded::Later(Box::pin(async move {
+        // Operation timeout (hard rule 12), per open write: a wedged handler
+        // must not hold a browser's reply open forever. The client sees a
+        // refusal it can act on instead of a spinner that never resolves.
+        match tokio::time::timeout(EVENT_TIMEOUT, verdict).await {
+            Ok(Ok(EventReply::Ok)) => frames::ok_reply(&join_ref, &msg_ref, &topic, json!({})),
+            Ok(Ok(EventReply::Error(reason))) => {
+                frames::error_reply(&join_ref, &msg_ref, &topic, reason)
+            }
+            Ok(Err(_)) | Err(_) => frames::error_reply(
+                &join_ref,
+                &msg_ref,
+                &topic,
+                "the cell did not answer".to_string(),
+            ),
+        }
+    }))
 }
 
 /// Drive one websocket connection for its lifetime.
@@ -387,6 +576,10 @@ pub async fn run_connection(
     // `page:` topic declares no client binary, so a display that pushed one
     // used to have it vanish without a trace on either side.
     let mut refused_binaries: u64 = 0;
+    // GH #1004: the open `object:set` verdicts of this socket. Polled in the
+    // same `select!` rather than spawned, so the end of the connection takes
+    // them with it; replies may leave in any order (the client matches `ref`).
+    let mut verdicts: FuturesUnordered<Verdict> = FuturesUnordered::new();
 
     loop {
         tokio::select! {
@@ -415,6 +608,12 @@ pub async fn run_connection(
                         let _ = sink.send(WsMessage::Close(None)).await;
                         break;
                     }
+                }
+            }
+            // A verdict the handler gave while the loop went on reading.
+            Some(reply) = verdicts.next(), if !verdicts.is_empty() => {
+                if sink.send(WsMessage::Text(reply)).await.is_err() {
+                    break;
                 }
             }
             incoming = stream.next() => {
@@ -511,6 +710,7 @@ pub async fn run_connection(
                     &mut links,
                     &mut out_rx,
                     &mut sink,
+                    &mut verdicts,
                     &base,
                     user_id.as_deref(),
                 )
@@ -545,7 +745,46 @@ pub async fn run_connection(
             "web: binary frames refused because the topic's kind takes none"
         );
     }
-    viewers.remove(&viewer_id).await;
+    if let Some(gone) = viewers.remove(&viewer_id).await {
+        report_screen(
+            &viewers,
+            &events_tx,
+            &gone.session_id,
+            &gone.route,
+            &gone.screen,
+            false,
+        )
+        .await;
+    }
+}
+
+/// GH #1002: how long one join piece may take to leave: 10 s plus 1 s for
+/// every 4 KB of it.
+///
+/// Operation timeout (hard rule 12) on the join's own writes, which go
+/// straight to the socket. The rate is a floor, not a guess: Slow 3G as
+/// measured is 50 KB/s, so a default 96 KB piece needs about 2 s and is given
+/// 34 s; a viewer slower than 4 KB/s for a whole piece is a socket that is not
+/// draining, and the join ends instead of holding this task for ever.
+fn piece_timeout(bytes: usize) -> Duration {
+    Duration::from_secs(10) + Duration::from_millis((bytes / 4) as u64)
+}
+
+/// Write one join frame within [`piece_timeout`]; `false` means the socket is over.
+///
+/// The frame bypasses the queue (see the join arm) but not the meter
+/// (GH #1006): it is counted in before the write and out after it, like
+/// [`write_out`], so a viewer stuck on a large join reads as behind.
+async fn piece_sent(sink: &mut SocketSink, text: String, meter: &Meter) -> bool {
+    let bytes = text.len() as u64;
+    let at = meter.written_directly(bytes);
+    let limit = piece_timeout(text.len());
+    let sent = matches!(
+        tokio::time::timeout(limit, sink.send(WsMessage::Text(text))).await,
+        Ok(Ok(()))
+    );
+    meter.written(at, bytes);
+    sent
 }
 
 /// Answer one frame.
@@ -561,6 +800,7 @@ async fn answer(
     links: &mut HashMap<String, TopicLink>,
     out_rx: &mut mpsc::Receiver<Queued>,
     sink: &mut SocketSink,
+    verdicts: &mut FuturesUnordered<Verdict>,
     base: &str,
     user_id: Option<&str>,
 ) -> Result<Option<String>, HandOff> {
@@ -758,8 +998,69 @@ async fn answer(
             }
 
             let route = route_of(&frame.payload, base);
+            if !io.pages.borrow().contains_key(&route) {
+                return Ok(Some(frames::error_reply(
+                    &frame.join_ref,
+                    &frame.msg_ref,
+                    &frame.topic,
+                    format!("no page declares the route {route:?}"),
+                )));
+            }
+
+            // The session id is the token's nonce — the half that is unique per
+            // page load. The path half says which surface it names and is
+            // already checked above, so it carries no information here.
+            let session_id = token.split('.').next().unwrap_or_default().to_string();
+            out_tx.meter().joined(&route, &session_id);
+            *joined = Some((route.clone(), session_id.clone()));
+            // GH #1002: registered BEFORE the snapshot is taken. A write is
+            // published before its diff is fanned out, so any write the snapshot
+            // misses has its diff fanned out after this insert — and reaches
+            // this viewer. The other order lost it: snapshot, write, fan-out to
+            // a registry without this viewer, insert. The lock is
+            // `gh1002_a_write_during_the_chunks_is_not_lost_or_early`.
+            // GH #1013: the same order lets a diff the snapshot ALREADY holds
+            // reach the viewer too (published, then this join, then its
+            // fan-out). Every page frame carries the generation of the pages it
+            // leads to, the join records its snapshot's generation
+            // (`holds_snapshot` below), and the write loop drops a diff of that
+            // generation or older (`Meter::admits`). The lock is
+            // `gh1013_a_diff_older_than_the_join_does_not_reach_the_viewer`.
+            let screen = screen_of(&frame.payload);
+            let replaced = viewers
+                .insert(
+                    viewer_id.to_string(),
+                    Viewer {
+                        tx: out_tx.clone(),
+                        route: route.clone(),
+                        join_ref: frame.join_ref.clone(),
+                        topic: frame.topic.clone(),
+                        session_id: session_id.clone(),
+                        screen: screen.clone(),
+                    },
+                )
+                .await;
+            // GH #1003: a second join on this socket ends the first one's view.
+            if let Some(old) = replaced {
+                report_screen(
+                    viewers,
+                    events_tx,
+                    &old.session_id,
+                    &old.route,
+                    &old.screen,
+                    false,
+                )
+                .await;
+            }
             let pages: Arc<PageMap> = io.pages.borrow().clone();
+            // GH #1013: what this viewer holds from now on. Every page frame
+            // still queued for it is read against this generation by the write
+            // loop, after the join's own frames below.
+            out_tx.meter().holds_snapshot(pages.generation);
             let Some(page) = pages.get(&route) else {
+                // Removed between the two looks: no page, no viewer.
+                viewers.remove(viewer_id).await;
+                *joined = None;
                 return Ok(Some(frames::error_reply(
                     &frame.join_ref,
                     &frame.msg_ref,
@@ -767,36 +1068,55 @@ async fn answer(
                     format!("no page declares the route {route:?}"),
                 )));
             };
-
-            // The session id is the token's nonce — the half that is unique per
-            // page load. The path half says which surface it names and is
-            // already checked above, so it carries no information here.
-            let session_id = token.split('.').next().unwrap_or_default().to_string();
-            out_tx.meter().joined(&route, &session_id);
-            *joined = Some((route.clone(), session_id));
-            viewers
-                .insert(
-                    viewer_id.to_string(),
-                    Viewer {
-                        tx: out_tx.clone(),
-                        route,
-                        join_ref: frame.join_ref.clone(),
-                        topic: frame.topic.clone(),
-                    },
-                )
-                .await;
+            // GH #1003: the app hears which screen joined, on which route —
+            // its screen class (display-hive § 6.1) — when it opted in.
+            report_screen(viewers, events_tx, &session_id, &route, &screen, true).await;
 
             // No render here, and that is R-W8-4b: the tree was built by the
-            // last write.
-            Ok(Some(frames::ok_reply(
+            // last write. GH #1002: a large page is cut at `join_chunk` — the
+            // reply carries the first piece, the rest follow as plain diffs; any
+            // other page joins in one frame as before (`join_frames`).
+            let (head, pieces) = page.join_frames(io.join_chunk);
+            let reply = frames::ok_reply(
                 &frame.join_ref,
                 &frame.msg_ref,
                 &frame.topic,
                 json!({
-                    "rendered": page.packed_tree(),
+                    "rendered": head,
                     "liveview_version": meclaw_surface::LIVEVIEW_VERSION
                 }),
-            )))
+            );
+            if pieces.is_empty() {
+                return Ok(Some(reply));
+            }
+            // Written here, straight to the socket and before this task reads
+            // its queue again: every diff a write queued for this viewer since
+            // the insert above lands AFTER the last piece, so a piece cut from
+            // this snapshot can never overwrite a newer diff. A diff older than
+            // the snapshot (or of its generation) is dropped by the write loop
+            // (GH #1013, `Meter::admits`): applied to a snapshot that already
+            // holds it, a keyed-list diff is not the same page.
+            if !piece_sent(sink, reply, out_tx.meter()).await {
+                return Err(HandOff::SocketGone);
+            }
+            for piece in pieces {
+                let text = frames::push(&frame.join_ref, &frame.topic, "diff", piece);
+                // Only a single slot larger than the limit can make a piece
+                // larger than it (`cut_frames`); said once per join, with the
+                // number, because it is a page worth splitting.
+                if text.len() > io.join_chunk + 1024 {
+                    tracing::info!(
+                        route = %route,
+                        bytes = text.len(),
+                        limit = io.join_chunk,
+                        "web: one slot is larger than the join piece limit and goes alone"
+                    );
+                }
+                if !piece_sent(sink, text, out_tx.meter()).await {
+                    return Err(HandOff::SocketGone);
+                }
+            }
+            Ok(None)
         }
 
         (_, "event") => {
@@ -811,59 +1131,15 @@ async fn answer(
             // Tasks 9 and 10 decide what an event *is* — a local `editable`
             // write or a semantic event on an out-edge. Both are the handler's
             // call, because the handler is the only writer and the only side
-            // with an `OutputSink`. This half forwards and says ok.
-            let name = frame
-                .payload
-                .get("event")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let value = frame.payload.get("value").cloned().unwrap_or(json!({}));
+            // with an `OutputSink`. This half forwards; it waits for nobody
+            // (GH #1004, [`forward_event`]).
             let (route, session_id) = joined.clone().unwrap_or_default();
-            let (respond, verdict) = tokio::sync::oneshot::channel();
-            if events_tx
-                .send(WebEvent::Browser {
-                    viewer: viewer_id.to_string(),
-                    route,
-                    session_id,
-                    user_id: user_id.map(str::to_string),
-                    name,
-                    value,
-                    respond,
-                })
-                .await
-                .is_err()
-            {
-                return Ok(Some(frames::error_reply(
-                    &frame.join_ref,
-                    &frame.msg_ref,
-                    &frame.topic,
-                    "the cell is shutting down".to_string(),
-                )));
-            }
-
-            // Operation timeout (hard rule 12): a wedged handler must not hold
-            // a browser's reply open forever. The client sees a refusal it can
-            // act on instead of a spinner that never resolves.
-            match tokio::time::timeout(EVENT_TIMEOUT, verdict).await {
-                Ok(Ok(EventReply::Ok)) => Ok(Some(frames::ok_reply(
-                    &frame.join_ref,
-                    &frame.msg_ref,
-                    &frame.topic,
-                    json!({}),
-                ))),
-                Ok(Ok(EventReply::Error(reason))) => Ok(Some(frames::error_reply(
-                    &frame.join_ref,
-                    &frame.msg_ref,
-                    &frame.topic,
-                    reason,
-                ))),
-                Ok(Err(_)) | Err(_) => Ok(Some(frames::error_reply(
-                    &frame.join_ref,
-                    &frame.msg_ref,
-                    &frame.topic,
-                    "the cell did not answer".to_string(),
-                ))),
+            match forward_event(frame, events_tx, viewer_id, route, session_id, user_id).await {
+                Forwarded::Now(reply) => Ok(Some(reply)),
+                Forwarded::Later(verdict) => {
+                    verdicts.push(verdict);
+                    Ok(None)
+                }
             }
         }
 
@@ -1018,6 +1294,111 @@ mod tests {
             Some(LinkFrame::Text("inbound".into())),
             "and the inbound frame is what the link holds now"
         );
+    }
+
+    /// An `event` frame as the client sends it.
+    fn event_frame(name: &str) -> frames::Frame {
+        frames::Frame {
+            join_ref: json!("1"),
+            msg_ref: json!("7"),
+            topic: "lv:x".to_string(),
+            event: "event".to_string(),
+            payload: json!({"type": "click", "event": name, "value": {"n": 1}}),
+        }
+    }
+
+    fn reply_status(text: &str) -> Value {
+        let v: Value = meclaw_core::serde_json::from_str(text).expect("a reply is JSON");
+        v[4].clone()
+    }
+
+    /// GH #1004 T6: with the handler gone, an event is refused as before —
+    /// at once, for both lanes, and with the same sentence.
+    #[tokio::test]
+    async fn gh1004_an_event_after_shutdown_is_refused() {
+        for name in ["pick", LOCAL_EVENT] {
+            let (events_tx, events_rx) = mpsc::channel::<WebEvent>(4);
+            drop(events_rx);
+            let forwarded = forward_event(
+                &event_frame(name),
+                &events_tx,
+                "v1",
+                "/".to_string(),
+                "s".to_string(),
+                None,
+            )
+            .await;
+            let Forwarded::Now(text) = forwarded else {
+                panic!("{name}: a closed channel is answered at once");
+            };
+            let reply = reply_status(&text);
+            assert_eq!(reply["status"], json!("error"), "{name}: {text}");
+            assert_eq!(
+                reply["response"]["reason"],
+                json!("the cell is shutting down"),
+                "{name}: {text}"
+            );
+        }
+    }
+
+    /// GH #1004 T1 at the seam: a semantic event is `ok` the moment the
+    /// handler's channel took it — nobody reads the channel here — and the
+    /// handler is handed no reply to give.
+    #[tokio::test]
+    async fn gh1004_a_semantic_event_is_answered_at_hand_over() {
+        let (events_tx, mut events_rx) = mpsc::channel::<WebEvent>(4);
+        let forwarded = forward_event(
+            &event_frame("pick"),
+            &events_tx,
+            "v1",
+            "/".to_string(),
+            "s".to_string(),
+            None,
+        )
+        .await;
+        let Forwarded::Now(text) = forwarded else {
+            panic!("a semantic event waits for no verdict");
+        };
+        assert_eq!(reply_status(&text)["status"], json!("ok"), "{text}");
+        let Some(WebEvent::Browser { name, respond, .. }) = events_rx.recv().await else {
+            panic!("the event reached the handler's channel");
+        };
+        assert_eq!(name, "pick");
+        assert!(respond.is_none(), "nobody is waiting for this verdict");
+    }
+
+    /// GH #1004 T5 at the seam: `object:set` still owes the handler's verdict,
+    /// and the reply carries it — ok or the handler's refusal.
+    #[tokio::test]
+    async fn gh1004_an_object_set_waits_for_the_handlers_verdict() {
+        for (verdict, status) in [
+            (EventReply::Ok, "ok"),
+            (EventReply::Error("not_editable".to_string()), "error"),
+        ] {
+            let (events_tx, mut events_rx) = mpsc::channel::<WebEvent>(4);
+            let forwarded = forward_event(
+                &event_frame(LOCAL_EVENT),
+                &events_tx,
+                "v1",
+                "/".to_string(),
+                "s".to_string(),
+                None,
+            )
+            .await;
+            let Forwarded::Later(pending) = forwarded else {
+                panic!("object:set is answered by the handler");
+            };
+            let Some(WebEvent::Browser {
+                respond: Some(respond),
+                ..
+            }) = events_rx.recv().await
+            else {
+                panic!("the handler is handed the reply to give");
+            };
+            respond.send(verdict).expect("the socket is waiting");
+            let text = pending.await;
+            assert_eq!(reply_status(&text)["status"], json!(status), "{text}");
+        }
     }
 
     #[test]

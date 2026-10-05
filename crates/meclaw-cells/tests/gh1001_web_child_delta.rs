@@ -106,12 +106,15 @@ async fn gh1001_a_child_update_sends_only_the_child() {
     let (bytes, diff) = viewer.next_diff().await;
     println!("LAB child update in a 128-child chunk: {bytes} bytes");
     // The chunk is root child `figures + 3`; its template's dynamics are
-    // `c`, `lod`, `children`, so the children part is dynamic 2.
+    // `c`, `lod`, `children`, so the children list is dynamic 2, a keyed
+    // comprehension whose entry 7 holds the child as its one dynamic (GH #1009).
+    // GH #1013: the chunk itself is entry `slot` of the root's keyed list.
     let slot = (lab.shape.figures + 3).to_string();
-    let child = &diff[&slot]["2"]["7"];
+    let child = &diff["0"]["k"][&slot]["0"]["2"]["k"]["7"]["0"];
     assert!(
         child.is_object(),
-        "the diff addresses the child inside its chunk, {{\"{slot}\":{{\"2\":{{\"7\":…}}}}}}: {}",
+        "the diff addresses the child inside its chunk inside the root list, \
+         {{\"0\":{{\"k\":{{\"{slot}\":{{\"0\":{{\"2\":{{\"k\":{{\"7\":…}}}}}}}}}}}}}}: {}",
         &diff.to_string()[..diff.to_string().len().min(300)]
     );
     assert!(
@@ -443,14 +446,15 @@ async fn gh1001_a_template_with_two_roots_falls_back_to_a_string() {
         .await);
     let mut viewer = lab.viewer().await;
     let slot = (lab.shape.figures + lab.shape.chunks).to_string();
+    // GH #1013: the slot is entry `slot` of the root's keyed list.
     assert_eq!(
-        viewer.rendered[&slot],
+        viewer.rendered["0"]["k"][&slot]["0"],
         json!("<b>one</b><i>two</i>"),
         "the two-root slot is a string in the join"
     );
     ok(&lab.call(vec![update("pair-1", json!({"a": "uno"}))]).await);
     let (_, diff) = viewer.next_diff().await;
-    assert_eq!(diff[&slot], json!("<b>uno</b><i>two</i>"));
+    assert_eq!(diff["0"]["k"][&slot]["0"], json!("<b>uno</b><i>two</i>"));
     let body = served_body(&lab.get_page().await);
     assert!(body.contains("<b>uno</b><i>two</i></main>"));
     if let Some((_, full)) = client_builds(&viewer.rendered, &[diff]) {
