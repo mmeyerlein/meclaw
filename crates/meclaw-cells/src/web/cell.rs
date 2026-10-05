@@ -11,7 +11,7 @@ use crate::web::assets::{AssetMap, load_assets};
 use crate::web::io::{WebIo, run_io};
 use crate::web::ops;
 use crate::web::output::{self, BundleLeg, OpOutcome};
-use crate::web::render::{PageMap, materialize_all};
+use crate::web::render::{self, PageMap, materialize_all};
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, CellOutput, Message, OriginSink, OutputSink};
@@ -57,7 +57,30 @@ pub enum WebEvent {
         /// `phx_reply` its client is waiting for.
         respond: tokio::sync::oneshot::Sender<EventReply>,
     },
+    /// GH #1006: a viewer's socket crossed a backlog threshold, or fell back
+    /// below half of both. Sent by the I/O half only when the cell opted in
+    /// (`viewer_events: ["backlog"]`), edge-triggered and at most once a second
+    /// while `high`; the handler turns it into a `viewer:backlog` emission.
+    Backlog {
+        /// The page load whose socket this is.
+        session_id: String,
+        /// The route it is looking at.
+        route: String,
+        /// Frames queued plus the one being written.
+        frames: u64,
+        /// Their bytes.
+        bytes: u64,
+        /// Age of the oldest of them.
+        oldest_ms: u64,
+        /// Resync marks since the last report.
+        resyncs: u64,
+        /// `true` for `high`, `false` for `clear`.
+        high: bool,
+    },
 }
+
+/// The event name a backlog report leaves under (GH #1006).
+pub const BACKLOG_EVENT: &str = "viewer:backlog";
 
 /// What the handler says about a browser event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +113,17 @@ pub enum WebReconfig {
         route: String,
         /// The LiveView diff payload, already packed.
         diff: Value,
+    },
+    /// Answer the read-only `viewers` op (GH #1006): one row per joined
+    /// viewer with its backlog counters.
+    ///
+    /// A request rather than a shared table: the counters live in the I/O
+    /// half's viewer registry, and the handler holds no lock of that half
+    /// (AGENTS.md: no lock in cell state). It travels on the same channel as
+    /// `Push`, so the answer reflects every push the handler sent before it.
+    Viewers {
+        /// Where the rows go.
+        respond: tokio::sync::oneshot::Sender<Vec<Value>>,
     },
 }
 
@@ -152,6 +186,13 @@ pub struct WebCell {
     /// The live operation-timeout, held for the same reason: a params update
     /// merges over it.
     pub(crate) external_timeout_ms: u64,
+    /// GH #1006: the per-viewer events, as written. See [`WebCell::mount`];
+    /// the I/O half reads them when it starts.
+    pub(crate) viewer_events: Vec<String>,
+    /// GH #1006: `backlog_high_bytes`, as written.
+    pub(crate) backlog_high_bytes: u64,
+    /// GH #1006: `backlog_high_ms`, as written.
+    pub(crate) backlog_high_ms: u64,
 }
 
 impl WebCell {
@@ -171,6 +212,9 @@ impl WebCell {
     ) -> Self {
         Self {
             path,
+            viewer_events: params.viewer_events.clone(),
+            backlog_high_bytes: params.backlog_high_bytes,
+            backlog_high_ms: params.backlog_high_ms,
             io: Some(io),
             pages_tx,
             assets_tx,
@@ -205,13 +249,24 @@ impl WebCell {
     /// gap; the same run proves the client reads that shape, because the
     /// structural arm already sends `["0","1","2","3","s"]` in one frame.
     ///
-    /// A structural change (create, move, delete) re-sends the whole packed
-    /// tree for that page instead of the slots: the slot list itself changed,
-    /// so a positional patch would address the wrong slot. That is the honest
-    /// version of "one diff per write" — it is one frame either way, and which
-    /// kind it is depends on what actually changed.
+    /// GH #1001: only what the write touched is rendered again — the slots it
+    /// names, on their routes, against the pages last published — and what
+    /// goes out is the difference to what the viewers hold, down to the child
+    /// inside a container ([`render::rerender`]). Measured on a deployed page
+    /// before (`MESSUNG.md` § 6 L-W2): a re-render of every route after every
+    /// write, ≈ 51 ms on 1 000 figures, 129–150 ms on 4 000. A change of the
+    /// root's child list (a root child created, moved or deleted) still sends
+    /// the whole packed tree: the slot list itself changed, so a positional
+    /// patch would address the wrong slot.
     async fn publish_and_push(&self, db: &mut DbConn, touched: &ops::Touched) {
-        let Ok(map) = db.call(|conn| materialize_all(conn)).await else {
+        // The pages last published are the ones every frame was computed
+        // against; the handler is their only writer, so the watch holds them.
+        let old = self.pages_tx.borrow().clone();
+        let touched = touched.clone();
+        let Ok(done) = db
+            .call(move |conn| render::rerender(conn, &old, &touched))
+            .await
+        else {
             tracing::error!(
                 path = %self.path,
                 "web: could not re-render after a write — the display keeps serving \
@@ -219,73 +274,12 @@ impl WebCell {
             );
             return;
         };
-        let map = Arc::new(map);
+        tracing::trace!(path = %self.path, objects = done.objects, "web: re-rendered");
         // A send failure means the listener is gone, which happens during
         // shutdown and is not worth a line in the journal.
-        let _ = self.pages_tx.send(map.clone());
-
-        // The root-object case: structural, but no slot to name — the whole
-        // page changed. Every route gets its packed tree, or the viewers keep
-        // a picture the database has left behind.
-        if touched.structural && touched.slots.is_empty() {
-            for (route, page) in map.iter() {
-                let _ = self
-                    .push_tx
-                    .send(WebReconfig::Push {
-                        route: route.clone(),
-                        diff: page.packed_tree(),
-                    })
-                    .await;
-            }
-            return;
-        }
-
-        // Group the touched slots by route — the grouping, not the order, is
-        // what makes one frame per route. A bundle arrives here already sorted
-        // and deduplicated (see the merge above); a single call carries at most
-        // one slot per route by construction (`touched_by`), except for a move,
-        // which names the slot it left and the slot it reached.
-        let mut by_route: Vec<(&String, Vec<&String>)> = Vec::new();
-        for (route, slot_id) in &touched.slots {
-            match by_route.iter_mut().find(|(r, _)| *r == route) {
-                Some((_, slots)) => slots.push(slot_id),
-                None => by_route.push((route, vec![slot_id])),
-            }
-        }
-
-        for (route, slot_ids) in by_route {
-            let Some(page) = map.get(route) else { continue };
-            // An object that is no longer a slot on this page cannot be
-            // addressed positionally — send the whole tree rather than a patch
-            // that misses, or the viewer keeps a picture that is quietly wrong.
-            // It is decided for the WHOLE group: a tree for one slot and a
-            // patch for its neighbours would be two frames again. With the ops
-            // the substrate has today every way to make a slot disappear also
-            // sets `structural`, so this arm is a belt on a brace rather than
-            // a path of its own — `723_a_route_hears_one_frame_per_pass.rs`
-            // locks the reachable shape, a move that leaves one root child for
-            // another.
-            let unaddressable = slot_ids
-                .iter()
-                .any(|slot_id| page.slot_of(slot_id).is_none());
-            let diff = if touched.structural || unaddressable {
-                page.packed_tree()
-            } else {
-                let mut diff = Map::new();
-                for slot_id in slot_ids {
-                    if let Some(i) = page.slot_of(slot_id) {
-                        diff.insert(i.to_string(), Value::String(page.slots[i].1.clone()));
-                    }
-                }
-                Value::Object(diff)
-            };
-            let _ = self
-                .push_tx
-                .send(WebReconfig::Push {
-                    route: route.clone(),
-                    diff,
-                })
-                .await;
+        let _ = self.pages_tx.send(Arc::new(done.pages));
+        for (route, diff) in done.frames {
+            let _ = self.push_tx.send(WebReconfig::Push { route, diff }).await;
         }
     }
 }
@@ -376,6 +370,9 @@ impl WebCell {
             trusted_proxies: self.trusted_proxies.clone(),
             link_mounts: self.link_mounts.clone(),
             external_timeout_ms: self.external_timeout_ms,
+            viewer_events: self.viewer_events.clone(),
+            backlog_high_bytes: self.backlog_high_bytes,
+            backlog_high_ms: self.backlog_high_ms,
         };
         let (merged, overlay) = match crate::params_overlay::apply_update(&current, update) {
             Ok(ok) => ok,
@@ -416,6 +413,9 @@ impl WebCell {
         self.trusted_proxies = merged.trusted_proxies.clone();
         self.link_mounts = merged.link_mounts.clone();
         self.external_timeout_ms = merged.external_timeout_ms;
+        self.viewer_events = merged.viewer_events.clone();
+        self.backlog_high_bytes = merged.backlog_high_bytes;
+        self.backlog_high_ms = merged.backlog_high_ms;
         db.set_query_timeout(Some(std::time::Duration::from_millis(
             self.external_timeout_ms,
         )));
@@ -629,6 +629,35 @@ impl LongRunningCell for WebCell {
             };
 
             let bundle = calls.len() > 1;
+
+            // The answer form (GH #1005), read BEFORE the first leg runs: a
+            // form the cell cannot honour is refused whole, and nothing is
+            // written — half a bundle applied under an answer nobody can read
+            // would leave the caller guessing which legs landed. One op keeps
+            // its one small answer whatever the slot says (`errors` is a
+            // bundle's form; a single reply has no repetition to drop).
+            let form = match &msg.body {
+                Body::Inline(v) => output::AnswerForm::from_body(v),
+                _ => Ok(output::AnswerForm::Full),
+            };
+            let form = match form {
+                Ok(f) => f,
+                Err(e) => {
+                    let body = output::build_refusal(
+                        if bundle { "bundle" } else { "unknown" },
+                        "invalid_input",
+                        e,
+                        started.elapsed().as_millis() as i64,
+                    );
+                    let _ = sink
+                        .push(CellOutput {
+                            target: reply_target,
+                            content: body,
+                        })
+                        .await;
+                    return;
+                }
+            };
             let mut legs: Vec<BundleLeg> = Vec::with_capacity(calls.len());
             let mut single: Option<(OpOutcome, String)> = None;
             // What the whole bundle touched, accumulated. See the push below.
@@ -641,7 +670,24 @@ impl LongRunningCell for WebCell {
 
             for (args, id) in calls {
                 let op_started = std::time::Instant::now();
-                let (outcome, touched) = db.call(move |conn| ops::apply(conn, &args)).await;
+                let (outcome, touched) =
+                    if args.get("op").and_then(Value::as_str) == Some(ops::VIEWERS_OP) {
+                        // GH #1006: read-only, and not the database's — the
+                        // counters live in the I/O half's viewer table, so
+                        // the handler asks over the push channel and waits
+                        // for the answer instead of taking that half's lock.
+                        // A closed channel (the I/O half is gone) is no
+                        // viewers, not an error.
+                        let (respond, rows) = tokio::sync::oneshot::channel();
+                        let _ = self.push_tx.send(WebReconfig::Viewers { respond }).await;
+                        let rows = rows.await.unwrap_or_default();
+                        (
+                            OpOutcome::read(ops::VIEWERS_OP, json!({ "viewers": rows })),
+                            ops::Touched::default(),
+                        )
+                    } else {
+                        db.call(move |conn| ops::apply(conn, &args)).await
+                    };
 
                 // One diff per write for a SINGLE call, immediately. A bundle
                 // pushes once, after the loop.
@@ -703,21 +749,10 @@ impl LongRunningCell for WebCell {
                     // its whole packed tree, which already contains every slot
                     // the bundle touched.
                     merged.slots.clear();
-                } else if merged.structural {
-                    // Structural without a root leg: the diff is the whole tree
-                    // per route, so ONE entry per route is all of it and a
-                    // second would send the same tree twice. Keeping the first
-                    // slot of each route keeps the addressing — only the routes
-                    // the bundle touched hear it — and drops the duplicates.
-                    let mut routes: Vec<String> = Vec::new();
-                    merged.slots.retain(|(route, _)| {
-                        let first = !routes.iter().any(|r| r == route);
-                        if first {
-                            routes.push(route.clone());
-                        }
-                        first
-                    });
                 } else {
+                    // Every slot the bundle touched, once: the re-render takes
+                    // only these (GH #1001), structural or not, and still
+                    // answers with one frame per route.
                     merged.slots.sort();
                     merged.slots.dedup();
                 }
@@ -725,8 +760,11 @@ impl LongRunningCell for WebCell {
             }
 
             let content = if bundle {
-                let (body, headers) =
-                    output::build_bundle_result(&legs, started.elapsed().as_millis() as i64);
+                let total = started.elapsed().as_millis() as i64;
+                let (body, headers) = match form {
+                    output::AnswerForm::Full => output::build_bundle_result(&legs, total),
+                    output::AnswerForm::Errors => output::build_bundle_result_compact(&legs, total),
+                };
                 merge(headers, body)
             } else {
                 let Some((outcome, id)) = single else { return };
@@ -790,6 +828,31 @@ impl LongRunningCell for WebCell {
                         self.publish_and_push(_db, &touched).await;
                     }
                     tracing::debug!(path = %self.path, %viewer, %route, %name, "web: browser event");
+                }
+                WebEvent::Backlog {
+                    session_id,
+                    route,
+                    frames,
+                    bytes,
+                    oldest_ms,
+                    resyncs,
+                    high,
+                } => {
+                    // GH #1006: the same lane as every other semantic event,
+                    // so an app hears it on the out-edge it already listens
+                    // on. The cell reports; whether and how to slow down is
+                    // the app's call.
+                    let value = json!({
+                        "session_id": session_id,
+                        "route": route,
+                        "frames": frames,
+                        "bytes": bytes,
+                        "oldest_ms": oldest_ms,
+                        "resyncs": resyncs,
+                        "level": if high { "high" } else { "clear" },
+                    });
+                    self.emit_semantic(BACKLOG_EVENT, &value, &route, &session_id, None, _sink)
+                        .await;
                 }
                 WebEvent::MountFailed(err) => {
                     // Loud, and not fatal. The cell keeps running and is

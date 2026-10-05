@@ -37,6 +37,12 @@ const SANDBOX_WATCH_CAP: Duration = Duration::from_secs(5);
 /// How often the sandbox check looks while it waits.
 const SANDBOX_POLL: Duration = Duration::from_millis(50);
 
+/// How long a browser whose pipe ended gets to be reaped before its refusal
+/// is worded without the exit code (GH #1007). The stillborn browser of the
+/// sandbox arm exits within milliseconds of its pipe's end; 500 ms covers a
+/// loaded host and caps the cost of a child that closed the pipe and lives.
+const EXIT_AFTER_EOF: Duration = Duration::from_millis(500);
+
 /// What an operator does about a browser that did not start.
 ///
 /// One sentence, used by every refusal that ends this way, because they all end
@@ -176,10 +182,11 @@ impl Browser {
             // and an operator reading `browser_crashed` would go looking for a
             // page that never existed.
             Ok(Err(BrowserError::BrowserCrashed(cause))) => {
-                // With the number, when the child has already been reaped:
-                // "exit code 133" is what an operator looks up, and "the
-                // browser is gone" is not.
-                let how = match self.reaper.exited() {
+                // With the number: "exit code 133" is what an operator looks
+                // up, and "the browser is gone" is not. The pipe's end can
+                // reach us before the exit is reapable — under a loaded gate
+                // it did (GH #1007) — so the exit gets a bounded moment.
+                let how = match self.reaper.exited_within(EXIT_AFTER_EOF).await {
                     Some(exit) => format!("{cause} ({})", exit.detail()),
                     None => cause,
                 };

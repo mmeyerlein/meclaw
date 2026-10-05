@@ -1,0 +1,7 @@
+{
+  "id": "gen-fake-exhausted",
+  "object": "chat.completion",
+  "model": "fake/cell-shapes",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "", "reasoning": "The user wants a single word. Let me consider which word would fit best here, and"}, "finish_reason": "length"}],
+  "usage": {"prompt_tokens": 14, "completion_tokens": 32, "total_tokens": 46}
+}

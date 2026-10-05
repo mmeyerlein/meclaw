@@ -38,6 +38,9 @@
 //!   flight.
 //! - `stillborn` — never answers anything: one line on stderr and exit 133,
 //!   the shape a packaged browser takes where its own sandbox cannot run.
+//! - `stillborn-late` — like `stillborn`, but closes its CDP pipes first and
+//!   exits 150 ms later: the pipe's end reaches the cell before the exit can
+//!   be reaped, the order a loaded host produces at random (GH #1007).
 //! - `crash-renderer` — answers, and emits `Inspector.targetCrashed` after the
 //!   first `Page.navigate`.
 //! - `same-namespace` — its child STAYS in this user namespace: what a browser
@@ -131,6 +134,17 @@ fn main() {
         // browser that crashed -- an operator sent after `browser_crashed`
         // goes looking for a page that never existed.
         eprintln!("Failed to move to new namespace: No usable sandbox!");
+        std::process::exit(133);
+    }
+
+    if mode == "stillborn-late" {
+        // The same death, in the order a loaded host can show it: the pipe
+        // ends first, the exit status comes later. The cell must still say
+        // the number (GH #1007).
+        eprintln!("Failed to move to new namespace: No usable sandbox!");
+        drop(inbound);
+        drop(outbound);
+        std::thread::sleep(std::time::Duration::from_millis(150));
         std::process::exit(133);
     }
 

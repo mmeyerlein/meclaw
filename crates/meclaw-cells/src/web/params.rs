@@ -1,6 +1,6 @@
 //! W8 (GH #380): the `web` cell's params.
 //!
-//! Five keys, and none of them is immutable.
+//! Eight keys, and none of them is immutable.
 //!
 //! # A named removal
 //!
@@ -64,7 +64,20 @@ pub struct WebParams {
     pub link_mounts: Vec<String>,
     /// Operation-timeout (hard rule 12, A) for I/O this cell initiates.
     pub external_timeout_ms: u64,
+    /// GH #1006: the per-viewer events this display reports to the app, from
+    /// `"backlog"` and `"screen"`. Empty (the default) reports none, and the
+    /// display behaves byte for byte as before the key existed.
+    pub viewer_events: Vec<String>,
+    /// GH #1006: bytes outstanding on one socket at which `viewer:backlog`
+    /// reports `high`.
+    pub backlog_high_bytes: u64,
+    /// GH #1006: age in ms of the oldest outstanding frame at which
+    /// `viewer:backlog` reports `high`.
+    pub backlog_high_ms: u64,
 }
+
+/// The per-viewer events a display may report (GH #1006).
+pub const VIEWER_EVENTS: &[&str] = &["backlog", "screen"];
 
 /// Whether `name` is a header name a request can actually carry.
 ///
@@ -72,6 +85,25 @@ pub struct WebParams {
 /// a refusal at plan time rather than a header that silently never matches.
 fn is_header_name(name: &str) -> bool {
     axum::http::HeaderName::from_bytes(name.as_bytes()).is_ok()
+}
+
+/// An optional integer key inside `range`, or `default` when absent/`null`.
+fn bounded(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    key: &str,
+    range: std::ops::RangeInclusive<u64>,
+    default: u64,
+) -> Result<u64, String> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(default),
+        Some(v) => v.as_u64().filter(|n| range.contains(n)).ok_or_else(|| {
+            format!(
+                "{key}: must be an integer in {}..={}, got {v}",
+                range.start(),
+                range.end()
+            )
+        }),
+    }
 }
 
 impl WebParams {
@@ -175,13 +207,64 @@ impl WebParams {
             .transpose()?
             .unwrap_or(5000);
 
+        // GH #1006. `null` reads as absent, like the lists above.
+        let viewer_events = match obj.get("viewer_events") {
+            None | Some(JsonValue::Null) => Vec::new(),
+            Some(JsonValue::Array(items)) => {
+                let mut list: Vec<String> = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let name = item
+                        .as_str()
+                        .filter(|n| VIEWER_EVENTS.contains(n))
+                        .ok_or_else(|| {
+                            format!(
+                                "viewer_events[{i}]: must be one of {VIEWER_EVENTS:?}, got {item}"
+                            )
+                        })?;
+                    if !list.iter().any(|n| n == name) {
+                        list.push(name.to_string());
+                    }
+                }
+                list
+            }
+            Some(other) => {
+                return Err(format!(
+                    "viewer_events: must be a list from {VIEWER_EVENTS:?}, got {other}"
+                ));
+            }
+        };
+        let backlog_high_bytes = bounded(
+            obj,
+            "backlog_high_bytes",
+            1024..=64 * 1024 * 1024,
+            crate::web::backlog::DEFAULT_HIGH_BYTES,
+        )?;
+        let backlog_high_ms = bounded(
+            obj,
+            "backlog_high_ms",
+            10..=60_000,
+            crate::web::backlog::DEFAULT_HIGH_MS,
+        )?;
+
         Ok(Self {
             mount: mount.to_string(),
             identity_header,
             trusted_proxies,
             link_mounts,
             external_timeout_ms,
+            viewer_events,
+            backlog_high_bytes,
+            backlog_high_ms,
         })
+    }
+
+    /// GH #1006: what the I/O half meters and reports, for this life.
+    pub fn backlog_policy(&self) -> crate::web::backlog::BacklogPolicy {
+        crate::web::backlog::BacklogPolicy {
+            report: self.viewer_events.iter().any(|e| e == "backlog"),
+            high_bytes: self.backlog_high_bytes,
+            high_ms: self.backlog_high_ms,
+        }
     }
 
     /// GH #833: the list the I/O half judges each connection with — the
@@ -198,7 +281,7 @@ impl WebParams {
 
 /// The runtime params-update overlay of a `web` cell.
 ///
-/// It carries all five keys, because `apply_update` merges the update over the
+/// It carries all eight keys, because `apply_update` merges the update over the
 /// **serialised current params**: a key that is not serialised here is missing
 /// from the merge base, so an update naming only `identity_header` would be
 /// re-parsed against a document with no `mount` in it and refused with
@@ -229,6 +312,27 @@ pub struct WebOverlay {
     pub link_mounts: Vec<String>,
     /// Operation-timeout for I/O this cell initiates. Mutable.
     pub external_timeout_ms: u64,
+    /// GH #1006: per-viewer events. Mutable; effect on the next life, read
+    /// when the I/O half starts. Not serialised when empty, so an overlay
+    /// written before the key existed and one that never named it read the
+    /// same.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub viewer_events: Vec<String>,
+    /// GH #1006: `high` threshold in bytes. Mutable; effect on the next life.
+    /// Not serialised at its default, for the same reason.
+    #[serde(skip_serializing_if = "is_default_high_bytes")]
+    pub backlog_high_bytes: u64,
+    /// GH #1006: `high` threshold in ms. Mutable; effect on the next life.
+    #[serde(skip_serializing_if = "is_default_high_ms")]
+    pub backlog_high_ms: u64,
+}
+
+fn is_default_high_bytes(v: &u64) -> bool {
+    *v == crate::web::backlog::DEFAULT_HIGH_BYTES
+}
+
+fn is_default_high_ms(v: &u64) -> bool {
+    *v == crate::web::backlog::DEFAULT_HIGH_MS
 }
 
 impl OverlayParams for WebOverlay {
@@ -239,6 +343,9 @@ impl OverlayParams for WebOverlay {
         "trusted_proxies",
         "link_mounts",
         "external_timeout_ms",
+        "viewer_events",
+        "backlog_high_bytes",
+        "backlog_high_ms",
     ];
 
     /// **Empty.** No param of this cell type is fixed for its lifetime: a
@@ -257,6 +364,9 @@ impl OverlayParams for WebOverlay {
             trusted_proxies: p.trusted_proxies,
             link_mounts: p.link_mounts,
             external_timeout_ms: p.external_timeout_ms,
+            viewer_events: p.viewer_events,
+            backlog_high_bytes: p.backlog_high_bytes,
+            backlog_high_ms: p.backlog_high_ms,
         })
     }
 }
@@ -265,6 +375,45 @@ impl OverlayParams for WebOverlay {
 mod tests {
     use super::*;
     use meclaw_core::serde_json::json;
+
+    /// GH #1006: the opt-in and its thresholds — absent is today's display,
+    /// a name outside the list and a threshold out of range are refused.
+    #[test]
+    fn gh1006_viewer_events_are_opt_in_and_bounded() {
+        let plain = WebParams::parse(&json!({"mount": "web"})).expect("plain");
+        assert!(plain.viewer_events.is_empty());
+        assert!(!plain.backlog_policy().report, "off by default");
+        assert_eq!(plain.backlog_high_bytes, 256 * 1024);
+        assert_eq!(plain.backlog_high_ms, 250);
+
+        let on = WebParams::parse(&json!({
+            "mount": "web",
+            "viewer_events": ["backlog", "screen", "backlog"],
+            "backlog_high_bytes": 65536,
+            "backlog_high_ms": 100
+        }))
+        .expect("on");
+        assert_eq!(on.viewer_events, vec!["backlog", "screen"], "deduplicated");
+        let policy = on.backlog_policy();
+        assert!(policy.report);
+        assert_eq!((policy.high_bytes, policy.high_ms), (65536, 100));
+
+        let only_screen =
+            WebParams::parse(&json!({"mount": "web", "viewer_events": ["screen"]})).expect("s");
+        assert!(
+            !only_screen.backlog_policy().report,
+            "screen alone is not backlog"
+        );
+
+        for bad in [
+            json!({"mount": "web", "viewer_events": ["frames"]}),
+            json!({"mount": "web", "viewer_events": "backlog"}),
+            json!({"mount": "web", "backlog_high_bytes": 0}),
+            json!({"mount": "web", "backlog_high_ms": 5}),
+        ] {
+            assert!(WebParams::parse(&bad).is_err(), "refused: {bad}");
+        }
+    }
 
     #[test]
     fn a_mount_is_required() {

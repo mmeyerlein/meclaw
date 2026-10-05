@@ -1,0 +1,30 @@
+{
+  "body": {
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Answer with the single word OK.",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": "Ping.",
+        "role": "user"
+      }
+    ],
+    "model": "anthropic/claude-sonnet-5"
+  },
+  "endpoint_class": "openrouter",
+  "expected_dropped": [
+    "temperature"
+  ],
+  "model_id": "anthropic/claude-sonnet-5",
+  "wire_dialect": "chat_completions"
+}

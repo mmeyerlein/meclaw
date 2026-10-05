@@ -120,6 +120,10 @@
         "dropped": {
           "type": "array",
           "required": false
+        },
+        "unverified": {
+          "type": "array",
+          "required": false
         }
       }
     }

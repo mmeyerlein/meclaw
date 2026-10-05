@@ -1,0 +1,76 @@
+{
+  "model_id": "deepseek/deepseek-v4-pro",
+  "endpoint_class": "openrouter",
+  "measured_at": "2026-10-05T06:36:48Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "taken",
+    "top_p": "taken",
+    "reasoning": "taken",
+    "reasoning_effort": "taken",
+    "thinking_token_budget": "accepted_unverified"
+  },
+  "listing": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+  ],
+  "reasoning_field": "reasoning",
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=taken, top_p=taken, reasoning=taken, reasoning_effort=taken, thinking_token_budget=accepted_unverified; thinking_token_budget: accepted_unverified (200 strict, not in the listing)"
+    },
+    "K4": {
+      "status": "green",
+      "note": "listing == measurement: reasoning,reasoning_effort,temperature,top_p; 200 but not listed (accepted_unverified): ['thinking_token_budget']"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512, reasoning low"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form reasoning, trace in reasoning"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "n/a",
+      "note": "no requests/deepseek__deepseek-v4-pro.json"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.000154
+}

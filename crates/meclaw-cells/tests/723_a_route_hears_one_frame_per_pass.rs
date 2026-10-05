@@ -32,7 +32,7 @@
 use meclaw_cells::web::cell::{WebCell, WebReconfig};
 use meclaw_cells::web::db::setup_web_schema;
 use meclaw_cells::web::params::WebParams;
-use meclaw_cells::web::render::PageMap;
+use meclaw_cells::web::render::{PageMap, materialize_all, wire_html};
 use meclaw_cells::web::{AssetMap, WebIo};
 use meclaw_colony::{DbConn, LongRunningCell, SurfaceRegistry};
 use meclaw_core::serde_json::{Value, json};
@@ -143,7 +143,10 @@ struct Harness {
 }
 
 fn harness(db: rusqlite::Connection) -> Harness {
-    let (pages_tx, pages_rx) = watch::channel(Arc::new(PageMap::new()));
+    // The pages a booted cell has published before its first write: what the
+    // viewers hold, and what every frame is computed against (GH #1001).
+    let boot = materialize_all(&db).expect("the fixture renders");
+    let (pages_tx, pages_rx) = watch::channel(Arc::new(boot));
     let (assets_tx, assets_rx) = watch::channel(Arc::new(AssetMap::new()));
     let (ready_tx, ready_rx) = watch::channel(false);
     let (push_tx, pushes) = mpsc::channel::<WebReconfig>(64);
@@ -208,8 +211,9 @@ fn op(i: usize, body: Value) -> Value {
 }
 
 /// Run one message against the given display and hand back every push.
-async fn run_on(db: rusqlite::Connection, turns: Vec<Value>) -> Vec<WebReconfig> {
+async fn run_on(db: rusqlite::Connection, turns: Vec<Value>) -> (Vec<WebReconfig>, PageMap) {
     let mut h = harness(db);
+    let boot = (**h._pages.borrow()).clone();
     let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(64);
     let (rc_tx, _rc_rx) = mpsc::channel(8);
     let msg = MessageBuilder::new(Path::new("/display"))
@@ -221,7 +225,7 @@ async fn run_on(db: rusqlite::Connection, turns: Vec<Value>) -> Vec<WebReconfig>
     while let Ok(push) = h.pushes.try_recv() {
         seen.push(push);
     }
-    seen
+    (seen, boot)
 }
 
 /// The diff's keys, sorted, with the statics key `s` kept — a slot diff has
@@ -231,24 +235,54 @@ fn keys(diff: &Value) -> Vec<String> {
         .as_object()
         .expect("a diff is an object")
         .keys()
+        // GH #1001: the frame's shared statics travel beside the slots.
+        .filter(|k| *k != "p")
         .cloned()
         .collect();
     k.sort();
     k
 }
 
-/// The HTML of the slot under `key`.
-fn slot(diff: &Value, key: &str) -> String {
-    diff.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("no slot under {key}: {diff}"))
-        .to_string()
+/// The HTML of the slot under `key` once the frame has landed on the page a
+/// viewer of `route` held from `boot`.
+fn slot(boot: &PageMap, route: &str, diff: &Value, key: &str) -> String {
+    // GH #1001: a slot is a rendered part, and a frame carries only what
+    // changed in it; its markup is what the client builds by merging the
+    // frame into the part it holds. A part that brings its statics (`"s"`)
+    // stands on its own, against the frame's shared statics.
+    let part = diff
+        .get(key)
+        .unwrap_or_else(|| panic!("no slot under {key}: {diff}"));
+    if part.get("s").is_some() || part.is_string() {
+        return wire_html(part, &diff["p"]);
+    }
+    let tree = boot[route].packed_tree();
+    let mut held = tree[key].clone();
+    merge(&mut held, part);
+    wire_html(&held, &tree["p"])
+}
+
+/// A value-only diff merged into a held part, key by key.
+fn merge(held: &mut Value, diff: &Value) {
+    match (held, diff) {
+        (Value::Object(h), Value::Object(d)) if !d.contains_key("s") => {
+            for (k, v) in d {
+                match h.get_mut(k) {
+                    Some(slot) => merge(slot, v),
+                    None => {
+                        h.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        (h, d) => *h = d.clone(),
+    }
 }
 
 /// The find: three slots of one route, one frame.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pass_over_three_slots_of_one_route_is_one_frame() {
-    let pushes = run_on(
+    let (pushes, boot) = run_on(
         one_output_db(),
         vec![
             leg(0, "main", json!({"level": "2"})),
@@ -264,7 +298,9 @@ async fn a_pass_over_three_slots_of_one_route_is_one_frame() {
         "one route hears one frame per pass — the live twin sent one per slot, \
          and the frame without the main slot put the optimistic tap back"
     );
-    let WebReconfig::Push { route, diff } = &pushes[0];
+    let WebReconfig::Push { route, diff } = &pushes[0] else {
+        panic!("a push, not a viewers request")
+    };
     assert_eq!(route, ROUTE);
     assert_eq!(
         keys(diff),
@@ -272,7 +308,7 @@ async fn a_pass_over_three_slots_of_one_route_is_one_frame() {
         "and that one frame names every slot the pass touched: {diff}"
     );
     for (key, level) in [("0", "2"), ("1", "1"), ("2", "3")] {
-        let html = slot(diff, key);
+        let html = slot(&boot, ROUTE, diff, key);
         assert!(
             html.contains(&format!(r#"data-level="{level}""#)),
             "slot {key} carries the end state of the pass: {html}"
@@ -283,7 +319,7 @@ async fn a_pass_over_three_slots_of_one_route_is_one_frame() {
 /// Two routes stay two frames, one each — the grouping must not merge outputs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pass_over_two_routes_is_one_frame_each() {
-    let pushes = run_on(
+    let (pushes, boot) = run_on(
         two_output_db(),
         vec![
             leg(0, "main-tv", json!({"level": "2"})),
@@ -297,7 +333,10 @@ async fn a_pass_over_two_routes_is_one_frame_each() {
     assert_eq!(pushes.len(), 2, "two outputs, two frames");
     let mut by_route: Vec<(&str, &Value)> = pushes
         .iter()
-        .map(|WebReconfig::Push { route, diff }| (route.as_str(), diff))
+        .filter_map(|p| match p {
+            WebReconfig::Push { route, diff } => Some((route.as_str(), diff)),
+            WebReconfig::Viewers { .. } => None,
+        })
         .collect();
     by_route.sort_by_key(|(route, _)| *route);
     assert_eq!(
@@ -312,8 +351,8 @@ async fn a_pass_over_two_routes_is_one_frame_each() {
             "{route} hears both of its slots in one frame: {diff}"
         );
         let (main, dock) = if route == TV { ("2", "1") } else { ("3", "4") };
-        assert!(slot(diff, "0").contains(&format!(r#"data-level="{main}""#)));
-        assert!(slot(diff, "1").contains(&format!(r#"data-level="{dock}""#)));
+        assert!(slot(&boot, route, diff, "0").contains(&format!(r#"data-level="{main}""#)));
+        assert!(slot(&boot, route, diff, "1").contains(&format!(r#"data-level="{dock}""#)));
     }
 }
 
@@ -328,7 +367,7 @@ async fn a_pass_over_two_routes_is_one_frame_each() {
 /// group rather than a positional patch that would miss.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_move_between_two_slots_of_one_route_is_one_frame_with_the_tree() {
-    let pushes = run_on(
+    let (pushes, _) = run_on(
         one_output_db(),
         vec![op(
             0,
@@ -342,7 +381,9 @@ async fn a_move_between_two_slots_of_one_route_is_one_frame_with_the_tree() {
         1,
         "the slot it left and the slot it reached are one route, so they are          one frame — not the same tree sent twice"
     );
-    let WebReconfig::Push { route, diff } = &pushes[0];
+    let WebReconfig::Push { route, diff } = &pushes[0] else {
+        panic!("a push, not a viewers request")
+    };
     assert_eq!(route, ROUTE);
     assert!(
         diff.get("s").is_some(),
@@ -358,12 +399,14 @@ async fn a_move_between_two_slots_of_one_route_is_one_frame_with_the_tree() {
 /// A single call keeps its old shape: one slot, one frame, one key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_single_call_still_sends_its_one_slot() {
-    let pushes = run_on(
+    let (pushes, _) = run_on(
         one_output_db(),
         vec![leg(0, "aside", json!({"level": "1"}))],
     )
     .await;
     assert_eq!(pushes.len(), 1, "one write, one push");
-    let WebReconfig::Push { diff, .. } = &pushes[0];
+    let WebReconfig::Push { diff, .. } = &pushes[0] else {
+        panic!("a push, not a viewers request")
+    };
     assert_eq!(keys(diff), vec!["1"], "and only the slot it wrote: {diff}");
 }

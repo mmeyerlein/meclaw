@@ -1,0 +1,7 @@
+{
+  "id": "gen-fake-reasoning",
+  "object": "chat.completion",
+  "model": "fake/cell-shapes",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK", "reasoning": "The user wants a single word; the word is OK.", "reasoning_details": [{"type": "reasoning.text", "text": "The user wants a single word; the word is OK."}]}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 14, "completion_tokens": 21, "total_tokens": 35}
+}

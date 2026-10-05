@@ -1,0 +1,65 @@
+{
+  "id": "gen-1791182203-bBwJDkJkjpEgu4wHX5pj",
+  "object": "chat.completion",
+  "created": 1791182203,
+  "model": "deepseek/deepseek-v4-pro",
+  "provider": "StreamLake",
+  "system_fingerprint": null,
+  "service_tier": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "tool_calls",
+      "native_finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "reasoning": "The user wants me to call the echo tool with the text \"ping\". Let me do that.",
+        "tool_calls": [
+          {
+            "type": "function",
+            "index": 0,
+            "id": "call_ad5ee5a19ee04259b16a90ff",
+            "function": {
+              "name": "echo",
+              "arguments": "{\"text\": \"ping\"}"
+            }
+          }
+        ],
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "The user wants me to call the echo tool with the text \"ping\". Let me do that.",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 297,
+    "completion_tokens": 64,
+    "total_tokens": 361,
+    "cost": 4.8250026e-05,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 209,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 4.87374e-05,
+      "upstream_inference_prompt_cost": 2.2011e-05,
+      "upstream_inference_completions_cost": 2.67264e-05
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 20,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

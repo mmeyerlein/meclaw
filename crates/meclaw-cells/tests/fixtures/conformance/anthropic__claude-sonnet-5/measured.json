@@ -1,0 +1,66 @@
+{
+  "model_id": "anthropic/claude-sonnet-5",
+  "endpoint_class": "openrouter",
+  "measured_at": "2026-10-05T06:35:41Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "refused",
+    "top_p": "refused",
+    "reasoning": "taken",
+    "reasoning_effort": "taken",
+    "thinking_token_budget": "accepted_unverified"
+  },
+  "listing": [
+    "include_reasoning",
+    "max_completion_tokens",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "stop",
+    "structured_outputs",
+    "tool_choice",
+    "tools",
+    "verbosity"
+  ],
+  "reasoning_field": null,
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=refused, top_p=refused, reasoning=taken, reasoning_effort=taken, thinking_token_budget=accepted_unverified; temperature: refused (No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection); top_p: refused (No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection); thinking_token_budget: accepted_unverified (200 strict, not in the listing)"
+    },
+    "K4": {
+      "status": "green",
+      "note": "listing == measurement: reasoning,reasoning_effort; 200 but not listed (accepted_unverified): ['thinking_token_budget']"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512, reasoning low"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form reasoning, trace in no field"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "green",
+      "note": "max_tokens 4096->32; params []; expected_dropped ['temperature']"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.001865
+}

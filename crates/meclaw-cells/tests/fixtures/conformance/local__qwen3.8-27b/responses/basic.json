@@ -1,0 +1,39 @@
+{
+  "id": "chatcmpl-b7fd801e0fa25edf",
+  "object": "chat.completion",
+  "created": 1791182208,
+  "model": "qwen3.8-27b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "\n\nOK",
+        "refusal": null,
+        "annotations": null,
+        "audio": null,
+        "function_call": null,
+        "reasoning": "The user said \"Ping.\" and my system instruction says to answer with the single word OK.\n"
+      },
+      "logprobs": null,
+      "finish_reason": "stop",
+      "stop_reason": null,
+      "token_ids": null,
+      "routed_experts": null
+    }
+  ],
+  "service_tier": null,
+  "system_fingerprint": "vllm-0.27.1-bbf95a72",
+  "usage": {
+    "prompt_tokens": 24,
+    "total_tokens": 48,
+    "completion_tokens": 24,
+    "prompt_tokens_details": null
+  },
+  "prompt_logprobs": null,
+  "prompt_token_ids": null,
+  "prompt_text": null,
+  "kv_transfer_params": null,
+  "ec_transfer_params": null,
+  "metrics": null
+}

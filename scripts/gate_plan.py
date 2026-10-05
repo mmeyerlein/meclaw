@@ -57,6 +57,14 @@ CLASSES (a path can carry several)
                   -- the measuring library. Its prefix is the longer one and
                      wins: a tool that READS a screen is not the driver that
                      lays one out, and must not pull `browser:display`
+    llm_conformance workshop/tools/llm-conformance/**,
+                  scripts/tests/test_llm_conformance.py,
+                  crates/meclaw-cells/src/llm/translate.rs
+                  -- the provider conformance tool and its offline tests
+                     against a fake provider (GH #998). translate.rs carries
+                     the class beside `rust_src`: the tool mirrors its
+                     SAMPLING_PARAMS, and the drift lock has to run when the
+                     cell's list moves
     persona_source see PERSONA_SOURCES below: the prompt literals, seeds, model knobs
                   and versions a persona is made of, plus the engine seam it is measured with
     evals_persona workshop/evals/persona/** -- its committed report included; it is NOT in IGNORED
@@ -105,6 +113,9 @@ STATIONS (S strand, I integration, R release, C ci)
                     the roadmap anchor gate)
     display-lab     display_lab (workshop/tools/display-lab/** and its test);
                     I/R always; never in C -- workshop/ does not travel
+    llm-conformance llm_conformance (workshop/tools/llm-conformance/**, its
+                    test, the cell's translate.rs); I/R always; never in C --
+                    workshop/ does not travel
     guide-selftest  evals_guide; I/R always; never in C -- workshop/ does not travel
     fmt             rust_src/rust_test/workspace
     clippy          rust_src/rust_test/workspace  (-p <crates> in S, else --workspace)
@@ -470,6 +481,7 @@ CI_EXCLUDED = frozenset({
     "guide-selftest",    # workshop/evals/conversation-guide/
     "browser:display",   # workshop/tools/display-layout-browser.mjs
     "display-lab",       # workshop/tools/display-lab/
+    "llm-conformance",   # workshop/tools/llm-conformance/
     "persona-cases",     # workshop/evals/persona/
     "persona-receipt",   # workshop/evals/persona/
     "export-selftest",   # plans/export-fixtures/
@@ -485,7 +497,7 @@ STATION_ORDER = (
     "precheck",
     "roadmap-anchors", "adr-anchors", "claims", "tree-rules",
     "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
-    "display-lab", "guide-selftest",
+    "display-lab", "llm-conformance", "guide-selftest",
     "fmt", "clippy", "unwrap-budget", "corridor",
     "tests", "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "scenarios:display",
@@ -693,6 +705,15 @@ def _classes_of_path(path):
     if lab:
         cls.add("display_lab")
 
+    # The provider conformance tool (GH #998): probes a model at its real
+    # endpoint; its contract is a unittest against a fake provider. The tool
+    # mirrors the cell's SAMPLING_PARAMS, so the cell file plans the drift
+    # lock as well -- beside its own `rust_src`.
+    if (path.startswith("workshop/tools/llm-conformance/")
+            or path in ("scripts/tests/test_llm_conformance.py",
+                        "crates/meclaw-cells/src/llm/translate.rs")):
+        cls.add("llm_conformance")
+
     # The conversation guide's self-test (GH #881): the harness, its fixture,
     # the shipped block its drift checks compare, and the two files it imports
     # from elsewhere. Those two keep their own classes too -- a break in the
@@ -857,6 +878,227 @@ def _test_binary_exists(repo, crate, stem):
     tests = os.path.join(root, "crates", crate, "tests")
     return (os.path.isfile(os.path.join(tests, stem + ".rs"))
             or os.path.isfile(os.path.join(tests, stem, "main.rs")))
+
+
+# --- binaries that run no test ----------------------------------------------
+#
+# GH #997: rule 8 picked `meclaw-colony::gh850_bench_normal_path` for a diff to
+# `scripts/test-tier.sh` -- its doc comment names the path -- and its only test
+# is an `#[ignore]` benchmark. The `tests` station then ran 0 tests (nextest
+# exit 4 on master; `no tests matched`, exit 6, since K1). A binary whose every
+# test is ignored is no drift lock for anything, so NO rule may target it. The
+# reference itself still counts (a comment naming a path stays a hit): only the
+# binary that cannot run a test is dropped, in one place in `test_filter`.
+
+# Comments and the CONTENTS of string/char literals go: a `//` inside
+# `"http://.."` is no comment, and a `#[test]` inside a string is no test.
+_RUST_LEXEME_RE = re.compile(
+    r'(?P<raw>r(?P<h>#*)"[\s\S]*?"(?P=h))'
+    r'|(?P<str>b?"(?:\\.|[^"\\])*")'
+    r"|(?P<chr>b?'(?:\\.|[^'\\])')"
+    r'|(?P<line>//[^\n]*)'
+    r'|(?P<block>/\*[\s\S]*?\*/)')
+
+# An attribute that makes a test, read in the direction of doubt (K1 fix
+# round 2): every attribute whose LAST path segment contains `test` --
+# `#[test]`, `#[tokio::test(..)]`, `#[test_log::test]`, `#[rstest]`,
+# `#[test_case(..)]`, `#[wasm_bindgen_test]` -- and `quickcheck`/`proptest`.
+# A form this misses would count as "no test" and could drop a binary that
+# runs tests; a form it over-counts only keeps a binary as target.
+_TEST_ATTR_RE = re.compile(
+    r'(?:\w+::)*(?:\w*test\w*|quickcheck|proptest)(?![\w:])')
+# Only the unconditional `#[ignore]` / `#[ignore = ".."]`; a
+# `#[cfg_attr(.., ignore)]` is conditional and leaves the test runnable.
+_IGNORE_ATTR_RE = re.compile(r'ignore\b')
+# Shapes that may carry tests the attribute count cannot see: a local macro,
+# an include, a column-0 item macro (`gen!();`), and a brace-bodied macro
+# invocation at ANY indentation (`quickcheck! { .. }` inside a `mod`).
+_HIDDEN_TESTS_RE = re.compile(
+    r'macro_rules!|\binclude!|^[A-Za-z_][\w:]*!|\b\w+!\s*\{',
+    re.M)
+# An out-of-line module, `[#[path = ".."]] [pub] mod x;`, with the attributes
+# before it (one level of nested brackets, enough for `#[cfg(any(..))]`).
+_OUT_OF_LINE_MOD_RE = re.compile(
+    r'(?P<attrs>(?:#\[(?:[^\[\]]|\[[^\[\]]*\])*\]\s*)*)'
+    r'(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<name>\w+)\s*;')
+_PATH_ATTR_RE = re.compile(r'#\[\s*path\s*=\s*"(?P<path>[^"]*)"\s*\]')
+
+
+def _rust_code(text, literals=False):
+    """`text` with comments blanked and every literal emptied to `""`.
+
+    `literals=True` keeps the literals whole (a `#[path = ".."]` is read).
+    """
+    def keep(m):
+        if m.group("line") or m.group("block"):
+            return " "
+        return m.group(0) if literals else '""'
+    return _RUST_LEXEME_RE.sub(keep, text)
+
+
+def _rust_code_aligned(text, literals=False):
+    """Like `_rust_code`, but every offset stays that of `text`.
+
+    Comments become spaces of their own length; literals are kept whole
+    (`literals=True`) or blanked to spaces between their quotes.
+    """
+    def keep(m):
+        s = m.group(0)
+        if m.group("line") or m.group("block"):
+            return re.sub(r"[^\n]", " ", s)
+        if literals or len(s) < 2:
+            return s
+        return s[0] + re.sub(r"[^\n]", " ", s[1:-1]) + s[-1]
+    return _RUST_LEXEME_RE.sub(keep, text)
+
+
+def _brace_depth(code, pos):
+    """Brace depth of `code` at `pos` (comments and literals already blank)."""
+    return code.count("{", 0, pos) - code.count("}", 0, pos)
+
+
+def _attribute_groups(code):
+    """Runs of outer attributes standing back to back, as lists of bodies."""
+    groups, i, n = [], 0, len(code)
+    current, last_end = [], -1
+    while True:
+        j = code.find("#[", i)
+        if j < 0:
+            break
+        depth, k = 0, j + 1
+        while k < n:
+            if code[k] == "[":
+                depth += 1
+            elif code[k] == "]":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        body = code[j + 2:k].strip()
+        if current and code[last_end:j].strip() == "":
+            current.append(body)
+        else:
+            if current:
+                groups.append(current)
+            current = [body]
+        last_end, i = k + 1, k + 1
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _test_counts(text):
+    """`(tests, runnable)` -- test attributes, and those not `#[ignore]`d."""
+    code = _rust_code(text)
+    tests = runnable = 0
+    for group in _attribute_groups(code):
+        if not any(_TEST_ATTR_RE.match(a) for a in group):
+            continue
+        tests += 1
+        if not any(_IGNORE_ATTR_RE.match(a) for a in group):
+            runnable += 1
+    return tests, runnable
+
+
+def _module_texts(text, tests_dir):
+    """The out-of-line modules of `text`, read one level deep; None in doubt.
+
+    K1 fix round 2: the browser locks gh867/gh961 pull in
+    `#[path = "support/display_colony.rs"] mod display_colony;`. Taken as
+    doubt on sight, they stayed targets of the `tests` station and ran 0 tests
+    there -- RED on every diff to their driver `.mjs` or to the lock. A module
+    is looked up as `tests/<path>`, `tests/x.rs`, `tests/x/mod.rs`; one that
+    is not found, or whose `#[path]` cannot be read, is doubt.
+    """
+    out = []
+    with_literals = _rust_code_aligned(text, literals=True)
+    bare = _rust_code_aligned(text)
+    # K1 fix round 3 close: block comments nest in Rust (`/* x /* y */ } */`);
+    # the non-greedy blanking leaves ` } */` behind and the stray `}` skews
+    # the brace depth. A `*/` outside comments and literals cannot occur in
+    # valid Rust, so one left in `bare` is doubt.
+    if "*/" in bare:
+        return None
+    for m in _OUT_OF_LINE_MOD_RE.finditer(with_literals):
+        attrs = m.group("attrs")
+        # K1 fix round 3: a `mod` inside an inline module (`mod a { mod b; }`)
+        # loads `tests/a/b.rs`, and a `cfg_attr(.., path = ..)` may swap the
+        # file -- both are doubt.
+        if _brace_depth(bare, m.start("name")) != 0:
+            return None
+        if re.search(r'#\[\s*cfg_attr\b[\s\S]*\bpath\s*=', attrs):
+            return None
+        path = _PATH_ATTR_RE.search(attrs)
+        if path:
+            candidates = [path.group("path")]
+        elif re.search(r'#\[\s*path\b', attrs):
+            return None
+        else:
+            name = m.group("name")
+            candidates = [name + ".rs", os.path.join(name, "mod.rs")]
+        for rel in candidates:
+            full = os.path.join(tests_dir, rel)
+            if os.path.isfile(full):
+                try:
+                    with open(full, encoding="utf-8", errors="replace") as fh:
+                        out.append(fh.read())
+                except OSError:
+                    return None
+                break
+        else:
+            return None
+    return out
+
+
+def _runs_no_test(text, tests_dir=None):
+    """True only when the binary SURELY runs 0 tests by default.
+
+    In doubt it runs: no test attribute at all (a `harness = false` target, a
+    helper compiled as its own binary), a local macro, an include, a module
+    that is not found -- or a module (read one level deep from `tests_dir`)
+    with test attributes or hidden shapes of its own.
+    """
+    tests, runnable = _test_counts(text)
+    if tests == 0 or runnable > 0:
+        return False
+    if _HIDDEN_TESTS_RE.search(_rust_code(text)):
+        return False
+    if not _OUT_OF_LINE_MOD_RE.search(_rust_code(text)):
+        return True
+    modules = None if tests_dir is None else _module_texts(text, tests_dir)
+    if modules is None:
+        return False
+    for mod in modules:
+        code = _rust_code(mod)
+        if (_test_counts(mod)[0] or _HIDDEN_TESTS_RE.search(code)
+                or _OUT_OF_LINE_MOD_RE.search(code)):
+            return False
+    return True
+
+
+_NO_TEST_CACHE = {}
+
+
+def _drop_binaries_without_tests(repo, terms):
+    """`terms` minus every `binary_id(=c::s)` whose source runs no test.
+
+    Only the selected binaries are parsed, once per tree: the whole tree is
+    ~1300 sources, and a plan names a handful.
+    """
+    root = REPO_ROOT if repo is None else repo
+    texts = None
+    out = set()
+    for t in terms:
+        key = (root, t)
+        if key not in _NO_TEST_CACHE:
+            if texts is None:
+                texts = {_binary_id(c, s): (c, x) for c, s, x in _test_sources(repo)}
+            hit = texts.get(t)
+            _NO_TEST_CACHE[key] = hit is not None and _runs_no_test(
+                hit[1], os.path.join(root, "crates", hit[0], "tests"))
+        if not _NO_TEST_CACHE[key]:
+            out.add(t)
+    return out
 
 
 def _sharers(repo, crate, stem):
@@ -1172,6 +1414,10 @@ def test_filter(paths, mode, repo=None):
                                      a file is that file's drift lock, so the
                                      file's diff must run it. Additive: it
                                      extends rules 4 and 5, it replaces neither.
+    9. over rules 3, 4, 5 and 8   -> a binary whose every test is `#[ignore]`
+                                     is dropped (`_runs_no_test`): it would
+                                     run 0 tests, and a `tests` station of 0
+                                     tests is RED (GH #997). In doubt it stays.
 
     Over-selection is allowed here, under-selection is not: a missed binary is
     a gate that passes over an untested change.
@@ -1210,6 +1456,10 @@ def test_filter(paths, mode, repo=None):
         for p in files:
             if not p.startswith("crates/"):
                 terms |= _tests_reading_path(repo, p)
+        # Rule 9, over all rules above: a binary that runs 0 tests is no
+        # target (GH #997). `all()` and `rdeps()` are untouched -- they never
+        # stand on one binary.
+        terms = _drop_binaries_without_tests(repo, terms)
 
     if not terms:
         return None
@@ -1426,6 +1676,15 @@ def plan(paths, mode, repo=None):
         out["display-lab"] = station(
             "display-lab", "unittest", False,
             [["python3", "-m", "unittest", "scripts.tests.test_display_lab"]])
+
+    # The conformance tool's offline tests (GH #998): a fake provider on
+    # loopback, no key, no money, under a second. `ir` for the same reason as
+    # display-lab: the pass that declares a wave done is where a broken
+    # instrument has to surface.
+    if (ir or "llm_conformance" in classes) and not ci:
+        out["llm-conformance"] = station(
+            "llm-conformance", "unittest", False,
+            [["python3", "-m", "unittest", "scripts.tests.test_llm_conformance"]])
 
     # The guide harness pins its own wiring (GH #881): the fixture edge, the
     # local engine and the rules tail its arms carry. A self-test nothing

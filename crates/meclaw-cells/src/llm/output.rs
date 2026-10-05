@@ -47,6 +47,7 @@ pub const HOP_KEYS: &[(&str, &str)] = &[
     ("cache_expires_at", "string"),
     ("context_window", "number"),
     ("dropped", "array"),
+    ("unverified", "array"),
 ];
 
 /// The usage block of one provider call, as it travels into the hop header.
@@ -116,7 +117,9 @@ impl HopUsage {
 /// SUCCESSFUL answer only. An error carries none of it: a call that failed
 /// wrote no prefix, so there is nothing that could go cold, and the error
 /// path keeps the header it has had since GH #463. GH #993 adds the sampling
-/// fields the request left out because the model does not take them.
+/// fields the request left out because the model does not take them, GH #999
+/// the ones it sent unchecked -- and those two (the request half) travel on
+/// an error answer too ([`HopCache::request_hop`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct HopCache {
     /// Seconds the provider keeps the written prefix warm. `Some` only with
@@ -130,6 +133,10 @@ pub(crate) struct HopCache {
     /// (`translate::dropped_params`). Empty = nothing dropped and no key, so
     /// the hop of a cell without a list stays the hop it always was.
     pub(crate) dropped: Vec<String>,
+    /// GH #999 (F6, R-H5-3 = c): the sampling fields the request carried
+    /// without a `supported_params` list to check them against
+    /// (`translate::unverified_params`). Empty with a list, and then no key.
+    pub(crate) unverified: Vec<String>,
 }
 
 impl HopCache {
@@ -140,6 +147,35 @@ impl HopCache {
                 .then_some(params.cache_ttl_s),
             context_window: (params.context_window > 0).then_some(params.context_window),
             dropped: crate::llm::translate::dropped_params(params),
+            unverified: crate::llm::translate::unverified_params(params),
+        }
+    }
+
+    /// GH #999 (F5/F6): the request half of the stamp -- `dropped` and
+    /// `unverified` -- for an ERROR answer, as `extra_hop` of
+    /// [`emit_error_with_hop_for`]. A refused request is exactly where the
+    /// receiver needs to see what was left out and what went unchecked (this
+    /// lifts OR-LP.LR.1). `None` when both are empty, so the error body of a
+    /// cell with nothing to name stays byte-identical. The cache half stays
+    /// success-only: a call that failed wrote no prefix.
+    pub(crate) fn request_hop(params: &LlmParams) -> Option<Map<String, Value>> {
+        let me = Self::of(params);
+        let mut m = Map::new();
+        me.write_request_keys(&mut m);
+        (!m.is_empty()).then_some(m)
+    }
+
+    /// `dropped` and `unverified`, each only when it names something. Each
+    /// key is a literal at its `header.insert`: `curator_cells` reads the
+    /// written keys off this source and holds the summarizer's declaration to
+    /// them.
+    fn write_request_keys(&self, header: &mut Map<String, Value>) {
+        let names = |v: &[String]| Value::Array(v.iter().cloned().map(Value::String).collect());
+        if !self.dropped.is_empty() {
+            header.insert("dropped".into(), names(&self.dropped));
+        }
+        if !self.unverified.is_empty() {
+            header.insert("unverified".into(), names(&self.unverified));
         }
     }
 
@@ -163,12 +199,7 @@ impl HopCache {
         if let Some(window) = self.context_window {
             header.insert("context_window".into(), Value::from(window));
         }
-        if !self.dropped.is_empty() {
-            header.insert(
-                "dropped".into(),
-                Value::Array(self.dropped.iter().cloned().map(Value::String).collect()),
-            );
-        }
+        self.write_request_keys(header);
     }
 }
 
@@ -634,6 +665,7 @@ mod tests {
             ttl_s,
             context_window,
             dropped: Vec::new(),
+            unverified: Vec::new(),
         }
     }
 
@@ -681,8 +713,11 @@ mod tests {
 
     #[test]
     fn off_or_a_zero_ttl_leaves_the_expiry_unknown() {
+        // A list that names the one sampling field sent: nothing dropped and
+        // nothing unverified (GH #999), so only the cache half is under test.
         let params = |extra: Value| {
-            let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k"});
+            let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k",
+                                 "supported_params": ["temperature"]});
             for (k, v) in extra.as_object().cloned().unwrap_or_default() {
                 raw[k] = v;
             }
@@ -742,6 +777,7 @@ mod tests {
         };
         let all = HopCache {
             dropped: vec!["temperature".into()],
+            unverified: vec!["top_p".into()],
             ..cache(Some(60), Some(1))
         };
         let success = header_of(full, all, 1, 1).await;

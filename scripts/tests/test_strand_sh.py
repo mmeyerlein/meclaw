@@ -1553,11 +1553,15 @@ PLAN_HOST_LOCAL = ("ok\tscope-ok\t0\ttrue\t\n"
                    "sys.exit(0 if v.get('ok') == 'GREEN' else 1)\" {receipt}\t\n")
 
 # A fake `cargo` for `strand.sh test` on a fake host: it prints the summary
-# line nextest prints and exits with FAKE_CARGO_RC.
+# line nextest prints and exits with FAKE_CARGO_RC. FAKE_CARGO_NO_SUMMARY
+# leaves the summary out, FAKE_CARGO_ERR goes to stderr (a refused filter).
 FAKE_CARGO = """#!/usr/bin/env bash
 printf 'cargo %s\\n' "$*" >>"$FAKE_CARGO_LOG"
-echo "        PASS [   0.010s] meclaw-cells::gh1_x a_case"
-echo "     Summary [   0.420s] ${FAKE_CARGO_TOTAL:-3} tests run: ${FAKE_CARGO_PASSED:-3} passed, 0 skipped"
+[ -z "${FAKE_CARGO_ERR:-}" ] || echo "$FAKE_CARGO_ERR" >&2
+if [ -z "${FAKE_CARGO_NO_SUMMARY:-}" ]; then
+    echo "        PASS [   0.010s] meclaw-cells::gh1_x a_case"
+    echo "     Summary [   0.420s] ${FAKE_CARGO_TOTAL:-3} tests run: ${FAKE_CARGO_PASSED:-3} passed, 0 skipped"
+fi
 exit "${FAKE_CARGO_RC:-0}"
 """
 
@@ -1896,6 +1900,59 @@ class TestGateHost(TokenTestCase):
         self.assertEqual(100, res.returncode, res.stdout + res.stderr)
         self.assertRegex(res.stdout.strip().splitlines()[-1],
                          r"^TEST \[binary\(~gh1_x\)\] 2/3 \d+s RED$")
+
+    # GH #997: a run in which no test ran is no proof. The filter named a
+    # helper module, matched no test, and the line read `0/0 ... GREEN`.
+    NO_MATCH_LINE = r"^TEST \[binary\(~helpers\)\] 0/0 \d+s RED \(no tests matched\)$"
+
+    def assert_no_match(self, env):
+        res = self.strand_test("binary(~helpers)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(6, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1], self.NO_MATCH_LINE)
+
+    def test_a_test_run_with_zero_tests_is_red(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_TOTAL": "0", "FAKE_CARGO_PASSED": "0"})
+        self.assert_no_match(env)
+
+    def test_a_test_run_without_a_summary_is_red(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_NO_SUMMARY": "1"})
+        self.assert_no_match(env)
+
+    def test_a_refused_filter_is_no_tests_matched(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_NO_SUMMARY": "1", "FAKE_CARGO_RC": "94",
+                    "FAKE_CARGO_ERR": "error: failed to parse filterset"})
+        self.assert_no_match(env)
+
+    # K1 fix round 2: a test that prints the refusal text is no refusal.
+    def test_a_failing_run_printing_the_refusal_text_keeps_100(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_TOTAL": "3", "FAKE_CARGO_PASSED": "2", "FAKE_CARGO_RC": "100",
+                    "FAKE_CARGO_ERR": "error: failed to parse filterset"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1],
+                         r"^TEST \[binary\(~gh1_x\)\] 2/3 \d+s RED$")
+
+    def test_a_green_run_printing_the_refusal_text_stays_green(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_ERR": "error: operator didn't match any binary IDs"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1],
+                         r"^TEST \[binary\(~gh1_x\)\] 3/3 \d+s GREEN$")
+
+    def test_a_build_failure_keeps_its_own_exit(self):
+        # No summary, but cargo said why: the remote exit stands, and the
+        # reason `no tests matched` would be a lie.
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_NO_SUMMARY": "1", "FAKE_CARGO_RC": "101"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(101, res.returncode, res.stdout + res.stderr)
+        last = res.stdout.strip().splitlines()[-1]
+        self.assertRegex(last, r"^TEST \[binary\(~gh1_x\)\] 0/0 \d+s RED$")
 
     def test_strand_test_without_a_token_is_exit_three(self):
         env = self.fake_cargo()

@@ -57,6 +57,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::web::backlog::{Meter, Outbox, Queued};
 use crate::web::cell::{EventReply, WebEvent};
 use std::time::Duration;
 
@@ -181,7 +182,7 @@ struct TopicLink {
 /// client up by the same count it would on a socket of its own.
 async fn forward(
     mut from_cell: mpsc::Receiver<LinkFrame>,
-    out_tx: mpsc::Sender<ViewerMsg>,
+    out_tx: Outbox,
     join_ref: Value,
     topic: String,
     binary_event: &'static str,
@@ -266,7 +267,8 @@ enum HandOff {
 async fn hand_over<S>(
     to_cell: &mpsc::Sender<LinkFrame>,
     frame: LinkFrame,
-    out_rx: &mut mpsc::Receiver<ViewerMsg>,
+    out_rx: &mut mpsc::Receiver<Queued>,
+    meter: &Meter,
     sink: &mut S,
 ) -> Result<(), HandOff>
 where
@@ -276,17 +278,12 @@ where
         tokio::select! {
             permit = to_cell.reserve() => break permit,
             out = out_rx.recv() => match out {
-                Some(ViewerMsg::Frame(text)) => {
-                    if sink.send(WsMessage::Text(text)).await.is_err() {
+                Some(queued) => {
+                    if !write_out(sink, queued, meter).await {
                         return Err(HandOff::SocketGone);
                     }
                 }
-                Some(ViewerMsg::Binary(bytes)) => {
-                    if sink.send(WsMessage::Binary(bytes)).await.is_err() {
-                        return Err(HandOff::SocketGone);
-                    }
-                }
-                Some(ViewerMsg::Close) | None => {
+                None => {
                     let _ = sink.send(WsMessage::Close(None)).await;
                     return Err(HandOff::SocketGone);
                 }
@@ -302,10 +299,36 @@ where
     }
 }
 
+/// Write one queued frame onto the socket and count it out of the meter
+/// (GH #1006).
+///
+/// Counted out AFTER `sink.send` returns, because that await is where a slow
+/// browser shows: the frame being written is still the viewer's backlog until
+/// the socket took it. `false` when the connection is over — the socket refused
+/// the frame, or the frame was the close.
+async fn write_out<S>(sink: &mut S, queued: Queued, meter: &Meter) -> bool
+where
+    S: futures_util::Sink<WsMessage> + Unpin,
+{
+    let Queued { msg, at, bytes } = queued;
+    meter.writing(at);
+    let open = match msg {
+        ViewerMsg::Frame(text) => sink.send(WsMessage::Text(text)).await.is_ok(),
+        ViewerMsg::Binary(b) => sink.send(WsMessage::Binary(b)).await.is_ok(),
+        // The listener moved (GH #410).
+        ViewerMsg::Close => {
+            let _ = sink.send(WsMessage::Close(None)).await;
+            false
+        }
+    };
+    meter.written(at, bytes);
+    open
+}
+
 /// One joined viewer, as the registry holds it.
 pub struct Viewer {
-    /// Where to send frames.
-    pub tx: mpsc::Sender<ViewerMsg>,
+    /// Where to send frames, with the meter that counts them (GH #1006).
+    pub tx: Outbox,
     /// The route this viewer is looking at.
     pub route: String,
     /// The client's join reference, needed to address a server-initiated push.
@@ -340,7 +363,13 @@ pub async fn run_connection(
     user_id: Option<String>,
 ) {
     let (mut sink, mut stream) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<ViewerMsg>(64);
+    let (out_tx, mut out_rx) = mpsc::channel::<Queued>(64);
+    // GH #1006: one meter per connection, counting every frame that enters
+    // this queue and leaves it onto the socket. It reports only when the cell
+    // opted in (`viewer_events: ["backlog"]`); counting is always on, because
+    // the `viewers` op reads it.
+    let meter = Arc::new(Meter::new(viewers.policy(), Some(events_tx.clone())));
+    let out_tx = Outbox::new(out_tx, Arc::clone(&meter));
     // The cell's own way out. An upgraded socket runs on a task axum spawned,
     // which nothing in the I/O half holds a handle to, so this is how it hears
     // that the half is gone — see [`crate::web::io::WebIo::shutdown`].
@@ -376,18 +405,13 @@ pub async fn run_connection(
             // message that must not be dropped.
             out = out_rx.recv() => {
                 match out {
-                    Some(ViewerMsg::Frame(text)) => {
-                        if sink.send(WsMessage::Text(text)).await.is_err() {
+                    Some(queued) => {
+                        if !write_out(&mut sink, queued, &meter).await {
                             break;
                         }
                     }
-                    Some(ViewerMsg::Binary(bytes)) => {
-                        if sink.send(WsMessage::Binary(bytes)).await.is_err() {
-                            break;
-                        }
-                    }
-                    // The listener moved (GH #410), or the sender is gone.
-                    Some(ViewerMsg::Close) | None => {
+                    // The sender is gone.
+                    None => {
                         let _ = sink.send(WsMessage::Close(None)).await;
                         break;
                     }
@@ -445,6 +469,7 @@ pub async fn run_connection(
                             &to_cell,
                             LinkFrame::Binary(binary.payload),
                             &mut out_rx,
+                            &meter,
                             &mut sink,
                         )
                         .await
@@ -531,10 +556,10 @@ async fn answer(
     events_tx: &mpsc::Sender<WebEvent>,
     viewers: &Arc<crate::web::io::ViewerRegistry>,
     viewer_id: &str,
-    out_tx: &mpsc::Sender<ViewerMsg>,
+    out_tx: &Outbox,
     joined: &mut Option<(String, String)>,
     links: &mut HashMap<String, TopicLink>,
-    out_rx: &mut mpsc::Receiver<ViewerMsg>,
+    out_rx: &mut mpsc::Receiver<Queued>,
     sink: &mut SocketSink,
     base: &str,
     user_id: Option<&str>,
@@ -677,6 +702,7 @@ async fn answer(
                 &to_cell,
                 LinkFrame::Text(frame.payload.to_string()),
                 out_rx,
+                out_tx.meter(),
                 sink,
             )
             .await
@@ -746,6 +772,7 @@ async fn answer(
             // page load. The path half says which surface it names and is
             // already checked above, so it carries no information here.
             let session_id = token.split('.').next().unwrap_or_default().to_string();
+            out_tx.meter().joined(&route, &session_id);
             *joined = Some((route.clone(), session_id));
             viewers
                 .insert(
@@ -933,7 +960,9 @@ mod tests {
             .expect("the one slot");
 
         // The browser's queue, with a backlog in it.
-        let (out_tx, mut out_rx) = mpsc::channel::<ViewerMsg>(QUEUED);
+        let (out_tx, mut out_rx) = mpsc::channel::<Queued>(QUEUED);
+        let meter = Arc::new(Meter::silent());
+        let out_tx = Outbox::new(out_tx, Arc::clone(&meter));
         for i in 0..QUEUED {
             out_tx
                 .send(ViewerMsg::Frame(format!("outbound {i}")))
@@ -969,6 +998,7 @@ mod tests {
                 &to_cell,
                 LinkFrame::Text("inbound".into()),
                 &mut out_rx,
+                &meter,
                 &mut sink,
             ),
         )

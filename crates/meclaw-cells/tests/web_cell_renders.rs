@@ -227,13 +227,20 @@ fn materialize_splits_the_root_template_at_its_children() {
     );
     assert_eq!(m.slots.len(), 2, "one slot per direct child of the root");
     assert_eq!(m.slots[0].0, "c0");
-    assert!(m.slots[0].1.contains(">0<"));
+    assert!(m.slots[0].1.html().contains(">0<"));
     assert_eq!(m.slots[1].0, "c1");
 
-    // The wire shape: {"s": statics, "0": …, "1": …}
+    // The wire shape: {"s": statics, "p": shared statics, "0": …, "1": …}.
+    // GH #1001: `<p>{{body}}</p>` is one element, so each slot is a part
+    // naming the shared statics, with `"r": 1` for the client's skip path.
     assert_eq!(
         m.packed_tree(),
-        json!({"s": ["<main>", "", "</main>"], "0": "<p>0</p>", "1": "<p>1</p>"})
+        json!({
+            "s": ["<main>", "", "</main>"],
+            "p": {"0": ["<p>", "</p>"]},
+            "0": {"s": 0, "0": "0", "r": 1},
+            "1": {"s": 0, "0": "1", "r": 1}
+        })
     );
     assert_eq!(
         m.rendered_body(),
@@ -268,7 +275,10 @@ fn a_root_with_three_children_keeps_all_three_inside_it() {
         m.packed_tree(),
         json!({
             "s": ["<main>", "", "", "</main>"],
-            "0": "<p>0</p>", "1": "<p>1</p>", "2": "<p>2</p>"
+            "p": {"0": ["<p>", "</p>"]},
+            "0": {"s": 0, "0": "0", "r": 1},
+            "1": {"s": 0, "0": "1", "r": 1},
+            "2": {"s": 0, "0": "2", "r": 1}
         })
     );
 }
@@ -285,7 +295,13 @@ fn a_root_with_one_child_is_the_shape_it_always_was() {
     assert_eq!(m.rendered_body(), "<main><p>0</p></main>");
     assert_eq!(
         m.packed_tree(),
-        json!({"s": ["<main>", "</main>"], "0": "<p>0</p>"})
+        // GH #1001: the one slot is a part; the statics and the served body
+        // are byte for byte what they were.
+        json!({
+            "s": ["<main>", "</main>"],
+            "p": {"0": ["<p>", "</p>"]},
+            "0": {"s": 0, "0": "0", "r": 1}
+        })
     );
 }
 
@@ -321,9 +337,11 @@ fn a_slot_index_addresses_the_same_child_in_the_diff_and_in_the_tree() {
             Some(i),
             "slot_of({id}) must name the child's own position"
         );
+        // GH #1001: the tree carries the slot as a part; its markup is the
+        // slot's markup.
         assert_eq!(
-            tree[i.to_string()],
-            json!(html),
+            meclaw_cells::web::render::wire_html(&tree[i.to_string()], &tree["p"]),
+            html.html(),
             "the diff key {i} and the tree's dynamic {i} are the same child"
         );
     }

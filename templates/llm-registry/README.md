@@ -1,4 +1,4 @@
-# `llm-registry@2.6.0`
+# `llm-registry@2.6.1`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -67,6 +67,16 @@ Since [#993](https://github.com/mmeyerlein/meclaw/issues/993) a row's `package` 
 `reasoning_effort`, `thinking_token_budget`). The push hands it to the cell, which then sends only
 those and names every sampling field it left out in `hop.dropped`; a row without it pushes a
 `$reset` of the key, and the cell sends what it always sent.
+
+Since [#1000](https://github.com/mmeyerlein/meclaw/issues/1000) every `active` row on a chat or
+responses wire carries that list, and the list is measured, not written: a conformance tool sends
+one request per sampling field to the model's endpoint under strict routing, and a field counts as
+taken only when the endpoint accepted it and lists it for the model (a gateway lets a field it does
+not know pass unchecked). The record of each row lies in
+`crates/meclaw-cells/tests/fixtures/conformance/<model_id with / as __>/measured.json`, and
+`h5_the_catalogue_matches_the_measurement` keeps the row's list equal to its `taken` set. To change
+a list, measure the model again and replace its record; `docs/cell-types.en.md` § `llm`, provider
+conformance, says how. A `decisions` row and a `retired` row carry no list.
 
 ## Two layers: the start value and the registry
 

@@ -1,0 +1,54 @@
+{
+  "model_id": "qwen3.8-27b",
+  "endpoint_class": "local",
+  "measured_at": "2026-10-05T06:36:51Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "accepted_unverified",
+    "top_p": "accepted_unverified",
+    "reasoning": "accepted_unverified",
+    "reasoning_effort": "accepted_unverified",
+    "thinking_token_budget": "accepted_unverified"
+  },
+  "listing": null,
+  "reasoning_field": "reasoning",
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=accepted_unverified, top_p=accepted_unverified, reasoning=accepted_unverified, reasoning_effort=accepted_unverified, thinking_token_budget=accepted_unverified"
+    },
+    "K4": {
+      "status": "n/a",
+      "note": "local endpoint: no listing"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form reasoning, trace in reasoning"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "n/a",
+      "note": "no requests/local__qwen3.8-27b.json"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.0
+}

@@ -1,0 +1,54 @@
+{
+  "id": "gen-1791182206-xz3i6ZuyNsJfNHkJz30p",
+  "object": "chat.completion",
+  "created": 1791182206,
+  "model": "deepseek/deepseek-v4-pro",
+  "provider": "StreamLake",
+  "system_fingerprint": null,
+  "service_tier": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "OK",
+        "refusal": null,
+        "reasoning": "We are asked: \"Answer with the single word OK.\" Then the user says \"Ping.\" So the instruction is to answer with the single word \"OK\". So I need to output \"OK\". No other text.",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "We are asked: \"Answer with the single word OK.\" Then the user says \"Ping.\" So the instruction is to answer with the single word \"OK\". So I need to output \"OK\". No other text.",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 14,
+    "completion_tokens": 48,
+    "total_tokens": 62,
+    "cost": 2.0653974e-05,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 11,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 2.08626e-05,
+      "upstream_inference_prompt_cost": 8.178e-07,
+      "upstream_inference_completions_cost": 2.00448e-05
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 45,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

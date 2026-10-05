@@ -51,15 +51,35 @@
 //! direct child of the page root — so a GET does no diff work either
 //! (R-W8-4b). Diffs exist only as a consequence of writes.
 //!
-//! That slot granularity is a deliberate v1 choice: a patch to any descendant
-//! re-renders the slot of its root-child ancestor and pushes only that.
-//! Finer granularity would mean tracking a slot per object and a much larger
-//! static table; coarser would mean re-rendering the page on every keystroke.
+//! # Parts, and what a write costs (GH #1001)
+//!
+//! Each slot holds a [`Part`]: LiveView's "rendered" shape for one object —
+//! the statics of its template once, the substituted values as dynamics, a
+//! `{{children}}` marker as one nested part holding one part per child, and an
+//! `{{#if}}` as either nothing or a nested part. Measured on a deployed page
+//! (`MESSUNG.md` § 6 L-W2, G1): every write re-rendered every route (≈ 51 ms
+//! on 1 000 figures, 129–150 ms on 4 000) and pushed the whole root-child
+//! slot as one HTML string (≈ 20 KB for one child of a 128-child chunk). So:
+//!
+//! - a write re-renders only the root-child slots it touched ([`rerender`]),
+//!   loading each slot's subtree in one recursive query, and reuses every
+//!   other slot of the published page as it is;
+//! - what goes out is the difference between the part the viewers hold and
+//!   the new one ([`diff_value`]): a moved figure is its changed values, a
+//!   child of a chunk is a path into the chunk;
+//! - statics travel once per frame in the shared table `"p"` and parts name
+//!   them by number;
+//! - a part whose template is exactly one element carries `"r": 1`, which lets
+//!   the client skip it when a frame leaves it alone ([`one_root_element`]).
+//!   A template that is not one element renders its object as an HTML string,
+//!   the form every slot had before.
 
 use crate::web::markup::{Contexts, Slot, Sub, fits, int_text};
+use crate::web::ops::Touched;
 use meclaw_core::serde_json::{Map, Value, json};
 use rusqlite::Connection;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Every route this cell serves, rendered.
 ///
@@ -74,23 +94,32 @@ pub type PageMap = BTreeMap<String, Materialized>;
 /// reason logged** rather than failing the whole map: one bad page must not
 /// take down every other page in the same cell.
 pub fn materialize_all(conn: &Connection) -> Result<PageMap, RenderError> {
-    let mut stmt = conn.prepare("SELECT route FROM pages ORDER BY route")?;
-    let routes = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+    Renderer::new(conn).all()
+}
 
-    let mut out = PageMap::new();
-    for route in routes {
-        match materialize(conn, &route) {
-            Ok(m) => {
-                out.insert(route, m);
-            }
-            Err(e) => {
-                tracing::error!(route = %route, error = %e, "web: route did not render");
+impl Renderer<'_> {
+    /// Every route, rendered by this one renderer (one component cache).
+    fn all(&mut self) -> Result<PageMap, RenderError> {
+        let routes = {
+            let mut stmt = self
+                .conn
+                .prepare_cached("SELECT route FROM pages ORDER BY route")?;
+            stmt.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut out = PageMap::new();
+        for route in routes {
+            match self.page(&route) {
+                Ok(m) => {
+                    out.insert(route, m);
+                }
+                Err(e) => {
+                    tracing::error!(route = %route, error = %e, "web: route did not render");
+                }
             }
         }
+        Ok(out)
     }
-    Ok(out)
 }
 
 /// How deep the object tree may nest before rendering gives up.
@@ -148,23 +177,28 @@ pub struct Materialized {
     /// with no children at all (no `{{children}}`, or a marker with nothing to
     /// show) holds exactly one piece, and the page is entirely static.
     pub statics: Vec<String>,
-    /// One `(object_id, html)` per **direct child** of the page root, in order.
-    pub slots: Vec<(String, String)>,
+    /// One `(object_id, part)` per **direct child** of the page root, in order.
+    pub slots: Vec<(String, Part)>,
     /// The page title, for the shell's `<title>`.
     pub title: String,
 }
 
 impl Materialized {
-    /// The LiveView packed tree: `{"s": statics, "0": slot0, "1": slot1, …}`.
+    /// The LiveView packed tree: `{"s": statics, "p": shared, "0": slot0, …}`.
+    ///
+    /// Every component's statics stand once in `"p"` and every part names them
+    /// by number; a page whose slots are all strings has no `"p"`.
     pub fn packed_tree(&self) -> Value {
+        let mut shared = SharedStatics::default();
         let mut m = Map::new();
         m.insert(
             "s".to_string(),
             Value::Array(self.statics.iter().map(|s| json!(s)).collect()),
         );
-        for (i, (_id, html)) in self.slots.iter().enumerate() {
-            m.insert(i.to_string(), json!(html));
+        for (i, (_id, part)) in self.slots.iter().enumerate() {
+            m.insert(i.to_string(), full_value(part, &mut shared));
         }
+        shared.attach(&mut m);
         Value::Object(m)
     }
 
@@ -182,11 +216,187 @@ impl Materialized {
         let mut out = String::new();
         for (i, s) in self.statics.iter().enumerate() {
             out.push_str(s);
-            if let Some((_, html)) = self.slots.get(i) {
-                out.push_str(html);
+            if let Some((_, part)) = self.slots.get(i) {
+                part.write_html(&mut out);
             }
         }
         out
+    }
+}
+
+/// One rendered object, or one piece of one: LiveView's "rendered" shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part {
+    /// A string on the wire: a substituted value, or the whole markup of an
+    /// object whose template is not exactly one element.
+    Text(String),
+    /// Statics and dynamics.
+    Node(Arc<Node>),
+}
+
+/// The statics of a template and the values that go between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    /// One more than there are dynamics.
+    pub statics: Arc<[String]>,
+    /// `"r": 1` — the statics are exactly one element, so the client may skip
+    /// this part when a frame does not touch it.
+    pub root: bool,
+    /// The values, each a part of its own.
+    pub dynamics: Vec<Part>,
+}
+
+impl From<String> for Part {
+    fn from(s: String) -> Self {
+        Part::Text(s)
+    }
+}
+
+impl From<&str> for Part {
+    fn from(s: &str) -> Self {
+        Part::Text(s.to_string())
+    }
+}
+
+impl std::fmt::Display for Part {
+    /// The part's markup.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.html())
+    }
+}
+
+impl Part {
+    /// The part's markup.
+    pub fn html(&self) -> String {
+        let mut out = String::new();
+        self.write_html(&mut out);
+        out
+    }
+
+    fn write_html(&self, out: &mut String) {
+        match self {
+            Part::Text(t) => out.push_str(t),
+            Part::Node(n) => {
+                for (i, s) in n.statics.iter().enumerate() {
+                    out.push_str(s);
+                    if let Some(d) = n.dynamics.get(i) {
+                        d.write_html(out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The statics one frame shares by number (`"p"`).
+///
+/// The client resolves a numeric `"s"` against the table of the frame that
+/// carries it and then deletes the table, so every frame numbers its own.
+#[derive(Default)]
+struct SharedStatics {
+    index: HashMap<Arc<[String]>, usize>,
+    table: Vec<Arc<[String]>>,
+}
+
+impl SharedStatics {
+    fn id(&mut self, statics: &Arc<[String]>) -> usize {
+        if let Some(&i) = self.index.get(statics) {
+            return i;
+        }
+        let i = self.table.len();
+        self.table.push(Arc::clone(statics));
+        self.index.insert(Arc::clone(statics), i);
+        i
+    }
+
+    /// Put the table on the frame, if any part used it.
+    fn attach(self, frame: &mut Map<String, Value>) {
+        if self.table.is_empty() {
+            return;
+        }
+        let mut p = Map::new();
+        for (i, s) in self.table.iter().enumerate() {
+            p.insert(
+                i.to_string(),
+                Value::Array(s.iter().map(|x| json!(x)).collect()),
+            );
+        }
+        frame.insert("p".to_string(), Value::Object(p));
+    }
+}
+
+/// A part in full, for a viewer that holds nothing of it.
+fn full_value(part: &Part, shared: &mut SharedStatics) -> Value {
+    match part {
+        Part::Text(t) => Value::String(t.clone()),
+        Part::Node(n) => {
+            let mut m = Map::new();
+            m.insert("s".to_string(), json!(shared.id(&n.statics)));
+            for (i, d) in n.dynamics.iter().enumerate() {
+                m.insert(i.to_string(), full_value(d, shared));
+            }
+            if n.root {
+                m.insert("r".to_string(), json!(1));
+            }
+            Value::Object(m)
+        }
+    }
+}
+
+/// What a viewer holding `old` needs to hold `new`, or `None` if nothing.
+///
+/// The same statics: only the dynamics that changed, by index, each again as
+/// a difference — the client merges an object without `"s"` into the part it
+/// has. Anything else: the new part in full, which the client puts in place.
+fn diff_value(old: &Part, new: &Part, shared: &mut SharedStatics) -> Option<Value> {
+    match (old, new) {
+        (Part::Text(a), Part::Text(b)) => (a != b).then(|| Value::String(b.clone())),
+        (Part::Node(a), Part::Node(b)) if Arc::ptr_eq(a, b) => None,
+        (Part::Node(a), Part::Node(b)) if a.root == b.root && a.statics == b.statics => {
+            let mut m = Map::new();
+            for (i, (x, y)) in a.dynamics.iter().zip(&b.dynamics).enumerate() {
+                if let Some(v) = diff_value(x, y, shared) {
+                    m.insert(i.to_string(), v);
+                }
+            }
+            (!m.is_empty()).then_some(Value::Object(m))
+        }
+        _ => (old != new).then(|| full_value(new, shared)),
+    }
+}
+
+/// The markup of a wire part, resolving numeric statics against `shared` (the
+/// `"p"` of the frame that carries it). For tests and diagnostics: the client
+/// does the same when it renders.
+pub fn wire_html(part: &Value, shared: &Value) -> String {
+    match part {
+        Value::String(s) => s.clone(),
+        Value::Object(m) => {
+            let statics: Vec<String> = match m.get("s") {
+                Some(Value::Number(n)) => shared[n.to_string()]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|s| s.as_str().unwrap_or_default().to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|s| s.as_str().unwrap_or_default().to_string())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let mut out = String::new();
+            for (i, s) in statics.iter().enumerate() {
+                out.push_str(s);
+                if let Some(d) = m.get(&i.to_string()) {
+                    out.push_str(&wire_html(d, shared));
+                }
+            }
+            out
+        }
+        _ => String::new(),
     }
 }
 
@@ -196,51 +406,904 @@ struct ObjectRow {
     props: Value,
 }
 
-fn load_object(conn: &Connection, id: &str) -> Result<ObjectRow, RenderError> {
-    let row = conn
-        .query_row(
-            "SELECT component, props FROM objects WHERE id = ?1",
-            [id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => RenderError::UnknownObject(id.to_string()),
-            other => RenderError::Db(other.to_string()),
-        })?;
-    Ok(ObjectRow {
-        component: row.0,
-        // A props column that is not an object renders as no props at all
-        // rather than failing the page: a malformed prop bag costs its own
-        // values, not everybody else's.
-        props: meclaw_core::serde_json::from_str(&row.1).unwrap_or_else(|_| json!({})),
-    })
+/// A template cut into statics and dynamics, once per component per render.
+#[derive(Debug, Default)]
+struct Tpl {
+    statics: Arc<[String]>,
+    root: bool,
+    dyns: Vec<Dyn>,
 }
 
-/// `(template, prop_schema)` of one component.
-fn load_component(conn: &Connection, name: &str) -> Result<(String, Value), RenderError> {
-    let row = conn
-        .query_row(
-            "SELECT template, prop_schema FROM components WHERE name = ?1",
-            [name],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => RenderError::UnknownComponent(name.to_string()),
-            other => RenderError::Db(other.to_string()),
+/// One dynamic of a [`Tpl`].
+#[derive(Debug)]
+enum Dyn {
+    Prop { name: String, slot: Slot },
+    Raw { name: String, slot: Slot },
+    Children,
+    If { prop: String, body: Tpl },
+}
+
+impl Tpl {
+    fn compile(pieces: &[Piece], top: bool) -> Tpl {
+        let mut statics = Vec::new();
+        let mut current = String::new();
+        let mut dyns = Vec::new();
+        for piece in pieces {
+            let d = match piece {
+                Piece::Text(t) => {
+                    current.push_str(t);
+                    continue;
+                }
+                Piece::Prop { name, slot } => Dyn::Prop {
+                    name: name.clone(),
+                    slot: slot.clone(),
+                },
+                Piece::Raw { name, slot } => Dyn::Raw {
+                    name: name.clone(),
+                    slot: slot.clone(),
+                },
+                Piece::Children => Dyn::Children,
+                Piece::If { prop, body } => Dyn::If {
+                    prop: prop.clone(),
+                    body: Tpl::compile(body, false),
+                },
+            };
+            statics.push(std::mem::take(&mut current));
+            dyns.push(d);
+        }
+        statics.push(current);
+        Tpl {
+            statics: statics.into(),
+            root: top && one_root_element(pieces),
+            dyns,
+        }
+    }
+}
+
+/// A component, ready to render.
+struct Compiled {
+    pieces: Vec<Piece>,
+    tpl: Tpl,
+    schema: Value,
+}
+
+/// The objects below one id, loaded in one query.
+#[derive(Default)]
+struct Subtree {
+    rows: HashMap<String, ObjectRow>,
+    kids: HashMap<String, Vec<String>>,
+}
+
+/// One render pass: a component cache and the count of objects it rendered.
+struct Renderer<'c> {
+    conn: &'c Connection,
+    components: HashMap<String, Arc<Compiled>>,
+    /// Objects rendered so far — the statistic [`rerender`] reports.
+    objects: usize,
+}
+
+impl<'c> Renderer<'c> {
+    fn new(conn: &'c Connection) -> Self {
+        Self {
+            conn,
+            components: HashMap::new(),
+            objects: 0,
+        }
+    }
+
+    /// `(template, prop_schema)` of one component, parsed and cut, once.
+    fn component(&mut self, name: &str) -> Result<Arc<Compiled>, RenderError> {
+        if let Some(c) = self.components.get(name) {
+            return Ok(Arc::clone(c));
+        }
+        let row = self
+            .conn
+            .prepare_cached("SELECT template, prop_schema FROM components WHERE name = ?1")?
+            .query_row([name], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    RenderError::UnknownComponent(name.to_string())
+                }
+                other => RenderError::Db(other.to_string()),
+            })?;
+        // A template stored in the database was accepted by
+        // `component.define`, so a parse failure here means the row was
+        // written around that gate. Render it as nothing rather than failing
+        // the page — and the definition path is where the message belongs.
+        let pieces = parse_template(&row.0).unwrap_or_default();
+        let compiled = Arc::new(Compiled {
+            tpl: Tpl::compile(&pieces, true),
+            pieces,
+            schema: meclaw_core::serde_json::from_str(&row.1).unwrap_or_else(|_| json!({})),
+        });
+        self.components
+            .insert(name.to_string(), Arc::clone(&compiled));
+        Ok(compiled)
+    }
+
+    /// `id` and everything below it, in one recursive query over
+    /// `idx_objects_parent`. `UNION` (not `UNION ALL`) ends a cycle; the
+    /// depth bound of the walk then names it.
+    fn subtree(&self, id: &str) -> Result<Subtree, RenderError> {
+        let mut stmt = self.conn.prepare_cached(
+            "WITH RECURSIVE sub(id) AS ( \
+                 SELECT ?1 UNION SELECT o.id FROM objects o JOIN sub ON o.parent = sub.id \
+             ) \
+             SELECT o.id, o.parent, o.component, o.ord, o.props \
+             FROM objects o JOIN sub ON o.id = sub.id",
+        )?;
+        let mut tree = Subtree::default();
+        let mut kids: HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        let rows = stmt.query_map([id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+            ))
         })?;
-    Ok((
-        row.0,
-        meclaw_core::serde_json::from_str(&row.1).unwrap_or_else(|_| json!({})),
-    ))
+        for row in rows {
+            let (oid, parent, component, ord, props) = row?;
+            // The top object's own parent edge too: it lies outside the
+            // subtree unless the tree is a cycle, and then it is the edge that
+            // lets the depth bound find it.
+            if let Some(p) = parent {
+                kids.entry(p).or_default().push((ord, oid.clone()));
+            }
+            tree.rows.insert(
+                oid,
+                ObjectRow {
+                    component,
+                    // A props column that is not an object renders as no props
+                    // at all rather than failing the page: a malformed prop bag
+                    // costs its own values, not everybody else's.
+                    props: meclaw_core::serde_json::from_str(&props).unwrap_or_else(|_| json!({})),
+                },
+            );
+        }
+        for (parent, mut list) in kids {
+            // `ORDER BY ord, id`, as the page has always drawn them.
+            list.sort();
+            tree.kids
+                .insert(parent, list.into_iter().map(|(_, id)| id).collect());
+        }
+        Ok(tree)
+    }
+
+    /// One object of `tree` and everything below it, as a part.
+    fn part(&mut self, tree: &Subtree, id: &str, depth: usize) -> Result<Part, RenderError> {
+        if depth > MAX_DEPTH {
+            return Err(RenderError::TooDeep { at: id.to_string() });
+        }
+        let row = tree
+            .rows
+            .get(id)
+            .ok_or_else(|| RenderError::UnknownObject(id.to_string()))?;
+        self.objects += 1;
+        let comp = self.component(&row.component)?;
+        let node = self.node(tree, &comp.tpl, &row.props, &comp.schema, id, depth)?;
+        let part = Part::Node(Arc::new(node));
+        if comp.tpl.root {
+            Ok(part)
+        } else {
+            // Not one element: the client could not skip it, and a part
+            // without a single root reads as malformed to its skip path. The
+            // markup as a string is the form every slot had before.
+            Ok(Part::Text(part.html()))
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn node(
+        &mut self,
+        tree: &Subtree,
+        tpl: &Tpl,
+        props: &Value,
+        schema: &Value,
+        id: &str,
+        depth: usize,
+    ) -> Result<Node, RenderError> {
+        let mut dynamics = Vec::with_capacity(tpl.dyns.len());
+        for d in &tpl.dyns {
+            dynamics.push(match d {
+                Dyn::Prop { name, slot } => {
+                    Part::Text(escape(&fitted_text(props, schema, name, slot)))
+                }
+                Dyn::Raw { name, slot } => Part::Text(raw_text(props, schema, name, slot)),
+                Dyn::Children => {
+                    let ids = tree.kids.get(id).map(Vec::as_slice).unwrap_or_default();
+                    let mut parts = Vec::with_capacity(ids.len());
+                    for child in ids {
+                        parts.push(self.part(tree, child, depth + 1)?);
+                    }
+                    // Statics n+1 empty strings: the children stand side by
+                    // side, and there is no single root to skip.
+                    Part::Node(Arc::new(Node {
+                        statics: vec![String::new(); parts.len() + 1].into(),
+                        root: false,
+                        dynamics: parts,
+                    }))
+                }
+                Dyn::If { prop, body } => {
+                    if prop_truthy(props, prop) {
+                        Part::Node(Arc::new(self.node(tree, body, props, schema, id, depth)?))
+                    } else {
+                        Part::Text(String::new())
+                    }
+                }
+            });
+        }
+        Ok(Node {
+            statics: Arc::clone(&tpl.statics),
+            root: tpl.root,
+            dynamics,
+        })
+    }
+
+    /// The root row of a page and its title.
+    fn page_row(&self, route: &str) -> Result<(String, String), RenderError> {
+        self.conn
+            .prepare_cached("SELECT root, title FROM pages WHERE route = ?1")?
+            .query_row([route], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    RenderError::UnknownRoute(route.to_string())
+                }
+                other => RenderError::Db(other.to_string()),
+            })
+    }
+
+    /// Render a whole route into its packed form.
+    fn page(&mut self, route: &str) -> Result<Materialized, RenderError> {
+        let (root, title) = self.page_row(route)?;
+        let tree = self.subtree(&root)?;
+        let obj = tree
+            .rows
+            .get(&root)
+            .ok_or_else(|| RenderError::UnknownObject(root.clone()))?;
+        self.objects += 1;
+        let comp = self.component(&obj.component)?;
+
+        // Split the root's own template at `{{children}}`. Everything outside
+        // the children marker is static for this page; each direct child
+        // becomes one slot. `{{#if}}` around the children marker is not split
+        // into — the conditional is evaluated and its result folded into the
+        // surrounding static, because a slot that appears and disappears is
+        // not a slot.
+        let mut statics: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut slots: Vec<(String, Part)> = Vec::new();
+        let mut split = false;
+
+        for piece in &comp.pieces {
+            match piece {
+                Piece::Children if !split => {
+                    split = true;
+                    statics.push(std::mem::take(&mut current));
+                    let ids = tree.kids.get(&root).cloned().unwrap_or_default();
+                    for child in ids {
+                        let part = self.part(&tree, &child, 1)?;
+                        slots.push((child, part));
+                    }
+                    // One separator between each pair of adjacent slots, so the
+                    // list ends up n+1 long once the trailing piece is pushed
+                    // (GH #394). Two children used to produce two statics,
+                    // which put the closing tag *between* them and dropped
+                    // every child from the third on — `rendered_body` walks
+                    // `statics`, and the wire format wants n+1 statics for n
+                    // dynamics.
+                    let separators = slots.len().saturating_sub(1);
+                    statics.resize(statics.len() + separators, String::new());
+                }
+                other => {
+                    let ids = tree.kids.get(&root).cloned().unwrap_or_default();
+                    render_pieces_with(
+                        std::slice::from_ref(other),
+                        &obj.props,
+                        &comp.schema,
+                        &mut current,
+                        &mut |out| {
+                            for child in &ids {
+                                self.part(&tree, child, 1)?.write_html(out);
+                            }
+                            Ok(())
+                        },
+                    )?;
+                }
+            }
+        }
+        statics.push(current);
+
+        // A root with nothing in its children marker is entirely static: one
+        // piece, no slots. That covers both a root with no `{{children}}` at
+        // all and one whose marker has no children to show — n+1 statics for
+        // n = 0 is one, and a tree with two statics and no dynamic is not a
+        // shape the client reads. The served body is identical either way.
+        if slots.is_empty() {
+            statics = vec![statics.concat()];
+        }
+
+        Ok(Materialized {
+            statics,
+            slots,
+            title,
+        })
+    }
+
+    /// Whether a write below this page's root can be answered slot by slot:
+    /// the root template shows its children exactly once, at its top level.
+    /// A second `{{children}}`, or one inside `{{#if}}`, is folded into the
+    /// statics, and only a whole render keeps those current.
+    fn slotted(&mut self, root: &str) -> Result<bool, RenderError> {
+        let component: String = match self
+            .conn
+            .prepare_cached("SELECT component FROM objects WHERE id = ?1")?
+            .query_row([root], |r| r.get(0))
+        {
+            Ok(c) => c,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let comp = self.component(&component)?;
+        let top = comp
+            .pieces
+            .iter()
+            .filter(|p| matches!(p, Piece::Children))
+            .count();
+        Ok(top == 1 && !comp.pieces.iter().any(nests_children))
+    }
+}
+
+/// Whether a piece is an `{{#if}}` with `{{children}}` somewhere inside.
+fn nests_children(piece: &Piece) -> bool {
+    match piece {
+        Piece::If { body, .. } => body
+            .iter()
+            .any(|p| matches!(p, Piece::Children) || nests_children(p)),
+        _ => false,
+    }
 }
 
 /// The ids of an object's children, in `ord` order.
 fn child_ids(conn: &Connection, parent: &str) -> Result<Vec<String>, RenderError> {
-    let mut stmt = conn.prepare("SELECT id FROM objects WHERE parent = ?1 ORDER BY ord, id")?;
+    let mut stmt =
+        conn.prepare_cached("SELECT id FROM objects WHERE parent = ?1 ORDER BY ord, id")?;
     let ids = stmt
         .query_map([parent], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ids)
+}
+
+/// What a re-render after a write produced: the pages to publish, the frames
+/// to push (one per route), and how many objects it rendered.
+#[derive(Debug, Default)]
+pub struct Rerendered {
+    /// The pages to publish.
+    pub pages: PageMap,
+    /// `(route, diff)`, one per route the write reached.
+    pub frames: Vec<(String, Value)>,
+    /// Objects rendered — the root-child slots the write touched, with
+    /// everything below them; untouched slots are taken from `old` as they
+    /// are (GH #1001 T1).
+    pub objects: usize,
+}
+
+/// Re-render after a write: only the slots `touched` names, on their routes.
+///
+/// `old` is what the viewers hold — the pages last published, every frame
+/// computed against it. Three answers:
+///
+/// - the root-object case (structural, no slot): every route whole, every
+///   route its packed tree, as before;
+/// - a route `old` does not have, or a write that names the page root
+///   (`page.set`, `component.define`), or a root template that folds its
+///   children into its statics: that route whole; the frame is the packed
+///   tree for a structural write, a route `old` does not have or a slot the
+///   page does not have, and the named slots in full otherwise;
+/// - everything else: the named slots re-rendered (a structural write re-reads
+///   the root's child list; a slot new to it is rendered too), every other
+///   slot taken over. If the root's child list is the one the viewers hold,
+///   the frame is each named slot's difference; otherwise the packed tree.
+///
+/// A route that does not render is left out of the pages with its reason
+/// logged, as [`materialize_all`] does.
+pub fn rerender(
+    conn: &Connection,
+    old: &PageMap,
+    touched: &Touched,
+) -> Result<Rerendered, RenderError> {
+    let mut r = Renderer::new(conn);
+    if touched.structural && touched.slots.is_empty() {
+        let pages = r.all()?;
+        let frames = pages
+            .iter()
+            .map(|(route, page)| (route.clone(), page.packed_tree()))
+            .collect();
+        return Ok(Rerendered {
+            pages,
+            frames,
+            objects: r.objects,
+        });
+    }
+
+    // Group by route, in first-seen order: one frame per route (GH #723).
+    let mut by_route: Vec<(&str, HashSet<&str>)> = Vec::new();
+    for (route, id) in &touched.slots {
+        match by_route.iter_mut().find(|(r, _)| r == route) {
+            Some((_, ids)) => {
+                ids.insert(id);
+            }
+            None => by_route.push((route, HashSet::from([id.as_str()]))),
+        }
+    }
+
+    let mut pages = old.clone();
+    let mut frames = Vec::new();
+    for (route, ids) in by_route {
+        // An update: the slots are patched in place in the copy that will be
+        // published, so the write costs its slots and not the page (T2 — a
+        // rebuilt slot list grew 2 → 6 ms from 1 000 to 4 000 figures).
+        if !touched.structural
+            && let Some(page) = pages.get_mut(route)
+        {
+            match in_place(&mut r, route, page, &ids) {
+                Ok(Some(frame)) => {
+                    frames.push((route.to_string(), frame));
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(route = %route, error = %e, "web: route did not render");
+                    pages.remove(route);
+                    continue;
+                }
+            }
+        }
+        let rendered = match old.get(route) {
+            Some(prev) if touched.structural => incremental(&mut r, route, prev, &ids),
+            _ => Ok(None),
+        };
+        let result = match rendered {
+            Ok(Some(done)) => Ok(done),
+            // A route the viewers hold no page for gets its packed tree: the
+            // named slots alone would land beside neighbours from before the
+            // render error that dropped the route (review M1, GH #1001).
+            Ok(None) => whole(
+                &mut r,
+                route,
+                &ids,
+                touched.structural || !old.contains_key(route),
+            ),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok((page, frame)) => {
+                pages.insert(route.to_string(), page);
+                frames.push((route.to_string(), frame));
+            }
+            Err(e) => {
+                tracing::error!(route = %route, error = %e, "web: route did not render");
+                pages.remove(route);
+            }
+        }
+    }
+    Ok(Rerendered {
+        pages,
+        frames,
+        objects: r.objects,
+    })
+}
+
+/// A route rendered whole after a write, and its frame: the packed tree when
+/// `packed` (a structural write, or a route the viewers hold no page for) or
+/// when a named slot is not on the page, the named slots in full otherwise.
+fn whole(
+    r: &mut Renderer<'_>,
+    route: &str,
+    ids: &HashSet<&str>,
+    packed: bool,
+) -> Result<(Materialized, Value), RenderError> {
+    let page = r.page(route)?;
+    let addressable = ids.iter().all(|id| page.slot_of(id).is_some());
+    let frame = if packed || !addressable {
+        page.packed_tree()
+    } else {
+        let mut shared = SharedStatics::default();
+        let mut m = Map::new();
+        for (i, (id, part)) in page.slots.iter().enumerate() {
+            if ids.contains(id.as_str()) {
+                m.insert(i.to_string(), full_value(part, &mut shared));
+            }
+        }
+        shared.attach(&mut m);
+        Value::Object(m)
+    };
+    Ok((page, frame))
+}
+
+/// Whether a write below `root` may be answered slot by slot (see
+/// [`Renderer::slotted`]); a write that names the root itself may not.
+fn slot_by_slot(
+    r: &mut Renderer<'_>,
+    root: &str,
+    prev: &Materialized,
+    ids: &HashSet<&str>,
+) -> Result<bool, RenderError> {
+    Ok(!ids.contains(root) && !prev.slots.is_empty() && r.slotted(root)?)
+}
+
+/// An update answered in place: the named slots re-rendered inside `page`,
+/// the frame their differences — or `None` when the route has to be whole.
+///
+/// An update cannot change the root's child list, so the list is the one the
+/// viewers hold; a slot it names that the page does not have is a picture the
+/// page never drew, and that is a whole render.
+fn in_place(
+    r: &mut Renderer<'_>,
+    route: &str,
+    page: &mut Materialized,
+    ids: &HashSet<&str>,
+) -> Result<Option<Value>, RenderError> {
+    let (root, title) = r.page_row(route)?;
+    if !slot_by_slot(r, &root, page, ids)? {
+        return Ok(None);
+    }
+    let at: Vec<usize> = page
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, _))| ids.contains(id.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+    if at.len() != ids.len() {
+        return Ok(None);
+    }
+    page.title = title;
+    let mut shared = SharedStatics::default();
+    let mut m = Map::new();
+    for i in at {
+        let id = page.slots[i].0.clone();
+        let tree = r.subtree(&id)?;
+        let new = r.part(&tree, &id, 1)?;
+        let old = std::mem::replace(&mut page.slots[i].1, new);
+        if let Some(v) = diff_value(&old, &page.slots[i].1, &mut shared) {
+            m.insert(i.to_string(), v);
+        }
+    }
+    shared.attach(&mut m);
+    Ok(Some(Value::Object(m)))
+}
+
+/// A structural write re-rendered slot by slot, or `None` when the route has
+/// to be whole: the root's child list is read again, the named slots and any
+/// slot new to the list are rendered, every other slot is taken over.
+fn incremental(
+    r: &mut Renderer<'_>,
+    route: &str,
+    prev: &Materialized,
+    ids: &HashSet<&str>,
+) -> Result<Option<(Materialized, Value)>, RenderError> {
+    let (root, title) = r.page_row(route)?;
+    if !slot_by_slot(r, &root, prev, ids)? {
+        return Ok(None);
+    }
+    let kids = child_ids(r.conn, &root)?;
+    if kids.is_empty() {
+        return Ok(None);
+    }
+    let held: HashMap<&str, &Part> = prev
+        .slots
+        .iter()
+        .map(|(id, part)| (id.as_str(), part))
+        .collect();
+    let mut slots = Vec::with_capacity(kids.len());
+    for id in kids {
+        let part = match held.get(id.as_str()) {
+            Some(part) if !ids.contains(id.as_str()) => (*part).clone(),
+            _ => {
+                let tree = r.subtree(&id)?;
+                r.part(&tree, &id, 1)?
+            }
+        };
+        slots.push((id, part));
+    }
+    let mut statics = Vec::with_capacity(slots.len() + 1);
+    statics.push(prev.statics[0].clone());
+    statics.resize(slots.len(), String::new());
+    statics.push(prev.statics[prev.statics.len() - 1].clone());
+    let page = Materialized {
+        statics,
+        slots,
+        title,
+    };
+
+    let same_list = page.slots.len() == prev.slots.len()
+        && page
+            .slots
+            .iter()
+            .zip(&prev.slots)
+            .all(|((a, _), (b, _))| a == b);
+    let frame = if same_list {
+        let mut shared = SharedStatics::default();
+        let mut m = Map::new();
+        for (i, ((id, new), (_, old))) in page.slots.iter().zip(&prev.slots).enumerate() {
+            if ids.contains(id.as_str())
+                && let Some(v) = diff_value(old, new, &mut shared)
+            {
+                m.insert(i.to_string(), v);
+            }
+        }
+        shared.attach(&mut m);
+        Value::Object(m)
+    } else {
+        page.packed_tree()
+    };
+    Ok(Some((page, frame)))
+}
+
+/// Whether a template's markup is exactly one element at its top level.
+///
+/// The client's skip path (`"r": 1`) cuts a part's markup at its first tag
+/// and its last `>` and stands an empty element with the part's id in for it
+/// (`phoenix_live_view.min.js`, `Lt`). That is only the same page if the part
+/// IS one element: no text, comment, value, children or conditional beside it.
+/// The template's own text is walked as markup (start and end tags, quoted
+/// attribute values, void elements, comments, raw-text bodies); every
+/// substitution must stand inside the element, and a conditional's body must
+/// leave the markup where it found it.
+pub(crate) fn one_root_element(pieces: &[Piece]) -> bool {
+    let mut scan = Scan::default();
+    scan.pieces(pieces) && scan.done()
+}
+
+/// Where the walk of [`one_root_element`] stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum ScanState {
+    #[default]
+    Data,
+    /// After `<`.
+    Open,
+    /// In a start tag's name.
+    Name,
+    /// In an end tag's name.
+    EndName,
+    /// Inside a start tag, between attributes.
+    InTag,
+    /// In a quoted attribute value.
+    Quoted(char),
+    /// After `<!`.
+    Bang,
+    /// In a comment, `<!--` … `-->`.
+    Comment,
+    /// In `<!…>` that is not a comment.
+    Decl,
+    /// In the body of a raw-text element, waiting for its end tag.
+    Raw,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Scan {
+    state: ScanState,
+    depth: usize,
+    roots: usize,
+    name: String,
+    self_closing: bool,
+    raw: String,
+    tail: String,
+    broken: bool,
+}
+
+/// Elements without an end tag.
+const VOID: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
+];
+
+/// Elements whose body is text up to their end tag.
+const RAW_TEXT: &[&str] = &["script", "style", "textarea", "title"];
+
+impl Scan {
+    fn done(&self) -> bool {
+        !self.broken && self.state == ScanState::Data && self.depth == 0 && self.roots == 1
+    }
+
+    fn pieces(&mut self, pieces: &[Piece]) -> bool {
+        for piece in pieces {
+            match piece {
+                Piece::Text(t) => {
+                    for c in t.chars() {
+                        self.char(c);
+                    }
+                }
+                Piece::Prop { .. } | Piece::Raw { .. } | Piece::Children => {
+                    // A value between tags at the top level is text beside
+                    // the element; anywhere else it stays inside it.
+                    if self.top_level() {
+                        return false;
+                    }
+                }
+                Piece::If { body, .. } => {
+                    if self.top_level() {
+                        return false;
+                    }
+                    // In a tag or a quoted value the body is attribute text;
+                    // between tags it has to close what it opens.
+                    if self.state == ScanState::Data {
+                        let before = self.clone();
+                        if !self.pieces(body)
+                            || self.broken
+                            || self.state != before.state
+                            || self.depth != before.depth
+                            || self.roots != before.roots
+                        {
+                            return false;
+                        }
+                        *self = before;
+                    }
+                }
+            }
+            if self.broken {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn top_level(&self) -> bool {
+        self.depth == 0 && self.state == ScanState::Data
+    }
+
+    fn char(&mut self, c: char) {
+        match self.state.clone() {
+            ScanState::Data => {
+                if c == '<' {
+                    self.state = ScanState::Open;
+                } else if self.depth == 0 && !c.is_whitespace() {
+                    self.broken = true;
+                }
+            }
+            ScanState::Open => match c {
+                '/' => {
+                    self.name.clear();
+                    self.state = ScanState::EndName;
+                }
+                '!' => {
+                    self.tail.clear();
+                    self.state = ScanState::Bang;
+                }
+                c if c.is_ascii_alphabetic() => {
+                    self.name.clear();
+                    self.name.push(c.to_ascii_lowercase());
+                    self.self_closing = false;
+                    self.state = ScanState::Name;
+                }
+                _ => {
+                    // A `<` that opens nothing is text.
+                    if self.depth == 0 {
+                        self.broken = true;
+                    }
+                    self.state = ScanState::Data;
+                }
+            },
+            ScanState::Name => match c {
+                '>' => self.start_tag(),
+                '/' => {
+                    self.self_closing = true;
+                    self.state = ScanState::InTag;
+                }
+                c if c.is_whitespace() => self.state = ScanState::InTag,
+                c => self.name.push(c.to_ascii_lowercase()),
+            },
+            ScanState::InTag => match c {
+                '>' => self.start_tag(),
+                '"' | '\'' => self.state = ScanState::Quoted(c),
+                '/' => self.self_closing = true,
+                _ => self.self_closing = false,
+            },
+            ScanState::Quoted(q) => {
+                if c == q {
+                    self.self_closing = false;
+                    self.state = ScanState::InTag;
+                }
+            }
+            ScanState::EndName => match c {
+                '>' => {
+                    if self.depth == 0 {
+                        self.broken = true;
+                    } else {
+                        self.depth -= 1;
+                    }
+                    self.state = ScanState::Data;
+                }
+                c => self.name.push(c.to_ascii_lowercase()),
+            },
+            ScanState::Bang => {
+                self.tail.push(c);
+                if self.tail == "--" {
+                    // A comment beside the element is a node of its own.
+                    if self.depth == 0 {
+                        self.broken = true;
+                    }
+                    self.tail.clear();
+                    self.state = ScanState::Comment;
+                } else if !"--".starts_with(self.tail.as_str()) {
+                    if self.depth == 0 {
+                        self.broken = true;
+                    }
+                    self.state = if c == '>' {
+                        ScanState::Data
+                    } else {
+                        ScanState::Decl
+                    };
+                }
+            }
+            ScanState::Comment => {
+                self.tail.push(c);
+                if self.tail.ends_with("-->") {
+                    self.tail.clear();
+                    self.state = ScanState::Data;
+                }
+            }
+            ScanState::Decl => {
+                if c == '>' {
+                    self.state = ScanState::Data;
+                }
+            }
+            ScanState::Raw => {
+                self.tail.push(c.to_ascii_lowercase());
+                let end = format!("</{}", self.raw);
+                if self.tail.ends_with(&end) {
+                    self.tail.clear();
+                    self.name = self.raw.clone();
+                    self.state = ScanState::EndName;
+                } else if self.tail.len() > 64 {
+                    let keep = self.tail.len() - end.len();
+                    let cut = (keep..self.tail.len())
+                        .find(|&i| self.tail.is_char_boundary(i))
+                        .unwrap_or(self.tail.len());
+                    self.tail.drain(..cut);
+                }
+            }
+        }
+    }
+
+    fn start_tag(&mut self) {
+        if self.depth == 0 {
+            self.roots += 1;
+        }
+        let name = std::mem::take(&mut self.name);
+        if VOID.contains(&name.as_str()) || self.self_closing {
+            self.state = ScanState::Data;
+        } else {
+            self.depth += 1;
+            if RAW_TEXT.contains(&name.as_str()) {
+                self.raw = name;
+                self.tail.clear();
+                self.state = ScanState::Raw;
+            } else {
+                self.state = ScanState::Data;
+            }
+        }
+        self.self_closing = false;
+    }
+}
+
+/// A `{{&prop}}` value: raw where its schema says `html` and its place takes
+/// markup, escaped and fitted everywhere else.
+fn raw_text(props: &Value, schema: &Value, name: &str, slot: &Slot) -> String {
+    if is_html_prop(schema, name) && slot.takes_markup() {
+        prop_text(props, name)
+    } else {
+        // Undeclared, or standing where markup cannot: escape and fit.
+        // Emitting markup a schema never promised was markup is the worse
+        // failure, and a raw value inside quotes is a way out of them.
+        escape(&fitted_text(props, schema, name, slot))
+    }
 }
 
 /// Escape for an HTML text node or a double-quoted attribute.
@@ -491,44 +1554,12 @@ fn fitted_text(props: &Value, schema: &Value, name: &str, slot: &Slot) -> String
 
 /// Render one object and everything below it.
 pub fn render_object(conn: &Connection, id: &str) -> Result<String, RenderError> {
-    render_at(conn, id, 0)
+    let mut r = Renderer::new(conn);
+    let tree = r.subtree(id)?;
+    Ok(r.part(&tree, id, 0)?.html())
 }
 
-fn render_at(conn: &Connection, id: &str, depth: usize) -> Result<String, RenderError> {
-    if depth > MAX_DEPTH {
-        return Err(RenderError::TooDeep { at: id.to_string() });
-    }
-    let obj = load_object(conn, id)?;
-    let (template, schema) = load_component(conn, &obj.component)?;
-    // A template stored in the database was accepted by `component.define`, so
-    // a parse failure here means the row was written around that gate. Render
-    // it as nothing rather than failing the page — and the definition path is
-    // where the message belongs.
-    let pieces = parse_template(&template).unwrap_or_default();
-    let mut out = String::new();
-    render_pieces(conn, &pieces, &obj.props, &schema, id, depth, &mut out)?;
-    Ok(out)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_pieces(
-    conn: &Connection,
-    pieces: &[Piece],
-    props: &Value,
-    schema: &Value,
-    id: &str,
-    depth: usize,
-    out: &mut String,
-) -> Result<(), RenderError> {
-    render_pieces_with(pieces, props, schema, out, &mut |out| {
-        for child in child_ids(conn, id)? {
-            out.push_str(&render_at(conn, &child, depth + 1)?);
-        }
-        Ok(())
-    })
-}
-
-/// The test-facing form of `render_pieces`: the same truthiness, so a test
+/// The test-facing form of the cell's walk: the same truthiness, so a test
 /// never disagrees with the cell about what `{{#if}}` sees.
 ///
 /// One component template with its props, the way the cell renders one object
@@ -566,17 +1597,7 @@ fn render_pieces_with(
             Piece::Prop { name, slot } => {
                 out.push_str(&escape(&fitted_text(props, schema, name, slot)))
             }
-            Piece::Raw { name, slot } => {
-                if is_html_prop(schema, name) && slot.takes_markup() {
-                    out.push_str(&prop_text(props, name));
-                } else {
-                    // Undeclared, or standing where markup cannot: escape and
-                    // fit. Emitting markup a schema never promised was markup
-                    // is the worse failure, and a raw value inside quotes is
-                    // a way out of them.
-                    out.push_str(&escape(&fitted_text(props, schema, name, slot)));
-                }
-            }
+            Piece::Raw { name, slot } => out.push_str(&raw_text(props, schema, name, slot)),
             Piece::Children => children(out)?,
             Piece::If { prop, body } => {
                 if prop_truthy(props, prop) {
@@ -590,78 +1611,7 @@ fn render_pieces_with(
 
 /// Render a whole route into its packed form.
 pub fn materialize(conn: &Connection, route: &str) -> Result<Materialized, RenderError> {
-    let (root, title) = conn
-        .query_row(
-            "SELECT root, title FROM pages WHERE route = ?1",
-            [route],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => RenderError::UnknownRoute(route.to_string()),
-            other => RenderError::Db(other.to_string()),
-        })?;
-
-    let obj = load_object(conn, &root)?;
-    let (template, schema) = load_component(conn, &obj.component)?;
-    let pieces = parse_template(&template).unwrap_or_default();
-
-    // Split the root's own template at `{{children}}`. Everything outside the
-    // children marker is static for this page; each direct child becomes one
-    // slot. `{{#if}}` around the children marker is not split into — the
-    // conditional is evaluated and its result folded into the surrounding
-    // static, because a slot that appears and disappears is not a slot.
-    let mut statics: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut slots: Vec<(String, String)> = Vec::new();
-    let mut split = false;
-
-    for piece in &pieces {
-        match piece {
-            Piece::Children if !split => {
-                split = true;
-                statics.push(std::mem::take(&mut current));
-                for child in child_ids(conn, &root)? {
-                    let html = render_at(conn, &child, 1)?;
-                    slots.push((child, html));
-                }
-                // One separator between each pair of adjacent slots, so the
-                // list ends up n+1 long once the trailing piece is pushed
-                // (GH #394). Two children used to produce two statics, which
-                // put the closing tag *between* them and dropped every child
-                // from the third on — `rendered_body` walks `statics`, and the
-                // wire format wants n+1 statics for n dynamics.
-                let separators = slots.len().saturating_sub(1);
-                statics.resize(statics.len() + separators, String::new());
-            }
-            other => {
-                render_pieces(
-                    conn,
-                    std::slice::from_ref(other),
-                    &obj.props,
-                    &schema,
-                    &root,
-                    0,
-                    &mut current,
-                )?;
-            }
-        }
-    }
-    statics.push(current);
-
-    // A root with nothing in its children marker is entirely static: one piece,
-    // no slots. That covers both a root with no `{{children}}` at all and one
-    // whose marker has no children to show — n+1 statics for n = 0 is one, and
-    // a tree with two statics and no dynamic is not a shape the client reads.
-    // The served body is identical either way.
-    if slots.is_empty() {
-        statics = vec![statics.concat()];
-    }
-
-    Ok(Materialized {
-        statics,
-        slots,
-        title,
-    })
+    Renderer::new(conn).page(route)
 }
 
 #[cfg(test)]
@@ -905,6 +1855,75 @@ mod tests {
                 ("js".to_string(), Slot::RawText),
                 ("body".to_string(), Slot::Text),
             ]
+        );
+    }
+
+    fn one_root(t: &str) -> bool {
+        one_root_element(&parse_template(t).expect("parses"))
+    }
+
+    #[test]
+    fn one_element_is_one_root_and_anything_beside_it_is_not() {
+        // GH #1001: `"r": 1` only where the client's skip path keeps the page.
+        assert!(one_root("<div class=\"a {{x}}\">{{y}}<b>{{&z}}</b></div>"));
+        assert!(one_root("  <p>{{#if on}}<i>on</i>{{/if}}</p>\n"));
+        assert!(one_root("<div><br><img src=\"/a.png\"><input/></div>"));
+        assert!(one_root("<div><!-- a > b --><style>p > i {}</style></div>"));
+        assert!(one_root("<section>{{children}}</section>"));
+        assert!(one_root("<hr>"));
+        assert!(!one_root("<b>{{a}}</b><i>{{b}}</i>"), "two elements");
+        assert!(!one_root("<p>x</p> tail"), "text beside the element");
+        assert!(!one_root("{{x}}<p></p>"), "a value beside the element");
+        assert!(!one_root("{{children}}"), "children at the top level");
+        assert!(!one_root("<!-- c --><p></p>"), "a comment beside it");
+        assert!(
+            !one_root("{{#if a}}<p></p>{{/if}}"),
+            "an element that may be absent"
+        );
+        assert!(
+            !one_root("<p>{{#if a}}<i>{{/if}}</p>"),
+            "a conditional that opens"
+        );
+        assert!(!one_root("plain text"), "no element at all");
+    }
+
+    fn node(statics: &[&str], dynamics: Vec<Part>) -> Part {
+        Part::Node(Arc::new(Node {
+            statics: statics
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .into(),
+            root: true,
+            dynamics,
+        }))
+    }
+
+    #[test]
+    fn a_diff_names_only_the_values_that_changed() {
+        let old = node(&["<p a=\"", "\">", "</p>"], vec!["1".into(), "x".into()]);
+        let new = node(&["<p a=\"", "\">", "</p>"], vec!["2".into(), "x".into()]);
+        let mut shared = SharedStatics::default();
+        assert_eq!(diff_value(&old, &new, &mut shared), Some(json!({"0": "2"})));
+        assert!(
+            shared.table.is_empty(),
+            "no statics travel for a changed value"
+        );
+        assert_eq!(diff_value(&old, &old.clone(), &mut shared), None);
+
+        let other = node(&["<i>", "</i>"], vec!["y".into()]);
+        let mut shared = SharedStatics::default();
+        assert_eq!(
+            diff_value(&old, &other, &mut shared),
+            Some(json!({"s": 0, "0": "y", "r": 1})),
+            "other statics: the part in full, its statics by number"
+        );
+        let mut frame = Map::new();
+        shared.attach(&mut frame);
+        assert_eq!(frame["p"], json!({"0": ["<i>", "</i>"]}));
+        assert_eq!(
+            wire_html(&json!({"s": 0, "0": "y"}), &frame["p"]),
+            "<i>y</i>"
         );
     }
 }

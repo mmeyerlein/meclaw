@@ -80,6 +80,10 @@
           "type": "array",
           "required": false
         },
+        "unverified": {
+          "type": "array",
+          "required": false
+        },
         "latency_ms": {
           "type": "number",
           "required": false

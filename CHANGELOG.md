@@ -12,6 +12,16 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.61.3] — 2026-10-05
+
+### Added
+
+- **An `llm` cell names what a provider would not take, and the catalogue says what each model takes** ([#999](https://github.com/mmeyerlein/meclaw/issues/999), [#1000](https://github.com/mmeyerlein/meclaw/issues/1000), tool [#998](https://github.com/mmeyerlein/meclaw/issues/998)). Every active chat-wire row of the catalogue now carries `supported_params` measured against the provider with a conformance tool, and a test keeps catalogue and measurement equal. A provider refusing a parameter answers with `meta.error.kind: unsupported_param` and the dropped fields in `hop`; a malformed tool call, an empty answer, reasoning that used up `max_tokens` and a stream on the chat wire are named, not passed on. Without a list the request is unchanged and `hop.unverified` names the fields sent unchecked. `llm-registry@2.6.1`.
+
+### Changed
+
+- **Template versions, third digit** ([#999](https://github.com/mmeyerlein/meclaw/issues/999), [#1000](https://github.com/mmeyerlein/meclaw/issues/1000)): `llm-registry@2.6.1` for the measured catalogue and the `unverified` hop key of `./translate`; the templates whose `llm` cells declare `unverified`, `argus@1.3.2`, `builder@1.26.3`, `coder-pipeline@2.2.5`, `cogny@5.8.1`, `curator@1.7.2`, `display@2.10.2`, `egon@2.1.4`, `file-space@1.4.3`, `memory-hive@3.8.4`, `presenter@1.2.2`, `research-assistant@2.2.2`, `slack-agent@2.1.4`, `steward@2.1.5`, `summarizer@2.2.5` and `talky@6.6.2`; the levels that pin them, `assistant@3.7.2`, `member@2.5.6`, `org@2.1.10` and `meclaw-os@2.2.11`, with `builder-librarian@2.2.24` (corpus). No lane moved.
+
 ## [0.61.2] — 2026-10-04
 
 ### Fixed

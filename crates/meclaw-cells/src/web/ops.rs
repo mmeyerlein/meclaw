@@ -19,6 +19,11 @@ use crate::web::render::parse_template;
 use meclaw_core::serde_json::{Value, json};
 use rusqlite::Connection;
 
+/// GH #1006: the read-only op that reports every viewer's backlog. Answered
+/// by the handler from the I/O half, never by [`apply`]: the counters are not
+/// in the database.
+pub const VIEWERS_OP: &str = "viewers";
+
 /// Route segments this cell keeps for itself.
 ///
 /// `live` is the phoenix client's: it appends exactly `/websocket` to the socket
@@ -73,13 +78,24 @@ pub fn apply(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
         "component.define" => component_define(conn, args),
         "page.set" => page_set(conn, args),
         "query" => (query(conn, args), Touched::default()),
+        // Answered by the handler from the I/O half's viewer table before it
+        // reaches the database (GH #1006); listed here so the op table names
+        // every op a caller may send.
+        VIEWERS_OP => (
+            OpOutcome::refused(
+                VIEWERS_OP,
+                "unknown_op",
+                "viewers is answered by the cell, not by its database",
+            ),
+            Touched::default(),
+        ),
         other => (
             OpOutcome::refused(
                 other,
                 "unknown_op",
                 format!(
                     "no such op {other:?} — this cell has object.create, object.update, \
-                     object.move, object.delete, component.define, page.set and query"
+                     object.move, object.delete, component.define, page.set, query and viewers"
                 ),
             ),
             Touched::default(),
@@ -100,20 +116,19 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, OpOutcome> {
 
 /// The declared props of a component, plus whether it exists at all.
 fn prop_schema_of(conn: &Connection, component: &str) -> Result<Value, OpOutcome> {
-    conn.query_row(
-        "SELECT prop_schema FROM components WHERE name = ?1",
-        [component],
-        |r| r.get::<_, String>(0),
-    )
-    .map(|s| meclaw_core::serde_json::from_str(&s).unwrap_or_else(|_| json!({})))
-    .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => OpOutcome::refused(
-            "object.create",
-            "unknown_component",
-            format!("no component {component:?} — define it before using it"),
-        ),
-        other => OpOutcome::refused("object.create", "invalid_input", other.to_string()),
-    })
+    // GH #1001: `prepare_cached` — an update leg runs this once per leg, and
+    // a fresh prepare per call was a share of the 400-leg bundle (lab).
+    conn.prepare_cached("SELECT prop_schema FROM components WHERE name = ?1")
+        .and_then(|mut stmt| stmt.query_row([component], |r| r.get::<_, String>(0)))
+        .map(|s| meclaw_core::serde_json::from_str(&s).unwrap_or_else(|_| json!({})))
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => OpOutcome::refused(
+                "object.create",
+                "unknown_component",
+                format!("no component {component:?} — define it before using it"),
+            ),
+            other => OpOutcome::refused("object.create", "invalid_input", other.to_string()),
+        })
 }
 
 /// Check a props bag against a component's declared schema.
@@ -335,11 +350,8 @@ fn touched_by(conn: &Connection, id: &str) -> Touched {
     let mut current = id.to_string();
     for _ in 0..MAX_DEPTH {
         let parent: Option<String> = conn
-            .query_row(
-                "SELECT parent FROM objects WHERE id = ?1",
-                [&current],
-                |r| r.get::<_, Option<String>>(0),
-            )
+            .prepare_cached("SELECT parent FROM objects WHERE id = ?1")
+            .and_then(|mut stmt| stmt.query_row([&current], |r| r.get::<_, Option<String>>(0)))
             .ok()
             .flatten();
         match parent {
@@ -363,7 +375,7 @@ fn touched_by(conn: &Connection, id: &str) -> Touched {
         };
     };
 
-    let mut stmt = match conn.prepare("SELECT route FROM pages WHERE root = ?1") {
+    let mut stmt = match conn.prepare_cached("SELECT route FROM pages WHERE root = ?1") {
         Ok(s) => s,
         Err(_) => return Touched::default(),
     };
@@ -437,11 +449,13 @@ fn object_update(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
         Ok(i) => i,
         Err(e) => return (e, Touched::default()),
     };
-    let current: Result<(String, String), _> = conn.query_row(
-        "SELECT component, props FROM objects WHERE id = ?1",
-        [id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-    );
+    let current: Result<(String, String), _> = conn
+        .prepare_cached("SELECT component, props FROM objects WHERE id = ?1")
+        .and_then(|mut stmt| {
+            stmt.query_row([id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+        });
     let (component, existing) = match current {
         Ok(v) => v,
         Err(_) => {
@@ -477,10 +491,10 @@ fn object_update(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
         }
     }
 
-    match conn.execute(
-        "UPDATE objects SET props = ?1 WHERE id = ?2",
-        rusqlite::params![merged.to_string(), id],
-    ) {
+    match conn
+        .prepare_cached("UPDATE objects SET props = ?1 WHERE id = ?2")
+        .and_then(|mut stmt| stmt.execute(rusqlite::params![merged.to_string(), id]))
+    {
         Ok(n) => (
             OpOutcome::wrote("object.update", n as i64),
             touched_by(conn, id),

@@ -25,6 +25,7 @@
 //! still know no topology; a `web` cell knows its own mount and its own DB.
 
 pub mod assets;
+pub mod backlog;
 pub mod cell;
 pub mod db;
 pub mod factory;

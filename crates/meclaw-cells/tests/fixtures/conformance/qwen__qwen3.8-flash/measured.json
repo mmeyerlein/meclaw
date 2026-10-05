@@ -1,0 +1,71 @@
+{
+  "model_id": "qwen/qwen3.8-flash",
+  "endpoint_class": "openrouter",
+  "measured_at": "2026-10-05T06:36:31Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "taken",
+    "top_p": "taken",
+    "reasoning": "taken",
+    "reasoning_effort": "accepted_unverified",
+    "thinking_token_budget": "accepted_unverified"
+  },
+  "listing": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logprobs",
+    "max_tokens",
+    "presence_penalty",
+    "reasoning",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+  ],
+  "reasoning_field": "reasoning",
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=taken, top_p=taken, reasoning=taken, reasoning_effort=accepted_unverified, thinking_token_budget=accepted_unverified; reasoning_effort: accepted_unverified (200 strict, not in the listing); thinking_token_budget: accepted_unverified (200 strict, not in the listing)"
+    },
+    "K4": {
+      "status": "green",
+      "note": "listing == measurement: reasoning,temperature,top_p; 200 but not listed (accepted_unverified): ['reasoning_effort', 'thinking_token_budget']"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512, reasoning low"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form reasoning, trace in reasoning"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "green",
+      "note": "max_tokens 4096->32; params ['temperature']; expected_dropped []"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.00023
+}

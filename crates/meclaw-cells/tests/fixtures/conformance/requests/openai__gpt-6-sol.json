@@ -1,0 +1,23 @@
+{
+  "body": {
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": "Answer with the single word OK.",
+        "role": "system"
+      },
+      {
+        "content": "Ping.",
+        "role": "user"
+      }
+    ],
+    "model": "openai/gpt-6-sol",
+    "prompt_cache_key": "meclaw-430ae444967bf0680407d82932f98d8c"
+  },
+  "endpoint_class": "openrouter",
+  "expected_dropped": [
+    "temperature"
+  ],
+  "model_id": "openai/gpt-6-sol",
+  "wire_dialect": "chat_completions"
+}

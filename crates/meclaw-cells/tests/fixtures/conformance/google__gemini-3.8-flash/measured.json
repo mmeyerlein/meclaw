@@ -1,0 +1,67 @@
+{
+  "model_id": "google/gemini-3.8-flash",
+  "endpoint_class": "openrouter",
+  "measured_at": "2026-10-05T06:35:54Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "taken",
+    "top_p": "taken",
+    "reasoning": "taken",
+    "reasoning_effort": "taken",
+    "thinking_token_budget": "accepted_unverified"
+  },
+  "listing": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+  ],
+  "reasoning_field": "reasoning_details",
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=taken, top_p=taken, reasoning=taken, reasoning_effort=taken, thinking_token_budget=accepted_unverified; thinking_token_budget: accepted_unverified (200 strict, not in the listing)"
+    },
+    "K4": {
+      "status": "green",
+      "note": "listing == measurement: reasoning,reasoning_effort,temperature,top_p; 200 but not listed (accepted_unverified): ['thinking_token_budget']"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512, reasoning low"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form reasoning, trace in reasoning_details"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "green",
+      "note": "max_tokens 4096->32; params ['temperature']; expected_dropped []"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.000858
+}

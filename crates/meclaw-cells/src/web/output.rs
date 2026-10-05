@@ -173,17 +173,76 @@ pub fn build_bundle_result(
     legs: &[BundleLeg],
     total_duration_ms: i64,
 ) -> (Value, Map<String, Value>) {
-    let rows_affected: i64 = legs.iter().map(|l| l.rows_affected).sum();
-    let bundle_errors = legs.iter().filter(|l| l.error_code.is_some()).count() as i64;
     let body = json!({
         "messages": legs.iter().map(BundleLeg::to_turn).collect::<Vec<Value>>(),
         "results": legs.iter().map(BundleLeg::to_result).collect::<Vec<Value>>(),
     });
+    (body, bundle_header(legs, total_duration_ms))
+}
+
+/// The header both bundle forms share.
+fn bundle_header(legs: &[BundleLeg], total_duration_ms: i64) -> Map<String, Value> {
+    let rows_affected: i64 = legs.iter().map(|l| l.rows_affected).sum();
+    let bundle_errors = legs.iter().filter(|l| l.error_code.is_some()).count() as i64;
     let mut headers = Map::new();
     headers.insert("operation".into(), json!("bundle"));
     headers.insert("rows_affected".into(), json!(rows_affected));
     headers.insert("duration_ms".into(), json!(total_duration_ms));
     headers.insert("bundle_errors".into(), json!(bundle_errors));
+    headers
+}
+
+/// The form a bundle's caller asked its answer in: the top-level slot
+/// `"answer"` of the inbound body (GH #1005, ruling R-H4-2 a, opt-in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnswerForm {
+    /// A turn and a result for every leg — the form since W8, and the default.
+    #[default]
+    Full,
+    /// A turn and a result for every REFUSED leg only, plus `legs` on the
+    /// header.
+    Errors,
+}
+
+impl AnswerForm {
+    /// Read the slot. Absent is the default; anything but the two documented
+    /// strings is refused, because a caller that misspelled `errors` and got
+    /// the full form back would never learn why its log did not shrink.
+    pub fn from_body(body: &Value) -> Result<Self, String> {
+        match body.get("answer") {
+            None => Ok(Self::Full),
+            Some(Value::String(s)) if s == "full" => Ok(Self::Full),
+            Some(Value::String(s)) if s == "errors" => Ok(Self::Errors),
+            Some(other) => Err(format!(
+                "answer slot: expected \"full\" or \"errors\", got {other}"
+            )),
+        }
+    }
+}
+
+/// The compact reply to a bundle: the header of [`build_bundle_result`] plus
+/// `legs`, and a turn and a result for the refused legs only.
+///
+/// Why (GH #1005): the full answer is ≈ 0.94 × its request — one turn AND one
+/// `results[]` entry per leg, ≈ 180 B per leg for a fact the caller already
+/// knows (it sent the leg). Measured with 300 figures panning, that put
+/// 82.7 MB/h of messages into an append-only log. The
+/// log stays complete: every refusal is here in full, with its `id`; only the
+/// repetition of the successes is not written. `bundle_errors` stays
+/// unconditional, so `0` with empty arrays reads *all legs succeeded*.
+pub fn build_bundle_result_compact(
+    legs: &[BundleLeg],
+    total_duration_ms: i64,
+) -> (Value, Map<String, Value>) {
+    let refused: Vec<&BundleLeg> = legs.iter().filter(|l| l.error_code.is_some()).collect();
+    // The header of the full form, field for field, plus the leg count: a
+    // reader of the compact form must not have to learn a second header.
+    let mut headers = bundle_header(legs, total_duration_ms);
+    headers.insert("legs".into(), json!(legs.len() as i64));
+    let body = json!({
+        "messages": refused.iter().map(|l| l.to_turn()).collect::<Vec<Value>>(),
+        "results": refused.iter().map(|l| l.to_result()).collect::<Vec<Value>>(),
+    });
     (body, headers)
 }
 

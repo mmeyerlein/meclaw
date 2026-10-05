@@ -555,6 +555,19 @@ impl LlmParams {
         if p.is_decisions() {
             p.check_decisions()?;
         }
+        // GH #999 (F4): the chat wire parses ONE JSON body. A `stream: true`
+        // overlay makes the provider answer in SSE and turns every call into
+        // a failure, so it is refused here -- at birth and, because a
+        // run-time update re-parses the merge, on mutation too.
+        if p.effective_wire_dialect() == WireDialect::ChatCompletions
+            && p.provider_extra.get("stream") == Some(&serde_json::Value::Bool(true))
+        {
+            return Err(
+                "provider_extra.stream: true is refused on the chat wire -- \
+                        the chat wire parses one JSON body"
+                    .to_string(),
+            );
+        }
         // P10 auth validation — strictly ADDITIVE, after the untouched provider
         // check. Exactly one credential, and the dialect must be able to carry
         // the chosen auth. No message ever echoes a param VALUE (cell-types
@@ -1734,6 +1747,40 @@ mod tests {
             .clone();
         let (merged, _) = p.apply_update(&update).expect("model is a run-time key");
         assert_eq!(merged.model, "vendor/decider-2");
+    }
+
+    /// GH #999 (F4): the chat wire parses ONE JSON body, so a `stream: true`
+    /// in the overlay would make the provider answer in SSE and every turn a
+    /// parse failure. Refused at birth and on a run-time update, by name and
+    /// with the reason; `stream: false` and the Responses wire (which reads
+    /// SSE) stay open.
+    #[test]
+    fn h5_params_refuse_a_stream_on_the_chat_wire() {
+        let raw = json!({"provider": "openai", "model": "m", "api_key": "k",
+                         "provider_extra": {"stream": true}});
+        let err = LlmParams::parse(&raw).expect_err("a stream on the chat wire");
+        assert!(err.contains("provider_extra.stream"), "{err}");
+        assert!(err.contains("chat wire parses one JSON body"), "{err}");
+
+        let mut ok = raw.clone();
+        ok["provider_extra"] = json!({"stream": false});
+        LlmParams::parse(&ok).expect("stream false is the chat wire's own mode");
+        let mut responses = raw.clone();
+        responses["wire_dialect"] = json!("responses");
+        LlmParams::parse(&responses).expect("the Responses wire reads a stream");
+
+        let p =
+            LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k"})).unwrap();
+        let update = json!({"provider_extra": {"stream": true}})
+            .as_object()
+            .unwrap()
+            .clone();
+        match p.apply_update(&update) {
+            Err(super::ParamUpdateError::Invalid(msg)) => {
+                assert!(msg.contains("chat wire parses one JSON body"), "{msg}");
+            }
+            other => panic!("a run-time stream is refused as invalid: {other:?}"),
+        }
     }
 
     // ───── GH #890: the provider cache and the window ─────

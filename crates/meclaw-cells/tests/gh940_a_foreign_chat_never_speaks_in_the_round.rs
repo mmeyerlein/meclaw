@@ -64,7 +64,7 @@ const SELF_BOUND: [&str; 4] = [
     "terminal@1.0.2",
 ];
 const TELEGRAM: &str = "telegram-connector@2.1.0";
-const SLACK: &str = "slack-agent@2.1.3";
+const SLACK: &str = "slack-agent@2.1.4";
 
 // ══════════════════════════════════════════════════════════════ the renderer
 

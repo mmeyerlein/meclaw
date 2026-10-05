@@ -155,6 +155,37 @@ async fn a_browser_that_never_answered_is_a_spawn_that_failed() {
     browser.reaper.terminate(Duration::from_millis(500)).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pipe_that_ends_before_the_exit_is_still_said_with_its_number() {
+    // GH #1007: the end of the pipe and the reaped exit race. Under a loaded
+    // gate the pipe's EOF reached `Browser::ready` before the exit status
+    // could be read, and the detail lost its "133" (the (e) arm went red once
+    // in three runs). The fixture closes its pipes and leaves 150 ms later, so
+    // the EOF always comes first; the cell waits for the exit, bounded, before
+    // it words the refusal.
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let p = BrowserParams::parse(&json!({
+        "chromium_path": FIXTURE,
+        "extra_args": ["--fixture-mode=stillborn-late"],
+        "startup_timeout_ms": 20_000,
+        "sandbox": {"trust": "trusted"},
+    }))
+    .expect("params");
+    let (mut browser, _events) =
+        Browser::start(p, td.path().join("profile")).expect("the process starts");
+    let e = tokio::time::timeout(MARKER, browser.ready())
+        .await
+        .expect("a dead browser does not wait out the startup timeout")
+        .expect_err("it never answered");
+    assert_eq!(e.error_code(), "spawn_failed", "{}", e.detail());
+    assert!(
+        e.detail().contains("133"),
+        "the exit that comes after the pipe's end is still named: {}",
+        e.detail()
+    );
+    browser.reaper.terminate(Duration::from_millis(500)).await;
+}
+
 #[test]
 fn an_oom_kill_is_said_with_its_number_and_its_knob() {
     // (f) The cap's verdict, read from the cgroup the browser sat in. A test

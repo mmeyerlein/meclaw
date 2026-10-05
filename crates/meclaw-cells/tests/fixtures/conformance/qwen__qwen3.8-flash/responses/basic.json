@@ -1,0 +1,54 @@
+{
+  "id": "gen-1791182174-SCHbwdqSBzFxaGVvjM0l",
+  "object": "chat.completion",
+  "created": 1791182174,
+  "model": "qwen/qwen3.8-flash",
+  "provider": "Alibaba",
+  "system_fingerprint": null,
+  "service_tier": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "length",
+      "native_finish_reason": "length",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "reasoning": "We need answer user's \"Ping.\" with single word OK as per developer? Need final only OK. Ensure analysis in same language. User language English. Final",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "We need answer user's \"Ping.\" with single word OK as per developer? Need final only OK. Ensure analysis in same language. User language English. Final",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 62,
+    "completion_tokens": 32,
+    "total_tokens": 94,
+    "cost": 2.40966e-05,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 2.434e-05,
+      "upstream_inference_prompt_cost": 9.3e-06,
+      "upstream_inference_completions_cost": 1.504e-05
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 32,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

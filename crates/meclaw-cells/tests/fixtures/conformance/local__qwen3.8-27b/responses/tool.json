@@ -1,0 +1,49 @@
+{
+  "id": "chatcmpl-ad26aae221ea3eba",
+  "object": "chat.completion",
+  "created": 1791182210,
+  "model": "qwen3.8-27b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "annotations": null,
+        "audio": null,
+        "function_call": null,
+        "tool_calls": [
+          {
+            "id": "chatcmpl-tool-a1b043a5d761f5de",
+            "type": "function",
+            "function": {
+              "name": "echo",
+              "arguments": "{\"text\": \"ping\"}"
+            }
+          }
+        ],
+        "reasoning": "The user wants me to call the echo tool with the text \"ping\". This is straightforward.\n"
+      },
+      "logprobs": null,
+      "finish_reason": "tool_calls",
+      "stop_reason": null,
+      "token_ids": null,
+      "routed_experts": null
+    }
+  ],
+  "service_tier": null,
+  "system_fingerprint": "vllm-0.27.1-bbf95a72",
+  "usage": {
+    "prompt_tokens": 289,
+    "total_tokens": 336,
+    "completion_tokens": 47,
+    "prompt_tokens_details": null
+  },
+  "prompt_logprobs": null,
+  "prompt_token_ids": null,
+  "prompt_text": null,
+  "kv_transfer_params": null,
+  "ec_transfer_params": null,
+  "metrics": null
+}

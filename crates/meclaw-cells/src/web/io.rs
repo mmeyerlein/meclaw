@@ -49,6 +49,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::mount_guard::MountGuard;
 use crate::web::assets::{Asset, AssetMap};
+use crate::web::backlog::{BacklogPolicy, Outbox};
 use crate::web::cell::{WebEvent, WebReconfig};
 use crate::web::render::PageMap;
 use crate::web::socket::{Viewer, ViewerMsg, run_connection};
@@ -60,9 +61,11 @@ use crate::web::socket::{Viewer, ViewerMsg, run_connection};
 /// The substrate's rule is that **cell state** lives in its task and is never
 /// shared. This is not cell state: it is a table of live socket senders, owned
 /// by the I/O half, written by whichever connection task joins or leaves, and
-/// read only to fan a frame out. The handler never touches it — it publishes
-/// pages through the `watch` channel and asks for a push through the reconfig
-/// channel, and this half does the addressing.
+/// read to fan a frame out. The handler never writes it — it publishes pages
+/// through the `watch` channel and asks for a push through the reconfig
+/// channel, and this half does the addressing. The `viewers` op (GH #1006)
+/// does not read it either: it asks over the same channel, and the fan-out
+/// answers with [`ViewerRegistry::report`].
 ///
 /// The alternative would be a third task whose only job is to own a `HashMap`
 /// and answer over a channel. That is the same lock with more moving parts, and
@@ -71,6 +74,10 @@ use crate::web::socket::{Viewer, ViewerMsg, run_connection};
 #[derive(Default)]
 pub struct ViewerRegistry {
     inner: Mutex<HashMap<String, Viewer>>,
+    /// What this life reports about each viewer's backlog (GH #1006), read by
+    /// every connection when it builds its meter. Fixed for the life, like the
+    /// mount: a params update takes effect on the next one.
+    policy: BacklogPolicy,
 }
 
 /// One viewer, as a fan-out addresses it.
@@ -82,8 +89,8 @@ pub struct ViewerRegistry {
 pub struct Addressed {
     /// The connection id the registry holds this viewer under.
     pub id: String,
-    /// Where to send frames.
-    pub tx: mpsc::Sender<ViewerMsg>,
+    /// Where to send frames, with the meter that counts them (GH #1006).
+    pub tx: Outbox,
     /// The client's join reference, needed to address a server-initiated push.
     pub join_ref: meclaw_core::JsonValue,
     /// The topic this viewer joined.
@@ -93,6 +100,46 @@ pub struct Addressed {
 }
 
 impl ViewerRegistry {
+    /// An empty registry whose connections meter by `policy` (GH #1006).
+    pub fn with_policy(policy: BacklogPolicy) -> Self {
+        Self {
+            inner: Mutex::default(),
+            policy,
+        }
+    }
+
+    /// What this life reports about each viewer's backlog.
+    pub fn policy(&self) -> BacklogPolicy {
+        self.policy
+    }
+
+    /// Every joined viewer's backlog, ordered by connection id — the answer
+    /// of the read-only `viewers` op (GH #1006).
+    ///
+    /// Called by the fan-out when the handler asks (`WebReconfig::Viewers`),
+    /// never by the handler itself: a snapshot of counters, taken under the
+    /// same short lock a fan-out takes, with no `.await` inside it.
+    pub async fn report(&self) -> Vec<meclaw_core::JsonValue> {
+        let inner = self.inner.lock().await;
+        let mut rows: Vec<(&String, &Viewer)> = inner.iter().collect();
+        rows.sort_by(|a, b| a.0.cmp(b.0));
+        rows.into_iter()
+            .map(|(_, v)| {
+                let meter = v.tx.meter();
+                let r = meter.reading();
+                meclaw_core::serde_json::json!({
+                    "session_id": meter.session_id(),
+                    "route": v.route,
+                    "frames": r.frames,
+                    "bytes": r.bytes,
+                    "oldest_ms": r.oldest_ms,
+                    "resyncs_total": r.resyncs_total,
+                    "screen": meclaw_core::JsonValue::Null,
+                })
+            })
+            .collect()
+    }
+
     /// Register a viewer under its connection id.
     pub async fn insert(&self, id: String, viewer: Viewer) {
         self.inner.lock().await.insert(id, viewer);
@@ -136,7 +183,7 @@ impl ViewerRegistry {
     /// the [`ViewerMsg::Close`] the caller sends, and their own `remove` then
     /// finds nothing — which is the harmless order, unlike removing after the
     /// close and racing a re-join against it.
-    pub async fn drain(&self) -> Vec<mpsc::Sender<ViewerMsg>> {
+    pub async fn drain(&self) -> Vec<Outbox> {
         let mut inner = self.inner.lock().await;
         inner.drain().map(|(_, v)| v.tx).collect()
     }
@@ -958,6 +1005,10 @@ async fn wait_for_shutdown(reconfig_rx: &mut mpsc::Receiver<WebReconfig>) {
                 %route,
                 "web: a diff arrived on the reconfig channel and was dropped"
             ),
+            // Dropping `respond` tells the asker "no viewers here".
+            Some(WebReconfig::Viewers { .. }) => tracing::warn!(
+                "web: a viewers request arrived on the reconfig channel and was dropped"
+            ),
         }
     }
 }
@@ -985,7 +1036,15 @@ async fn push_one(
     pages: &watch::Receiver<Arc<PageMap>>,
     dirty: &mut HashMap<String, Addressed>,
 ) {
-    let WebReconfig::Push { route, diff } = push;
+    let (route, diff) = match push {
+        WebReconfig::Push { route, diff } => (route, diff),
+        // GH #1006: the `viewers` op. Answered here, in order with the pushes
+        // before it; a gone asker is nothing to report.
+        WebReconfig::Viewers { respond } => {
+            let _ = respond.send(viewers.report().await);
+            return;
+        }
+    };
     for a in viewers.on_route(&route).await {
         let behind = dirty.contains_key(&a.id);
         let payload = match behind.then(|| whole_tree(pages, &a.route)).flatten() {
@@ -998,9 +1057,14 @@ async fn push_one(
         let frame = meclaw_surface::frames::push(&a.join_ref, &a.topic, "diff", payload);
         match a.tx.try_send(ViewerMsg::Frame(frame)) {
             Ok(()) => {
-                dirty.remove(&a.id);
+                if dirty.remove(&a.id).is_some() {
+                    a.tx.meter().resync_settled();
+                }
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
+                // GH #1006: the mark is the one fact about a slow viewer the
+                // app could not see; the meter reports it as `high`.
+                a.tx.meter().resync_owed();
                 dirty.insert(a.id.clone(), a);
             }
             // That browser is gone; its connection task cleans the registry up.
@@ -1030,10 +1094,14 @@ fn resync(pages: &watch::Receiver<Arc<PageMap>>, dirty: &mut HashMap<String, Add
             return false;
         };
         let frame = meclaw_surface::frames::push(&a.join_ref, &a.topic, "diff", tree);
-        matches!(
+        let still_owed = matches!(
             a.tx.try_send(ViewerMsg::Frame(frame)),
             Err(mpsc::error::TrySendError::Full(_))
-        )
+        );
+        if !still_owed {
+            a.tx.meter().resync_settled();
+        }
+        still_owed
     });
 }
 
@@ -1076,15 +1144,17 @@ async fn fan_out(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web::backlog::{Meter, Queued};
+    use crate::web::cell::WebEvent;
     use crate::web::socket::Viewer;
     use meclaw_core::serde_json::json;
 
     /// One registered viewer, with a channel the test keeps the receiving end of.
-    fn viewer(route: &str, cap: usize) -> (Viewer, mpsc::Receiver<ViewerMsg>) {
-        let (tx, rx) = mpsc::channel::<ViewerMsg>(cap);
+    fn viewer(route: &str, cap: usize) -> (Viewer, mpsc::Receiver<Queued>) {
+        let (tx, rx) = mpsc::channel::<Queued>(cap);
         (
             Viewer {
-                tx,
+                tx: Outbox::new(tx, Arc::new(Meter::silent())),
                 route: route.to_string(),
                 join_ref: json!("1"),
                 topic: "lv:c".to_string(),
@@ -1125,7 +1195,7 @@ mod tests {
             "/".to_string(),
             Materialized {
                 statics: vec!["<main>".to_string(), "</main>".to_string()],
-                slots: vec![("n1".to_string(), "<i>one</i>".to_string())],
+                slots: vec![("n1".to_string(), "<i>one</i>".into())],
                 title: "t".to_string(),
             },
         );
@@ -1169,13 +1239,13 @@ mod tests {
         );
 
         // The browser reads its backlog: the slot is free again.
-        let ViewerMsg::Frame(first) = rx.recv().await.expect("the first frame") else {
+        let ViewerMsg::Frame(first) = rx.recv().await.expect("the first frame").msg else {
             panic!("a frame, not a close")
         };
         assert_eq!(payload(&first), json!({"0": "<i>a</i>"}));
 
         push_one(diff_push("0", "<i>c</i>"), &viewers, &pages_rx, &mut dirty).await;
-        let ViewerMsg::Frame(second) = rx.recv().await.expect("the second frame") else {
+        let ViewerMsg::Frame(second) = rx.recv().await.expect("the second frame").msg else {
             panic!("a frame, not a close")
         };
         assert_eq!(
@@ -1218,13 +1288,110 @@ mod tests {
         let _ = rx.recv().await.expect("the prefilled frame");
         resync(&pages_rx, &mut dirty);
         assert!(dirty.is_empty(), "and the mark goes when the tree is sent");
-        let ViewerMsg::Frame(f) = rx.recv().await.expect("the tree") else {
+        let ViewerMsg::Frame(f) = rx.recv().await.expect("the tree").msg else {
             panic!("a frame, not a close")
         };
         assert_eq!(
             payload(&f),
             page_map().get("/").expect("route").packed_tree()
         );
+    }
+
+    /// T6 (GH #1006): a full queue — the resync mark of GH #414 — is reported
+    /// as `high` with the mark counted, whatever the byte and age thresholds
+    /// say: it is the one state in which the viewer is certainly behind.
+    #[tokio::test]
+    async fn gh1006_a_resync_counts_as_high() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = Arc::new(ViewerRegistry::default());
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let policy = BacklogPolicy {
+            report: true,
+            // Thresholds far out of reach: only the mark can raise `high`.
+            high_bytes: 1 << 30,
+            high_ms: 60_000,
+        };
+        let meter = Arc::new(Meter::new(policy, Some(events_tx)));
+        meter.joined("/", "s-1");
+        let (tx, mut rx) = mpsc::channel::<Queued>(1);
+        let v = Viewer {
+            tx: Outbox::new(tx, Arc::clone(&meter)),
+            route: "/".to_string(),
+            join_ref: json!("1"),
+            topic: "lv:c".to_string(),
+        };
+        v.tx.try_send(ViewerMsg::Frame("busy".to_string()))
+            .expect("prefill");
+        viewers.insert("v1".to_string(), v).await;
+        let mut dirty = HashMap::new();
+        push_one(diff_push("0", "<b>x</b>"), &viewers, &pages_rx, &mut dirty).await;
+        assert!(dirty.contains_key("v1"), "the queue was full: marked");
+
+        let Ok(WebEvent::Backlog {
+            high,
+            resyncs,
+            session_id,
+            ..
+        }) = events_rx.try_recv()
+        else {
+            panic!("a backlog report on the mark");
+        };
+        assert!(high, "a resync is high");
+        assert!(resyncs >= 1, "with the mark counted");
+        assert_eq!(session_id, "s-1");
+        assert_eq!(meter.reading().resyncs_total, 1);
+
+        // The viewer drains and the tree gets in: the debt is paid, and once
+        // the queue is empty again the report is `clear`.
+        let q = rx.recv().await.expect("the prefilled frame");
+        meter.writing(q.at);
+        meter.written(q.at, q.bytes);
+        resync(&pages_rx, &mut dirty);
+        assert!(dirty.is_empty(), "the tree fit");
+        let q = rx.recv().await.expect("the tree");
+        meter.writing(q.at);
+        meter.written(q.at, q.bytes);
+        let Ok(WebEvent::Backlog { high, .. }) = events_rx.try_recv() else {
+            panic!("a clear once caught up");
+        };
+        assert!(!high);
+    }
+
+    /// GH #1006: the `viewers` op is a request on the push channel, answered
+    /// by the fan-out from the registry — the handler holds no lock of this
+    /// half. The answer is one row per joined viewer, in id order.
+    #[tokio::test]
+    async fn gh1006_the_fan_out_answers_a_viewers_request() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = Arc::new(ViewerRegistry::default());
+        let (v2, _r2) = viewer("/b", 4);
+        let (v1, _r1) = viewer("/a", 4);
+        viewers.insert("v2".to_string(), v2).await;
+        viewers.insert("v1".to_string(), v1).await;
+        let (push_tx, mut pushes) = mpsc::channel(4);
+        let mut dirty: HashMap<String, Addressed> = HashMap::new();
+        let looping = {
+            let viewers = Arc::clone(&viewers);
+            tokio::spawn(async move { fan_out(&mut pushes, &viewers, &pages_rx, &mut dirty).await })
+        };
+
+        let (respond, rows) = tokio::sync::oneshot::channel();
+        push_tx
+            .send(WebReconfig::Viewers { respond })
+            .await
+            .expect("the fan-out is listening");
+        let rows = rows.await.expect("the fan-out answers");
+        let routes: Vec<&str> = rows.iter().filter_map(|r| r["route"].as_str()).collect();
+        assert_eq!(
+            routes,
+            ["/a", "/b"],
+            "one row per viewer, in id order: {rows:?}"
+        );
+        assert_eq!(rows[0]["frames"], json!(0));
+        assert!(rows[0]["screen"].is_null());
+
+        drop(push_tx);
+        looping.await.expect("the fan-out ends with its channel");
     }
 
     /// …and the loop actually runs it: one push, dropped, and NO further push.
@@ -1266,7 +1433,8 @@ mod tests {
         let got = tokio::time::timeout(std::time::Duration::from_secs(30), wedged_rx.recv())
             .await
             .expect("a viewer that lost a frame must not be left stale")
-            .expect("a frame");
+            .expect("a frame")
+            .msg;
         let ViewerMsg::Frame(f) = got else {
             panic!("a frame, not a close")
         };

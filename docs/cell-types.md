@@ -395,6 +395,8 @@ Output header (`hop` compartment, expires on the next cell emission):
 | `model` | model the provider actually used |
 | `refused_subscriber` | only on the refusal of a params push addressed to this cell (GH #863): this cell's path |
 | `refused_model` | beside it: the `model` the push named, empty when it named none |
+| `dropped` | only with `supported_params` and only when the cell left a sampling field out (GH #993): their names; since GH #999 on an error as well |
+| `unverified` | only without `supported_params` (GH #999): the sampling fields the cell sent unchecked, in the order of the cell's field list |
 | `error_code` | only on `finish_reason == "error"`: `"rate_limit"` \| `"auth"` \| `"timeout"` \| `"model_not_found"` \| `"provider_error"` \| `"invalid_input"` (param-update reject, immutable, unknown or malformed key, or a params push addressed to another cell) \| `"credential_pending"` (R3/GH #421, GH #457: the cell declares `params.credential_grant_id`, holds no credential in RAM, and the round failed, meaning `credential_wait_ms` elapsed, the box did not open, or the buffer was full. No provider was called and nothing was billed; the triggering message gets this code only in those cases, and is otherwise parked and answered) |
 
 The `error_code` enum is additively extensible. New failure classes may add a value, and existing values never change their spelling or their meaning (the same promise the dead-letter and mutation codes carry, `docs/meclaw-overview.md`). A CEL condition must therefore not assume the list is complete: match on the codes you handle and give the rest a default lane, because an unmatched code is a future release and not a bug in your topology. A planned addition is `quota_exhausted`, and it will arrive this way, as an added value with nothing renamed.
@@ -411,6 +413,11 @@ The `error_code` enum is additively extensible. New failure classes may add a va
 | token store missing or unreadable | `auth` | `auth_store_unavailable` | none |
 | 5xx or overload | `provider_error` | `transient` | none |
 | upstream error inside a 200 body (GH #75) | that of the stated status | that of the stated status, else coarse (`rate_limited` / `unauthorized` / `model_not_found` / `provider_error`) | `in_body: true`, `upstream_status` (when stated), `upstream_message` |
+| the provider refuses a sampling field it names (GH #999) | unchanged: `model_not_found` on a 404, `provider_error` on a 400 or 422, inside a 200 body that of the stated status | `unsupported_param` | `upstream_status`, `upstream_message` (at most 500 bytes); inside a 200 body also `in_body: true` |
+| a tool call without `id` or `function.name`, or with `arguments` that are no JSON object string (GH #999) | `provider_error` | `malformed_tool_call` | none |
+| an answer with neither text nor a tool call (GH #999) | `provider_error` | `empty_answer` | none |
+| the same with `finish_reason` `length` and a thinking trace (GH #999) | `provider_error` | `reasoning_exhausted` | none |
+| `text/event-stream` on the chat wire (GH #999) | `provider_error` | `unexpected_stream` | none |
 
 Pre-P10 failure paths emit no `kind`, and their message is unchanged.
 
@@ -458,6 +465,33 @@ Provider translate (the translation boundary): the `llm` cell is provider-agnost
 From this follows the deferral cleanliness: a further provider (Anthropic, say) is solely a second translate plus a widening of the `provider` check, while the cell logic, the `cell.db` semantics and the error model stay unchanged.
 
 Response sanitation (GH #569). Provider-internal annotation markers never reach UBF. Some models decorate the answer text with inline citation markers built from Private-Use-Area codepoints. The observed shape is `U+E200` `cite` `U+E202` `turn0search0` `U+E201`, a reference to the provider's own tool-round numbering. The PUA characters render invisible or as boxes, and the enclosed text as literal junk (`citeturn0search0`); no provider-internal token may reach a person. The response translation of both wire dialects strips them before the text enters the assistant turn: a span from `U+E200` up to and including the next `U+E201` falls with its content, a `U+E200` without a closing codepoint (a truncated response) takes the rest of the text with it (behind it there is marker content only, by construction), and any other PUA codepoint falls on its own. Everything outside stays byte-identical, with no trimming and no whitespace normalisation. In the Responses dialect the stripping happens after the `output_text` parts are joined, so a marker split across two parts falls too.
+
+Provider conformance (GH #998, GH #999, GH #1000). A provider may refuse a sampling field under strict routing, or take it and ignore it; the cell's own tests run against a mock and see neither. So the cell checks both sides of a call, and a tool measures each catalogue model against its real endpoint:
+
+- What the cell sends. A sampling field goes out only when the model's `supported_params` names it, and `hop.dropped` names every one left out, on a success and on an error. Without a list the request is the request of before, and `hop.unverified` names the sampling fields that went out unchecked (a `provider_extra` key counts when it is one of them).
+- What the cell takes back. An answer is checked before it becomes a turn, and a refusal says what it was in `meta.error.kind`. `error_code` keeps its value, so an edge written for it still matches:
+
+  | `meta.error.kind` | `error_code` | `source` | when |
+  |---|---|---|---|
+  | `unsupported_param` | unchanged: `model_not_found` on a 404, `provider_error` on a 400 or 422, inside a 200 body that of the stated status | `wire` | the provider's refusal names a field it does not take; `upstream_status` and `upstream_message` (at most 500 bytes) carry its sentence |
+  | `malformed_tool_call` | `provider_error` | `parse` | a tool call without `id` or `function.name`, or whose `arguments` is not a string holding a JSON object (`""` reads as `{}`) |
+  | `empty_answer` | `provider_error` | `parse` | neither text nor a tool call |
+  | `reasoning_exhausted` | `provider_error` | `parse` | the same with `finish_reason` `length` and a thinking trace: the reasoning used up `max_tokens` |
+  | `unexpected_stream` | `provider_error` | `wire` | `text/event-stream` on the chat wire, which reads one JSON body; `provider_extra.stream: true` on that wire is refused at boot and on update |
+
+- How a model is checked. `workshop/tools/llm-conformance/conformance.py` (a maintainer tool; it does not ship with the exported tree) sends small probes and the cell's own request for a catalogue row to the endpoint, against a hosted gateway or an OpenAI-compatible local server:
+
+  | check | what it proves |
+  |---|---|
+  | K1, K2 | a minimal chat answers as one JSON body of the expected shape, with token counts |
+  | K3 | each sampling field, one request each: `taken`, `refused` or `accepted_unverified`. Under strict routing a gateway refuses only fields it knows, so `taken` needs a strict 200 and the field in the model listing; a local server is never strict, so nothing there is `taken` |
+  | K4 | the listing and K3 agree (`n/a` on a local server) |
+  | K5, K6 | a tool call asked for in the turn comes back as a tool call; a reasoning answer is text, or is named as exhausted |
+  | K7 | no stream on the chat wire |
+  | K8 | the cell's request for the row (`crates/meclaw-cells/tests/fixtures/conformance/requests/<slug>.json`, built from the catalogue by the cell itself) is taken as is |
+  | K9 | `--record <dir>` writes `measured.json` and the raw answers |
+
+  A cost guard stops a run before a call whose worst case would pass `--budget-usd` (0.05 by default). The catalogue lists come from this measurement: a row's `supported_params` is its `taken` set, its record lies under `crates/meclaw-cells/tests/fixtures/conformance/<slug>/`, and `h5_the_catalogue_matches_the_measurement` keeps both equal offline. A changed list therefore means a new measurement, not an edit.
 
 Second wire dialect: Responses. Beside chat-completions the translate knows the Responses dialect: the same translation boundary, the same UBF semantics, a different wire shape. `messages[]` becomes typed `input[]` items (`input_text`/`output_text`, `function_call`/`function_call_output`), the system prompt becomes the top-level `instructions`, `max_tokens` becomes `max_output_tokens`, and tool schemas are flat instead of nested. `store: false` is set, because the subscription backend does not persist, and `include: ["reasoning.encrypted_content"]` only on the subscription lane. The answer is read from `response.output_item.done` and not from the deltas; `reasoning` items never reach UBF.
 

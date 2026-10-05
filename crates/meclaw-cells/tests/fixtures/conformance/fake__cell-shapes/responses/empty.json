@@ -1,0 +1,7 @@
+{
+  "id": "gen-fake-empty",
+  "object": "chat.completion",
+  "model": "fake/cell-shapes",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": null}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 14, "completion_tokens": 0, "total_tokens": 14}
+}

@@ -1518,6 +1518,87 @@ class TestTierTargetDirectory(GateShTestCase):
         self.assertGreater(source.stat().st_mtime, stale)
 
 
+class TestTierNoTestsMatched(GateShTestCase):
+    """A filter that runs no test is RED, exit 6, `no tests matched` (GH #997).
+
+    Every station that hands a filterset to the runner goes through
+    `scripts/test-tier.sh filter` -- `tests`, `browser:display` and its two
+    locks -- and the runner grades a station by its exit code alone. A filter
+    that matched nothing used to leave a station GREEN on zero tests. A fake
+    `cargo` prints what nextest would print; nothing compiles.
+    """
+
+    tier_sh = TestTierTargetDirectory.tier_sh
+    run_tier = TestTierTargetDirectory.run_tier
+
+    def tier(self, out="", err="", rc=0):
+        bindir = pathlib.Path(self._tmp.name) / "fakebin"
+        bindir.mkdir(exist_ok=True)
+        (bindir / "cargo").write_text(
+            "#!/bin/sh\nprintf '%%s' \"$FAKE_OUT\"\nprintf '%%s' \"$FAKE_ERR\" >&2\n"
+            "exit %d\n" % rc)
+        (bindir / "cargo").chmod(0o755)
+        return self.run_tier(self.repo, "filter", "binary(~helpers)", dry=False,
+                             path_prefix=str(bindir),
+                             extra_env={"FAKE_OUT": out, "FAKE_ERR": err})
+
+    def assert_no_match(self, res):
+        self.assertEqual(6, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no tests matched", res.stdout + res.stderr)
+
+    def test_zero_tests_run_is_red(self):
+        self.assert_no_match(self.tier(
+            out="     Summary [   0.010s] 0 tests run: 0 passed, 0 skipped\n"))
+
+    def test_no_summary_is_red(self):
+        self.assert_no_match(self.tier(out="    Starting 0 tests across 0 binaries\n"))
+
+    def test_nextest_refusing_the_filter_is_no_tests_matched(self):
+        self.assert_no_match(self.tier(
+            err="error: operator didn't match any binary IDs\n"
+                "error: failed to parse filterset\n", rc=94))
+
+    def test_nextest_finding_no_tests_is_no_tests_matched(self):
+        self.assert_no_match(self.tier(err="error: no tests to run\n", rc=4))
+
+    def test_a_run_with_tests_stays_green(self):
+        res = self.tier(out="     Summary [   0.420s] 3 tests run: 3 passed, 0 skipped\n")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("no tests matched", res.stdout + res.stderr)
+
+    def test_a_failing_test_keeps_the_runner_exit(self):
+        res = self.tier(out="     Summary [   0.420s] 3 tests run: 2 passed, 1 failed\n",
+                        rc=100)
+        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("no tests matched", res.stdout + res.stderr)
+
+    def test_a_build_failure_keeps_the_runner_exit(self):
+        res = self.tier(err="error: could not compile `x`\n", rc=101)
+        self.assertEqual(101, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("no tests matched", res.stdout + res.stderr)
+
+    # K1 fix round 2: the refusal text is read only off a run that neither
+    # passed nor failed nor broke -- a test that PRINTS it keeps its exit.
+    REFUSAL = "error: operator didn't match any binary IDs\nfailed to parse filterset\n"
+
+    def test_a_failing_run_printing_the_refusal_text_keeps_100(self):
+        res = self.tier(out=self.REFUSAL + "     Summary [   0.420s] 3 tests run: 2 passed, 1 failed\n",
+                        rc=100)
+        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("no tests matched", res.stderr)
+
+    def test_a_green_run_printing_the_refusal_text_stays_green(self):
+        res = self.tier(out=self.REFUSAL + "     Summary [   0.420s] 3 tests run: 3 passed, 0 skipped\n")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("no tests matched", res.stderr)
+
+    def test_a_station_exiting_six_is_red_in_the_gate(self):
+        plan = self.plan_file("tests\tbinary(~helpers)\t0\tsh -c 'exit 6'\t\n")
+        res = run_gate(self.repo, "strand", plan=plan, dry=False)
+        self.assertEqual(["RED"], [r["verdict"] for r in gate_lines(res.stdout)])
+        self.assertEqual(1, res.returncode)
+
+
 class TestOptionValues(GateShTestCase):
     """An option that wants a value says so instead of hanging on an empty one."""
 

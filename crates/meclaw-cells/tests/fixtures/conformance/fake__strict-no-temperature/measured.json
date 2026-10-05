@@ -1,0 +1,61 @@
+{
+  "model_id": "fake/strict-no-temperature",
+  "endpoint_class": "openrouter",
+  "measured_at": "2026-10-05T06:02:23Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "refused",
+    "top_p": "refused",
+    "reasoning": "taken",
+    "reasoning_effort": "taken",
+    "thinking_token_budget": "refused"
+  },
+  "listing": [
+    "max_tokens",
+    "tools",
+    "tool_choice",
+    "include_reasoning",
+    "reasoning",
+    "reasoning_effort"
+  ],
+  "reasoning_field": "reasoning",
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=refused, top_p=refused, reasoning=taken, reasoning_effort=taken, thinking_token_budget=refused; temperature: refused (No endpoints found that support the requested parameters); top_p: refused (No endpoints found that support the requested parameters); thinking_token_budget: refused (No endpoints found that support the requested parameters)"
+    },
+    "K4": {
+      "status": "green",
+      "note": "listing == measurement: reasoning,reasoning_effort"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512, reasoning low"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form reasoning, trace in reasoning"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "n/a",
+      "note": "no --requests-dir"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.0005
+}

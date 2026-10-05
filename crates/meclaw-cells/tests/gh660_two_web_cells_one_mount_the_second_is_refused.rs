@@ -166,11 +166,13 @@ async fn two_web_cells_one_mount_the_second_is_refused() {
             );
             assert!(detail.contains("/a"), "and who holds it; got {detail}");
         }
-        // Two variants, so the other one is spelled out rather than bound:
-        // `WebEvent` carries a `oneshot::Sender` and is deliberately not
-        // `Debug`.
+        // The others are spelled out rather than bound: `WebEvent` carries a
+        // `oneshot::Sender` and is deliberately not `Debug`.
         WebEvent::Browser { name, .. } => {
             panic!("expected MountFailed; got the browser event {name:?}")
+        }
+        WebEvent::Backlog { session_id, .. } => {
+            panic!("expected MountFailed; got a backlog report for {session_id:?}")
         }
     }
 

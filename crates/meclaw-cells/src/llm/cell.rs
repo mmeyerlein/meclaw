@@ -179,7 +179,8 @@ impl LaneFailure {
             code: translate::translate_error_to_code(err),
             source,
             detail: format!("translate: {err:?}"),
-            extra: None,
+            // GH #999: the new answer checks name their kind.
+            extra: translate::translate_error_meta(err),
         }
     }
 }
@@ -2123,7 +2124,13 @@ impl LlmCell {
                     }
                     Err(f) => {
                         let code = f.code;
-                        output::emit_error_for(
+                        // GH #999: a call that reached the provider names what
+                        // its request left out and what it sent unchecked; a
+                        // request that was never built names nothing.
+                        let request_hop = (f.source != "translate")
+                            .then(|| output::HopCache::request_hop(&self.params))
+                            .flatten();
+                        output::emit_error_with_hop_for(
                             &self.params.provider,
                             sink,
                             reply_target,
@@ -2136,6 +2143,7 @@ impl LlmCell {
                             None,
                             None,
                             f.extra,
+                            request_hop,
                         )
                         .await;
                         self.log_phases(&clock, code);
@@ -2230,7 +2238,7 @@ impl LlmCell {
                 Ok(json) => json,
                 Err(err) => {
                     let code = wire::wire_error_to_code(&err);
-                    output::emit_error_for(
+                    output::emit_error_with_hop_for(
                         &self.params.provider,
                         sink,
                         reply_target,
@@ -2246,6 +2254,9 @@ impl LlmCell {
                         // lane too. `None` for every pre-P10 variant, so the
                         // legacy emitted body stays byte-identical.
                         wire::wire_error_meta(&err),
+                        // GH #999 (F5/F6, lifts OR-LP.LR.1): a refused request
+                        // names what it left out and what it sent unchecked.
+                        output::HopCache::request_hop(&self.params),
                     )
                     .await;
                     self.log_phases(&clock, code);
@@ -2261,7 +2272,7 @@ impl LlmCell {
                 Err(e) => {
                     let resp_model = response_json.get("model").and_then(|v| v.as_str());
                     let resp_id = response_json.get("id").and_then(|v| v.as_str());
-                    output::emit_error_for(
+                    output::emit_error_with_hop_for(
                         &self.params.provider,
                         sink,
                         reply_target,
@@ -2273,7 +2284,10 @@ impl LlmCell {
                         (unix_ms_now() - started_at_unix_ms).max(0) as u64,
                         resp_model,
                         resp_id,
-                        None,
+                        // GH #999: the answer checks (F1/F2) name their kind;
+                        // `None` for every older parse failure.
+                        translate::translate_error_meta(&e),
+                        output::HopCache::request_hop(&self.params),
                     )
                     .await;
                     self.log_phases(&clock, translate::translate_error_to_code(&e));

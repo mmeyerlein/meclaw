@@ -270,6 +270,12 @@ fn topic() -> String {
 }
 
 async fn join_page(port: u16, join_ref: &str) -> Ws {
+    join_page_with_tree(port, join_ref).await.0
+}
+
+/// Join, and keep the rendered tree the join answered with: the base every
+/// later diff is merged into.
+async fn join_page_with_tree(port: u16, join_ref: &str) -> (Ws, Value) {
     let body = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
         .await
         .expect("get")
@@ -292,8 +298,94 @@ async fn join_page(port: u16, join_ref: &str) -> Ws {
     ))
     .await
     .expect("join");
-    let _ = ws.next().await.expect("open").expect("frame");
-    ws
+    let reply = match ws.next().await.expect("open").expect("frame") {
+        WsMessage::Text(t) => meclaw_core::serde_json::from_str::<Value>(&t).expect("JSON"),
+        other => panic!("the join reply is a text frame: {other:?}"),
+    };
+    (ws, reply[4]["response"]["rendered"].clone())
+}
+
+/// A diff merged into a held tree the way the LiveView client merges it: a
+/// part that brings its statics (`"s"`) replaces what was there, every other
+/// object merges key by key, a value replaces.
+fn merge_diff(held: &mut Value, diff: &Value) {
+    match (held, diff) {
+        (Value::Object(h), Value::Object(d)) if !d.contains_key("s") => {
+            for (k, v) in d {
+                match h.get_mut(k) {
+                    Some(slot) => merge_diff(slot, v),
+                    None => {
+                        h.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        (h, d) => *h = d.clone(),
+    }
+}
+
+/// The x a box is drawn at: the text after `translate(` in the element whose
+/// `data-oid` is `oid`.
+fn drawn_x(html: &str, oid: &str) -> Option<String> {
+    let at = html.find(&format!("data-oid=\"{oid}\""))?;
+    let rest = &html[at..];
+    let tag_end = rest.find('>')?;
+    let open = rest[..tag_end].find("translate(")? + "translate(".len();
+    let len = rest[open..].find(',')?;
+    Some(rest[open..open + len].to_string())
+}
+
+/// The page a viewer holds after merging `diff` into its join, as markup.
+fn held_page(join: &Value, diff: &Value) -> String {
+    let mut held = join.clone();
+    merge_diff(&mut held, diff);
+    let shared = held.get("p").cloned().unwrap_or(Value::Null);
+    meclaw_cells::web::render::wire_html(&held, &shared)
+}
+
+/// The same diff, addressed one step off: the innermost key that carries
+/// `value` moved to a neighbouring index (`slot_off = false`), or the
+/// outermost one moved to another slot of the join (`slot_off = true`).
+fn misaddressed(join: &Value, diff: &Value, value: &str, slot_off: bool) -> Value {
+    fn path_to(v: &Value, value: &str, path: &mut Vec<String>) -> bool {
+        match v {
+            Value::String(s) => s == value,
+            Value::Object(m) => m.iter().any(|(k, x)| {
+                path.push(k.clone());
+                if path_to(x, value, path) {
+                    return true;
+                }
+                path.pop();
+                false
+            }),
+            _ => false,
+        }
+    }
+    let mut path = Vec::new();
+    assert!(
+        path_to(diff, value, &mut path),
+        "{value} is in the diff: {diff}"
+    );
+    let at = if slot_off { 0 } else { path.len() - 1 };
+    let k: usize = path[at].parse().expect("numeric key");
+    path[at] = if slot_off {
+        join.as_object()
+            .expect("tree")
+            .keys()
+            .filter_map(|x| x.parse::<usize>().ok())
+            .find(|&x| x != k)
+            .expect("a second slot")
+            .to_string()
+    } else if k > 0 {
+        (k - 1).to_string()
+    } else {
+        (k + 1).to_string()
+    };
+    let mut out = json!(value);
+    for key in path.iter().rev() {
+        out = json!({ key.as_str(): out });
+    }
+    out
 }
 
 async fn drag(ws: &mut Ws, join_ref: &str, id: &str, prop: &str, value: Value) {
@@ -337,7 +429,7 @@ async fn a_drag_reaches_every_viewer_and_costs_no_message() {
     let mut live = start(&root, &cell_dir).await;
 
     let mut a = join_page(live.port, "1").await;
-    let mut b = join_page(live.port, "2").await;
+    let (mut b, b_join) = join_page_with_tree(live.port, "2").await;
 
     drag(&mut a, "1", "n/a/one", "x", json!(4321)).await;
 
@@ -370,10 +462,32 @@ async fn a_drag_reaches_every_viewer_and_costs_no_message() {
         b_diff[4].get("diff").is_none(),
         "the push payload is the tree itself, not a reply-shaped wrapper: {b_diff}"
     );
+    // GH #1001: the diff names only the value that changed inside the box's
+    // part (`{"2":{"4":"4321"}}`), not the box's markup again. So the claim
+    // "the box is drawn at its new place" is read where the viewer reads it:
+    // B's join merged with the diff, drawn, and the x inside the dragged
+    // box's own `translate(`. A diff on the wrong slot or the wrong dynamic
+    // index would carry the same "4321" and draw it somewhere else.
+    let payload = &b_diff[4];
     assert!(
-        b_diff[4].to_string().contains("translate(4321"),
-        "the diff carries the box at its new place: {b_diff}"
+        payload.get("p").is_none(),
+        "a drag changes a value, not a component's statics: {b_diff}"
     );
+    assert_eq!(
+        drawn_x(&held_page(&b_join, payload), "n/a/one").as_deref(),
+        Some("4321"),
+        "the other viewer draws the box at its new place: {b_diff}"
+    );
+    // And the check can tell: the same value one index off, or on another
+    // slot, does not put this box there.
+    for slot_off in [false, true] {
+        let wrong = misaddressed(&b_join, payload, "4321", slot_off);
+        assert_ne!(
+            drawn_x(&held_page(&b_join, &wrong), "n/a/one").as_deref(),
+            Some("4321"),
+            "a misaddressed diff ({wrong}) must not read as the drag"
+        );
+    }
 
     // The write landed, in the shape the layout reads back on the next tick.
     assert_eq!(stored_prop(&live.cell_dir, "n/a/one", "x"), json!(4321));

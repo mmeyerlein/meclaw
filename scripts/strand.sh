@@ -135,7 +135,9 @@
 # log comes back to `receipts/<strand>/test-<run>/test.log` -- `latest`, the
 # gate's pointer, is not moved -- and the last line is
 # `TEST [<filterset>] <passed>/<total> <secs>s GREEN|RED`; the exit is the
-# remote one (3 = no lane held, 2 = a wrong call or an unreachable host).
+# remote one (3 = no lane held, 2 = a wrong call or an unreachable host,
+# 6 = no test ran: `RED (no tests matched)` -- a filter that matched nothing,
+# a summary of zero, no summary, or a filterset nextest refused; GH #997).
 # It blocks like a gate: start it in the background and wait.
 #
 # A host that does not answer is exit 2 with `strand: lane <name> unreachable`,
@@ -812,6 +814,23 @@ cmd_test() {
     passed=$(grep -oE '[0-9]+ tests? run: [0-9]+ passed' "$log" | tail -1 | sed -E 's/.*run: ([0-9]+) passed/\1/')
     verdict=GREEN
     [ "$rc" = 0 ] || verdict=RED
+    # Zero tests prove nothing (GH #997): the tier's own `no tests matched`
+    # (exit 6), a zero in the summary, a clean exit without one, nextest's
+    # "no tests to run" (4) or a filterset it refused -- RED, exit 6, and the
+    # reason on the line. A failing test or a failed build keeps its exit,
+    # and so does a pass: the texts are read only off any other exit, else a
+    # test that merely prints them would turn 0 or 100 into 6.
+    local refused=""
+    case "$rc" in
+        0|100|101) ;;
+        *) grep -qE "no tests matched|failed to parse filterset|didn't match any" "$log" \
+               && refused=1 ;;
+    esac
+    if [ "$rc" = 6 ] || [ "$rc" = 4 ] || [ "${total:-}" = 0 ] \
+        || { [ "$rc" = 0 ] && [ -z "$total" ]; } || [ -n "$refused" ]; then
+        verdict="RED (no tests matched)"
+        rc=6
+    fi
     [ "$rc" = 0 ] || tail -20 "$log"
     printf 'TEST [%s] %s/%s %ss %s\n' "$expr" "${passed:-0}" "${total:-0}" "$secs" "$verdict" \
         | tee -a "$log"

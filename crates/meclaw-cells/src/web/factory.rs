@@ -291,6 +291,9 @@ fn make_build(
                 trusted_proxies: o.trusted_proxies,
                 link_mounts: o.link_mounts,
                 external_timeout_ms: o.external_timeout_ms,
+                viewer_events: o.viewer_events,
+                backlog_high_bytes: o.backlog_high_bytes,
+                backlog_high_ms: o.backlog_high_ms,
             },
             Err(e) => {
                 tracing::error!(
@@ -343,6 +346,11 @@ fn make_build(
         io.trusted = Arc::new(parsed.trusted());
         // GH #869: set after `new` for the same reason as the list above.
         io.link_mounts = Arc::new(parsed.link_mounts.clone());
+        // GH #1006: the registry is where every connection reads what to meter
+        // and report; set before the cell clones it for the `viewers` op.
+        io.viewers = Arc::new(crate::web::io::ViewerRegistry::with_policy(
+            parsed.backlog_policy(),
+        ));
         let cell = WebCell::new(
             path_cap.as_str().to_string(),
             io,

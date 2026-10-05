@@ -296,6 +296,22 @@ impl ChildReaper {
         }
     }
 
+    /// How the child ended, waiting at most `limit` for it to end.
+    ///
+    /// For a caller that already knows the child is gone — its pipe ended —
+    /// and wants the number: the pipe's EOF can arrive before the exit is
+    /// reapable, and under load it did (GH #1007: the "133" of a browser that
+    /// never started went missing once in three gate runs). Bounded, so a
+    /// child that closed its pipe and lives on costs `limit` and no more.
+    /// Like `wait`, this drops the child's stdin handle if one is still held.
+    pub async fn exited_within(&mut self, limit: std::time::Duration) -> Option<ChildExit> {
+        match tokio::time::timeout(limit, self.child.wait()).await {
+            Ok(Ok(status)) => Some(exit_of(status)),
+            Ok(Err(_)) => Some(ChildExit::SpawnLost),
+            Err(_) => None,
+        }
+    }
+
     /// Stages two and three: wait for `grace`, then SIGKILL and wait
     /// unconditionally. The final `wait()` is what turns a killed process into
     /// a reaped one — without it we would leave a zombie behind.

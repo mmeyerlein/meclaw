@@ -242,8 +242,10 @@ fn slot_html(diff: &Value, id: &str) -> String {
     diff.as_object()
         .expect("a packed tree is an object")
         .iter()
-        .filter(|(k, _)| *k != "s")
-        .filter_map(|(_, v)| v.as_str())
+        .filter(|(k, _)| *k != "s" && *k != "p")
+        // GH #1001: a slot is a rendered part; its markup is what the client
+        // builds from it with the frame's shared statics.
+        .map(|(_, v)| meclaw_cells::web::render::wire_html(v, &diff["p"]))
         .find(|html| html.contains(&needle))
         .unwrap_or_else(|| panic!("no slot carries {id}: {diff}"))
         .to_string()
@@ -271,7 +273,9 @@ async fn a_bundle_of_eight_legs_is_one_push_carrying_the_end_state() {
         "a bundle is one push — the live pass sent seven, four of them whole \
          trees from the middle of the bundle"
     );
-    let WebReconfig::Push { route, diff } = &pushes[0];
+    let WebReconfig::Push { route, diff } = &pushes[0] else {
+        panic!("a push, not a viewers request")
+    };
     assert_eq!(route, ROUTE);
     let window = slot_html(diff, "aside");
     assert!(
@@ -297,7 +301,9 @@ async fn a_bundle_that_writes_one_slot_three_times_is_one_push() {
     ])
     .await;
     assert_eq!(pushes.len(), 1, "three legs, one frame");
-    let WebReconfig::Push { diff, .. } = &pushes[0];
+    let WebReconfig::Push { diff, .. } = &pushes[0] else {
+        panic!("a push, not a viewers request")
+    };
     let window = slot_html(diff, "aside");
     assert!(window.contains(r#"data-level="3""#), "{window}");
 }
@@ -308,7 +314,9 @@ async fn a_bundle_that_writes_one_slot_three_times_is_one_push() {
 async fn a_single_call_still_pushes_on_its_own() {
     let pushes = run(vec![leg(0, "aside", json!({"level": "1"}))]).await;
     assert_eq!(pushes.len(), 1, "one write, one push");
-    let WebReconfig::Push { diff, .. } = &pushes[0];
+    let WebReconfig::Push { diff, .. } = &pushes[0] else {
+        panic!("a push, not a viewers request")
+    };
     assert!(
         slot_html(diff, "aside").contains(r#"data-level="1""#),
         "{diff}"
@@ -318,7 +326,9 @@ async fn a_single_call_still_pushes_on_its_own() {
     // route rather than a slot (GH #414's ROOT-object arm).
     let pushes = run(vec![leg(0, "root", json!({"tick": "9"}))]).await;
     assert_eq!(pushes.len(), 1, "one root write, one push");
-    let WebReconfig::Push { diff, .. } = &pushes[0];
+    let WebReconfig::Push { diff, .. } = &pushes[0] else {
+        panic!("a push, not a viewers request")
+    };
     let statics = diff
         .get("s")
         .and_then(Value::as_array)
@@ -357,7 +367,10 @@ async fn a_bundle_that_moves_one_outputs_root_and_another_outputs_slot_reaches_b
 
     let mut routes: Vec<&str> = pushes
         .iter()
-        .map(|WebReconfig::Push { route, .. }| route.as_str())
+        .filter_map(|p| match p {
+            WebReconfig::Push { route, .. } => Some(route.as_str()),
+            WebReconfig::Viewers { .. } => None,
+        })
         .collect();
     routes.sort_unstable();
     assert_eq!(
@@ -367,7 +380,10 @@ async fn a_bundle_that_moves_one_outputs_root_and_another_outputs_slot_reaches_b
          root moved must not be left out of its own pass"
     );
 
-    for WebReconfig::Push { route, diff } in &pushes {
+    for (route, diff) in pushes.iter().filter_map(|p| match p {
+        WebReconfig::Push { route, diff } => Some((route, diff)),
+        WebReconfig::Viewers { .. } => None,
+    }) {
         if route == TV {
             let statics = diff
                 .get("s")

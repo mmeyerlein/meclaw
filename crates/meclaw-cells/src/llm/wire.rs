@@ -105,6 +105,27 @@ pub enum WireError {
         /// never a credential.
         message: String,
     },
+    /// GH #999 (F5): the provider refused the request for one of its params
+    /// -- its sentence carries a [`PARAM_REFUSAL_NEEDLES`] needle. Measured
+    /// (Loop 13): a strict hosted router answers `temperature` for a model
+    /// without it with 404 "No endpoints found that support the requested
+    /// parameters", which the chat wire reported as a bare `ModelNotFound` and
+    /// read like a wrong model name. `inner` is the classification the same
+    /// status gets without the needle, and it keeps deciding the `error_code`
+    /// (no failover edge changes lane, OR-H5-3); only `meta.error.kind`
+    /// becomes `unsupported_param`.
+    ParamRefused {
+        /// HTTP (or in-body) status the refusal came with, when known.
+        status: Option<u16>,
+        /// The classification without the needle. Never `ParamRefused`.
+        inner: Box<WireError>,
+        /// The provider's own sentence, bounded like an in-body message.
+        message: String,
+    },
+    /// GH #999 (F4): a 2xx on the chat wire with `Content-Type:
+    /// text/event-stream`. The chat wire parses ONE JSON body; before, a
+    /// streamed answer surfaced as a `BodyParse` complaint without a kind.
+    UnexpectedStream,
 }
 
 /// Map `WireError` to the UBF `error_code`-Enum value (cell-types Z.112).
@@ -124,12 +145,81 @@ pub(crate) fn wire_error_to_code(err: &WireError) -> &'static str {
         | WireError::HttpStatusWithDetail { .. }
         | WireError::Network(_)
         | WireError::BodyParse(_)
+        | WireError::UnexpectedStream
         | WireError::Transient(_) => "provider_error",
         // GH #75: an error inside a 200 body is the error it says it is. The
         // lane is decided by the wrapped classification, so an in-body 429 and
         // an HTTP-level 429 are indistinguishable to a failover edge.
         WireError::InBodyError { inner, .. } => wire_error_to_code(inner),
+        // GH #999: the kind is new, the lane is the lane of before.
+        WireError::ParamRefused { inner, .. } => wire_error_to_code(inner),
     }
+}
+
+/// GH #999 (F5): lowercase needles that mark a provider sentence as the
+/// refusal of a request PARAM rather than of the model or the request.
+/// Measured spellings: a hosted router's 404 "No endpoints found that support
+/// the requested parameters", OpenAI-style "Unsupported parameter: …" and
+/// "Unknown parameter: …", a local OpenAI-style server's pydantic "Extra
+/// inputs are not permitted". "not supported" counts only together with the
+/// name of a sampling field (`translate::SAMPLING_PARAMS`): alone it is far
+/// too common a phrase.
+const PARAM_REFUSAL_NEEDLES: [&str; 4] = [
+    "requested parameters",
+    "unsupported parameter",
+    "unknown parameter",
+    "extra inputs are not permitted",
+];
+
+/// GH #999 (F5): whether a provider sentence refuses a request param.
+pub(crate) fn names_a_param_refusal(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    PARAM_REFUSAL_NEEDLES.iter().any(|n| lower.contains(n))
+        || (lower.contains("not supported")
+            && crate::llm::translate::SAMPLING_PARAMS
+                .iter()
+                .any(|p| lower.contains(p)))
+}
+
+/// GH #999 (F5): wrap `inner` as a [`WireError::ParamRefused`] when the
+/// provider's sentence names a param refusal, else hand it back unchanged --
+/// without a needle the error is exactly the error of before.
+fn with_param_refusal(inner: WireError, status: Option<u16>, message: Option<String>) -> WireError {
+    match message {
+        Some(m) if names_a_param_refusal(&m) => WireError::ParamRefused {
+            status,
+            inner: Box::new(inner),
+            message: m,
+        },
+        _ => inner,
+    }
+}
+
+/// GH #999 (F5): the provider's sentence out of a non-2xx body: the OpenAI
+/// envelope `error`, else a flat `message` (a local OpenAI-style server), else
+/// `detail`, else the raw text -- bounded like an in-body message.
+fn error_body_message(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let msg = match serde_json::from_str::<Value>(trimmed) {
+        Ok(v) => match v.get("error").filter(|e| !e.is_null()) {
+            Some(e) => in_body_message(e),
+            None => v
+                .get("message")
+                .or_else(|| v.get("detail"))
+                .and_then(|m| m.as_str())
+                // The flat form goes through the same 500-byte bound: a
+                // pydantic refusal repeats the refused field's `input`, so it
+                // is as unbounded as any raw body (lock
+                // `h5_a_long_flat_refusal_is_bounded`).
+                .map(|m| in_body_message(&Value::String(m.to_string())))
+                .unwrap_or_else(|| in_body_message(&Value::String(trimmed.to_string()))),
+        },
+        Err(_) => in_body_message(&Value::String(trimmed.to_string())),
+    };
+    Some(msg)
 }
 
 /// The coarse `meta.error.kind` for a variant the P10 table does not name.
@@ -237,6 +327,10 @@ pub(crate) fn classify_in_body_error(body: &Value) -> Option<WireError> {
     // Same table as a real HTTP status of that number. `0` for "the gateway
     // did not say" falls through to the generic provider_error bucket.
     let inner = classify_responses_status(upstream_status.unwrap_or(0), body);
+    // GH #999: a router delivers a provider's param refusal in a 200 body as
+    // well; the needle wraps the classification, so the inner `ModelNotFound`
+    // of such a 404 cannot claim the kind.
+    let inner = with_param_refusal(inner, upstream_status, Some(message.clone()));
     Some(WireError::InBodyError {
         upstream_status,
         inner: Box::new(inner),
@@ -286,6 +380,20 @@ pub(crate) fn wire_error_meta(err: &WireError) -> Option<serde_json::Map<String,
         }
         WireError::Transient(_) => {
             m.insert("kind".into(), Value::String("transient".into()));
+        }
+        // GH #999: the refusal of a param; the status and the sentence say
+        // which one. Inside an in-body error the wrapper adds its provenance.
+        WireError::ParamRefused {
+            status, message, ..
+        } => {
+            m.insert("kind".into(), Value::String("unsupported_param".into()));
+            if let Some(s) = status {
+                m.insert("upstream_status".into(), Value::from(*s));
+            }
+            m.insert("upstream_message".into(), Value::String(message.clone()));
+        }
+        WireError::UnexpectedStream => {
+            m.insert("kind".into(), Value::String("unexpected_stream".into()));
         }
         // GH #75: the wrapped classification decides the kind (so an in-body
         // 429 says `rate_limited` and an in-body quota signal keeps its P10
@@ -483,7 +591,19 @@ pub async fn call_openai_timed(
         // download plus our own parsing (GH #124 discriminator).
         let ttfb = Some(ms_since(started));
         let status = resp.status().as_u16();
+        // GH #999 (F4): the chat wire parses ONE JSON body; a stream is
+        // named before the JSON parser fails on it without a kind.
+        let streamed = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| {
+                ct.trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("text/event-stream")
+            });
         let outcome = match status {
+            200..=299 if streamed => Err(WireError::UnexpectedStream),
             200..=299 => {
                 match resp.json::<Value>().await {
                     Ok(json) => {
@@ -501,7 +621,23 @@ pub async fn call_openai_timed(
                 }
             }
             401 => Err(WireError::Unauthorized),
-            404 => Err(WireError::ModelNotFound),
+            // GH #999 (F5): the body of a 400/404/422 is read now (it used to
+            // be dropped unread), because the provider's sentence is the only
+            // place that tells a refused PARAM from a missing model or a bad
+            // request. Without a needle the variant is the one of before.
+            404 | 400 | 422 => {
+                let inner = if status == 404 {
+                    WireError::ModelNotFound
+                } else {
+                    WireError::HttpStatus(status)
+                };
+                // The read runs inside `request_fut`, i.e. under the A-timeout
+                // below: a 404 whose body hangs is a `timeout` now, no longer
+                // an instant `model_not_found` -- an accepted edge, the size is
+                // as unbounded as `resp.json()` on the 2xx path.
+                let message = resp.text().await.ok().and_then(|t| error_body_message(&t));
+                Err(with_param_refusal(inner, Some(status), message))
+            }
             429 => Err(WireError::RateLimited),
             _ => Err(WireError::HttpStatus(status)),
         };

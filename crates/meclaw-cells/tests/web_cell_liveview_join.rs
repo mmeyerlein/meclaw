@@ -215,7 +215,9 @@ async fn a_join_is_answered_from_the_materialised_page() {
     // The packed tree of the seeded page: the root's template split at its
     // children, one slot per direct child.
     assert_eq!(rendered["s"], json!(["<main>", "</main>"]));
-    assert_eq!(rendered["0"], json!("<p>on home</p>"));
+    // GH #1001: one slot per direct child, as a part naming shared statics.
+    assert_eq!(rendered["0"], json!({"s": 0, "0": "on home", "r": 1}));
+    assert_eq!(rendered["p"], json!({"0": ["<p>", "</p>"]}));
     assert_eq!(
         reply[4]["response"]["liveview_version"],
         json!(meclaw_surface::LIVEVIEW_VERSION),
@@ -268,8 +270,9 @@ async fn the_join_url_decides_which_page_the_socket_is_on() {
     let reply = recv(&mut ws).await;
     assert_eq!(reply[4]["status"], json!("ok"), "{reply}");
     assert_eq!(
+        // GH #1001: the slot is a part naming the shared statics.
         reply[4]["response"]["rendered"]["0"],
-        json!("<p>on other</p>"),
+        json!({"s": 0, "0": "on other", "r": 1}),
         "the socket answered with the OTHER page"
     );
 

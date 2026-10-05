@@ -299,6 +299,42 @@ class Classify(unittest.TestCase):
         self.assertLess(order.index("gate-selftest"), order.index("display-lab"))
         self.assertLess(order.index("display-lab"), order.index("fmt"))
 
+    def test_llm_conformance_is_its_own_cheap_station(self):
+        """The provider conformance tool owes a contract, and a contract owes a station.
+
+        `workshop/tools/llm-conformance/` probes a model at its real endpoint
+        (wave Haertung 5, GH #998); its offline tests run it against a fake
+        provider. The cell's `SAMPLING_PARAMS` is mirrored in the tool, so a
+        change to `translate.rs` plans the drift lock as well.
+        """
+        tool = "workshop/tools/llm-conformance/conformance.py"
+        test = "scripts/tests/test_llm_conformance.py"
+        cell = "crates/meclaw-cells/src/llm/translate.rs"
+        for path in (tool, test, cell):
+            self.assertIn("llm_conformance", gp.classify([path]), path)
+        self.assertNotIn("llm_conformance",
+                         gp.classify(["workshop/tools/judge_eval.py"]))
+
+        st = by_name(gp.plan([tool], "strand", repo=None))
+        self.assertIn("llm-conformance", st)
+        self.assertFalse(st["llm-conformance"].cargo, "a python unittest builds nothing")
+        self.assertEqual(
+            st["llm-conformance"].cmds,
+            [["python3", "-m", "unittest", "scripts.tests.test_llm_conformance"]])
+
+        self.assertNotIn("llm-conformance",
+                         {s.name for s in gp.plan(["docs/x.md"], "strand", repo=None)})
+        self.assertIn("llm-conformance",
+                      {s.name for s in gp.plan(["docs/x.md"], "integration", repo=None)})
+        # ci never plans it: workshop/ does not travel.
+        self.assertIn("llm-conformance", gp.CI_EXCLUDED)
+        self.assertNotIn("llm-conformance",
+                         {s.name for s in gp.plan([tool], "ci", repo=None)})
+
+        order = gp.STATION_ORDER
+        self.assertLess(order.index("display-lab"), order.index("llm-conformance"))
+        self.assertLess(order.index("llm-conformance"), order.index("fmt"))
+
     def test_the_guide_harness_is_its_own_cheap_station(self):
         """The conversation guide's self-test pins its own wiring (GH #881).
 
@@ -1755,6 +1791,223 @@ class LiveBinariesAreScenarioTest(unittest.TestCase):
         for name in self.live_binaries():
             with self.subTest(binary=name):
                 self.assertIn("binary(/^%s$/)" % name, gp.SCENARIO)
+
+
+IGNORED_ONLY = (
+    '//! Measurement, run with `scripts/test-tier.sh filter ... --run-ignored all`.\n'
+    '#[tokio::test(flavor = "multi_thread", worker_threads = 4)]\n'
+    '#[ignore = "benchmark -- run explicitly"]\n'
+    'async fn bench() {}\n')
+
+
+class IgnoredOnlyBinariesAreNoTarget(unittest.TestCase):
+    """GH #997: a binary whose every test is `#[ignore]` runs 0 tests.
+
+    Rule 8 picked `gh850_bench_normal_path` for a diff to
+    `scripts/test-tier.sh` (its doc comment names the path); its one test is a
+    `#[ignore]` benchmark, so the `tests` station ran 0 tests -- nextest exit 4
+    on master, `no tests matched` (exit 6) since K1. Such a binary is never the
+    target of ANY plan rule; a comment naming the path is still a reference.
+    """
+
+    def test_an_ignored_only_reader_is_not_selected(self):
+        repo = reader_repo(self, {"bench": IGNORED_ONLY})
+        st = by_name(gp.plan(["scripts/test-tier.sh"], "strand", repo=repo))
+        self.assertNotIn("tests", st)
+
+    def test_a_reader_with_one_ignored_and_one_normal_test_stays(self):
+        repo = reader_repo(self, {
+            "bench": IGNORED_ONLY,
+            "mixed": ('// reads scripts/test-tier.sh\n'
+                      '#[test]\n#[ignore]\nfn slow() {}\n'
+                      '#[test]\nfn fast() {}\n')})
+        self.assertEqual(
+            gp.test_filter(["scripts/test-tier.sh"], "ci", repo=repo),
+            "binary_id(=meclaw-cells::mixed)")
+
+    def test_rule_3_drops_a_changed_ignored_only_test_file_too(self):
+        """Central, not rule 8 only: the binary runs 0 tests whoever picks it."""
+        repo = reader_repo(self, {"bench": IGNORED_ONLY,
+                                  "normal": "#[test]\nfn t() {}\n"})
+        self.assertEqual(
+            gp.test_filter(["crates/meclaw-cells/tests/bench.rs",
+                            "crates/meclaw-cells/tests/normal.rs"], "ci", repo=repo),
+            "binary_id(=meclaw-cells::normal)")
+
+    def test_doubtful_shapes_stay_targets(self):
+        """In doubt the binary stays: cfg_attr, macros, modules, no attribute."""
+        doubtful = {
+            "cfg_attr": ('// scripts/test-tier.sh\n'
+                         '#[test]\n#[cfg_attr(not(feature = "x"), ignore)]\nfn t() {}\n'),
+            "macro": ('// scripts/test-tier.sh\n#[test]\n#[ignore]\nfn a() {}\n'
+                      'macro_rules! gen { () => { #[test] fn b() {} } }\ngen!();\n'),
+            "module": ('// scripts/test-tier.sh\nmod more;\n'
+                       '#[test]\n#[ignore]\nfn a() {}\n'),
+            "commented_ignore": ('// scripts/test-tier.sh\n'
+                                 '#[test]\n// #[ignore]\nfn a() {}\n'),
+            "harness_false": 'fn main() { let _ = "scripts/test-tier.sh"; }\n',
+        }
+        repo = reader_repo(self, doubtful)
+        self.assertEqual(
+            gp.test_filter(["scripts/test-tier.sh"], "ci", repo=repo),
+            " + ".join("binary_id(=meclaw-cells::%s)" % s for s in sorted(doubtful)))
+
+    def test_the_counter_parser(self):
+        self.assertEqual(gp._test_counts(IGNORED_ONLY), (1, 0))
+        self.assertEqual(gp._test_counts(
+            '#[test]\n#[ignore]\nfn a() {}\n#[tokio::test]\nasync fn b() {}\n'
+            'const S: &str = "#[test]";\n/* #[test] fn c() {} */\n'), (2, 1))
+
+    def test_the_real_tree_no_longer_selects_the_bench(self):
+        """The measured case: `scripts/test-tier.sh` must not pick gh850."""
+        expr = gp.test_filter(["scripts/test-tier.sh"], "ci") or ""
+        self.assertNotIn("gh850_bench_normal_path", expr)
+
+
+def module_repo(case, binaries, modules):
+    """`reader_repo` plus out-of-line module files under `tests/` (any depth)."""
+    repo = reader_repo(case, binaries)
+    tests = pathlib.Path(repo) / "crates" / "meclaw-cells" / "tests"
+    for rel, text in modules.items():
+        (tests / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tests / rel).write_text(text, encoding="utf-8")
+    return repo
+
+
+class OutOfLineModulesAreReadOneLevelDeep(unittest.TestCase):
+    """K1 fix round 2: `mod x;` is resolved, not taken as doubt on sight.
+
+    The browser locks gh867/gh961 are `#[ignore]`d and pull in
+    `#[path = "support/display_colony.rs"] mod display_colony;`. Taken as
+    doubt, they stayed targets of the `tests` station and ran 0 tests there --
+    RED on every diff that touches only their driver `.mjs` or the lock
+    itself; the station `browser:display` runs them with `--run-ignored all`.
+    The module is read one level deep (`tests/<path>`, `tests/x.rs`,
+    `tests/x/mod.rs`); doubt only when it has test attributes or hidden shapes
+    itself, or cannot be found.
+    """
+
+    LOCK = ('// reads scripts/test-tier.sh\n'
+            '#[path = "support/helper.rs"]\nmod helper;\n'
+            '#[tokio::test]\n#[ignore = "browser lock"]\nasync fn lock() {}\n')
+
+    def selected(self, binaries, modules):
+        repo = module_repo(self, binaries, modules)
+        return gp.test_filter(["scripts/test-tier.sh"], "ci", repo=repo)
+
+    def test_a_path_module_without_tests_drops_the_lock(self):
+        self.assertIsNone(self.selected(
+            {"lock": self.LOCK}, {"support/helper.rs": "pub fn boot() {}\n"}))
+
+    def test_plain_module_files_resolve_too(self):
+        body = '// scripts/test-tier.sh\nmod %s;\n#[test]\n#[ignore]\nfn a() {}\n'
+        self.assertIsNone(self.selected(
+            {"flat": body % "flat_help", "nested": body % "nested_help"},
+            {"flat_help.rs": "pub fn x() {}\n",
+             "nested_help/mod.rs": "pub fn y() {}\n"}))
+
+    def test_a_module_with_its_own_test_keeps_the_binary(self):
+        self.assertEqual(
+            self.selected({"lock": self.LOCK},
+                          {"support/helper.rs": "#[test]\nfn inner() {}\n"}),
+            "binary_id(=meclaw-cells::lock)")
+
+    def test_a_module_with_a_hidden_shape_keeps_the_binary(self):
+        self.assertEqual(
+            self.selected({"lock": self.LOCK},
+                          {"support/helper.rs": "macro_rules! m { () => {} }\n"}),
+            "binary_id(=meclaw-cells::lock)")
+
+    def test_a_missing_module_keeps_the_binary(self):
+        self.assertEqual(self.selected({"lock": self.LOCK}, {}),
+                         "binary_id(=meclaw-cells::lock)")
+
+    def test_a_module_declared_inside_an_inline_module_keeps_the_binary(self):
+        """K1 fix round 3: `mod a { mod b; }` loads `tests/a/b.rs`, not
+        `tests/b.rs`. Resolved from the root, the testless `b.rs` dropped a
+        binary whose `a/b.rs` runs a test -- a nested `mod` is doubt."""
+        body = ('// scripts/test-tier.sh\n#[test] #[ignore] fn slow(){}\n'
+                'mod a { mod b; }\n')
+        self.assertEqual(
+            self.selected({"nest": body},
+                          {"b.rs": "pub fn x() {}\n",
+                           "a/b.rs": "#[test]\nfn runs() {}\n"}),
+            "binary_id(=meclaw-cells::nest)")
+
+    def test_braces_in_comments_and_literals_do_not_nest(self):
+        """Depth is read on code without comments and literals."""
+        body = ('// scripts/test-tier.sh { {\n/* { */ const S: &str = "{";\n'
+                "const C: char = '{';\n#[test]\n#[ignore]\nfn a() {}\n"
+                'mod flat_help;\n')
+        self.assertIsNone(self.selected(
+            {"flat": body}, {"flat_help.rs": "pub fn x() {}\n"}))
+
+    def test_a_cfg_attr_path_keeps_the_binary(self):
+        """`#[cfg_attr(unix, path = "y.rs")] mod x;` may load `y.rs` -- doubt."""
+        body = ('// scripts/test-tier.sh\n#[test]\n#[ignore]\nfn a() {}\n'
+                '#[cfg_attr(unix, path = "y.rs")]\nmod x;\n')
+        self.assertEqual(
+            self.selected({"alt": body},
+                          {"x.rs": "pub fn x() {}\n",
+                           "y.rs": "#[test]\nfn runs() {}\n"}),
+            "binary_id(=meclaw-cells::alt)")
+
+    def test_a_nested_block_comment_keeps_the_binary(self):
+        """K1 fix round 3 close: `/* x /* y */ } */` nests in Rust. The
+        non-greedy blanking leaves ` } */`, the stray `}` closed `mod a` early
+        and `mod z;` resolved to the testless `tests/z.rs` -- doubt."""
+        body = ('// scripts/test-tier.sh\n#[test]\n#[ignore]\nfn a() {}\n'
+                'mod a {\n/* x /* y */ } */\nmod z;\n}\n')
+        self.assertEqual(
+            self.selected({"nested": body},
+                          {"z.rs": "pub fn x() {}\n",
+                           "a/z.rs": "#[test]\nfn runs() {}\n"}),
+            "binary_id(=meclaw-cells::nested)")
+
+    def test_only_a_driver_mjs_has_no_tests_station(self):
+        """The measured case: gh961's driver alone ran 0 tests in `tests`."""
+        for mjs in ("display-motion-browser.mjs", "display-csp-browser.mjs"):
+            st = by_name(gp.plan(["workshop/tools/" + mjs], "strand"))
+            self.assertNotIn("tests", st, mjs)
+            self.assertIn("browser:display", st, mjs)
+
+    def test_only_the_gh961_lock_has_browser_display_but_no_tests_station(self):
+        st = by_name(gp.plan(
+            ["crates/meclaw-cells/tests/gh961_motion_by_target_state_browser.rs"],
+            "strand"))
+        self.assertNotIn("tests", st)
+        self.assertIn("browser:display", st)
+
+
+class UnknownTestShapesAreDoubt(unittest.TestCase):
+    """K1 fix round 2: a test form the counter does not know is no proof of 0.
+
+    Any attribute whose last path segment contains `test` (`#[wasm_bindgen_test]`,
+    `#[serial_test::test]`), and `quickcheck`/`proptest`, counts as a runnable
+    test; a macro invocation `name! {` at any indentation is doubt.
+    """
+
+    IGNORED = '// scripts/test-tier.sh\n#[test]\n#[ignore]\nfn slow() {}\n'
+
+    def test_unknown_attributes_count_as_runnable_tests(self):
+        self.assertEqual(gp._test_counts("#[quickcheck]\nfn p(x: u8) -> bool { true }\n"),
+                         (1, 1))
+        self.assertEqual(gp._test_counts("#[wasm_bindgen_test]\nfn w() {}\n"), (1, 1))
+        self.assertEqual(gp._test_counts("#[proptest]\nfn q(x: u8) {}\n"), (1, 1))
+        self.assertEqual(gp._test_counts("#[cfg(test)]\nmod m {}\n#[path = \"x_test.rs\"]\n"),
+                         (0, 0))
+
+    def test_such_binaries_stay_targets(self):
+        shapes = {
+            "quickcheck": self.IGNORED + "#[quickcheck]\nfn p(x: u8) -> bool { true }\n",
+            "wasm": self.IGNORED + "#[wasm_bindgen_test]\nfn w() {}\n",
+            "indented_macro": self.IGNORED + "mod props {\n    quickcheck! {\n"
+                              "        fn p(x: u8) -> bool { true }\n    }\n}\n",
+        }
+        repo = reader_repo(self, shapes)
+        self.assertEqual(
+            gp.test_filter(["scripts/test-tier.sh"], "ci", repo=repo),
+            " + ".join("binary_id(=meclaw-cells::%s)" % s for s in sorted(shapes)))
 
 
 def scenario_repo(case, stems):

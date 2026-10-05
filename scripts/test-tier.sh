@@ -32,6 +32,12 @@
 #     scripts/test-tier.sh t0|t1|t2 [extra nextest args...]
 #     scripts/test-tier.sh filter '<nextest filterset>' [extra nextest args...]
 #
+# EXIT: nextest's own, with one addition: a `filter` run in which no test ran
+# -- a summary of `0 tests run`, no summary at all, nextest's "no tests to
+# run", or a filterset nextest refused because an operator matched nothing --
+# exits 6 with `no tests matched`. Zero tests prove nothing; a gate station
+# and `scripts/strand.sh test` grade it RED.
+#
 #     MECLAW_TIER_PROFILE=<name>  nextest profile (default: default)
 #     CI=<anything>               CI mode: no nice/ionice, no cargo lock, no
 #                                 TMPDIR override -- the runner owns the box.
@@ -134,6 +140,8 @@ T2='all()'
 # MECLAW_CARGO_LOCK_HELD=1 -- taking it again would deadlock the gate against
 # its own child. Same file as the runner's, same switch to move it.
 LOCK="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
+# The exit of a `filter` run in which no test ran (GH #997).
+EXIT_NO_TESTS=6
 
 run_nextest() {
     local filter="$1"
@@ -230,21 +238,65 @@ run_nextest() {
         meclaw_write_stamp "$root" "$target_dir" "$rev" "$dirty"
     fi
 
-    local rc=0
+    local rc=0 seen=""
     if [ -n "${MECLAW_TIER_DRY:-}" ]; then
         echo "=== tier-dry: cargo nextest run --workspace --profile $profile" \
              "-E $filter $*"
-    elif [ -n "${CI:-}" ]; then
-        cargo nextest run --workspace --profile "$profile" -E "$filter" "$@"
+    elif [ "$tier" = filter ]; then
+        # A filter is judged on what ran, not only on the exit (GH #997): the
+        # output goes through `tee` so the summary can be read afterwards.
+        seen=$(mktemp) || {
+            [ "$own_lock" = 1 ] && exec 9>&-
+            echo "test-tier: no temp file" >&2
+            return 2
+        }
+        cargo_nextest "$filter" "$@" 2>&1 | tee "$seen" 9>&-
+        rc=${PIPESTATUS[0]}
+    else
+        cargo_nextest "$filter" "$@"
         rc=$?
+    fi
+    [ "$own_lock" = 1 ] && exec 9>&-
+    if [ -n "$seen" ]; then
+        if no_tests_matched "$rc" "$seen"; then
+            echo "test-tier: RED -- no tests matched: $filter" >&2
+            rc=$EXIT_NO_TESTS
+        fi
+        rm -f "$seen"
+    fi
+    return "$rc"
+}
+
+cargo_nextest() {
+    local filter="$1"
+    shift
+    if [ -n "${CI:-}" ]; then
+        cargo nextest run --workspace --profile "$profile" -E "$filter" "$@"
     else
         ( [ "$own_lock" = 1 ] && exec 9>&-
           nice -n 19 ionice -c3 \
               cargo nextest run --workspace --profile "$profile" -E "$filter" "$@" )
-        rc=$?
     fi
-    [ "$own_lock" = 1 ] && exec 9>&-
-    return "$rc"
+}
+
+# `no_tests_matched <rc> <output>`: did a filter run no test at all? Four
+# shapes of the same thing -- a zero in nextest's summary, a clean exit
+# without any summary, nextest's own "no tests to run" (exit 4), and a
+# filterset nextest refused because an operator matched nothing. A failing
+# test or a failed build has its own exit and keeps it -- and so does a run
+# that passed: the refusal text is read only off any OTHER exit, else a test
+# that merely prints it would turn 0 or 100 into 6.
+no_tests_matched() {
+    local rc="$1" out="$2" total
+    [ "$rc" = 4 ] && return 0
+    case "$rc" in
+        0|100|101) ;;
+        *) grep -qE "failed to parse filterset|didn't match any" "$out" && return 0 ;;
+    esac
+    total=$(grep -oE '[0-9]+ tests? run:' "$out" | tail -1 | grep -oE '^[0-9]+')
+    [ "$total" = 0 ] && return 0
+    [ "$rc" = 0 ] && [ -z "$total" ] && return 0
+    return 1
 }
 
 if [ $# -lt 1 ]; then

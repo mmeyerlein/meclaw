@@ -1,0 +1,7 @@
+{
+  "id": "gen-fake-tool",
+  "object": "chat.completion",
+  "model": "fake/cell-shapes",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": [{"id": "call_fake_1", "type": "function", "function": {"name": "echo", "arguments": "{\"text\":\"ping\"}"}}]}, "finish_reason": "tool_calls"}],
+  "usage": {"prompt_tokens": 61, "completion_tokens": 9, "total_tokens": 70}
+}

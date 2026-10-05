@@ -20,6 +20,21 @@ pub(crate) enum TranslateError {
     UnknownFinishReason(String),
     /// Response JSON shape mismatch (missing `choices[0]`, `model`, `id`, …).
     ResponseShape(String),
+    /// GH #999 (F1): a `tool_calls[i]` the tool caller could not use -- an
+    /// empty or missing `id` or `function.name`, or `function.arguments` that
+    /// is not a string holding a JSON object. Before, `id` became `""` and any
+    /// `function` value travelled as text; the caller failed later with no
+    /// word about the provider. `meta.error.kind = "malformed_tool_call"`.
+    ToolCallShape(String),
+    /// GH #999 (F2): neither text (after the annotation strip, trimmed) nor a
+    /// tool call. Before, `content: null` was a success with no turn and
+    /// `content: ""` a success with an empty one. `kind = "empty_answer"`.
+    EmptyAnswer,
+    /// GH #999 (F2): the empty answer of a call cut at `length` whose message
+    /// carries a thinking trace -- the budget went into thinking, which the
+    /// caller fixes with `max_tokens`, not with a retry.
+    /// `kind = "reasoning_exhausted"`.
+    ReasoningExhausted,
 }
 
 /// Walk a UBF system-tree and concatenate leaves' `text` values into a single
@@ -234,6 +249,32 @@ pub(crate) fn dropped_params(params: &crate::llm::params::LlmParams) -> Vec<Stri
         .map(|(key, _)| key)
         .filter(|key| !takes_param(params, key) && !params.provider_extra.contains_key(*key))
         .map(String::from)
+        .collect()
+}
+
+/// GH #999 (F6, R-H5-3 = c): the sampling fields this cell's request carries
+/// ON A GUESS -- without a `supported_params` list nothing has checked them
+/// against the model, and a hosted router ignores an unknown one silently
+/// (measured, Loop 13: `temperature` to a model without it). The request stays
+/// byte-identical; the answer names these in `hop.unverified`. The same field
+/// lists as [`dropped_params`], plus the `provider_extra` keys that are
+/// sampling fields (the overlay is sent unchecked too), in [`SAMPLING_PARAMS`]
+/// order. Empty with a list (the list IS the check) and on the decisions wire.
+pub(crate) fn unverified_params(params: &crate::llm::params::LlmParams) -> Vec<String> {
+    use crate::llm::params::WireDialect;
+    if params.supported_params.is_some() || params.is_decisions() {
+        return Vec::new();
+    }
+    let fields = match params.effective_wire_dialect() {
+        WireDialect::ChatCompletions => chat_sampling_fields(params),
+        WireDialect::Responses => crate::llm::translate_responses::sampling_fields(params),
+    };
+    SAMPLING_PARAMS
+        .iter()
+        .filter(|name| {
+            fields.iter().any(|(key, _)| key == *name) || params.provider_extra.contains_key(**name)
+        })
+        .map(|name| (*name).to_string())
         .collect()
 }
 
@@ -1153,6 +1194,84 @@ pub(crate) fn translate_error_to_code(_err: &TranslateError) -> &'static str {
     "provider_error"
 }
 
+/// GH #999: the `meta.error.kind` of a translate failure, `None` for every
+/// variant older than #999 -- their emitted body stays byte-identical. The
+/// `error_code` stays `provider_error` (the closed enum); the kind is what an
+/// operator or a failover edge tells the cases apart by.
+pub(crate) fn translate_error_meta(
+    err: &TranslateError,
+) -> Option<meclaw_core::serde_json::Map<String, Value>> {
+    let kind = match err {
+        TranslateError::ToolCallShape(_) => "malformed_tool_call",
+        TranslateError::EmptyAnswer => "empty_answer",
+        TranslateError::ReasoningExhausted => "reasoning_exhausted",
+        _ => return None,
+    };
+    let mut m = meclaw_core::serde_json::Map::new();
+    m.insert("kind".into(), Value::String(kind.into()));
+    Some(m)
+}
+
+/// GH #999 (F2): the keys under which a provider puts its thinking trace in
+/// `message` (measured spellings: a hosted router `reasoning` and
+/// `reasoning_details`, a local OpenAI-style server `reasoning_content`).
+/// Read only to NAME an exhausted budget; the trace itself never enters UBF.
+const THINKING_TRACE_KEYS: &[&str] = &["reasoning", "reasoning_content", "reasoning_details"];
+
+/// Whether `message` carries a non-empty thinking trace.
+fn has_thinking_trace(message: &Value) -> bool {
+    THINKING_TRACE_KEYS.iter().any(|k| match message.get(*k) {
+        None | Some(Value::Null) => false,
+        Some(Value::String(s)) => !s.trim().is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+        Some(_) => true,
+    })
+}
+
+/// GH #999 (F1): one provider tool call as the UBF `tool_call` turn's text,
+/// or the reason it cannot be one. `arguments` must be a string holding a JSON
+/// object; the empty string is the empty object (common provider practice for
+/// a call without arguments) and is written as `"{}"`, so the tool caller
+/// always parses an object. Every other part of `function` travels as it came.
+fn tool_call_text(i: usize, tc: &Value) -> Result<(String, String), TranslateError> {
+    let shape = |what: &str| TranslateError::ToolCallShape(format!("tool_calls[{i}]: {what}"));
+    let id = tc
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| shape("missing or empty id"))?;
+    let mut function = tc
+        .get("function")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .ok_or_else(|| shape("missing function object"))?;
+    if function
+        .get("name")
+        .and_then(|v| v.as_str())
+        .is_none_or(|n| n.trim().is_empty())
+    {
+        return Err(shape("missing or empty function.name"));
+    }
+    let empty = match function.get("arguments") {
+        Some(Value::String(a)) if a.trim().is_empty() => true,
+        Some(Value::String(a))
+            if meclaw_core::serde_json::from_str::<Value>(a).is_ok_and(|v| v.is_object()) =>
+        {
+            false
+        }
+        Some(Value::String(_)) => return Err(shape("function.arguments is not a JSON object")),
+        Some(_) => return Err(shape("function.arguments is not a string")),
+        None => return Err(shape("missing function.arguments")),
+    };
+    if empty {
+        function.insert("arguments".into(), Value::String("{}".into()));
+    }
+    let text = meclaw_core::serde_json::to_string(&Value::Object(function))
+        .map_err(|e| TranslateError::ResponseShape(format!("tool_call.function serialize: {e}")))?;
+    Ok((id.to_string(), text))
+}
+
 /// Translated OpenAI Chat-Completions response — assistant UBF-turn(s) plus
 /// meta-fields the LlmCell will surface as UBF-headers (model, response_id,
 /// finish_reason, token-usage).
@@ -1301,14 +1420,12 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
     };
 
     let mut assistant_turn: Vec<Value> = Vec::new();
-    // Tool calls first.
+    // Tool calls first, each checked before it is believed (GH #999 F1).
+    let mut calls = 0usize;
     if let Some(tcs) = message.get("tool_calls").and_then(|v| v.as_array()) {
-        for tc in tcs {
-            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let function = tc.get("function").cloned().unwrap_or(Value::Null);
-            let text = meclaw_core::serde_json::to_string(&function).map_err(|e| {
-                TranslateError::ResponseShape(format!("tool_call.function serialize: {e}"))
-            })?;
+        for (i, tc) in tcs.iter().enumerate() {
+            let (id, text) = tool_call_text(i, tc)?;
+            calls += 1;
             assistant_turn.push(json!({
                 "origin": "assistant",
                 "type": "tool_call",
@@ -1318,13 +1435,29 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
         }
     }
     // Then text content (if present and non-null). Provider-internal citation
-    // markers are stripped here — they never enter UBF (GH #569).
+    // markers are stripped here — they never enter UBF (GH #569). The thinking
+    // trace (`reasoning*` keys) is never read into a turn (GH #999 F3).
+    let mut has_text = false;
     if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
+        let text = strip_provider_annotations(content);
+        has_text = !text.trim().is_empty();
         assistant_turn.push(json!({
             "origin": "assistant",
             "type": "text",
-            "text": strip_provider_annotations(content),
+            "text": text,
         }));
+    }
+    // GH #999 F2: an answer with nothing in it is no answer. Named, so the
+    // caller can tell a budget spent on thinking from a provider that sent
+    // nothing at all.
+    if calls == 0 && !has_text {
+        return Err(
+            if finish_reason == "length" && has_thinking_trace(message) {
+                TranslateError::ReasoningExhausted
+            } else {
+                TranslateError::EmptyAnswer
+            },
+        );
     }
 
     let model = json

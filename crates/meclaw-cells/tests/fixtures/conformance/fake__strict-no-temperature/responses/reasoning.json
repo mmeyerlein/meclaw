@@ -1,0 +1,23 @@
+{
+  "id": "gen-fake-8",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "fake/strict-no-temperature",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "OK",
+        "reasoning": "The user wants OK."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 1,
+    "total_tokens": 13,
+    "cost": 0.0001
+  }
+}
