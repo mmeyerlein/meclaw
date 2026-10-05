@@ -33,11 +33,11 @@
         },
         {
           "route": "in_hand",
-          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from llm-registry@2.6.1"
+          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from llm-registry@2.7.0"
         },
         {
           "route": "in_select",
-          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from llm-registry@2.6.1"
+          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from llm-registry@2.7.0"
         },
         {
           "route": "in_turn",

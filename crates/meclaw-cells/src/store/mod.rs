@@ -1,6 +1,7 @@
 //! Phase-9 store-Cell modules.
 
 pub mod cell;
+pub mod consumed;
 pub mod ddl;
 pub mod degraded;
 pub mod factory;

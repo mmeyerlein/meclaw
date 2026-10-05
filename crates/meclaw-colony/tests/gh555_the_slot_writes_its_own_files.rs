@@ -18,6 +18,7 @@
 use meclaw_colony::{DbConn, build_stateful_task_with_peace};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, Message, MessageBuilder, Path, TransferBounds};
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -80,7 +81,7 @@ impl Live {
             b = b.reply_to(Path::new(s));
         }
         self.mailbox.send(b.build()).await.expect("mailbox open");
-        tokio::time::timeout(std::time::Duration::from_secs(30), self.out.recv())
+        tokio::time::timeout(std::time::Duration::from_secs(30), self.out.recv_answer())
             .await
             .expect("the substrate must answer a transfer slot within 30s")
             .expect("the substrate must answer a transfer slot")

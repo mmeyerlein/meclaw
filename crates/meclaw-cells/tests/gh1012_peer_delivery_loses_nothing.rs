@@ -353,8 +353,9 @@ async fn the_answer_waits_for_the_commit() {
 }
 
 /// Part c: the process dies between the answer and the handler's work. After
-/// the start the arrival comes again, exactly once; once handled it is `done`
-/// and a third life replays nothing.
+/// the start the arrival comes again, exactly once; once handled it is `done`,
+/// and a third life raises the pending row once more and the colony drops it
+/// by its key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answered_frame_survives_a_crash_and_arrives_once() {
     let dir = tempfile::tempdir().expect("dir");
@@ -374,7 +375,18 @@ async fn an_answered_frame_survives_a_crash_and_arrives_once() {
         rx.try_recv().is_err(),
         "exactly one replayed arrival per answered frame"
     );
-    // The handler half books it: arrival emitted, row `done`.
+    let PeerEvent::Arrived { delivery, .. } = &ev else {
+        panic!("an arrival, not {ev:?}")
+    };
+    let key = delivery
+        .inbox_key
+        .clone()
+        .expect("the replayed arrival names its inbox row");
+    assert!(
+        delivery.replayed,
+        "raised from the inbox, not from the wire"
+    );
+    // The handler half hands it on (GH #1015: keyed, marked as a repeat).
     let p = MeclawParams::parse(&params("http://127.0.0.1:1", None)).expect("params");
     let mut cell = MeclawCell::new(&p).expect("cell");
     let (out_tx, mut out_rx) = mpsc::channel(8);
@@ -387,15 +399,33 @@ async fn an_answered_frame_survives_a_crash_and_arrives_once() {
         arrival.content["header"]["peer_frame_id"],
         json!(id.to_string())
     );
+    assert_eq!(arrival.content["header"]["delivery_key"], json!(key));
+    assert_eq!(arrival.content["header"]["delivery_replay"], json!(true));
     task.abort();
     let st = rows(&path, "SELECT state FROM peer_inbox");
     assert_eq!(
         st,
-        vec![vec!["done".to_string()]],
-        "the row stays, only its state moved"
+        vec![vec!["pending".to_string()]],
+        "the row stays pending: a handed-on row is booked done only after HAND_ON_SETTLE (GH #1015)"
     );
+    // GH #1015 (OR-HV-60): a row without follow-up traffic stays pending, so
+    // the third life raises it once more — exactly once, same key, marked as
+    // a repeat. The colony drops it by that key: the receiver-side lock is
+    // `gh1015_…::a_repeated_keyed_hand_on_is_dropped_direct_and_through_a_hive_transit`.
     let (_addr, mut rx, _task, _keep) = mount_at(&path).await;
-    assert!(rx.try_recv().is_err(), "a done row is not replayed");
+    let again = rx
+        .try_recv()
+        .expect("the pending row is raised again in the third life");
+    assert!(rx.try_recv().is_err(), "exactly once");
+    let PeerEvent::Arrived { delivery, .. } = &again else {
+        panic!("an arrival, not {again:?}")
+    };
+    assert_eq!(
+        delivery.inbox_key.as_deref(),
+        Some(key.as_str()),
+        "the same key"
+    );
+    assert!(delivery.replayed, "marked as a repeat");
 }
 
 /// Part f: the arrival carries the sender's and the receiver's clocks; a

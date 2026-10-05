@@ -89,10 +89,17 @@ async fn insert_and_await_emission(
         .await
         .expect("the live cell must own a live mailbox");
     // 30s is a generous failure marker, not a semantic discriminator.
-    tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
-        .await
-        .expect("the live cell must answer within 30s")
-        .expect("outputs channel stays open")
+    // GH #1015: the cell task follows each handled message with a consume
+    // mark on the same channel; the answer is the next emission that is not one.
+    loop {
+        let em = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+            .await
+            .expect("the live cell must answer within 30s")
+            .expect("outputs channel stays open");
+        if em.consumed_mark_id().is_none() {
+            return em;
+        }
+    }
 }
 
 /// Create `cell.db` up front so a test can plant corruption into it before the

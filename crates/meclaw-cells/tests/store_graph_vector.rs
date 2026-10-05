@@ -179,7 +179,14 @@ async fn similar_ids(mailbox: &Mailbox, emissions: &mut Emissions) -> Vec<String
                 "vector_column":"blob","vector": b64(&[0x00, 0x00])}),
     )
     .await;
-    let em = emissions.recv().await.unwrap();
+    // GH #1015: the cell task follows each handled message with a consume
+    // mark on the same channel; the answer is the next emission that is not one.
+    let em = loop {
+        let em = emissions.recv().await.unwrap();
+        if em.consumed_mark_id().is_none() {
+            break em;
+        }
+    };
     assert!(
         em.content["header"].get("error_code").is_none(),
         "similar failed on a live cell: {:?}",
@@ -1182,7 +1189,13 @@ async fn hamming_survives_wake_rewake_and_respawn() {
                               "row":{"id":id,"blob": b64(&vec)}}),
         )
         .await;
-        let em = orx.recv().await.unwrap();
+        let em = loop {
+            // GH #1015: skip the consume mark that follows each handled message.
+            let em = orx.recv().await.unwrap();
+            if em.consumed_mark_id().is_none() {
+                break em;
+            }
+        };
         assert_eq!(em.content["header"]["rows_affected"], 1);
     }
     assert_eq!(

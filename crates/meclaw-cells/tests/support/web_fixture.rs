@@ -361,24 +361,24 @@ impl Lab {
 
     /// Send one message of tool-call turns and wait for its answer.
     pub async fn call(&mut self, ops: Vec<Value>) -> Value {
-        let turns: Vec<Value> = ops
-            .into_iter()
-            .enumerate()
-            .map(|(i, op)| leg(i, op))
-            .collect();
-        let msg = MessageBuilder::new(Path::new(CELL))
-            .reply_to(Path::new("/caller"))
-            .body(Body::Inline(json!({ "messages": turns })))
-            .build();
+        let msg = bundle_message(ops);
+        let id = msg.id;
         self.sender
             .send(msg)
             .await
             .expect("the cell takes messages");
-        let emission = tokio::time::timeout(Duration::from_secs(30), self.out_rx.recv())
-            .await
-            .expect("the cell answers within the failure-marker window")
-            .expect("the cell is alive");
-        emission.content
+        // GH #1020: the answer is matched to its call, not taken as whatever
+        // the output channel carries next — a cell task may put its own
+        // bookkeeping on the same channel after a delivery.
+        loop {
+            let emission = tokio::time::timeout(Duration::from_secs(30), self.out_rx.recv())
+                .await
+                .expect("the cell answers within the failure-marker window")
+                .expect("the cell is alive");
+            if is_reply_to(&emission, id) {
+                return emission.content;
+            }
+        }
     }
 
     /// The page as served on a GET (shell included).
@@ -533,7 +533,7 @@ pub mod backlog_lab {
     use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
     use meclaw_core::serde_json::{Value, json};
     use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
-    use meclaw_testing::{surface_listener, wait_for_mount};
+    use meclaw_testing::{EmissionsExt, surface_listener, wait_for_mount};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -691,7 +691,7 @@ pub mod backlog_lab {
             let screens = Arc::clone(&screens);
             let emitted = Arc::clone(&emitted);
             tokio::spawn(async move {
-                while let Some(e) = out_rx.recv().await {
+                while let Some(e) = out_rx.recv_answer().await {
                     let header = &e.content["header"];
                     if header["route"] == json!("event") {
                         emitted.fetch_add(1, Ordering::Relaxed);
@@ -710,6 +710,9 @@ pub mod backlog_lab {
                                 .await
                                 .push(e.content["event"]["value"].clone());
                         }
+                    } else if e.target.as_str() != super::REPLY_TO {
+                        // GH #1020: bookkeeping on the output channel, not a reply.
+                        continue;
                     } else if reply_tx.send(e.content).await.is_err() {
                         return;
                     }
@@ -1156,7 +1159,7 @@ pub fn bundle_message(ops: Vec<Value>) -> meclaw_core::Message {
         .map(|(i, op)| leg(i, op))
         .collect();
     MessageBuilder::new(Path::new(CELL))
-        .reply_to(Path::new("/caller"))
+        .reply_to(Path::new(REPLY_TO))
         .body(Body::Inline(json!({ "messages": turns })))
         .build()
 }
@@ -1165,6 +1168,22 @@ pub fn bundle_message(ops: Vec<Value>) -> meclaw_core::Message {
 /// "event"`) rather than a bundle's answer.
 pub fn is_event(emission: &CellEmission) -> bool {
     emission.content["header"]["route"] == json!("event")
+}
+
+/// GH #1020: the address every lab message names as its `reply_to`.
+pub const REPLY_TO: &str = "/caller";
+
+/// GH #1020: whether `emission` is the cell's answer to the message `id` —
+/// addressed to the lab's `reply_to` and parented on that message.
+pub fn is_reply_to(emission: &CellEmission, id: meclaw_core::Uuid) -> bool {
+    emission.target.as_str() == REPLY_TO && emission.parent_message_id == Some(id)
+}
+
+/// GH #1020: whether `emission` is something the cell said — an answer to the
+/// lab or a semantic event — rather than bookkeeping a cell task puts on the
+/// same output channel.
+pub fn cell_spoke(emission: &CellEmission) -> bool {
+    emission.target.as_str() == REPLY_TO || is_event(emission)
 }
 
 /// GH #1004: queue bundles without waiting for their answers, and read the
@@ -1187,17 +1206,24 @@ impl Lab {
 
     /// The next emission, within the failure-marker window.
     pub async fn next_emission(&mut self) -> CellEmission {
-        tokio::time::timeout(Duration::from_secs(30), self.out_rx.recv())
-            .await
-            .expect("an emission within the failure-marker window")
-            .expect("the cell is alive")
+        loop {
+            let e = tokio::time::timeout(Duration::from_secs(30), self.out_rx.recv())
+                .await
+                .expect("an emission within the failure-marker window")
+                .expect("the cell is alive");
+            if cell_spoke(&e) {
+                return e;
+            }
+        }
     }
 
     /// Every emission already waiting, without waiting for more.
     pub fn emitted_so_far(&mut self) -> Vec<CellEmission> {
         let mut out = Vec::new();
         while let Ok(e) = self.out_rx.try_recv() {
-            out.push(e);
+            if cell_spoke(&e) {
+                out.push(e);
+            }
         }
         out
     }

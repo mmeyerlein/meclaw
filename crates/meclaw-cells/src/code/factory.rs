@@ -228,6 +228,7 @@ mod tests {
     use meclaw_colony::CellFactory;
     use meclaw_core::serde_json::json;
     use meclaw_core::{Body, MessageBuilder, Path};
+    use meclaw_testing::EmissionsExt;
     use std::sync::Arc;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -328,7 +329,7 @@ mod tests {
             SpawnedCellKind::Dormant { .. } => unreachable!("Phase-13-G-2: only Active"),
         };
         sender.send(msg).await.unwrap();
-        let em = orx.recv().await.unwrap();
+        let em = orx.recv_answer().await.unwrap();
         assert_eq!(em.content["header"]["exit_code"], 0);
     }
 
@@ -405,7 +406,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let em = orx.recv().await.unwrap();
+            let em = orx.recv_answer().await.unwrap();
             assert_eq!(em.content["header"]["exit_code"], 0);
             pids.push(em.content["pid"].as_i64().unwrap());
         }

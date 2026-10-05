@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@2.2.13"
+│       └── os/config.json     type: "ref", template: "meclaw-os@2.2.17"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 20 edges
 ├── grow-member.json           3. a person.         1 node, 20 edges
@@ -70,10 +70,10 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@2.2.13   the shell
+/os                                 meclaw-os@2.2.17   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.3.2         the control loop
-├── llm-registry                      → llm-registry@2.6.1  the model registry
+├── llm-registry                      → llm-registry@2.7.0  the model registry
 └── orgs                              (empty container)
     └── acme                       org@2.1.10        a namespace and a boundary
         └── members                  (empty container)
@@ -119,7 +119,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.13"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.17"}],
           "add_edges": []}}
 ```
 
@@ -686,7 +686,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@2.2.13"}}
+{"cell": {"type": "ref", "template": "meclaw-os@2.2.17"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`

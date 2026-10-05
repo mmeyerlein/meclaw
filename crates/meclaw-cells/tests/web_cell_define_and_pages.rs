@@ -17,6 +17,7 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -133,7 +134,7 @@ async fn call(live: &mut Live, args: Value) -> Value {
         .reply_to(Path::new("/caller"))
         .build();
     live.mailbox.send(msg).await.expect("mailbox");
-    tokio::time::timeout(Duration::from_secs(30), live.out_rx.recv())
+    tokio::time::timeout(Duration::from_secs(30), live.out_rx.recv_answer())
         .await
         .expect("the cell must answer")
         .expect("emission")

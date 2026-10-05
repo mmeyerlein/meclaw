@@ -162,3 +162,11 @@ adr	status	anchor_home	target
 0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	test:gh1009_a_root_write_keeps_every_node
 0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	test:gh1009_a_reorder_keeps_each_objects_node
 0048-web-cell-nested-parts-and-keyed-children.md	accepted	self	test:gh1013_a_create_under_the_root_keeps_every_other_node
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	file:crates/meclaw-colony/tests/gh1015_the_log_replays_what_no_cell_finished.rs
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	test:a_sigkill_mid_chain_loses_nothing_and_doubles_nothing
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	test:a_restart_replays_each_open_delivery_once_in_log_order_with_the_logged_budget
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	test:a_replayed_handler_does_not_deliver_its_logged_child_twice
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	test:a_cold_start_with_nothing_open_costs_one_query
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	test:a_repeated_keyed_hand_on_is_dropped_direct_and_through_a_hive_transit
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	test:a_consume_mark_is_never_committed_before_its_handlers_work
+0049-the-log-replays-what-no-cell-finished.md	accepted	self	test:ordered_restarts_never_exhaust_a_delivery

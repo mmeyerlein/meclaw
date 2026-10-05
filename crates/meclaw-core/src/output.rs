@@ -63,6 +63,43 @@ pub struct CellEmission {
     pub direct_reply: bool,
 }
 
+/// GH #1015: the reserved target of a consume mark. No cell path starts with
+/// `@`, so no edge and no registry entry can ever answer it.
+pub const CONSUMED_MARK_TARGET: &str = "/@consumed";
+
+impl CellEmission {
+    /// GH #1015: the mark a cell's task puts on its output channel when a
+    /// delivery is finished — after every emission the handler made, on the
+    /// same FIFO channel, so the colony enqueues the logs of the children
+    /// before the mark that closes the parent. The colony consumes it in the
+    /// outputs arm; it is never routed.
+    pub fn consumed_mark(sender_path: Path, message_id: Uuid) -> Self {
+        CellEmission {
+            sender_path,
+            parent_message_id: Some(message_id),
+            trace_id: message_id,
+            input_ttl: 0,
+            input_headers: Headers::default(),
+            input_reply_to: None,
+            target: Path::new(CONSUMED_MARK_TARGET),
+            content: Value::Null,
+            direct_reply: false,
+        }
+    }
+
+    /// GH #1015: the delivery this emission closes, when it is a consume mark.
+    pub fn consumed_mark_id(&self) -> Option<Uuid> {
+        if self.target.as_str() == CONSUMED_MARK_TARGET
+            && self.content.is_null()
+            && !self.direct_reply
+        {
+            self.parent_message_id
+        } else {
+            None
+        }
+    }
+}
+
 /// Per-message lifetime; exists only for the duration of one `cell.handle()`
 /// call. `cell_task` constructs the sink with the parent context, hands it to
 /// `cell.handle()` by `&`, and drops it afterwards. Pushing more than once is

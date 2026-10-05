@@ -3050,3 +3050,68 @@ mod gh863 {
         assert_eq!(out[0]["header"]["phase"], "world", "{out:?}");
     }
 }
+
+/// GH #1025: a row with status `explicit` is never a ranked answer -- not
+/// even the cheapest row that has every capability asked for -- but a named
+/// tier that points at it is an index lookup and reaches it. A retired row
+/// stays out of both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn select_never_ranks_an_explicit_row_but_a_tier_reaches_it() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let mock = MockOpenAI::start(vec![]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, &format!("{}/v1", mock.base_url));
+    let (h, mut rx) = boot(&td).await;
+    for (model_id, status, tier) in [
+        ("test/flash", "explicit", "flash"),
+        ("test/gone", "retired", "gone"),
+    ] {
+        admin(
+            &h,
+            &mut rx,
+            json!({"operation": "insert", "table": "models",
+                   "row": {"model_id": model_id, "provider": "gateway", "base_url": "",
+                           "wire_dialect": "chat_completions", "context_window": 1000000,
+                           "cost_in": 0, "cost_out": 0,
+                           "caps": {"tools": true, "vision": true}, "traits": {},
+                           "status": status, "note": "TEST ROW", "package": {},
+                           "prompt": ""}}),
+        )
+        .await;
+        admin(
+            &h,
+            &mut rx,
+            json!({"operation": "insert", "table": "tiers",
+                   "row": {"tier": tier, "model_id": model_id, "since": now_iso(),
+                           "decided_by": "test", "active": 1}}),
+        )
+        .await;
+    }
+
+    let ranked = resolve(
+        &h,
+        &mut rx,
+        json!({"capability": ["tools", "vision"], "max_cost": 500}),
+    )
+    .await;
+    assert_eq!(ranked["resolved"].as_bool(), Some(true), "{ranked}");
+    assert_eq!(ranked["reason_code"].as_str(), Some("ranked"));
+    assert_eq!(
+        ranked["model_id"].as_str(),
+        Some("provider-a/model-mid"),
+        "free and fit, the explicit and the retired row are still no candidates: {ranked}"
+    );
+
+    let by_tier = resolve(&h, &mut rx, json!({"tier": "flash"})).await;
+    assert_eq!(by_tier["resolved"].as_bool(), Some(true), "{by_tier}");
+    assert_eq!(by_tier["model_id"].as_str(), Some("test/flash"));
+    assert_eq!(by_tier["reason_code"].as_str(), Some("tier_active"));
+
+    let gone = resolve(&h, &mut rx, json!({"tier": "gone"})).await;
+    assert_eq!(gone["resolved"].as_bool(), Some(false), "{gone}");
+    assert_eq!(gone["reason_code"].as_str(), Some("tier_model_inactive"));
+
+    h.shutdown().await;
+}

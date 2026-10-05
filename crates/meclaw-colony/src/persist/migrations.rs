@@ -62,7 +62,7 @@
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 12;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 13;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -90,7 +90,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=11 => {
+        1..=12 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -253,6 +253,23 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
             {
                 tx.execute(
                     "ALTER TABLE edges ADD COLUMN tap INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            // v12→v13 (GH #1015): the open deliveries. One row per delivery the
+            // colony logged to a cell and that cell has not finished yet — the
+            // log is the source, the mailboxes are a cache, and this table is
+            // what a boot replays. Written in the same writer op as the
+            // `message_log` insert, removed by the consume mark the cell's
+            // output channel carries behind its own emissions.
+            if current <= 12 {
+                tx.execute(
+                    "CREATE TABLE IF NOT EXISTS delivery_open (
+                       message_id  TEXT PRIMARY KEY,
+                       cell_path   TEXT NOT NULL,
+                       seq         INTEGER NOT NULL,
+                       replays     INTEGER NOT NULL DEFAULT 0
+                     ) WITHOUT ROWID",
                     [],
                 )?;
             }

@@ -48,6 +48,7 @@ use meclaw_colony::{
 };
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
@@ -278,7 +279,7 @@ async fn a_blocked_spawn_journal_does_not_stall_the_colony() {
 
     // Receipt 1: every cell answered, and its child really ran.
     for n in 0..CELLS {
-        let em = tokio::time::timeout(MARKER, cell_out_rx.recv())
+        let em = tokio::time::timeout(MARKER, cell_out_rx.recv_answer())
             .await
             .unwrap_or_else(|_| panic!("cell answer {n} arrived within the marker"))
             .expect("the cells answer");

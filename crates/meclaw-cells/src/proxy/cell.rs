@@ -319,7 +319,35 @@ impl LongRunningCell for ProxyCell {
                 return;
             };
 
-            // 4. sendMessage call (W7 A timeout via the client). Errors → T13.
+            // 4. GH #1015 (OR-HV-61): after a crash the colony replays open
+            //    deliveries, so this exact message may already have been sent.
+            //    Book its id BEFORE the send (at-most-once, window in
+            //    `proxy::consumed`): a human must never get the same answer
+            //    twice. A replay ends here silently — the original already went
+            //    out (pure sink), and its typing keeper was stopped then. A
+            //    failed booking does not send either: without the record the
+            //    send could be the second one.
+            let once_key = msg.id.to_string();
+            match db
+                .call(move |c| crate::proxy::consumed::book_once(c, &once_key))
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(e) => {
+                    self.typing.stop(chat_id);
+                    crate::proxy::emit::emit_inbound_error(
+                        sink,
+                        &msg,
+                        "send_failed",
+                        &format!("cell.db consumed record failed, not sent: {e}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+
+            // 5. sendMessage call (W7 A timeout via the client). Errors → T13.
             let timeout = std::time::Duration::from_millis(self.send_timeout_ms);
             let sent = self.client.send_message(chat_id, &text, timeout).await;
             // GH #515: the answer is on the wire (or has definitively failed) —

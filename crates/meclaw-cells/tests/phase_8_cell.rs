@@ -8,6 +8,7 @@
 mod mock_openai;
 
 use meclaw_cells::llm::wire::{WireError, call_openai, redact_authorization};
+use meclaw_testing::EmissionsExt;
 use meclaw_testing::mock_http::MockResponse;
 use mock_openai::{MockOpenAI, canned_chat_completion, canned_error_status, canned_tool_calls};
 use std::time::Duration;
@@ -995,7 +996,7 @@ async fn llm_cell_factory_spawn_cell_opens_cell_db_at_cell_dir() {
         .build();
     sender.send(msg).await.unwrap();
 
-    let em = tokio::time::timeout(Duration::from_secs(30), out_rx.recv())
+    let em = tokio::time::timeout(Duration::from_secs(30), out_rx.recv_answer())
         .await
         .expect("emit timed out")
         .expect("channel closed");
@@ -1073,7 +1074,7 @@ async fn llm_cell_factory_respawn_returns_working_cell() {
         })))
         .build();
     sender1.send(msg1).await.unwrap();
-    let em1 = tokio::time::timeout(Duration::from_secs(30), out_rx.recv())
+    let em1 = tokio::time::timeout(Duration::from_secs(30), out_rx.recv_answer())
         .await
         .expect("first emit timed out")
         .expect("first channel closed");
@@ -1091,7 +1092,7 @@ async fn llm_cell_factory_respawn_returns_working_cell() {
         })))
         .build();
     s2.send(msg2).await.unwrap();
-    let em2 = tokio::time::timeout(Duration::from_secs(30), out_rx.recv())
+    let em2 = tokio::time::timeout(Duration::from_secs(30), out_rx.recv_answer())
         .await
         .expect("second emit timed out")
         .expect("second channel closed");

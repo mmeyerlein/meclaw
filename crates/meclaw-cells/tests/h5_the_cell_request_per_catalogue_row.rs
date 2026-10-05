@@ -2,7 +2,7 @@
 //! as a file the conformance tool sends unchanged to the real endpoint (K8).
 //!
 //! A mock can only check the cell against the cell's own idea of the wire.
-//! So for every `active` chat-wire row of the shipped catalogue this test
+//! So for every `active` or `explicit` chat-wire row of the shipped catalogue this test
 //! boots a real cell with that row's package (what the registry would push:
 //! the row's columns plus its `package` json), sends the tool's fixed probe
 //! turn, and compares the body the mock RECEIVED with
@@ -94,7 +94,7 @@ fn package_of(row: &Map<String, Value>) -> Map<String, Value> {
     out
 }
 
-/// The active chat-wire rows of the shipped catalogue.
+/// The reachable (`active` or `explicit`) chat-wire rows of the shipped catalogue.
 fn chat_rows(path: &PathBuf) -> Vec<Map<String, Value>> {
     std::fs::read_to_string(path)
         .expect("catalogue")
@@ -102,7 +102,14 @@ fn chat_rows(path: &PathBuf) -> Vec<Map<String, Value>> {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str::<Map<String, Value>>(l).expect("a json row"))
         .filter(|r| !r.contains_key("schema"))
-        .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("active"))
+        // GH #1025: an `explicit` row is pushed to a brain like an active one
+        // (override, tier, model id), so its params are held to the same lock.
+        .filter(|r| {
+            matches!(
+                r.get("status").and_then(|v| v.as_str()),
+                Some("active" | "explicit")
+            )
+        })
         .filter(|r| r.get("wire_dialect").and_then(|v| v.as_str()) == Some("chat_completions"))
         .collect()
 }

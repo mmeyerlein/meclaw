@@ -30,7 +30,9 @@ pub fn setup_slack_schema(conn: &Connection) -> rusqlite::Result<()> {
             owned_at  INTEGER NOT NULL,
             PRIMARY KEY (channel, thread_ts)
         );",
-    )
+    )?;
+    // GH #1015: the outbound dedupe record (see `proxy::consumed`).
+    conn.execute_batch(crate::proxy::consumed::CONSUMED_DDL)
 }
 
 /// Records an envelope id. Returns `true` when this is the first sighting and

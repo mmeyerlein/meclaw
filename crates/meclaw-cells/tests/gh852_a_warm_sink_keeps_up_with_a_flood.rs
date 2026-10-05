@@ -25,6 +25,7 @@ use meclaw_cells::code::{CodeCellFactory, CodeParams, RunnerMode};
 use meclaw_colony::{CellFactory, SpawnedCellKind};
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, CellEmission, Message, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -117,7 +118,7 @@ async fn collect(orx: &mut mpsc::Receiver<CellEmission>, n: usize) -> Vec<CellEm
     let deadline = Instant::now() + MARKER;
     while out.len() < n {
         let left = deadline.saturating_duration_since(Instant::now());
-        match tokio::time::timeout(left, orx.recv()).await {
+        match tokio::time::timeout(left, orx.recv_answer()).await {
             Ok(Some(em)) => out.push(em),
             Ok(None) => panic!("the output channel closed after {} of {n}", out.len()),
             Err(_) => panic!("only {} of {n} answers within {MARKER:?}", out.len()),
@@ -356,7 +357,7 @@ async fn gate_answers(mode: &str) -> Vec<String> {
     }
     let got = collect(&mut orx, expected).await;
     // Nothing beyond the count: a silence with its control (the count above).
-    let extra = tokio::time::timeout(Duration::from_millis(300), orx.recv()).await;
+    let extra = tokio::time::timeout(Duration::from_millis(300), orx.recv_answer()).await;
     assert!(extra.is_err(), "{mode}: one emission too many: {extra:?}");
     for em in &got {
         assert!(

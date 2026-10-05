@@ -1,0 +1,22 @@
+{
+  "body": {
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": "Answer with the single word OK.",
+        "role": "system"
+      },
+      {
+        "content": "Ping.",
+        "role": "user"
+      }
+    ],
+    "model": "qwen/qwen3.7-flash",
+    "prompt_cache_key": "meclaw-430ae444967bf0680407d82932f98d8c",
+    "temperature": 0.7
+  },
+  "endpoint_class": "openrouter",
+  "expected_dropped": [],
+  "model_id": "qwen/qwen3.7-flash",
+  "wire_dialect": "chat_completions"
+}

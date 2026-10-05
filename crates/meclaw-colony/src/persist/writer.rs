@@ -138,6 +138,41 @@ pub enum ColonyWriteOp {
     },
     /// Message-log insert (FIX-1 fields anchored in T32).
     InsertMessageLog(MessageLogRow),
+    /// GH #1015: a message-log insert that is also a DELIVERY to a cell. The
+    /// same op writes the `delivery_open` row, so there is no instant in which
+    /// the delivery is logged but not open (a split across two ops could fall
+    /// across a batch boundary). The row's `seq` is the log row's rowid — the
+    /// order a boot replays in.
+    InsertMessageLogOpen(MessageLogRow),
+    /// GH #1015: the cell at `cell_path` finished the delivery `message_id`.
+    /// Rides the ordinary batch: no commit of its own, no fsync, no ack. The
+    /// colony enqueues it only after the logs of every emission the handler
+    /// made (the mark travels on the cell's output channel behind them), so a
+    /// mark is never committed before the children it stands for. The path is
+    /// part of the key: a cell can only close its own delivery.
+    MarkConsumed {
+        /// The delivered message.
+        message_id: String,
+        /// The cell that consumed it.
+        cell_path: String,
+    },
+    /// GH #1015: a boot is about to replay these open deliveries — count the
+    /// attempt. `ack` fires after the commit, so the count is durable before
+    /// the first replayed message reaches a cell: a message that kills the
+    /// process on every attempt still reaches `replay_exhausted`.
+    CountReplays {
+        /// The open deliveries this boot replays.
+        ids: Vec<String>,
+        /// Fires after the batch holding this op is committed.
+        ack: Option<tokio::sync::oneshot::Sender<()>>,
+    },
+    /// GH #1015 (review M-2): `true` — the colony is stopping in order (its
+    /// teardown); `false` — a boot took note. The poison counter counts a
+    /// replay only after a life that did NOT end in order, so three ordered
+    /// restarts with a deep backlog never make a healthy delivery
+    /// `replay_exhausted`. Every boot clears it before its first delivery, in
+    /// the writer's FIFO, so a crash later in that life is counted.
+    CleanStop(bool),
     /// Phase 6: insert in_flight row into mutation_log; ack fires after tx.commit().
     MutationLogInsert {
         /// Mutation ID (UUID v7).
@@ -593,8 +628,11 @@ fn apply_op(
             )?;
         }
         ColonyWriteOp::InsertMessageLog(row) => {
-            tx.execute(
-                "INSERT INTO message_log (
+            // GH #1015 (review M-5): ids of follow-ups are derived, so a second
+            // insert of an id the log holds is a bug upstream, not a reason to
+            // abort the writer (and with it the process, on every replay).
+            let n = tx.execute(
+                "INSERT OR IGNORE INTO message_log (
                     id, trace_id, parent_message_id, correlation_id, ttl,
                     from_path, to_path, reply_to, headers, body_kind, body_payload, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -613,6 +651,54 @@ fn apply_op(
                     row.created_at,
                 ],
             )?;
+            if n == 0 {
+                tracing::error!(id = %row.id, "message_log already holds this id; second insert dropped");
+            }
+        }
+        ColonyWriteOp::InsertMessageLogOpen(row) => {
+            let to_path = row.to_path.clone();
+            let id = row.id.clone();
+            apply_op(tx, ColonyWriteOp::InsertMessageLog(row), acks, mpsc_acks)?;
+            if tx.changes() == 0 {
+                return Ok(());
+            }
+            let seq = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT OR IGNORE INTO delivery_open (message_id, cell_path, seq) VALUES (?, ?, ?)",
+                rusqlite::params![id, to_path, seq],
+            )?;
+        }
+        ColonyWriteOp::MarkConsumed {
+            message_id,
+            cell_path,
+        } => {
+            // The open row is an index into the log, not the log: closing it
+            // deletes nothing from `message_log` (R-94).
+            tx.execute(
+                "DELETE FROM delivery_open WHERE message_id = ? AND cell_path = ?",
+                rusqlite::params![message_id, cell_path],
+            )?;
+        }
+        ColonyWriteOp::CleanStop(clean) => {
+            if clean {
+                tx.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('clean_stop', '1')",
+                    [],
+                )?;
+            } else {
+                tx.execute("DELETE FROM meta WHERE key = 'clean_stop'", [])?;
+            }
+        }
+        ColonyWriteOp::CountReplays { ids, ack } => {
+            for id in ids {
+                tx.execute(
+                    "UPDATE delivery_open SET replays = replays + 1 WHERE message_id = ?",
+                    rusqlite::params![id],
+                )?;
+            }
+            if let Some(a) = ack {
+                acks.push(a);
+            }
         }
         ColonyWriteOp::MutationLogInsert {
             id,

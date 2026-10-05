@@ -151,6 +151,21 @@ pub enum DeadLetterReason {
     /// the message here next to its `refused` receipt, so a non-delivery is
     /// never only a receipt. Canonical string `peer_refused`.
     PeerRefused,
+    /// GH #1016: a `voice` cell was asked to speak or advise into a session
+    /// whose connection it held and lost -- the caller hung up, the switch
+    /// stopped the audio fork -- so the answer arrived after the call it was
+    /// written for. It is not an error and nothing is retried: the cell hands
+    /// the late message here instead of to the model, so a call that is over
+    /// hears nothing and the answer is still on record. Canonical string
+    /// `session_ended`.
+    SessionEnded,
+    /// GH #1015: a delivery the colony logged and its cell never finished was
+    /// replayed on boot as often as the colony allows and still never finished
+    /// — the message takes the process down with it (a poison message). The
+    /// boot dead-letters it instead of replaying it once more and closes the
+    /// open delivery; the `message_log` row stays. Canonical string
+    /// `replay_exhausted`.
+    ReplayExhausted,
 }
 
 impl DeadLetterReason {
@@ -178,6 +193,8 @@ impl DeadLetterReason {
             Self::MailboxFull { .. } => "mailbox_full",
             Self::PeerExpired => "peer_expired",
             Self::PeerRefused => "peer_refused",
+            Self::SessionEnded => "session_ended",
+            Self::ReplayExhausted => "replay_exhausted",
         }
     }
 
@@ -207,6 +224,8 @@ impl DeadLetterReason {
             "mailbox_full" => Self::MailboxFull { detail: None },
             "peer_expired" => Self::PeerExpired,
             "peer_refused" => Self::PeerRefused,
+            "session_ended" => Self::SessionEnded,
+            "replay_exhausted" => Self::ReplayExhausted,
             _ => return None,
         })
     }
@@ -298,6 +317,10 @@ mod tests_3a {
             PeerExpired,
             // GH #1012, OR-HV-51.
             PeerRefused,
+            // GH #1016.
+            SessionEnded,
+            // GH #1015.
+            ReplayExhausted,
         ];
         // The compile-time half of "closed": this match names every variant and
         // has no catch-all, so a new one is a compiler error in this function.
@@ -322,13 +345,15 @@ mod tests_3a {
                 DeadLetterReason::MailboxFull { .. } => "mailbox_full",
                 DeadLetterReason::PeerExpired => "peer_expired",
                 DeadLetterReason::PeerRefused => "peer_refused",
+                DeadLetterReason::SessionEnded => "session_ended",
+                DeadLetterReason::ReplayExhausted => "replay_exhausted",
             }
         }
 
         assert_eq!(
             all.len(),
-            19,
-            "the canonical set is 19 codes (GH #1012 added `peer_expired` and `peer_refused`); a variant was added or removed \
+            21,
+            "the canonical set is 21 codes (GH #1012 added `peer_expired` and `peer_refused`, GH #1016 `session_ended`, GH #1015 `replay_exhausted`); a variant was added or removed \
              without moving this count, and the spec list has to move with it"
         );
 

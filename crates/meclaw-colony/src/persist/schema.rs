@@ -165,6 +165,12 @@ CREATE TABLE IF NOT EXISTS mailbox_overflow (
   PRIMARY KEY (cell_path, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_overflow_seq ON mailbox_overflow(cell_path, seq);
+CREATE TABLE IF NOT EXISTS delivery_open (
+  message_id  TEXT PRIMARY KEY,
+  cell_path   TEXT NOT NULL,
+  seq         INTEGER NOT NULL,
+  replays     INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -430,8 +436,8 @@ mod tests {
     }
 
     #[test]
-    fn setup_colony_db_seeds_schema_version_12() {
-        // GH #937: the edges `tap` column → schema v12, on top of GH #850:
+    fn setup_colony_db_seeds_schema_version_13() {
+        // GH #1015: the `delivery_open` table → schema v13, on top of GH #937: the edges `tap` column → schema v12, on top of GH #850:
         // the `mailbox_overflow` table → schema v11, on top of GH #612:
         // the `dead_letters.detail` column → schema v10, on top of the
         // GH #559 edges `lane` column (v9) and the GH #491 registry `dormant`
@@ -445,7 +451,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "12");
+        assert_eq!(v, "13");
     }
 
     #[test]
@@ -474,7 +480,8 @@ mod tests {
     fn read_schema_version_returns_9_after_colony_setup() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 12);
+        // GH #1015: delivery_open → v13.
+        assert_eq!(read_schema_version(&conn).unwrap(), 13);
     }
 
     #[test]
@@ -751,7 +758,8 @@ mod tests {
         assert!(cols.contains(&"lane".to_string()));
         // GH #937: the v12 column, on the fresh-create path.
         assert!(cols.contains(&"tap".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 12);
+        // GH #1015: delivery_open → v13.
+        assert_eq!(read_schema_version(&conn).unwrap(), 13);
     }
 
     #[test]
@@ -779,7 +787,7 @@ mod tests {
         assert!(cols.contains(&"lane".to_string()));
         // GH #937: and the v12 column, through the same chain.
         assert!(cols.contains(&"tap".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 12);
+        assert_eq!(read_schema_version(&conn).unwrap(), 13);
     }
 
     /// GH #90: a pre-v5 database whose `registry` already exists without the
@@ -802,7 +810,7 @@ mod tests {
         )
         .unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 12);
+        assert_eq!(read_schema_version(&conn).unwrap(), 13);
         let idx: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_registry_template'",

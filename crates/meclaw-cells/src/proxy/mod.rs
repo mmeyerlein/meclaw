@@ -3,6 +3,7 @@
 //! type; the seam is `params.platform` (see `platform`). See `docs/cell-types.md` § `proxy`.
 
 pub mod cell;
+pub mod consumed;
 pub mod db;
 pub mod emit;
 pub mod factory;

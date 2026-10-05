@@ -756,6 +756,15 @@ impl Overflow {
                     if ticket {
                         tickets_back.push(path.clone());
                     }
+                    // GH #1015: the overflow is part of the delivery. A message
+                    // it dead-letters is finished — close its open row, or the
+                    // next boot would replay a dead letter.
+                    let _ = log_tx
+                        .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
+                            message_id: msg.id.to_string(),
+                            cell_path: path.as_str().to_string(),
+                        })
+                        .await;
                     let sender_path = msg.reply_to.clone().unwrap_or_else(|| Path::new("/"));
                     crate::colony::push_dead_letter(
                         dead_letters,
@@ -1608,24 +1617,24 @@ fn read_block(
 }
 
 /// The `message_log` columns of one message.
-struct LogColumns {
-    trace_id: String,
-    parent_message_id: Option<String>,
-    correlation_id: Option<String>,
-    ttl: i64,
-    to_path: String,
-    reply_to: Option<String>,
-    headers: String,
-    body_kind: String,
-    body_payload: Option<String>,
-    created_at: i64,
+pub(crate) struct LogColumns {
+    pub(crate) trace_id: String,
+    pub(crate) parent_message_id: Option<String>,
+    pub(crate) correlation_id: Option<String>,
+    pub(crate) ttl: i64,
+    pub(crate) to_path: String,
+    pub(crate) reply_to: Option<String>,
+    pub(crate) headers: String,
+    pub(crate) body_kind: String,
+    pub(crate) body_payload: Option<String>,
+    pub(crate) created_at: i64,
 }
 
 /// The inverse of the colony's log-row builder: the message as the router
 /// delivers it (`ttl` is the post-decrement value the log stores, `target` the
 /// resolved `to_path`). `None` when a column does not parse — the row is then
 /// treated like a missing one, never delivered half.
-fn message_from_log(id: &str, c: LogColumns) -> Option<Message> {
+pub(crate) fn message_from_log(id: &str, c: LogColumns) -> Option<Message> {
     let uuid = |s: &str| meclaw_core::Uuid::parse_str(s).ok();
     let body = match c.body_kind.as_str() {
         "blob" => meclaw_core::Body::Blob(uuid(c.body_payload.as_deref()?)?),

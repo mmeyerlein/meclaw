@@ -162,7 +162,7 @@ impl LongRunningCell for SlackCell {
         &'a mut self,
         msg: Message,
         sink: &'a OutputSink,
-        _db: &'a mut DbConn,
+        db: &'a mut DbConn,
         _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
@@ -222,6 +222,31 @@ impl LongRunningCell for SlackCell {
                 .await;
                 return;
             };
+
+            // GH #1015 (OR-HV-61): after a crash the colony replays open
+            // deliveries, so this exact message may already have been posted.
+            // Book its id BEFORE the post (at-most-once, window in
+            // `proxy::consumed`): a human must never get the same answer twice.
+            // A replay ends silently (pure sink); a failed booking does not post
+            // either, because without the record the post could be the second.
+            let once_key = msg.id.to_string();
+            match db
+                .call(move |c| crate::proxy::consumed::book_once(c, &once_key))
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(e) => {
+                    crate::proxy::emit::emit_inbound_error(
+                        sink,
+                        &msg,
+                        "send_failed",
+                        &format!("cell.db consumed record failed, not sent: {e}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
 
             // The A-timeout for this call lives inside the client, built from
             // `send_timeout_ms` at construction time.

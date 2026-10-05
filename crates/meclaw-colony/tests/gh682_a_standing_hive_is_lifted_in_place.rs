@@ -142,6 +142,11 @@ fn build_echo(
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
     let (death_ack_tx, death_ack_rx) = oneshot::channel::<()>();
     let cell = EchoMockCell::new(path.clone()).emitted_target(echo_to.clone());
+    // GH #1015: the inbox goes to the task as the shipped factories hand it
+    // on — it is what arms the task's consume mark. Without it (measured) the
+    // three children never closed a `delivery_open` row in life 1, and the
+    // reboot replayed `before_lift` at `keep`, `bump` and `gone` into the
+    // lifted 1.1.0 graph.
     let inner = tokio::spawn(cell_task(
         path.clone(),
         inner_rx,
@@ -149,7 +154,7 @@ fn build_echo(
         cell,
         None,
         None,
-        None,
+        colony_inbox.cloned(),
     ));
     let p = path.clone();
     let inbox = colony_inbox.cloned();

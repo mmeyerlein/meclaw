@@ -15,6 +15,7 @@
 use meclaw_colony::{CellFactory, SpawnedCellKind};
 use meclaw_core::serde_json::Value;
 use meclaw_core::{Body, CellEmission, Message, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -78,7 +79,7 @@ impl ToolRig {
 
     async fn send_raw(&mut self, msg: Message) -> CellEmission {
         self.tx.send(msg).await.expect("cell mailbox open");
-        tokio::time::timeout(Duration::from_secs(30), self.rx.recv())
+        tokio::time::timeout(Duration::from_secs(30), self.rx.recv_answer())
             .await
             .expect("no emission within 30s")
             .expect("emission channel closed")

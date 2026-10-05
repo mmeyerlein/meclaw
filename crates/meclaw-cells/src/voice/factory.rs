@@ -471,7 +471,10 @@ fn make_build(
         // is what a respawn is.
         io.cell_path = path_cap.clone();
         io.surfaces = Arc::clone(&surfaces_cap);
-        let cell = VoiceCell::new(path_cap.clone(), io, &parsed, &effective_raw);
+        // GH #1016: a late answer for a call that is over is dead-lettered
+        // into the same inbox the substrate gives every cell.
+        let cell = VoiceCell::new(path_cap.clone(), io, &parsed, &effective_raw)
+            .with_dead_letters(colony_inbox_cap.clone());
         let db = DbConn::wrap(
             conn,
             Some(Duration::from_millis(parsed.external_timeout_ms)),

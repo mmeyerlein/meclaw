@@ -35,6 +35,7 @@ use meclaw_testing::{surface_listener, wait_for_mount};
 /// The name this fixture's display answers to. The port in every URL below is
 /// the LISTENER's: a `web` cell has none since `web@2.0.0`.
 const MOUNT: &str = "screen";
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -249,7 +250,7 @@ async fn start(root: &std::path::Path, cell_dir: &std::path::Path) -> Live {
         )
         .await
         .expect("mailbox");
-    let reply = tokio::time::timeout(Duration::from_secs(60), live.out_rx.recv())
+    let reply = tokio::time::timeout(Duration::from_secs(60), live.out_rx.recv_answer())
         .await
         .expect("the display must answer the bootstrap")
         .expect("an emission");
@@ -498,7 +499,7 @@ async fn a_drag_reaches_every_viewer_and_costs_no_message() {
     // And nothing entered the colony. A drag that emitted would still look
     // correct in the browser and would flood the topology.
     assert!(
-        live.out_rx.try_recv().is_err(),
+        live.out_rx.try_recv_answer().is_err(),
         "a drag must emit NO message — zero topology round trip"
     );
 
@@ -570,7 +571,7 @@ async fn the_two_events_of_one_release_both_land() {
     assert_eq!(stored_prop(&live.cell_dir, "n/a/one", "x"), json!(700));
     assert_eq!(stored_prop(&live.cell_dir, "n/a/one", "y"), json!(240));
     assert!(
-        live.out_rx.try_recv().is_err(),
+        live.out_rx.try_recv_answer().is_err(),
         "two events, still no message"
     );
 
@@ -621,7 +622,7 @@ async fn a_browser_may_clear_the_pin_marker() {
 
     // Still the local lane: an un-pin is CRUD on the display's own database.
     assert!(
-        live.out_rx.try_recv().is_err(),
+        live.out_rx.try_recv_answer().is_err(),
         "releasing a cell must emit NO message either"
     );
 

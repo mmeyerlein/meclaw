@@ -1,4 +1,4 @@
-# `llm-registry@2.6.1`
+# `llm-registry@2.7.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -277,8 +277,8 @@ asked (`translations_asked`); the answers arrive after the ack.
 | `reset` | `{"cell_path": "<subscriber>"}` | clears the targeted replacements whose `match` is exactly this path and resolves it again. A prefix replacement that also covers siblings stays |
 | `remap` | `{"tier": "<tier>", "model_id": "<model>"}` | the tier row supersedes; its subscribers are resolved again |
 | `subscribe` | `{"cell_path": "<brain>", "start_model": "<start value>", "requirement"?: "<prose>", "tier"?: "<tier>", "pinned"?: 0 \| 1}` | makes a brain a subscriber, or corrects its start value, requirement, tier or pin. With a requirement the start value may be empty |
-| `model_upsert` | `{"model": {"model_id": "<id>", <any catalogue column>…}}` | writes one catalogue row, merged into the stored one; `status` defaults to `active`. Every subscriber is resolved again |
-| `model_retire` | `{"model_id": "<id>"}` | the row goes `retired` and is never a result again; every subscriber is resolved again |
+| `model_upsert` | `{"model": {"model_id": "<id>", <any catalogue column>…}}` | writes one catalogue row, merged into the stored one; `status` is `active` (the default), `explicit` (reached only by name, never by prose or search; since 2.7.0) or `retired`. Every subscriber is resolved again |
+| `model_retire` | `{"model_id": "<id>"}` | an `active` or `explicit` row goes `retired` and is never a result again; every subscriber is resolved again |
 | `retranslate` | `{}` | asks the translator every question the current catalogue has not answered -- the retry after a failed round |
 | `show` | `{"cell_path"?: "<prefix>"}` | the view per cell, on `answer` |
 
@@ -363,6 +363,16 @@ answered its translation; nothing else moved.
 Since 2.4.0 ([#890](https://github.com/mmeyerlein/meclaw/issues/890)) a model row carries `cache_mode` and `cache_ttl_s`, `./hand`
 pushes both with `context_window` in the package, and `./translate` declares every hop key the
 `llm` cell writes. A package can now say how its provider caches, so it is the second digit.
+
+Since 2.7.0 ([#1025](https://github.com/mmeyerlein/meclaw/issues/1025)) a catalogue row has a third
+status, `explicit`: a cell reaches it only by name -- a targeted or global replacement, a tier, or
+the start value it was born with -- and never by prose or by search. `./translate` is not shown
+the row, `./hand` refuses a translation that names it anyway (`translation_outside_catalogue`),
+and the ranked search of `./select` never offers it, while a named tier that points at it still
+resolves to it. The row is outside the catalogue the translator reads, so it is outside the
+catalogue hash too: adding, changing or retiring an explicit row asks no requirement again.
+`qwen/qwen3.7-flash` ships as `explicit`. A row can say what no row could before, so it is the
+second digit.
 
 ## How a brain becomes a subscriber
 
@@ -575,6 +585,7 @@ read 2026-10-02:
 | `qwen/qwen3.8-flash` | 1 000 000 | 15 / 47 | active |
 | `openai/gpt-5.6-luna` | 1 050 000 | 20 / 120 | retired |
 | `typesafe/jev-1.13` (decisions) | 32 000 | 4 / 0 | active |
+| `qwen/qwen3.7-flash` | 1 000 000 | 3 / 13 | explicit |
 
 `tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5`)
 and `strong` (`anthropic/claude-opus-5.5`). Prices and listings move; every row says in its
@@ -583,6 +594,9 @@ and `strong` (`anthropic/claude-opus-5.5`). Prices and listings move; every row 
 (reasoning effort, token budget, the lines a model needs) is its own decision, and the form is in
 *The model package* above. The retired row is retired in this catalogue, not by the provider:
 the row that replaced it does the same job for less, and a retired row is never a result.
+The `explicit` row was added for one lab use (GH #1017): it is the cheapest row with tools, so
+as an active row it would become the translator's answer to every requirement that asks for a
+low price; as `explicit` it serves only the cells a replacement or a tier sends to it.
 `traits` stays empty -- a curated score is a judgement a deployment makes about its own work.
 `subscribers` is deliberately **not** seeded -- an invented subscriber path would push params at
 a cell that does not exist -- and neither are `overrides`, `translations`, `open_questions` and `incidents`, which

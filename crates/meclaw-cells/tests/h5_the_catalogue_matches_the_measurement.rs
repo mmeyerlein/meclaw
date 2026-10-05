@@ -10,7 +10,7 @@
 //! request fixtures as `fixtures/conformance/<slug>/measured.json`, and this
 //! file keeps the two equal offline:
 //!
-//! 1. every `active` row on a chat or responses wire names its params;
+//! 1. every `active` or `explicit` row on a chat or responses wire names its params;
 //! 2. every such row has a measurement;
 //! 3. the row's list, read on the sampling fields, is the measured `taken`
 //!    set in the cell's order (`accepted_unverified` never counts);
@@ -79,7 +79,7 @@ fn sampling_params() -> Vec<String> {
     quoted_list(&src, "const SAMPLING_PARAMS: &[&str] = &[", "];")
 }
 
-/// The active rows on a chat or responses wire.
+/// The reachable (`active` or `explicit`) rows on a chat or responses wire.
 fn chat_rows(path: &Path) -> Vec<Map<String, Value>> {
     std::fs::read_to_string(path)
         .expect("catalogue")
@@ -87,7 +87,14 @@ fn chat_rows(path: &Path) -> Vec<Map<String, Value>> {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str::<Map<String, Value>>(l).expect("a json row"))
         .filter(|r| !r.contains_key("schema"))
-        .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("active"))
+        // GH #1025: an `explicit` row is pushed to a brain like an active one
+        // (override, tier, model id), so its params are held to the same lock.
+        .filter(|r| {
+            matches!(
+                r.get("status").and_then(|v| v.as_str()),
+                Some("active" | "explicit")
+            )
+        })
         .filter(|r| {
             r.get("wire_dialect")
                 .and_then(|v| v.as_str())

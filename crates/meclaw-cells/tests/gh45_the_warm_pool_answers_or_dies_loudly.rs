@@ -10,6 +10,7 @@ use meclaw_cells::code::CodeCellFactory;
 use meclaw_colony::{CellFactory, SpawnedCellKind};
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 
 /// Spawn a warm `code` cell around `script` and return its mailbox + outputs.
@@ -81,7 +82,7 @@ async fn a_child_that_hard_exits_answers_and_is_replaced() {
     .await
     .unwrap();
     let dead = rx
-        .recv()
+        .recv_answer()
         .await
         .expect("a dead child still produces an answer");
     assert_eq!(
@@ -89,7 +90,7 @@ async fn a_child_that_hard_exits_answers_and_is_replaced() {
         "exit 0 with no stdout is what a cold run reports too"
     );
     tx.send(msg()).await.unwrap();
-    let alive = rx.recv().await.expect("the cell serves on");
+    let alive = rx.recv_answer().await.expect("the cell serves on");
     assert_eq!(alive.content["header"]["exit_code"], 0);
 }
 
@@ -105,7 +106,10 @@ async fn a_line_that_is_not_a_frame_does_not_break_the_run() {
     )
     .await;
     tx.send(msg()).await.unwrap();
-    let em = rx.recv().await.expect("the frame after the banner arrives");
+    let em = rx
+        .recv_answer()
+        .await
+        .expect("the frame after the banner arrives");
     assert_eq!(em.content["header"]["exit_code"], 0);
 }
 
@@ -132,13 +136,13 @@ async fn every_message_gets_exactly_one_answer() {
     }
     let mut seen = 0;
     while seen < 12 {
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv()).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv_answer()).await {
             Ok(Some(_)) => seen += 1,
             other => panic!("only {seen} of 12 answers arrived: {other:?}"),
         }
     }
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv())
+        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv_answer())
             .await
             .is_err(),
         "no thirteenth answer -- exactly one per message"

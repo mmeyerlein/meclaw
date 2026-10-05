@@ -6,6 +6,7 @@
 pub mod bootstrap_apply;
 pub mod code_wire;
 mod colony_handle;
+pub mod emissions;
 pub mod factories;
 mod message_builder;
 pub mod mock_cartesia;
@@ -30,6 +31,7 @@ pub use code_wire::{
     shipped_script,
 };
 pub use colony_handle::{ColonyHandle, HARNESS_DRAIN_BUDGET_MS, spawn_colony_task_at};
+pub use emissions::EmissionsExt;
 pub use factories::EmitOnceMockCellFactory;
 pub use factories::{SPAWN_REFUSAL, SpawnRefusesCellFactory};
 pub use message_builder::MessageBuilder;

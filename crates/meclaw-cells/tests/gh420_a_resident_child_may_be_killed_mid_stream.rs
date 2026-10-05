@@ -9,6 +9,7 @@ use meclaw_cells::code::CodeCellFactory;
 use meclaw_colony::{CellFactory, SpawnedCellKind};
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 
 /// counter in RAM, mirrored to `state_path`; the pid so the test can kill it.
@@ -79,7 +80,7 @@ async fn one(
     )
     .await
     .unwrap();
-    let em = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+    let em = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv_answer())
         .await
         .expect("no answer within 30s")
         .expect("channel open");

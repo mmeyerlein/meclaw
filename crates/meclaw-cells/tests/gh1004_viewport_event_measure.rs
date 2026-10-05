@@ -28,8 +28,9 @@
 mod web_fixture;
 
 use meclaw_core::serde_json::{Value, json};
+use meclaw_testing::EmissionsExt;
 use std::time::{Duration, Instant};
-use web_fixture::{Lab, Shape, bundle_message, is_event, update};
+use web_fixture::{Lab, Shape, bundle_message, cell_spoke, is_event, update};
 
 const FIGURES: usize = 4_000;
 const PER_BUNDLE: usize = 400;
@@ -92,7 +93,8 @@ async fn cadence(viewers: usize) -> Cadence {
     let heard = tokio::spawn(async move {
         let mut out: Vec<(Instant, u64, u64)> = Vec::new();
         let mut bundles: Vec<f64> = Vec::new();
-        while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(5), emissions.recv()).await
+        while let Ok(Some(e)) =
+            tokio::time::timeout(Duration::from_secs(5), emissions.recv_answer()).await
         {
             if !is_event(&e) {
                 if let Some(d) = e.content["header"]["duration_ms"].as_f64() {
@@ -220,11 +222,12 @@ async fn behind_an_open_event() -> Vec<f64> {
     let answers = tokio::spawn(async move {
         let mut out = Vec::new();
         while out.len() < BUNDLES {
-            let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(30), emissions.recv()).await
+            let Ok(Some(e)) =
+                tokio::time::timeout(Duration::from_secs(30), emissions.recv_answer()).await
             else {
                 break;
             };
-            if !is_event(&e) {
+            if cell_spoke(&e) && !is_event(&e) {
                 out.push(Instant::now());
             }
         }

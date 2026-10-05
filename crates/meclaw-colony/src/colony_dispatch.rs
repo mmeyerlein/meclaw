@@ -240,7 +240,10 @@ fn message_log_inner_select(
     scan_budget: usize,
 ) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    let mut inner = format!("SELECT {MESSAGE_LOG_COLUMNS} FROM message_log WHERE 1=1");
+    // `rowid AS log_seq`: the insertion order, carried out of the inner select
+    // so the outer one can break a shared `created_at` by it (GH #1015, S-1).
+    let mut inner =
+        format!("SELECT {MESSAGE_LOG_COLUMNS}, rowid AS log_seq FROM message_log WHERE 1=1");
     if let Some(t) = filter.trace_id.as_ref() {
         inner.push_str(" AND trace_id = ?");
         params.push(Box::new(t.clone()));
@@ -277,11 +280,24 @@ fn message_log_inner_select(
         // cursorless first page). `(a, b) < (?, ?)` is a range on
         // `idx_msglog_created_id` and stops where the page stops; the test
         // below holds SQLite to that plan.
-        inner.push_str(" AND (created_at, id) < (?, ?)");
+        //
+        // GH #1015 (fix round 2, S-1): the tie-break inside one `created_at` is
+        // the insertion order (`rowid`), not the id. Follow-up ids are derived
+        // (seed time prefix + hash), so `id DESC` sorted a chain written in one
+        // tick by hash — 710, 809 and gh965 read a patch before its own
+        // verdict row in about every other run. The cursor keeps its public
+        // shape `(created_at, id)`; the id is resolved to its row here, a
+        // primary-key lookup. `idx_msglog_created` ends in the rowid, so the
+        // page is still a range read on an index that stops with the page
+        // (the plan test below). An id that is not in the log (never handed out
+        // by a page) keeps the whole tick: nothing is skipped.
+        inner.push_str(
+            " AND (created_at, rowid) < (?, COALESCE((SELECT rowid FROM message_log WHERE id = ?), 9223372036854775807))",
+        );
         params.push(Box::new(cursor.created_at));
         params.push(Box::new(cursor.id.clone()));
     }
-    inner.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
+    inner.push_str(" ORDER BY created_at DESC, rowid DESC LIMIT ?");
     params.push(Box::new(scan_budget as i64));
     (inner, params)
 }
@@ -355,7 +371,7 @@ pub async fn handle_read_messages(
                 outer.push_str(" AND body_kind = ?");
                 params.push(Box::new(k.clone()));
             }
-            outer.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
+            outer.push_str(" ORDER BY created_at DESC, log_seq DESC LIMIT ?");
             params.push(Box::new(limit as i64));
 
             let rows = query_message_log(&conn, &outer, &params)?;
@@ -2541,12 +2557,89 @@ mod tests {
         assert_eq!(
             ids,
             vec!["m2", "m1"],
-            "cursor row itself excluded, tie broken by id"
+            "cursor row itself excluded, tie broken by insertion order"
         );
         assert!(reply.next.is_none(), "partial page yields no cursor");
     }
 
-    /// GH #770 — the cursor page is a range read on `(created_at, id)`: never a
+    /// GH #1015 (fix round 2, S-1): a chain whose follow-ups carry DERIVED ids
+    /// (seed time prefix + hash, `derived_message_id`) and share one
+    /// `created_at` reads back in the order it was written — on the first page
+    /// and across cursor pages. With `id DESC` as the tie-break the order inside
+    /// the shared timestamp was the hash order, and 710, 809 and gh965 read a
+    /// patch before its own verdict row about every other run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_derived_chain_in_one_tick_reads_in_insertion_order() {
+        use meclaw_core::{Path, Uuid};
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        let seed = Uuid::now_v7();
+        let mut parent = seed;
+        let mut written: Vec<String> = vec![seed.to_string()];
+        for hop in 0..24u32 {
+            let next = crate::colony::derived_message_id(
+                parent,
+                &Path::new(&format!("/hop{hop}")),
+                0,
+                &Path::new(&format!("/hop{}", hop + 1)),
+            );
+            written.push(next.to_string());
+            parent = next;
+        }
+        let mut by_id = written.clone();
+        by_id.sort();
+        assert_ne!(
+            by_id, written,
+            "fixture: hash order must differ from insertion order"
+        );
+        for id in &written {
+            insert_simple_row(&db, id, 1_700_000_000_000, "/a", "/b").await;
+        }
+        db.shutdown_async().await;
+        let newest_first: Vec<String> = written.iter().rev().cloned().collect();
+
+        let page = handle_read_messages(
+            &db_path,
+            crate::api_dto::MessageLogFilter {
+                limit: 100,
+                scan_budget: 5000,
+                ..Default::default()
+            },
+        )
+        .await;
+        let got: Vec<String> = page.entries.iter().map(|e| e.id.clone()).collect();
+        assert_eq!(
+            got, newest_first,
+            "one page: newest first in insertion order"
+        );
+
+        let mut paged: Vec<String> = Vec::new();
+        let mut before = None;
+        loop {
+            let reply = handle_read_messages(
+                &db_path,
+                crate::api_dto::MessageLogFilter {
+                    limit: 5,
+                    scan_budget: 5000,
+                    before: before.take(),
+                    ..Default::default()
+                },
+            )
+            .await;
+            paged.extend(reply.entries.iter().map(|e| e.id.clone()));
+            match reply.next {
+                Some(c) => before = Some(c),
+                None => break,
+            }
+        }
+        assert_eq!(
+            paged, newest_first,
+            "cursor pages: same order, no row lost or doubled"
+        );
+    }
+
+    /// GH #770 — the cursor page is a range read on `(created_at, rowid)`: never a
     /// scan, never a sort. The plan of the query the cell really builds, so a
     /// rewrite that hands the planner an OR again is caught here and not on a
     /// 7 GB log. Muster: `persist::schema::tests::the_ledger_mutation_window_…`.
@@ -2574,9 +2667,11 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         let joined = plan.join(" | ");
+        // GH #1015 (S-1): the tie-break is the rowid, which `idx_msglog_created`
+        // carries as its last column — a range on that index, no sort.
         assert!(
-            joined.contains("idx_msglog_created_id"),
-            "the cursor page must read the (created_at, id) index: {joined}"
+            joined.contains("USING INDEX idx_msglog_created (created_at<?)"),
+            "the cursor page must read the created_at index as a range: {joined}"
         );
         assert!(
             !joined.contains("SCAN message_log"),

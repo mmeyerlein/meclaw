@@ -74,8 +74,9 @@ pub use build_task::{
 };
 pub use cell_task::{cell_task, cell_task_long_running, cell_task_stateful, stateless_dispatcher};
 pub use colony::{
-    CellStatus, ColonyMsg, ColonyTaskConfig, DeathKind, EgressPolicy, NodeContract, RegistryEntry,
-    RespawnFn, colony_task, set_term_timeout_ms_for_test, spawn_watcher,
+    CellStatus, ColonyMsg, ColonyTaskConfig, DELIVERY_KEY_HEADER, DELIVERY_KEY_MS_HEADER,
+    DELIVERY_REPLAY_HEADER, DeathKind, EgressPolicy, NodeContract, RegistryEntry, RespawnFn,
+    colony_task, set_term_timeout_ms_for_test, spawn_watcher,
 };
 pub use colony_config::{
     COLONY_CONFIG_SCHEMA_VERSION, ColonyConfig, ConfigError, MutationReceipts,

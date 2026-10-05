@@ -1529,8 +1529,10 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
             m["wire_dialect"] == "decisions",
             "{m}"
         );
+        // GH #1025: `explicit` is reachable like `active` (override, tier,
+        // model id), only never a translation or a ranked `select`.
         match m["status"].as_str() {
-            Some("active") => active.push(id.to_string()),
+            Some("active") | Some("explicit") => active.push(id.to_string()),
             Some("retired") => {}
             other => panic!("status {other:?}: {m}"),
         }
@@ -1539,7 +1541,143 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
         let mid = t["model_id"].as_str().unwrap_or_default();
         assert!(
             active.iter().any(|a| a == mid),
-            "tier {t} points at a row that is not active"
+            "tier {t} points at a row that is not reachable"
         );
     }
+    // GH #1025: the lab row is shipped as `explicit` -- a cheap row added for
+    // one lab use (GH #1017) is never the answer to unrelated prose.
+    let flash = models
+        .iter()
+        .find(|m| m["model_id"] == "qwen/qwen3.7-flash")
+        .expect("the qwen3.7-flash row");
+    assert_eq!(flash["status"], "explicit", "{flash}");
+}
+
+/// 9. GH #1025: a row with status `explicit` is reached by name -- a model_upsert
+///    takes the status, a targeted and a global replacement push it to the
+///    brain -- and never by prose: the translator is not shown it, an answer
+///    naming it is refused, and adding it asks no question again (the
+///    catalogue hash does not move). Retired, it is unreachable again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_explicit_row_is_reached_by_name_and_never_by_prose() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    const FLASH: &str = "test/flash";
+    const R_CHEAP: &str =
+        "Cheap, with tools; a short tool call now and then, price over everything.";
+    let subs = MockOpenAI::start(subscribers_mock_answers()).await;
+    let translator = MockOpenAI::start(vec![
+        answer(FAST, "cheap, talks, has tools"),
+        answer(FLASH, "the cheapest row with tools"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(
+        &td,
+        &root,
+        &format!("{}/v1", subs.base_url),
+        &format!("{}/v1", translator.base_url),
+    );
+    let (h, mut rx) = boot(&td).await;
+    catalogue(&h, &mut rx, FAST, 1, json!({})).await;
+    catalogue(&h, &mut rx, DEEP, 50, json!({})).await;
+
+    // (a) One requirement, translated against the two active rows.
+    let (_, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "subscribe", "cell_path": "/sub_a", "start_model": BIRTH_A,
+               "requirement": R_TALK}),
+    )
+    .await;
+    assert_eq!(ack["translations_asked"].as_i64(), Some(1), "{ack}");
+    assert_eq!(body_of(&next_push(&mut rx).await)["params"]["model"], FAST);
+
+    // (b) model_upsert takes `explicit` -- and the cheaper row asks nothing:
+    //     the translator's catalogue, and so its hash, did not change.
+    let (pushes, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "model_upsert", "model": {"model_id": FLASH, "cost_in": 0,
+               "cost_out": 0, "context_window": 32000, "caps": {"tools": true},
+               "strengths": "the cheapest row with tools", "status": "explicit"}}),
+    )
+    .await;
+    assert_eq!(ack["reason_code"], "model_upserted", "{ack}");
+    assert_eq!(ack["translations_asked"].as_i64(), Some(0), "{ack}");
+    assert!(
+        pushes.is_empty(),
+        "nobody moves onto an explicit row: {ack}"
+    );
+    assert_eq!(translator.recorded_requests().await.len(), 1);
+
+    // (c) "cheap, with tools": the question does not show the explicit row,
+    //     and an answer naming it anyway is refused -- the cell stays put.
+    let (pushes, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "subscribe", "cell_path": "/sub_b", "start_model": BIRTH_B,
+               "requirement": R_CHEAP}),
+    )
+    .await;
+    assert_eq!(ack["translations_asked"].as_i64(), Some(1), "{ack}");
+    assert!(pushes.is_empty(), "{ack}");
+    let lines = journal_until(&h, &mut rx, "translation_outside_catalogue", 1).await;
+    assert_eq!(lines[0]["model_id"], FLASH, "{lines:?}");
+    let q = &translator.recorded_requests().await[1];
+    let asked = meclaw_core::serde_json::to_string(q.messages().unwrap()).unwrap();
+    assert!(
+        asked.contains("Cheap, with tools") && asked.contains(FAST),
+        "{asked}"
+    );
+    assert!(
+        !asked.contains(FLASH),
+        "the translator never sees an explicit row: {asked}"
+    );
+    assert_eq!(inference_model(&h, &mut rx, "/sub_b", &subs).await, BIRTH_B);
+
+    // (d) By name it is reached: a targeted replacement ...
+    let (pushes, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "override_set", "scope": "target", "match": "/sub_b", "model_id": FLASH}),
+    )
+    .await;
+    assert_eq!(ack["outcome"], "accepted", "{ack}");
+    assert_eq!(pushes.len(), 1, "{ack}");
+    assert_eq!(body_of(&pushes[0])["params"]["model"], FLASH);
+    assert_eq!(inference_model(&h, &mut rx, "/sub_b", &subs).await, FLASH);
+    //     ... and a global one over the translated base.
+    let (pushes, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "override_set", "scope": "global", "match": FAST, "model_id": FLASH}),
+    )
+    .await;
+    assert_eq!(ack["outcome"], "accepted", "{ack}");
+    assert_eq!(pushes.len(), 1, "{ack}");
+    assert_eq!(hop_of(&pushes[0], "subscriber"), "/sub_a");
+    assert_eq!(inference_model(&h, &mut rx, "/sub_a", &subs).await, FLASH);
+
+    // (e) Retired, it is out of reach again: both cells leave it, and a new
+    //     replacement onto it is refused.
+    let (_, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "model_retire", "model_id": FLASH}),
+    )
+    .await;
+    assert_eq!(ack["reason_code"], "model_retired", "{ack}");
+    assert_eq!(inference_model(&h, &mut rx, "/sub_a", &subs).await, FAST);
+    assert_eq!(inference_model(&h, &mut rx, "/sub_b", &subs).await, BIRTH_B);
+    let (_, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "override_set", "scope": "target", "match": "/sub_a", "model_id": FLASH}),
+    )
+    .await;
+    assert_eq!(ack["outcome"], "rejected", "{ack}");
+
+    h.shutdown().await;
 }

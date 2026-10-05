@@ -12,6 +12,33 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.61.5] — 2026-10-05
+
+### Breaking
+
+- **The log replays what no cell finished** ([#1015](https://github.com/mmeyerlein/meclaw/issues/1015)). A delivery counts as consumed only once its cell's handler is done; after a crash the next start re-delivers every logged-but-unconsumed delivery, in log order, with its logged budget, and a delivery replayed on three starts without finishing becomes the new dead letter `replay_exhausted`. Follow-up message ids are derived from the message they answer (no longer random), so a replayed handler's follow-ups that the log already holds are not delivered again. Two matching edges from one cell to the same target get distinct ids. An ordered stop does not count as a replay attempt. Migration: a cell with an effect may see a delivery twice after a crash, until the writer commits its consume mark — deduplicate by the message id (`docs/stability.en.md` § Delivery across a crash, with the table of built-in cells). A `meclaw` peer mount keeps a handed-on inbox row pending for 30 s and stamps `hop.delivery_key`, `hop.delivery_key_ms` (and `hop.delivery_replay` on a repeat); the colony drops a repeat on every hop, through a hive transit too.
+- **Built-in cells deduplicate by message id** ([#1015](https://github.com/mmeyerlein/meclaw/issues/1015)). `store` books the id of every write in a `meclaw_consumed` table in the same savepoint as the write; a replayed write has no second effect and answers `{"duplicate": true}` with `rows_affected: 0`, not the first write's answer. The outgoing Telegram and Slack proxies book the id before the platform call, so a person never receives a message twice (a crash between booking and the call loses it). `llm` is not deduplicated.
+- **The message log reads a shared tick in the order it was written** ([#1015](https://github.com/mmeyerlein/meclaw/issues/1015)). `GET /colony/messages` breaks a shared `created_at` by insertion order instead of by id; with derived ids the id order inside one second was hash order. The cursor (`before_created_at`, `before_id`) keeps its shape and meaning.
+- **Harness authors: a cell's output channel carries consume marks** ([#1015](https://github.com/mmeyerlein/meclaw/issues/1015)). Every cell task, with or without a colony inbox, puts one mark per handled delivery on its output channel after the handler's own emissions (`CellEmission::consumed_mark_id()` is `Some`). The colony takes them; a test that reads the raw channel skips them with `meclaw_testing::EmissionsExt`.
+
+### Changed
+
+- **Template versions:** `freeswitch@2.3.1` (third digit: `greeting` is opt-in and its default is unchanged); `llm-registry@2.7.0` (second digit: the model status `explicit`; 2.6.2 added one catalogue row); third digit for the pins that follow the regenerated corpus, `builder-librarian@2.2.30` (including the replay after a restart, the new catalogue row and the status `explicit`), `builder@1.26.9` and `meclaw-os@2.2.17`.
+
+### Added
+
+- **Replay of logged-but-unconsumed messages after restart** ([#1015](https://github.com/mmeyerlein/meclaw/issues/1015)): the colony books every delivery it logs as open and closes it once the cell's handler is done; the next start re-delivers what is still open, in log order and with its logged budget, and dead-letters a delivery that took three starts down with it as `replay_exhausted`. See Breaking for what this asks of cells with effects (ADR-0049, `docs/stability.en.md` § Delivery across a crash).
+- **Model catalogue row `qwen/qwen3.7-flash`** ([#1017](https://github.com/mmeyerlein/meclaw/issues/1017)): `llm-registry@2.6.2` ships one more chat row, a cheap vision-language reasoning model on the hosted provider, with the `supported_params` measured against it (`temperature`, `top_p`, `reasoning`) and its conformance record under the test fixtures.
+- llm-registry 2.7.0: model status `explicit` — rows that resolve only by explicit override/tier/model_id, never by prose translation or select; qwen/qwen3.7-flash ships as explicit ([#1025](https://github.com/mmeyerlein/meclaw/issues/1025)).
+- **`freeswitch` signal param `greeting`** ([#1016](https://github.com/mmeyerlein/meclaw/issues/1016)): `turn` (default, unchanged) or `media`. With `media` the arrival of an inbound call raises no "Greet them" turn, because the media half greets by itself (a duplex `voice` with `params.duplex.greeting`); booking, `call_accepted` receipt and the speaker handed to the media half stay as they are. A colony that sets `duplex.greeting` sets `greeting: media`. An unreadable value greets by turn and the `call_accepted` receipt carries `hop.greeting_fallback`.
+- **Dead-letter reason `session_ended`** ([#1016](https://github.com/mmeyerlein/meclaw/issues/1016)): with `replay_exhausted` (#1015) the canonical set grows to 21 codes.
+
+### Fixed
+
+- **A call is greeted once** ([#1016](https://github.com/mmeyerlein/meclaw/issues/1016)): with a duplex greeting and `greeting: media`, the caller no longer hears the model's greeting followed by the spoken answer to the arrival turn.
+- **Nothing is said into a call that is over** ([#1016](https://github.com/mmeyerlein/meclaw/issues/1016)): an `in_speak` or `in_advise` for a session whose connection a `voice` cell held and lost is handed to the colony as a `session_ended` dead letter instead of reaching the model or travelling on as an `unknown_session` error (which ended as a `hive_no_route` dead letter). A session id that connects again is spoken to again; a session the cell never held is still `unknown_session`.
+- **Log order within one second by rowid** ([#1015](https://github.com/mmeyerlein/meclaw/issues/1015)): rows that share a `created_at` second are read in the order they were written (rowid), not by id, so a chain of derived ids reads in the order it happened; the cursor keeps its shape.
+
 ## [0.61.4] — 2026-10-05
 
 ### Breaking

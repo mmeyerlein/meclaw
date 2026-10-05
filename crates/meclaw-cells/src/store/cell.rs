@@ -3,7 +3,7 @@
 //! else DbConn::call). Emits exactly one message per message: one
 //! tool_result-Turn per `tool_call`-Turn that arrived (GH #295).
 
-use crate::store::{StoreParams, WriteSurface, ops, output};
+use crate::store::{StoreParams, WriteSurface, consumed, output};
 use meclaw_colony::DbConn;
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_core::serde_json::{Map, Value};
@@ -73,8 +73,12 @@ impl StoreCell {
             }
         };
         let mut legs: Vec<output::BundleLeg> = Vec::with_capacity(calls.len());
-        for (args, call_id) in calls {
+        for (leg, (args, call_id)) in calls.into_iter().enumerate() {
             let op_started = std::time::Instant::now();
+            // GH #1015 (OR-HV-61): one bundle carries several writes under ONE
+            // message id, so each leg books its own key — a replayed bundle
+            // skips exactly the legs that already took effect.
+            let once_key = format!("{}#{leg}", msg.id);
             let id = call_id.unwrap_or_default();
             // GH #331's rule, per leg: the op the caller asked for, or the
             // literal `error` when the args name none.
@@ -100,7 +104,9 @@ impl StoreCell {
             let canonical = self.params.canonical.clone();
             let outcome = if self.query_timeout().is_some() {
                 match db
-                    .call_with_timeout(move |c| ops::dispatch_with(c, &args, &canonical))
+                    .call_with_timeout(move |c| {
+                        consumed::dispatch_once(c, &args, &canonical, Some(&once_key))
+                    })
                     .await
                 {
                     Ok(Ok(o)) => o,
@@ -129,7 +135,7 @@ impl StoreCell {
                 }
             } else {
                 match db
-                    .call(move |c| ops::dispatch_with(c, &args, &canonical))
+                    .call(move |c| consumed::dispatch_once(c, &args, &canonical, Some(&once_key)))
                     .await
                 {
                     Ok(o) => o,
@@ -640,9 +646,16 @@ impl StatefulCell for StoreCell {
             // The canonical bindings ride along into the DB task: they are what
             // makes the derived column store-owned on every write (0.2.0 P2).
             let canonical = self.params.canonical.clone();
+            // GH #1015 (OR-HV-61): after a crash the colony replays open
+            // deliveries, so this message may already have taken effect; the
+            // write is booked under its id in the same savepoint and a replay
+            // answers `duplicate` instead of writing again.
+            let once_key = msg.id.to_string();
             let outcome = if self.query_timeout().is_some() {
                 match db
-                    .call_with_timeout(move |c| ops::dispatch_with(c, &args, &canonical))
+                    .call_with_timeout(move |c| {
+                        consumed::dispatch_once(c, &args, &canonical, Some(&once_key))
+                    })
                     .await
                 {
                     Ok(Ok(o)) => o,
@@ -657,7 +670,7 @@ impl StatefulCell for StoreCell {
                 }
             } else {
                 match db
-                    .call(move |c| ops::dispatch_with(c, &args, &canonical))
+                    .call(move |c| consumed::dispatch_once(c, &args, &canonical, Some(&once_key)))
                     .await
                 {
                     Ok(o) => o,
@@ -733,6 +746,47 @@ mod tests {
         let headers = &em.content["header"];
         assert_eq!(headers["operation"], "insert");
         assert_eq!(headers["rows_affected"], 1);
+    }
+
+    /// GH #1015 (OR-HV-61): a replayed delivery (same `Message.id`) of a
+    /// single insert and of a two-leg bundle writes each row exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gh1015_store_cell_replayed_message_writes_once() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE items (id INTEGER, name TEXT)", [])
+            .unwrap();
+        let mut db = DbConn::wrap(conn, None);
+        let mut cell = StoreCell::new(
+            StoreParams::parse(&json!({"schema": {"items": {"id": "int", "name": "text"}}}))
+                .unwrap(),
+        );
+        let (sink, mut orx) = sink_pair();
+        let one = |id: i64| {
+            json!({"origin":"assistant","type":"tool_call","id":format!("c{id}"),
+                   "text": format!(r#"{{"operation":"insert","table":"items","row":{{"id":{id}}}}}"#)})
+        };
+        let single = MessageBuilder::new(Path::new("/store"))
+            .body(Body::Inline(json!({"messages":[one(1)]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        let bundle = MessageBuilder::new(Path::new("/store"))
+            .body(Body::Inline(json!({"messages":[one(2), one(3)]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        for m in [single.clone(), single, bundle.clone(), bundle] {
+            cell.handle(m, &sink, &mut db).await;
+            let em = orx.recv().await.unwrap();
+            assert!(
+                em.content["header"].get("error_code").is_none(),
+                "{:?}",
+                em.content
+            );
+        }
+        let rows: i64 = db
+            .call(|c| c.query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0)))
+            .await
+            .unwrap();
+        assert_eq!(rows, 3, "a replayed message must not write a second row");
     }
 
     // ---- β2: runtime params-overlay (store) ----

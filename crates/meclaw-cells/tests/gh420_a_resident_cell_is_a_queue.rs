@@ -4,6 +4,7 @@ use meclaw_cells::code::CodeCellFactory;
 use meclaw_colony::{CellFactory, SpawnedCellKind};
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -56,7 +57,7 @@ async fn twenty_messages_come_back_in_the_order_they_went_in() {
     }
     let mut got = Vec::new();
     for _ in 0..20 {
-        let em = tokio::time::timeout(std::time::Duration::from_secs(30), orx.recv())
+        let em = tokio::time::timeout(std::time::Duration::from_secs(30), orx.recv_answer())
             .await
             .expect("no answer within 30s")
             .expect("channel open");

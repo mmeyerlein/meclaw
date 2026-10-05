@@ -456,7 +456,10 @@ impl Run {
     /// Every store call `stage` sent to `store`, oldest first.
     async fn store_calls(&self) -> Vec<Value> {
         let mut rows = self.log(&format!("{PRESENTER}/store")).await;
-        rows.sort_by(|a, b| a.id.cmp(&b.id));
+        // GH #1015 (fix round 2): follow-up ids are derived (seed time prefix +
+        // hash), so id order is no longer the order of writing; the log reads
+        // newest first in insertion order, reversed here to oldest first.
+        rows.reverse();
         let mut out = Vec::new();
         for row in rows {
             let body: Value = row

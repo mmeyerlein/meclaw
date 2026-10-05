@@ -41,6 +41,7 @@ use meclaw_cells::code::{CodeCellFactory, CodeParams};
 use meclaw_colony::{CellFactory, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, MessageBuilder, Path};
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 
 /// The repository root, the way every display lock resolves it.
@@ -170,7 +171,7 @@ async fn the_curators_runner_params_handle_one_message_at_a_time() {
             .expect("the mailbox takes the event");
     }
     for n in 0..EVENTS {
-        let em = tokio::time::timeout(std::time::Duration::from_secs(30), orx.recv())
+        let em = tokio::time::timeout(std::time::Duration::from_secs(30), orx.recv_answer())
             .await
             .unwrap_or_else(|_| panic!("event {n} was answered"))
             .expect("the cell answers every event");

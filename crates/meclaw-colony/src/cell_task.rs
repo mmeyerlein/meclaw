@@ -231,20 +231,65 @@ async fn emit_backstop_timeout(sink: &OutputSink, reply_to: Option<Path>) {
 /// `continue` from one of the delivery gates, the B-backstop's cancellation, and
 /// a panic unwinding through the `.await`.
 ///
+///
+/// GH #1015: the same `Drop` also closes the delivery in the colony's
+/// `delivery_open` — a delivery counts as consumed only once its handler is
+/// done (normal return, gate `continue`, backstop, panic), never on receipt.
+/// The mark goes on the OUTPUT channel, not the inbox: the colony's select is
+/// biased inbox-before-outputs, so a mark on the inbox could overtake the
+/// handler's own emissions and be committed before the logs of the children it
+/// stands for (OR-HV-56 trap 1).
 pub(crate) struct WorkGuard {
     own_path: Path,
     tx: Option<mpsc::Sender<crate::ColonyMsg>>,
+    consumed: Option<(meclaw_core::Uuid, mpsc::Sender<CellEmission>)>,
 }
 
 impl WorkGuard {
     /// Build a guard for `own_path`. `None` → inert (no report on drop).
     pub(crate) fn new(own_path: Path, tx: Option<mpsc::Sender<crate::ColonyMsg>>) -> Self {
-        Self { own_path, tx }
+        Self {
+            own_path,
+            tx,
+            consumed: None,
+        }
+    }
+
+    /// GH #1015: also put the consume mark for `message_id` on `outputs_tx`
+    /// when the guard drops — with or without a colony inbox (`tx`). The mark
+    /// rides the output channel, which every task has, and the colony is the
+    /// one product reader of that channel (it takes the mark before anything
+    /// else). Fix round 2, S-3 (OR-HV.X-M2.11): gated on `tx`, a factory that
+    /// handed `None` behind a colony never closed a delivery, and because an
+    /// ordered stop counts nothing, every boot delivered all of them again.
+    /// A harness reading the raw channel skips marks with
+    /// `meclaw_testing::EmissionsExt`.
+    pub(crate) fn marking(
+        mut self,
+        message_id: meclaw_core::Uuid,
+        outputs_tx: &mpsc::Sender<CellEmission>,
+    ) -> Self {
+        self.consumed = Some((message_id, outputs_tx.clone()));
+        self
     }
 }
 
 impl Drop for WorkGuard {
     fn drop(&mut self) {
+        if let Some((id, out)) = self.consumed.take() {
+            let mark = CellEmission::consumed_mark(self.own_path.clone(), id);
+            // `Drop` cannot await. A full output channel hands the mark to a
+            // task that waits for room — still behind every emission already
+            // queued, so the order holds. No runtime (a test tearing down)
+            // loses the mark, which only means one replay more after a crash.
+            if let Err(mpsc::error::TrySendError::Full(mark)) = out.try_send(mark)
+                && let Ok(rt) = tokio::runtime::Handle::try_current()
+            {
+                rt.spawn(async move {
+                    let _ = out.send(mark).await;
+                });
+            }
+        }
         if let Some(tx) = self.tx.take() {
             // Colony gone or inbox full: the ledger keeps the ticket and the
             // drain reports it at the deadline. Never a panic on the way out.
@@ -263,6 +308,12 @@ impl Drop for WorkGuard {
 ///
 /// `colony_inbox_tx`: GH #47 — where the per-delivery `WorkDone` ticket goes.
 /// `None` for the unit tests that run this task without a colony behind it.
+/// GH #1015: the consume mark does NOT depend on it — every handled delivery
+/// puts its mark on `outputs_tx` (fix round 2, S-3: with the inbox as the
+/// switch, `None` behind a colony left every delivery open, and the gh682
+/// reboot fixture replayed a pre-lift message at all three screen children).
+/// A factory behind a colony still hands on its inbox for the `WorkDone`
+/// ticket (GH #47).
 pub async fn cell_task<C: Cell + Send + 'static>(
     own_path: Path,
     mut mailbox: mpsc::Receiver<Message>,
@@ -276,7 +327,8 @@ pub async fn cell_task<C: Cell + Send + 'static>(
         // GH #47: the plain task has no DLQ path and no rescue, but it does have
         // to account for what the colony handed it — `meclaw-testing`'s echo
         // factory runs here behind a real colony.
-        let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
+        let _work =
+            WorkGuard::new(own_path.clone(), colony_inbox_tx.clone()).marking(msg.id, &outputs_tx);
         let input_id = msg.id;
         let input_trace = msg.trace_id;
         let input_ttl = msg.ttl;
@@ -466,7 +518,8 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell + 'static>
                 // GH #47: the ticket the colony took for this delivery comes
                 // back when this arm ends — normal return, delivery-gate
                 // `continue`, backstop return or panic unwind, all of them.
-                let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
+                let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone())
+                    .marking(msg.id, &outputs_tx);
                 let input_id = msg.id;
                 let input_trace = msg.trace_id;
                 let input_ttl = msg.ttl;
@@ -864,7 +917,8 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
             mb = mailbox.recv() => match mb {
                 Some(mut msg) => {
                     // GH #47: same ticket discipline as the stateful task.
-                    let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
+                    let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone())
+                        .marking(msg.id, &outputs_tx);
                     let sink = meclaw_core::OutputSink::new(
                         outputs_tx.clone(),
                         own_path.clone(),
@@ -1017,7 +1071,8 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
         // `recv()` above and the worker's first line in which the message is
         // neither in the mailbox nor accounted for — and the drain samples
         // asynchronously, so that window is a real race, not a theoretical one.
-        let work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
+        let work =
+            WorkGuard::new(own_path.clone(), colony_inbox_tx.clone()).marking(msg.id, &outputs_tx);
         let outputs_tx = outputs_tx.clone();
         let cell = cell.clone();
         let own_path = own_path.clone();
@@ -1103,6 +1158,54 @@ mod tests {
 
         // With echo forward disabled (task 12), just verify no panic occurs.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    /// GH #1015 (fix round 2, S-3): a task spawned WITHOUT a colony inbox still
+    /// closes what it handled. The mark rides the output channel, which every
+    /// task has; with the inbox as its switch, a factory that handed `None`
+    /// left each of its deliveries in `delivery_open` for good, and since an
+    /// ordered stop counts nothing, every boot delivered all of them again
+    /// (fix round 1: the gh682 fixture replayed a pre-lift message at all three
+    /// screen children). The mark comes after the handler's own emission.
+    #[tokio::test]
+    async fn a_task_without_an_inbox_still_marks_what_it_handled() {
+        let (in_tx, in_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+        let cell = EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"));
+        let join = tokio::spawn(cell_task(
+            Path::new("/a"),
+            in_rx,
+            out_tx,
+            cell,
+            None,
+            None,
+            None,
+        ));
+        let msg = MessageBuilder::new(Path::new("/a")).build();
+        let id = msg.id;
+        in_tx.send(msg).await.unwrap();
+        drop(in_tx);
+        join.await.unwrap();
+        let mut marks = Vec::new();
+        let mut others = 0;
+        while let Ok(em) = out_rx.try_recv() {
+            match em.consumed_mark_id() {
+                Some(m) => marks.push(m),
+                None => {
+                    assert!(
+                        marks.is_empty(),
+                        "the mark must follow the handler's emission"
+                    );
+                    others += 1;
+                }
+            }
+        }
+        assert_eq!(
+            marks,
+            vec![id],
+            "exactly one mark, for the handled delivery"
+        );
+        assert!(others <= 1, "echo emits at most once: {others}");
     }
 
     /// GH #47: the plain task reports too. `meclaw-testing`'s echo factory runs
@@ -2612,10 +2715,18 @@ mod tests {
             .send(meclaw_core::MessageBuilder::new(Path::new("/x")).build())
             .await
             .unwrap();
-        let em2 = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
-            .await
-            .expect("subsequent message must be processed within 5s (permit freed)")
-            .expect("outputs channel open");
+        // GH #1015 (S-3): the first delivery's consume mark sits on the output
+        // channel in front of the second answer — skip marks, read the answer.
+        let em2 = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let em = out_rx.recv().await.expect("outputs channel open");
+                if em.consumed_mark_id().is_none() {
+                    break em;
+                }
+            }
+        })
+        .await
+        .expect("subsequent message must be processed within 5s (permit freed)");
         assert_eq!(em2.target.as_str(), "/echoed");
         assert_eq!(em2.content, meclaw_core::JsonValue::Bool(true));
 

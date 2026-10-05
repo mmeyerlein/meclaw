@@ -49,3 +49,51 @@ has no deprecation period and no compatibility flag, so the release note is wher
 
 Nothing under `crates/` carries a SemVer guarantee. The Rust crates are internals and move
 without notice, which is why the binary and the HTTP API are the interface this file talks about.
+
+## Delivery across a crash
+
+The colony's `message_log` is the source of every delivery, and a cell's mailbox is a cache of it.
+A delivery the colony logged to a cell counts as consumed only once that cell's handler is done
+with it (a normal return, a dead letter at the delivery gate, the `message_timeout` backstop, a
+panic), never when the cell received it. When the process dies with deliveries that are logged and
+not consumed, the next start hands each of them to its cell again, in log order, with the budget
+(`ttl`) it was logged with, before the colony routes anything new. Order holds per cell, with one
+exception: a cell that also had an overflow on disk gets its replayed mailbox deliveries behind
+those overflow rows. A delivery that was replayed after three lives that crashed and finished on
+none of them is the dead letter `replay_exhausted` on the next start; an ordered stop (the
+shutdown teardown) does not count as an attempt, so restarts with a deep backlog never exhaust a
+healthy delivery. The log keeps every row; replay deletes nothing.
+
+A replayed delivery carries its original message id, and so does everything a replayed handler
+emits: a follow-up's id is derived from the message it answers and its place among that handler's
+emissions, not drawn at random. A follow-up whose id the log already holds is not delivered again,
+so a chain of cells delivers each MESSAGE once to the next cell even across a crash. What is left
+are effects: any cell whose handler finished but whose consume mark had not reached the disk sees
+that delivery a second time — at any step of a chain, not only the last. The window lasts until
+the writer commits the mark; the mark costs no commit of its own and queues behind everything the
+writer already holds, so under load the window is the writer's channel backlog, not one batch.
+A cell with an effect deduplicates by the message id: a stateful cell records the ids it consumed
+in the same transaction as its effect, and an outgoing call carries the id as its idempotency key
+where the far side takes one. The built-in cells:
+
+| Cell | Deduplicated by message id | Window that remains |
+|---|---|---|
+| `store` | yes — writes book the id in `meclaw_consumed`, same savepoint as the write; a repeat answers `{"duplicate": true}` with `rows_affected: 0`, not the first write's answer | none for writes; reads run again |
+| `proxy` Telegram / Slack (outgoing) | yes — the id is booked in `consumed` before the platform call | a crash between booking and the call loses that message instead of sending it twice |
+| `proxy` `meclaw` (peer) | yes — `peer_outbox` / `peer_inbox` and the frame id | see below |
+| `llm` | no — the call runs again (cost); its follow-up emissions carry derived ids and are dropped when logged | one paid call per replayed delivery |
+| `bash`, `process`, `file`, `edit`, `code`, `web` | no | the effect may happen twice within the window |
+| `subcolony` | no | the child colony may receive the input twice |
+
+An ingress that holds a durable key for what it hands on stamps it into the hop as `delivery_key`
+(the `meclaw` peer mount: its inbox key), and a hand-on it repeats from its own book after a start
+as `delivery_replay: true`; the colony derives the id from the key and drops a repeat it already
+logged — on every hop of the chain, through a hive transit too. A key that is a UUID (a frame id)
+is the seed of the derived ids as it is; any other key is stamped with its arrival time as
+`delivery_key_ms`, which becomes the ids' v7 time prefix. The `meclaw` peer mount books a handed-on
+inbox row `done` only once it is older than 30 s and the next arrival comes in, because the mount
+cannot see the colony's commit of the hand-on. Two consequences: if the colony's writer is backed
+up for more than 30 s and the process then dies, a row booked `done` may have a hand-on that was
+never logged — that delivery is lost; and a row without later traffic stays `pending`, so every
+start raises it once more and the colony drops the repeat by its `delivery_key` (one primary-key
+read), with no further effect. The durability covers a process crash, not a power loss (`synchronous = NORMAL`).

@@ -43,6 +43,7 @@ use meclaw_testing::{surface_listener, wait_for_mount};
 /// The name this fixture's display answers to. The port in every URL below is
 /// the LISTENER's: a `web` cell has none since `web@2.0.0`.
 const MOUNT: &str = "canvy";
+use meclaw_testing::EmissionsExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -972,7 +973,7 @@ async fn apply(live: &mut Live, calls: &[Value]) -> Value {
         .reply_to(Path::new("/canvy/layout"))
         .build();
     live.mailbox.send(msg).await.expect("mailbox");
-    tokio::time::timeout(Duration::from_secs(60), live.out_rx.recv())
+    tokio::time::timeout(Duration::from_secs(60), live.out_rx.recv_answer())
         .await
         .expect("the display must answer a bundle")
         .expect("an emission")
@@ -1392,7 +1393,7 @@ async fn a_drag_survives_the_next_tick() {
     // Nothing entered the colony. This is the assertion a browser-looking-correct
     // test would miss.
     assert!(
-        live.out_rx.try_recv().is_err(),
+        live.out_rx.try_recv_answer().is_err(),
         "a drag must emit NO message — zero topology round trip"
     );
 

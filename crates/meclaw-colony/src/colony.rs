@@ -560,6 +560,18 @@ pub enum ColonyMsg {
         /// Cell whose handler has just finished with a delivery.
         path: Path,
     },
+    /// GH #1015 (review I-1): a consume mark whose handler emitted to
+    /// `/colony…`. Such an emission is dispatched (its mutation, its dead
+    /// letter) only when its `Route` comes back through the inbox; the mark
+    /// takes the same queue behind it, so the delivery is never closed before
+    /// that work is queued for the writer — whatever order the loop's select
+    /// polls its arms in.
+    ConsumeMark {
+        /// The delivered message.
+        message_id: Uuid,
+        /// The cell that consumed it.
+        cell_path: Path,
+    },
     /// Issue #7: read the per-I/O-task liveness marks (in-memory, no DB).
     /// Answers `GET /health`.
     ReadLiveness {
@@ -2243,6 +2255,19 @@ async fn run_shutdown_teardown(
                 // dropped; nothing left to account for.
                 let _ = path;
             }
+            ColonyMsg::ConsumeMark {
+                message_id,
+                cell_path,
+            } => {
+                // The child's Route was handled above it; close the delivery.
+                let _ = colony_db
+                    .writer_tx
+                    .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
+                        message_id: message_id.to_string(),
+                        cell_path: cell_path.as_str().to_string(),
+                    })
+                    .await;
+            }
             ColonyMsg::ReadLiveness { ack: lv_ack } => {
                 // Shutdown-drain: Read is best-effort; drop ack silently.
                 drop(lv_ack);
@@ -2677,6 +2702,12 @@ async fn run_shutdown_teardown(
     // runs for it. FIFO guarantees these land before the
     // writer's own Shutdown op.
     persist_dead_letters(dead_letters, &colony_db.writer_tx).await;
+    // GH #1015 (review M-2): an ordered stop — the next boot does not count
+    // its replays as attempts (a crash never reaches this line).
+    let _ = colony_db
+        .writer_tx
+        .send(crate::persist::writer::ColonyWriteOp::CleanStop(true))
+        .await;
     // 3. Shutdown writer thread (async variant — we are in a Tokio context).
     colony_db.shutdown_async().await;
     // 4. Ack + break.
@@ -2770,6 +2801,20 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // the join handle resolved), so an entry lives here for exactly the span
     // between the two events and is emptied by `deliver_rescued_mailbox`.
     let mut rescued_mailboxes: HashMap<Path, Vec<Message>> = HashMap::new();
+    // GH #1015: emissions seen per open delivery (sender, consumed message) —
+    // the index a follow-up's derived id is built from; the consume mark
+    // drops the entry.
+    let mut emission_index: HashMap<(Path, Uuid), u32> = HashMap::new();
+    // GH #1015: ids the log already holds as children of a replayed delivery.
+    // A replayed handler that emits one of them again is the duplicate the
+    // crash window leaves; it is dropped here instead of delivered twice.
+    // Filled once at boot, empty on a cold start.
+    let mut replay_logged: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    // GH #1015 (review I-1): (sender, consumed) of handlers that emitted to
+    // `/colony…`; their consume mark goes through the inbox, behind the child.
+    let mut colony_bound: std::collections::HashSet<(Path, Uuid)> =
+        std::collections::HashSet::new();
+    let mut boot_replayed = false;
     // Reboot hydration: classify the boot state, load from DB on a reboot.
     let is_reboot: bool = match colony_db.boot_state() {
         Ok(crate::bootstrap::BootState::FirstBoot) => {
@@ -3232,6 +3277,16 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     ColonyMsg::WorkDone { path } => {
                         in_flight.leave(&path);
                     }
+                    // GH #1015 (review I-1): behind the `/colony` child's Route.
+                    ColonyMsg::ConsumeMark { message_id, cell_path } => {
+                        let _ = colony_db
+                            .writer_tx
+                            .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
+                                message_id: message_id.to_string(),
+                                cell_path: cell_path.as_str().to_string(),
+                            })
+                            .await;
+                    }
                     ColonyMsg::ReadLiveness { ack } => {
                         let _ = ack.send(build_liveness_reply(&io_liveness, std::time::SystemTime::now()));
                     }
@@ -3428,6 +3483,25 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // registered now — an overflow from disk nobody adopted
                         // is dead-lettered instead of waiting for ever.
                         settle_unstarted_overflows(&registry, &mut in_flight);
+                        // GH #1015: every cell the boot knows is registered and the
+                        // overflow from disk is adopted — replay what the log holds
+                        // as delivered and no cell finished, before the first route.
+                        if !boot_replayed {
+                            boot_replayed = true;
+                            let loaded = load_open_deliveries(&colony_db.read_conn);
+                            replay_logged = loaded.children.clone();
+                            replay_open_deliveries(
+                                loaded,
+                                &mut registry,
+                                &hive_scopes,
+                                &mut dead_letters,
+                                &mut in_flight,
+                                &colony_db.writer_tx,
+                                &blob_store,
+                                colony_config.blob_inline_max_bytes,
+                            )
+                            .await;
+                        }
                         // GH #285: the boot declaration is where most slots enter.
                         slot_table_dirty = true;
                         // GH #389: the edge table stands — reopen the outputs arm.
@@ -3756,6 +3830,33 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 // fatal under the shipped `on_trip = exit`: a build order killed
                 // the colony.
                 beat(&heartbeat_tx, crate::watchdog::Beat::Working);
+                // GH #1015: a consume mark closes the sender's delivery. It came
+                // down the same FIFO channel as that handler's emissions, so the
+                // log rows of its children are already queued for the writer in
+                // front of it — the mark can never be committed before them.
+                if let Some(consumed) = em.consumed_mark_id() {
+                    emission_index.remove(&(em.sender_path.clone(), consumed));
+                    // Review I-1: a handler that emitted to `/colony…` has a
+                    // child still in the inbox (dispatched when its Route
+                    // runs); the mark queues behind it there.
+                    if colony_bound.remove(&(em.sender_path.clone(), consumed)) {
+                        let _ = inbox_self_tx
+                            .send(ColonyMsg::ConsumeMark {
+                                message_id: consumed,
+                                cell_path: em.sender_path.clone(),
+                            })
+                            .await;
+                        continue;
+                    }
+                    let _ = colony_db
+                        .writer_tx
+                        .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
+                            message_id: consumed.to_string(),
+                            cell_path: em.sender_path.as_str().to_string(),
+                        })
+                        .await;
+                    continue;
+                }
                 // TTL slice (2026-06-11): a source emission (parent_message_id ==
                 // None — the OriginSink shape of timer/proxy/mcp) gets its fresh
                 // TTL from colony.json `message_default_ttl` here. Envelope-Setter-
@@ -3816,6 +3917,25 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 if !parks {
                     strip_parked_stamps(&mut em.content, em.sender_path.as_str());
                 }
+                // GH #1015: a follow-up's id is derived, not drawn — from the
+                // consumed message and the emission's place in its handler, or,
+                // for a source, from the durable key its ingress stamped. A
+                // handler that runs again after a crash emits the same ids, and
+                // an id the log already holds is never delivered twice.
+                let id_seed: Option<(Uuid, u32)> = match em.parent_message_id {
+                    Some(parent) => {
+                        let n = emission_index
+                            .entry((em.sender_path.clone(), parent))
+                            .or_insert(0);
+                        let i = *n;
+                        *n = n.saturating_add(1);
+                        Some((parent, i))
+                    }
+                    None => keyed_source_seed(&em.content).map(|seed| (seed, 0)),
+                };
+                let replayed_source = em.parent_message_id.is_none()
+                    && id_seed.is_some()
+                    && hop_flag(&em.content, DELIVERY_REPLAY_HEADER);
                 // W2b (Ruling A1, ruling 2026-06-12): a substrate-generated error
                 // reply addressed to a known sender (`direct_reply` — consumes_violation
                 // ingress check / message_timeout backstop) is delivered DIRECTLY to
@@ -3826,7 +3946,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 // runs before the emits/UBF checks (substrate-built, already valid).
                 if em.direct_reply {
                     let (err_hop, err_body) = split_content_header(em.content.clone());
-                    let err_msg = MessageBuilder::new(em.target.clone())
+                    let mut err_msg = MessageBuilder::new(em.target.clone())
                         .trace_id(em.trace_id)
                         .parent_message_id_opt(em.parent_message_id)
                         .reply_to(em.sender_path.clone())
@@ -3834,6 +3954,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         .hop(err_hop)
                         .body(Body::Inline(err_body))
                         .build();
+                    if let Some((seed, i)) = id_seed {
+                        err_msg.id = derived_message_id(seed, &em.sender_path, i, &err_msg.target);
+                    }
+                    if replay_logged.remove(&err_msg.id) {
+                        continue;
+                    }
                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                     work.push_back((em.sender_path.clone(), err_msg));
                     while let Some((s, m)) = work.pop_front() {
@@ -3988,6 +4114,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 // "Cell→/colony/* DLQs already").
                 if em.target.as_str() == "/colony" || em.target.as_str().starts_with("/colony/") {
                     let follow_up = build_follow_up_with(em.clone(), em.target.clone(), merged_headers);
+                    if let Some(parent) = em.parent_message_id {
+                        colony_bound.insert((from.clone(), parent));
+                    }
                     let _ = inbox_self_tx
                         .send(ColonyMsg::Route { sender_path: from.clone(), msg: follow_up })
                         .await;
@@ -4026,10 +4155,20 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 }
                 let decisions: Vec<EdgeDecision> = matched;
 
+                let mut per_target: HashMap<Path, u32> = HashMap::new();
                 for dec in decisions {
                     let restores = dec.restore_ttl;
                     let slot_target = dec.target.clone();
+                    let nth = {
+                        let n = per_target.entry(dec.target.clone()).or_insert(0);
+                        let k = *n;
+                        *n = n.saturating_add(1);
+                        k
+                    };
                     let mut follow_up = build_follow_up_with(em.clone(), dec.target, dec.headers_out);
+                    if let Some((seed, i)) = id_seed {
+                        follow_up.id = derived_message_id_nth(seed, &from, i, &follow_up.target, nth);
+                    }
                     // GH #285 (W4 T11): a decision that ends at a DECLARED SLOT with
                     // nothing bound behind it is resolved by the hive's declaration
                     // before it becomes a routed message — `drop` discards it in
@@ -4060,12 +4199,28 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                     work.push_back((from.clone(), follow_up));
                     while let Some((s, m)) = work.pop_front() {
+                        // GH #1015: an id the log already holds. To a cell it was
+                        // delivered before (its own open row, if any, replays it);
+                        // a hive transit is walked again without a second log
+                        // row, so the cascade behind it finds its own id.
+                        let mid = m.id;
+                        // Review C-2: a repeated keyed hand-on (`delivery_replay`)
+                        // walks a hive transit again; the cascade's derived id is
+                        // in no boot set (the source has no open row), so every id
+                        // of such a chain asks the log — one primary-key read,
+                        // only on this replay path, never on the hot path.
+                        let logged = replay_logged.remove(&mid)
+                            || (replayed_source && message_is_logged(&colony_db.read_conn, mid));
+                        if logged && registry.contains_key(&Path::resolve(&s, m.target.as_str())) {
+                            continue;
+                        }
                         // GH #119: the tool-loop case — a fan-out follow-up that runs out of
                         // TTL notifies its reply anchor instead of dying silently.
                         if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
-                        match route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes).await {
+                        match route_with_log_as(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes, logged).await {
                             RouteAction::Done => {}
-                            RouteAction::Cascade { sender, msg } => {
+                            RouteAction::Cascade { sender, mut msg } => {
+                                msg.id = derived_message_id(mid, &sender, 0, &msg.target);
                                 work.push_back((sender, msg));
                             }
                             RouteAction::ColonyDispatch { endpoint, msg, sender } => {
@@ -4327,6 +4482,86 @@ async fn route_with_log(
     blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
     blob_inline_max_bytes: usize,
 ) -> RouteAction {
+    route_with_log_as(
+        registry,
+        hive_scopes,
+        dead_letters,
+        in_flight,
+        log_tx,
+        sender_path,
+        msg,
+        blob_store,
+        blob_inline_max_bytes,
+        false,
+    )
+    .await
+}
+
+/// GH #1015: [`route_with_log`] for a message the log may already hold.
+/// `logged` → no second log row (a boot replay, a transit walked again);
+/// every other step — wake, overflow, ticket, the corridor — is the same.
+///
+/// A delivery to a registered cell is logged with its `delivery_open` row in
+/// the same writer op; when the routing step then dead-letters it instead of
+/// delivering it (inactive cell, refused overflow, unresolvable target), the
+/// open row is closed at once — a dead letter is an end, never a replay.
+#[allow(clippy::too_many_arguments)]
+async fn route_with_log_as(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    sender_path: Path,
+    msg: Message,
+    blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
+    blob_inline_max_bytes: usize,
+    logged: bool,
+) -> RouteAction {
+    let message_id = msg.id;
+    let dead_before = dead_letters.len();
+    let resolved_for_mark = Path::resolve(&sender_path, msg.target.as_str());
+    let delivery = !(resolved_for_mark.as_str() == "/colony"
+        || resolved_for_mark.starts_with("/colony/"))
+        && msg.ttl > 0
+        && registry.contains_key(&resolved_for_mark);
+    let action = route_with_log_inner(
+        registry,
+        hive_scopes,
+        dead_letters,
+        in_flight,
+        log_tx,
+        sender_path,
+        msg,
+        blob_store,
+        blob_inline_max_bytes,
+        logged,
+    )
+    .await;
+    if (delivery || logged) && dead_letters.len() > dead_before {
+        let _ = log_tx
+            .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
+                message_id: message_id.to_string(),
+                cell_path: resolved_for_mark.as_str().to_string(),
+            })
+            .await;
+    }
+    action
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn route_with_log_inner(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    sender_path: Path,
+    msg: Message,
+    blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
+    blob_inline_max_bytes: usize,
+    logged: bool,
+) -> RouteAction {
     let resolved_target = Path::resolve(&sender_path, msg.target.as_str());
     let is_colony_endpoint =
         resolved_target.as_str() == "/colony" || resolved_target.starts_with("/colony/");
@@ -4355,7 +4590,7 @@ async fn route_with_log(
         msg
     };
 
-    let log_row_opt = if should_log {
+    let log_row_opt = if should_log && !logged {
         // Source-Messages (parent_message_id IS NULL) get the @external sentinel.
         let from_path = if msg.parent_message_id.is_none() {
             "@external".to_string()
@@ -4515,7 +4750,9 @@ async fn route_with_log(
         let routed = routed_like_the_corridor(&sender_path, msg);
         if let Some(row) = log_row_opt {
             let _ = log_tx
-                .send(crate::persist::writer::ColonyWriteOp::InsertMessageLog(row))
+                .send(crate::persist::writer::ColonyWriteOp::InsertMessageLogOpen(
+                    row,
+                ))
                 .await;
         }
         let Some(entry) = registry.get(&resolved_target) else {
@@ -4557,10 +4794,357 @@ async fn route_with_log(
 
     if let Some(row) = log_row_opt {
         let _ = log_tx
-            .send(crate::persist::writer::ColonyWriteOp::InsertMessageLog(row))
+            .send(if pre_routable {
+                crate::persist::writer::ColonyWriteOp::InsertMessageLogOpen(row)
+            } else {
+                crate::persist::writer::ColonyWriteOp::InsertMessageLog(row)
+            })
             .await;
     }
     next
+}
+
+/// GH #1015: the hop header an ingress stamps when it already holds a durable
+/// key for what it hands on (the peer mount: its inbox key). The colony derives
+/// the follow-up's id from it instead of drawing one, so a hand-on the ingress
+/// repeats after a crash carries the id of the first.
+pub const DELIVERY_KEY_HEADER: &str = "delivery_key";
+/// GH #1015 (review I-6): the time (Unix ms) of the keyed hand-on, stamped
+/// next to a key that is not a UUID; it becomes the derived ids' v7 time
+/// prefix. The ingress must stamp the same value on a repeat.
+pub const DELIVERY_KEY_MS_HEADER: &str = "delivery_key_ms";
+/// GH #1015: the hop flag an ingress sets on a hand-on it repeats from its own
+/// book at start. Such a hand-on whose id the log already holds is dropped.
+pub const DELIVERY_REPLAY_HEADER: &str = "delivery_replay";
+/// GH #1015: how many boots replay one open delivery before the next one
+/// dead-letters it as `replay_exhausted` instead (a message that takes the
+/// process down on every attempt).
+pub(crate) const REPLAY_MAX: i64 = 3;
+
+/// FNV-1a over length-separated parts — stable across builds and processes,
+/// which `DefaultHasher` does not promise (a replay may run on a new binary).
+fn fnv1a64(mut h: u64, parts: &[&[u8]]) -> u64 {
+    for part in parts {
+        for b in part.iter().chain((part.len() as u64).to_le_bytes().iter()) {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// GH #1015: the id of a follow-up, derived from what produced it. Same seed,
+/// sender, emission index and target → same id, in every process. The 48-bit
+/// time prefix is the seed's, so a v7 seed keeps its children near it in id
+/// order; version and variant bits are those of a v7.
+pub(crate) fn derived_message_id(seed: Uuid, sender: &Path, index: u32, target: &Path) -> Uuid {
+    derived_message_id_nth(seed, sender, index, target, 0)
+}
+
+/// GH #1015 (review C-1): `nth` counts the decisions of ONE emission that end
+/// at the same target — two matching edges A→B (different `condition` or
+/// `modifier`) fan one emission out twice to B, and without it both copies
+/// shared an id: the second log insert hit the primary key and the writer
+/// aborted the process, on every replay again. `nth = 0` is the plain id, so
+/// an emission with one decision per target keeps the id it had.
+pub(crate) fn derived_message_id_nth(
+    seed: Uuid,
+    sender: &Path,
+    index: u32,
+    target: &Path,
+    nth: u32,
+) -> Uuid {
+    let idx = index.to_le_bytes();
+    let k = nth.to_le_bytes();
+    let base: [&[u8]; 4] = [
+        seed.as_bytes(),
+        sender.as_str().as_bytes(),
+        &idx,
+        target.as_str().as_bytes(),
+    ];
+    let with_nth: [&[u8]; 5] = [base[0], base[1], base[2], base[3], &k];
+    let parts: &[&[u8]] = if nth == 0 { &base } else { &with_nth };
+    let a = fnv1a64(0xcbf2_9ce4_8422_2325, parts);
+    let b = fnv1a64(0x6c62_272e_07bb_0142, parts);
+    let ts = seed.as_u128() >> 80;
+    Uuid::from_u128(
+        (ts << 80)
+            | (0x7u128 << 76)
+            | (u128::from(a & 0x0fff) << 64)
+            | (0b10u128 << 62)
+            | (u128::from(b) & 0x3fff_ffff_ffff_ffff),
+    )
+}
+
+/// GH #1015: the seed of a source emission that carries a durable key.
+///
+/// Review I-6: the seed's top 48 bits become the children's v7 time prefix.
+/// A key that is itself a UUID (the sender's frame id, a v7) is the seed as
+/// it is; any other key is hashed below the time its ingress stamped as
+/// `hop.delivery_key_ms` (the arrival time, stored with the inbox row, so a
+/// replay derives the same seed), so ids keep sorting by time.
+fn keyed_source_seed(content: &meclaw_core::serde_json::Value) -> Option<Uuid> {
+    let header = content.get("header")?;
+    let key = header.get(DELIVERY_KEY_HEADER)?.as_str()?;
+    if let Ok(id) = Uuid::parse_str(key) {
+        return Some(id);
+    }
+    let ms = header
+        .get(DELIVERY_KEY_MS_HEADER)
+        .and_then(meclaw_core::serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let parts: [&[u8]; 1] = [key.as_bytes()];
+    let a = fnv1a64(0xcbf2_9ce4_8422_2325, &parts);
+    let b = fnv1a64(0x6c62_272e_07bb_0142, &parts);
+    let low = ((u128::from(a) << 64) | u128::from(b)) & ((1u128 << 80) - 1);
+    Some(Uuid::from_u128(
+        (u128::from(ms & 0xffff_ffff_ffff) << 80) | low,
+    ))
+}
+
+fn hop_flag(content: &meclaw_core::serde_json::Value, key: &str) -> bool {
+    content
+        .get("header")
+        .and_then(|h| h.get(key))
+        .and_then(meclaw_core::serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// GH #1015: one primary-key read; only ever asked for a hand-on an ingress
+/// marked as repeated, never on the normal path.
+fn message_is_logged(conn: &rusqlite::Connection, id: Uuid) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM message_log WHERE id = ?1",
+        [id.to_string()],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// GH #1015: one open delivery as the boot reads it.
+pub(crate) struct OpenRow {
+    pub(crate) id: String,
+    pub(crate) cell_path: String,
+    pub(crate) replays: i64,
+    /// `None`: the log row is missing or unreadable by this build.
+    pub(crate) message: Option<Message>,
+}
+
+/// GH #1015: what a boot replays, and what it must not deliver twice.
+#[derive(Default)]
+pub(crate) struct OpenDeliveries {
+    /// Open deliveries in log order, without those the overflow on disk
+    /// delivers itself (stage 2 hydrates them on its own).
+    pub(crate) rows: Vec<OpenRow>,
+    /// Ids the log holds as children (and transit grandchildren) of an open
+    /// delivery — what a replayed handler may emit a second time.
+    pub(crate) children: std::collections::HashSet<Uuid>,
+    /// SQL statements this read ran: 1 on a cold start with nothing open.
+    pub(crate) queries: u32,
+    /// Review M-2: the last life ended in an ordered stop — this boot's
+    /// replays are not counted towards `replay_exhausted`. Read only when
+    /// something is open (a cold start stays one query).
+    pub(crate) clean_stop: bool,
+}
+
+/// GH #1015: read the open deliveries. A cold start with nothing open costs
+/// exactly one query on an empty table.
+pub(crate) fn load_open_deliveries(conn: &rusqlite::Connection) -> OpenDeliveries {
+    let mut out = OpenDeliveries {
+        queries: 1,
+        ..Default::default()
+    };
+    let rows = conn
+        .prepare(
+            "SELECT d.message_id, d.cell_path, d.replays,
+                    m.trace_id, m.parent_message_id, m.correlation_id, m.ttl,
+                    m.to_path, m.reply_to, m.headers, m.body_kind, m.body_payload, m.created_at
+             FROM delivery_open d LEFT JOIN message_log m ON m.id = d.message_id
+             WHERE NOT EXISTS (SELECT 1 FROM mailbox_overflow o WHERE o.message_id = d.message_id)
+             ORDER BY d.seq",
+        )
+        .and_then(|mut st| {
+            st.query_map([], |r| {
+                let id: String = r.get(0)?;
+                let trace: Option<String> = r.get(3)?;
+                let message = match trace {
+                    None => None,
+                    Some(trace_id) => crate::overflow::message_from_log(
+                        &id,
+                        crate::overflow::LogColumns {
+                            trace_id,
+                            parent_message_id: r.get(4)?,
+                            correlation_id: r.get(5)?,
+                            ttl: r.get(6)?,
+                            to_path: r.get(7)?,
+                            reply_to: r.get(8)?,
+                            headers: r.get(9)?,
+                            body_kind: r.get(10)?,
+                            body_payload: r.get(11)?,
+                            created_at: r.get(12)?,
+                        },
+                    ),
+                };
+                Ok(OpenRow {
+                    id,
+                    cell_path: r.get(1)?,
+                    replays: r.get(2)?,
+                    message,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match rows {
+        Ok(rows) => out.rows = rows,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "open deliveries could not be read — nothing is replayed this boot, the rows stay"
+            );
+            return out;
+        }
+    }
+    if out.rows.is_empty() {
+        return out;
+    }
+    out.queries += 2;
+    out.clean_stop = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE key = 'clean_stop'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    let kids = conn
+        .prepare(
+            "SELECT id FROM message_log WHERE parent_message_id IN
+               (SELECT message_id FROM delivery_open)
+             UNION
+             SELECT id FROM message_log WHERE parent_message_id IN
+               (SELECT id FROM message_log WHERE parent_message_id IN
+                 (SELECT message_id FROM delivery_open))",
+        )
+        .and_then(|mut st| {
+            st.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match kids {
+        Ok(ids) => {
+            out.children = ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
+        }
+        Err(e) => tracing::error!(
+            error = %e,
+            "children of open deliveries could not be read — a replayed handler may deliver \
+             a child twice"
+        ),
+    }
+    out
+}
+
+/// GH #1015: replay the open deliveries — the log is the source, the
+/// mailboxes were the cache the crash took. Each goes straight to its cell
+/// with the budget it was logged with (the route below takes the one hop the
+/// log row already counted, so the cell reads exactly the logged `ttl`), in
+/// log order. The attempt is counted durably first (one commit per boot, none
+/// on a cold start); a delivery past [`REPLAY_MAX`] attempts is the dead
+/// letter `replay_exhausted` instead.
+#[allow(clippy::too_many_arguments)]
+async fn replay_open_deliveries(
+    loaded: OpenDeliveries,
+    registry: &mut HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
+    blob_inline_max_bytes: usize,
+) {
+    // Review M-2: this life has begun; a crash in it counts. Ahead of every
+    // delivery log in the writer's FIFO, so no open row outlives it unseen.
+    let _ = log_tx
+        .send(crate::persist::writer::ColonyWriteOp::CleanStop(false))
+        .await;
+    if loaded.rows.is_empty() {
+        return;
+    }
+    let clean_stop = loaded.clean_stop;
+    let mut deliver: Vec<(String, Message)> = Vec::new();
+    for row in loaded.rows {
+        let close = crate::persist::writer::ColonyWriteOp::MarkConsumed {
+            message_id: row.id.clone(),
+            cell_path: row.cell_path.clone(),
+        };
+        match row.message {
+            None => {
+                tracing::error!(
+                    message_id = %row.id,
+                    target = %row.cell_path,
+                    "an open delivery without a readable log row — closed, not replayed"
+                );
+                let _ = log_tx.send(close).await;
+            }
+            Some(msg) if row.replays >= REPLAY_MAX => {
+                tracing::error!(
+                    message_id = %row.id,
+                    target = %row.cell_path,
+                    replays = row.replays,
+                    "an open delivery was replayed {REPLAY_MAX} times and never finished — \
+                     dead-lettered as replay_exhausted"
+                );
+                let target = Path::new(&row.cell_path);
+                push_dead_letter(
+                    dead_letters,
+                    DeadLetter {
+                        sender_path: msg.reply_to.clone().unwrap_or_else(|| Path::new("/")),
+                        original_target: target.clone(),
+                        resolved_target: target,
+                        message: msg,
+                        reason: crate::dead_letter::DeadLetterReason::ReplayExhausted,
+                    },
+                );
+                let _ = log_tx.send(close).await;
+            }
+            Some(msg) => deliver.push((row.cell_path, msg)),
+        }
+    }
+    if deliver.is_empty() {
+        return;
+    }
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let _ = log_tx
+        .send(crate::persist::writer::ColonyWriteOp::CountReplays {
+            // Review M-2: after an ordered stop nothing crashed — no count.
+            ids: if clean_stop {
+                Vec::new()
+            } else {
+                deliver.iter().map(|(_, m)| m.id.to_string()).collect()
+            },
+            ack: Some(ack_tx),
+        })
+        .await;
+    let _ = ack_rx.await;
+    tracing::warn!(
+        count = deliver.len(),
+        "replaying deliveries the log holds and no cell finished before the last stop"
+    );
+    for (cell_path, mut msg) in deliver {
+        msg.target = Path::new(&cell_path);
+        msg.ttl = msg.ttl.saturating_add(1);
+        let sender = msg.reply_to.clone().unwrap_or_else(|| Path::new("/"));
+        let _ = route_with_log_as(
+            registry,
+            hive_scopes,
+            dead_letters,
+            in_flight,
+            log_tx,
+            sender,
+            msg,
+            blob_store,
+            blob_inline_max_bytes,
+            true,
+        )
+        .await;
+    }
 }
 
 /// Befund 8 — sweep the filesystem residue of a POST-RENAME mutation reject so
@@ -10984,10 +11568,23 @@ fn enqueue_hive_transit(
         // cell that emitted INTO the hive, not the hive itself.
         let origin_sender = msg.reply_to.clone().unwrap_or_else(|| hive_path.clone());
         let inbound_target = msg.target.clone();
+        let mut per_target: HashMap<Path, u32> = HashMap::new();
         for dec in decisions {
             let restores = dec.restore_ttl;
             let slot_target = dec.target.clone();
             let mut transit = build_transit_follow_up(&msg, dec.target, dec.headers_out);
+            // GH #1015 (fix round 1, measured in the C-2 lock): a transit
+            // follow-up drew a fresh id, so a hive hop walked again after a
+            // crash or a keyed repeat delivered its cell a second time under
+            // a new id. Derived from the hop like any follow-up, it is the id
+            // the log already holds, and the caller's log check drops it.
+            let nth = {
+                let n = per_target.entry(transit.target.clone()).or_insert(0);
+                let k = *n;
+                *n = n.saturating_add(1);
+                k
+            };
+            transit.id = derived_message_id_nth(msg.id, &hive_path, 0, &transit.target, nth);
             // GH #285 (W4 T11): the hive's own out-edge may end at a slot it
             // declared and nothing has filled. Then the declaration answers, not
             // the router — `hive_no_route` is not it either, because the edge
@@ -15224,5 +15821,45 @@ mod tests {
         assert_eq!(canonical_scope_prefix("/"), "/");
         assert_eq!(canonical_scope_prefix("/main"), "/main");
         assert_eq!(canonical_scope_prefix("/main/"), "/main");
+    }
+}
+
+#[cfg(test)]
+mod gh1015_tests {
+    use super::*;
+
+    /// GH #1015, cold-start lock: a boot with nothing open costs exactly one
+    /// query on an empty table — the replay is free when there is nothing to
+    /// replay.
+    #[test]
+    fn a_cold_start_with_nothing_open_costs_one_query() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::ColonyDb::open(&dir.path().join("colony.db")).expect("open colony.db");
+        let t0 = std::time::Instant::now();
+        let loaded = load_open_deliveries(&db.read_conn);
+        let took = t0.elapsed();
+        println!(
+            "GH1015-COLD queries={} took_us={}",
+            loaded.queries,
+            took.as_micros()
+        );
+        assert_eq!(loaded.queries, 1);
+        assert!(loaded.rows.is_empty());
+        assert!(loaded.children.is_empty());
+    }
+
+    /// GH #1015: a derived id is a pure function of its inputs (the replay
+    /// re-derives it in a new process), differs per index and target, and
+    /// keeps the v7 shape and the seed's time prefix.
+    #[test]
+    fn a_derived_id_is_stable_and_distinct() {
+        let seed = Uuid::now_v7();
+        let (s, t, u) = (Path::new("/a"), Path::new("/b"), Path::new("/c"));
+        let x = derived_message_id(seed, &s, 0, &t);
+        assert_eq!(x, derived_message_id(seed, &s, 0, &t));
+        assert_ne!(x, derived_message_id(seed, &s, 1, &t));
+        assert_ne!(x, derived_message_id(seed, &s, 0, &u));
+        assert_eq!(x.get_version_num(), 7);
+        assert_eq!(x.as_u128() >> 80, seed.as_u128() >> 80);
     }
 }

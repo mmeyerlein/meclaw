@@ -70,7 +70,18 @@ pub struct MeclawCell {
     book_ready: bool,
     /// GH #1012: `params.peer_retry_deadline_s` in ms.
     deadline_ms: i64,
+    /// GH #1015: inbox rows handed on and not yet booked `done`, oldest first.
+    handed: std::collections::VecDeque<(String, std::time::Instant)>,
 }
+
+/// GH #1015: how long a handed-on inbox row stays `pending`. The hand-on is an
+/// emission; the colony logs it in a later writer batch, and a cell cannot see
+/// that commit. A row booked `done` before it would be the one loss window a
+/// crash leaves (measured in the HV-14 SIGKILL run of #1012). Kept `pending`,
+/// the row is raised again at the next start, keyed so the colony drops it
+/// when its log already holds it. A writer batch commits in milliseconds; the
+/// margin covers a backlogged writer.
+const HAND_ON_SETTLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A message that may cross: its lane, the frame and the address.
 struct Crossing {
@@ -105,6 +116,7 @@ impl MeclawCell {
             book_ready: false,
             deadline_ms: i64::try_from(p.peer_retry_deadline_s.saturating_mul(1_000))
                 .unwrap_or(i64::MAX),
+            handed: std::collections::VecDeque::new(),
         }
     }
 
@@ -640,6 +652,22 @@ impl LongRunningCell for MeclawCell {
                     let mut content =
                         arrived_emission(&lane, &peer, boundary, &context, &claims, body);
                     stamp_arrival(&mut content, &delivery);
+                    // GH #1015: the inbox key is durable — the colony derives the
+                    // hand-on's ids from it, and drops a repeat it already logged.
+                    if let Some(key) = delivery.inbox_key.as_deref() {
+                        stamp_delivery_key(
+                            &mut content,
+                            key,
+                            delivery.arrived_ms,
+                            delivery.replayed,
+                        );
+                        stamp_delivery_key(
+                            &mut receipt,
+                            &format!("{key}:receipt"),
+                            delivery.arrived_ms,
+                            delivery.replayed,
+                        );
+                    }
                     // `route()` takes one hop from every input budget. The
                     // frame's `ttl` is already the budget AFTER the crossing
                     // (`wire::message_frame` took that hop), so the input handed
@@ -654,15 +682,32 @@ impl LongRunningCell for MeclawCell {
                     // its sink would give, like a refusal (OR-Peer9, OR-Peer7).
                     let carried = Some((trace_id, meclaw_core::MESSAGE_DEFAULT_TTL));
                     emit(sink, &self.emit_to, receipt, carried).await;
-                    // GH #1012: handed on, so the replay will not raise it again.
-                    // Between the two emissions and this write lies the one
-                    // window in which a crash replays it once more; the arrival
-                    // carries `peer_frame_id`, by which a reader can tell.
-                    if let Some(key) = delivery.inbox_key
-                        && self.ensure_book(db).await
-                        && let Err(e) = db.call(move |c| book::inbox_done(c, &key)).await
+                    // GH #1015: handed on — booked `done` only once it is older
+                    // than `HAND_ON_SETTLE` (see there). Until then a crash raises
+                    // it again, and the colony drops the repeat by its key.
+                    if let Some(key) = delivery.inbox_key {
+                        self.handed.push_back((key, std::time::Instant::now()));
+                    }
+                    let mut settled = Vec::new();
+                    while let Some((_, at)) = self.handed.front()
+                        && at.elapsed() >= HAND_ON_SETTLE
                     {
-                        tracing::warn!(error = %e, "proxy/meclaw: an inbox row stays pending");
+                        if let Some((key, _)) = self.handed.pop_front() {
+                            settled.push(key);
+                        }
+                    }
+                    if !settled.is_empty()
+                        && self.ensure_book(db).await
+                        && let Err(e) = db
+                            .call(move |c| {
+                                for key in &settled {
+                                    book::inbox_done(c, key)?;
+                                }
+                                Ok::<(), rusqlite::Error>(())
+                            })
+                            .await
+                    {
+                        tracing::warn!(error = %e, "proxy/meclaw: inbox rows stay pending");
                     }
                 }
                 PeerEvent::Refused {
@@ -765,6 +810,30 @@ async fn emit(sink: &OriginSink, target: &Path, content: Value, carried: Option<
         }
         _ => {
             let _ = sink.emit(out).await;
+        }
+    }
+}
+
+/// GH #1015: stamp the hand-on's durable key (and whether it is a repeat from
+/// the inbox) into the emission's hop, where the colony reads it.
+/// `arrived_ms` is stored with the inbox row, so a repeat stamps the same
+/// time and the colony derives the same ids (their v7 time prefix, when the
+/// key is not itself a UUID).
+fn stamp_delivery_key(content: &mut Value, key: &str, arrived_ms: u64, replayed: bool) {
+    if let Some(h) = content.get_mut("header").and_then(Value::as_object_mut) {
+        h.insert(
+            meclaw_colony::DELIVERY_KEY_HEADER.to_string(),
+            Value::String(key.to_string()),
+        );
+        h.insert(
+            meclaw_colony::DELIVERY_KEY_MS_HEADER.to_string(),
+            Value::from(arrived_ms),
+        );
+        if replayed {
+            h.insert(
+                meclaw_colony::DELIVERY_REPLAY_HEADER.to_string(),
+                Value::Bool(true),
+            );
         }
     }
 }

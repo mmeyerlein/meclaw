@@ -543,7 +543,8 @@ pub struct MessageLogFilter {
     pub since: Option<i64>,
     /// Upper bound on `created_at` (Unix seconds, inclusive).
     pub until: Option<i64>,
-    /// Keyset cursor: return only rows strictly older than `(created_at, id)`.
+    /// Keyset cursor: return only rows written strictly before the row named by
+    /// `(created_at, id)` (same tick: by insertion order, GH #1015).
     pub before: Option<MessageLogCursor>,
     /// Rows returned. Clamped to `1..=1000` by the dispatch helper.
     pub limit: usize,
@@ -568,7 +569,8 @@ pub struct MessageLogCursor {
 /// Reply for [`crate::ColonyMsg::ReadMessages`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadMessagesReply {
-    /// Rows, newest first (`created_at DESC, id DESC`).
+    /// Rows, newest first (`created_at DESC`, a shared tick in reverse insertion
+    /// order — GH #1015).
     pub entries: Vec<MessageLogDto>,
     /// Cursor for the next (older) page; `None` when the page was not full.
     pub next: Option<MessageLogCursor>,

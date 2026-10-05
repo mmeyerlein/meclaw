@@ -17,7 +17,7 @@ use crate::voice::wire::{ClientFrame, Mode, ServerFrame, SpeakEndReason, WireErr
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, CellOutput, Message, OriginSink, OutputSink, Path, Uuid};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -361,6 +361,15 @@ pub struct LiveSessionState {
 /// bound keeps a very long call from growing the list without end.
 pub const CLOSED_DELEGATIONS_KEPT: usize = 8;
 
+/// How many ended sessions a `voice` cell remembers (GH #1016).
+///
+/// A late answer comes for the call that just ended, seconds after it: the
+/// longest measured gap between a hang-up and the last answer written for that
+/// call was eleven seconds (2026-09-28). A cell carries one call at a time on
+/// a telephone and a handful on a screen, so 64 is many calls of slack, and a
+/// session older than that is answered as it always was, `unknown_session`.
+pub const ENDED_SESSIONS_KEPT: usize = 64;
+
 /// One delegation the model opened and nobody has answered yet (R-L9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenDelegation {
@@ -433,6 +442,21 @@ pub struct VoiceCell {
     /// ([`CALLER_ROUTES`]) and dropped with the connection. A session nobody
     /// named carries no `user_id` at all -- the cell itself knows nobody.
     senders: HashMap<String, String>,
+    /// The sessions whose connection this cell held and lost, newest last,
+    /// at most [`ENDED_SESSIONS_KEPT`] of them (GH #1016).
+    ///
+    /// The media half is the one place that knows a call is over -- an edge
+    /// condition reads the message, not the line -- so this is where the door
+    /// of a session closes: an `in_speak` or `in_advise` for a session in here
+    /// is a late answer and goes to the colony as a `session_ended` dead
+    /// letter instead of to the model. A session id that connects again
+    /// leaves the list: it is a new call.
+    ended: VecDeque<String>,
+    /// Where a late answer is handed as a dead letter: the colony inbox the
+    /// substrate gives every cell at spawn (GH #1016). `None` only where a
+    /// test builds the cell without a colony; the late answer is then logged
+    /// and dropped, never sent on.
+    dead_letters: Option<mpsc::Sender<meclaw_colony::ColonyMsg>>,
     /// Whether this cell runs a duplex provider (`params.duplex`).
     ///
     /// Settled at birth: the block is not in
@@ -513,6 +537,14 @@ pub struct VoiceCell {
 }
 
 impl VoiceCell {
+    /// Hand this cell the colony inbox it dead-letters a late answer into
+    /// (GH #1016). The factory passes the inbox every cell gets at spawn.
+    #[must_use]
+    pub fn with_dead_letters(mut self, inbox: mpsc::Sender<meclaw_colony::ColonyMsg>) -> Self {
+        self.dead_letters = Some(inbox);
+        self
+    }
+
     /// Build the handler half from the effective params (birth params with the
     /// `cell.db` overlay replayed over them) and the I/O half it will hand off.
     pub fn new(path: Path, mut io: VoiceIo, params: &VoiceParams, raw: &Value) -> Self {
@@ -534,6 +566,8 @@ impl VoiceCell {
             sessions: HashMap::new(),
             live_sessions: HashMap::new(),
             senders: HashMap::new(),
+            ended: VecDeque::new(),
+            dead_letters: None,
             duplex: params.duplex.is_some(),
             duplex_turn_gap_ms: duplex_gap_ms(params),
             duplex_backchannel_max_ms: duplex_backchannel_ms(params),
@@ -1717,6 +1751,70 @@ impl VoiceCell {
         }
     }
 
+    /// Remember that `session_id` ended (GH #1016), newest last, bounded by
+    /// [`ENDED_SESSIONS_KEPT`].
+    fn close_door(&mut self, session_id: &str) {
+        self.ended.retain(|gone| gone != session_id);
+        self.ended.push_back(session_id.to_string());
+        while self.ended.len() > ENDED_SESSIONS_KEPT {
+            self.ended.pop_front();
+        }
+    }
+
+    /// The session a message addresses, if this cell saw it end (GH #1016).
+    /// Read the way the speak path reads it: the call key first, the older
+    /// session key where the call key is absent.
+    fn ended_session_of(&self, msg: &Message) -> Option<String> {
+        let addressed = |key: &str| {
+            msg.headers
+                .context
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let session_id = addressed("call_id").or_else(|| addressed("session_id"))?;
+        self.ended.contains(&session_id).then_some(session_id)
+    }
+
+    /// Hand a late answer to the colony as a `session_ended` dead letter
+    /// (GH #1016): nothing reaches the model, nothing travels on as an error,
+    /// and the message itself is the record. A colony inbox that is gone is
+    /// named in the log, so the answer never vanishes without a line.
+    async fn dead_letter_late(&self, msg: &Message, session_id: &str) {
+        let lane = msg
+            .headers
+            .hop
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        tracing::info!(
+            path = self.path.as_str(),
+            %session_id,
+            %lane,
+            "voice: an answer for a call that is over -- dead-lettered as session_ended"
+        );
+        let delivered = match &self.dead_letters {
+            Some(inbox) => inbox
+                .send(meclaw_colony::ColonyMsg::DeadLetterMessage {
+                    message: msg.clone(),
+                    reason: meclaw_colony::DeadLetterReason::SessionEnded,
+                })
+                .await
+                .is_ok(),
+            None => false,
+        };
+        if !delivered {
+            tracing::warn!(
+                path = self.path.as_str(),
+                %session_id,
+                %lane,
+                "voice: a session_ended dead letter has no colony inbox to go to"
+            );
+        }
+    }
+
     /// The refusal shape of a message this cell could not act on. `code` comes
     /// from the closed list in the spec: `invalid_body`, `missing_session`,
     /// `unknown_session`, `invalid_input`. Never silent — a caller that sent a
@@ -2041,6 +2139,25 @@ impl LongRunningCell for VoiceCell {
                 return;
             }
 
+            // A CALL THAT IS OVER HEARS NOTHING (GH #1016). Measured
+            // 2026-09-28: after the caller hung up, the answers still being
+            // written for the call kept arriving as `in_speak`/`in_advise`,
+            // were refused as `unknown_session` on the error lane and ended as
+            // `hive_no_route` dead letters at the colony root -- one per
+            // answer, named for a routing gap that is not there. An edge reads
+            // the message, not the line, so the door closes here, in the one
+            // place that saw the connection go.
+            let late =
+                if msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("in_session") {
+                    None
+                } else {
+                    self.ended_session_of(&msg)
+                };
+            if let Some(session_id) = late {
+                self.dead_letter_late(&msg, &session_id).await;
+                return;
+            }
+
             // The advise lane, before the text is read: its text may come out
             // of `body.text` rather than out of an assistant turn, and its
             // section decides which of the three append channels it takes
@@ -2229,6 +2346,10 @@ impl LongRunningCell for VoiceCell {
                     mode,
                     ack,
                 } => {
+                    // A session id that connects again is a new call
+                    // (GH #1016): its door opens again -- first thing, before
+                    // any branch below can return.
+                    self.ended.retain(|gone| gone != &session_id);
                     // GH #836: the connection holds its `hello` until `ack`
                     // fires, and it fires only AFTER the insert below -- so a
                     // client that has a `hello` has a session this table knows,
@@ -2267,6 +2388,9 @@ impl LongRunningCell for VoiceCell {
                 VoiceEvent::Disconnected { session_id } => {
                     self.sessions.remove(&session_id);
                     self.live_sessions.remove(&session_id);
+                    // GH #1016: the call is over, so the door to it closes.
+                    // What still arrives for it is a late answer.
+                    self.close_door(&session_id);
                     // The name goes with the connection (GH #979): a session
                     // id that comes back is a new connection, and it is named
                     // again or not at all -- never by a leftover.

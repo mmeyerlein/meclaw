@@ -13,7 +13,9 @@ pub fn setup_proxy_schema(conn: &Connection) -> rusqlite::Result<()> {
             id     INTEGER PRIMARY KEY CHECK (id = 1),
             offset INTEGER NOT NULL
         );",
-    )
+    )?;
+    // GH #1015: the outbound dedupe record (see `proxy::consumed`).
+    conn.execute_batch(crate::proxy::consumed::CONSUMED_DDL)
 }
 
 /// Reads the persisted cursor offset. On a fresh schema (no row in

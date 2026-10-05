@@ -1,0 +1,65 @@
+{
+  "id": "gen-1791224622-A11uX4SoqKYjbNC0uptp",
+  "object": "chat.completion",
+  "created": 1791224622,
+  "model": "qwen/qwen3.7-flash",
+  "provider": "Alibaba",
+  "system_fingerprint": null,
+  "service_tier": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "tool_calls",
+      "native_finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "reasoning": "Thinking Process:\n1.  **Identify the User's Goal**: The user wants me to call the `echo` tool with the text \"ping\".\n2.  **Locate the Tool**: I see a tool definition for `echo` that takes one required parameter `text`.\n3.  **Map Input to Parameters**: `text = \"ping\"`.\n4.  **Construct Function Call**: `echo(text=\"ping\")`.\n5.  **Format Output**: Use the exact format expected by the system for tool calls.\n\nCheck constraints: \"Always answer by calling the tool echo.\" - Matches perfectly. Let's output. \nNo other tools are needed.\nProceed. \nOutput matches the requested format.\u2705",
+        "tool_calls": [
+          {
+            "type": "function",
+            "index": 0,
+            "id": "call_49372c9908a94df88391a9f3",
+            "function": {
+              "name": "echo",
+              "arguments": "{\"text\": \"ping\"}"
+            }
+          }
+        ],
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "Thinking Process:\n1.  **Identify the User's Goal**: The user wants me to call the `echo` tool with the text \"ping\".\n2.  **Locate the Tool**: I see a tool definition for `echo` that takes one required parameter `text`.\n3.  **Map Input to Parameters**: `text = \"ping\"`.\n4.  **Construct Function Call**: `echo(text=\"ping\")`.\n5.  **Format Output**: Use the exact format expected by the system for tool calls.\n\nCheck constraints: \"Always answer by calling the tool echo.\" - Matches perfectly. Let's output. \nNo other tools are needed.\nProceed. \nOutput matches the requested format.\u2705",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 289,
+    "completion_tokens": 178,
+    "total_tokens": 467,
+    "cost": 3.14919e-05,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 3.181e-05,
+      "upstream_inference_prompt_cost": 8.67e-06,
+      "upstream_inference_completions_cost": 2.314e-05
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 151,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

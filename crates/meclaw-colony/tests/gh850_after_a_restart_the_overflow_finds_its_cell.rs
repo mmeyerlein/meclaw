@@ -272,6 +272,18 @@ async fn a_first_life_with_rows_on_disk(
     cells: &[&str],
     n: usize,
 ) -> Vec<Vec<Uuid>> {
+    a_first_life_with_rows_on_disk_and_in_mailboxes(db_file, cells, n)
+        .await
+        .0
+}
+
+/// GH #1015: as above, plus the ids that sat in each mailbox (the first
+/// `CAPACITY` per cell) — logged as delivered, never consumed.
+async fn a_first_life_with_rows_on_disk_and_in_mailboxes(
+    db_file: &std::path::Path,
+    cells: &[&str],
+    n: usize,
+) -> (Vec<Vec<Uuid>>, Vec<Vec<Uuid>>) {
     let (inbox_tx, join) = boot(
         db_file,
         config(r#"{"mailbox_overflow_spill_messages": 0}"#, 0),
@@ -282,16 +294,18 @@ async fn a_first_life_with_rows_on_disk(
         stubs.push(register_stub(&inbox_tx, c).await);
     }
     let mut on_disk = Vec::new();
+    let mut in_mailbox = Vec::new();
     for c in cells {
         let sent = flood(&inbox_tx, c, n).await;
         on_disk.push(sent[CAPACITY..].to_vec());
+        in_mailbox.push(sent[..CAPACITY].to_vec());
     }
     for (c, ids) in cells.iter().zip(&on_disk) {
         wait_rows(db_file, c, "the first life's overflow on disk", ids.len()).await;
     }
     shutdown(&inbox_tx, join).await;
     drop(stubs);
-    on_disk
+    (on_disk, in_mailbox)
 }
 
 /// (I-1) A restart with rows on disk for a disconnected cell, a failed cell
@@ -304,7 +318,8 @@ async fn a_restart_dead_letters_the_overflow_no_cell_can_take() {
     let td = tempfile::TempDir::new().expect("tempdir");
     let db_file = td.path().join("colony.db");
     let cells = ["/off", "/failed", "/gone"];
-    let on_disk = a_first_life_with_rows_on_disk(&db_file, &cells, 20).await;
+    let (on_disk, in_mailbox) =
+        a_first_life_with_rows_on_disk_and_in_mailboxes(&db_file, &cells, 20).await;
 
     let (inbox_tx, join) = boot(&db_file, config("{}", 20_000)).await;
     register_dormant(&inbox_tx, "/off", None, false, false).await;
@@ -320,6 +335,10 @@ async fn a_restart_dead_letters_the_overflow_no_cell_can_take() {
         let mine: Vec<&DeadLetter> = dead
             .iter()
             .filter(|d| d.resolved_target.as_str() == *c)
+            // GH #1015: the first life's mailbox deliveries are open too and
+            // the boot replays them into the same dead letter; the lock here
+            // is the overflow's rows, every one, in order.
+            .filter(|d| ids.contains(&d.message.id))
             .collect();
         assert_eq!(
             mine.iter().map(|d| d.message.id).collect::<Vec<_>>(),
@@ -332,10 +351,34 @@ async fn a_restart_dead_letters_the_overflow_no_cell_can_take() {
             mine.iter().map(|d| d.reason.as_code()).collect::<Vec<_>>()
         );
     }
+    // GH #1015: the first `CAPACITY` deliveries of each cell sat in its
+    // mailbox — logged, never consumed. They were lost silently before; the
+    // boot now replays them, and no cell can take them either: each one is
+    // dead-lettered exactly once, with the code of its target.
+    for ((c, ids), code) in
+        cells
+            .iter()
+            .zip(&in_mailbox)
+            .zip(["cell_inactive", "cell_inactive", "unresolved_path"])
+    {
+        for id in ids {
+            let hits: Vec<&str> = dead
+                .iter()
+                .filter(|d| d.message.id == *id)
+                .map(|d| d.reason.as_code())
+                .collect();
+            assert_eq!(
+                hits,
+                vec![code],
+                "{c}: mailbox delivery {id} dead-lettered once"
+            );
+        }
+    }
     assert_eq!(
         dead.len(),
-        on_disk.iter().map(Vec::len).sum::<usize>(),
-        "and nothing else"
+        on_disk.iter().map(Vec::len).sum::<usize>()
+            + in_mailbox.iter().map(Vec::len).sum::<usize>(),
+        "and nothing else: 48 overflow rows + 12 mailbox deliveries"
     );
 
     let took = shutdown(&inbox_tx, join).await;

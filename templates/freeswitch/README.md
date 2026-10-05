@@ -1,4 +1,4 @@
-# `freeswitch@2.3.0`
+# `freeswitch@2.3.1`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -235,7 +235,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.3.0",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.3.1",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -452,6 +452,34 @@ default, and why it is one line rather than a param.
 gets one, whatever else is running. `second_call` is about who is allowed to
 ring THIS member, and a colony that wants to stop its own agent dialling twice
 has a tool schema to say so in, not a policy.
+
+## One greeting per call
+
+An inbound call is greeted ONCE (GH #614), and since GH #1016 a colony says
+which half of the channel gives that greeting, in `params.greeting` of
+`./signal`:
+
+| `greeting` | who greets |
+|---|---|
+| `turn` (default) | the arrival raises the turn “The caller is on the line. Greet them.”, and the member's answer is the greeting. Right for a cascade media half, which cannot greet on its own |
+| `media` | the media half greets by itself — a duplex `./voice` with `params.duplex.greeting` set has the model greet the moment the session opens — and the arrival raises no turn. The booking, the `call_accepted` receipt and the speaker handed to the media half stay as they are; the first turn of the call is the caller's own |
+
+A colony that sets `duplex.greeting` on `./voice` sets `greeting: media` here.
+The two settings live on two nodes because a `ref` to `voice` and the inline
+signalling script share no params, and leaving this one at `turn` is the double
+greeting measured on a live call (two greetings two seconds apart: the model's
+own, then the spoken answer to the arrival turn). A caller put through from the
+queue keeps the arrival turn under either value, because the media half greeted
+while that call was on hold. A value outside the list greets by turn and says
+so: the `call_accepted` receipt carries `hop.greeting_fallback`.
+
+**Nothing is said into a call that is over.** When the caller hangs up, the
+switch stops the audio fork and the media half's connection for that session
+closes. An `in_speak` or `in_advise` that still arrives for it — an answer the
+member was writing when the line went down — is not handed to the model and
+not refused on the error lane: the media half hands it to the colony as a
+`session_ended` dead letter, the message itself on record. A session id that
+connects again is a new call and is spoken to again.
 
 ## What the dialplan owes
 
@@ -893,6 +921,7 @@ silent. **What is NOT here is a clock** — see *What is not here*.
 | `second_call` | `signal` | `busy` | what an inbound call gets while the line is busy: `busy`, `queue` or `parallel` |
 | `capacity` | `signal` | `1` | how many calls may run at once. Read for every policy, so `busy` is `parallel` with `1` |
 | `queue_hold_media` | `signal` | `local_stream://moh` | what a waiting caller hears, as a `uuid_broadcast` source. A recorded announcement is a `file_string://…` |
+| `greeting` | `signal` | `turn` | which half greets a caller: `turn` (the arrival turn, answered by the member) or `media` (the media half greets by itself, no arrival turn) — § *One greeting per call* |
 | `external_timeout_ms` | `gateway` | `60000` | must exceed `ring_timeout_ms`: the originate answer arrives when the ringing stops |
 
 **Since `2.0.2` three of them are declared `operator_set`** (GH #661). The three
@@ -1094,7 +1123,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.3.0`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.3.1`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1107,7 +1136,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.3.0"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.3.1"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

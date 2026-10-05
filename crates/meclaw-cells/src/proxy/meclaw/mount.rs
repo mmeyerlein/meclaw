@@ -103,6 +103,8 @@ pub struct Delivery {
     /// The inbox row of this arrival (the frame id, or a local key for a frame
     /// without one); `None` on a mount without an inbox.
     pub inbox_key: Option<String>,
+    /// GH #1015: raised again from the inbox at start, not from the wire.
+    pub replayed: bool,
 }
 
 /// GH #1012: the handler half asks the I/O half to deliver a `Retry` for
@@ -451,6 +453,7 @@ fn judge(
         sent_ms,
         arrived_ms: now_ms(),
         inbox_key: None,
+        replayed: false,
     };
     let event = PeerEvent::Arrived {
         lane: lane.route.clone(),
@@ -519,6 +522,7 @@ pub(crate) fn arrival_from_json(key: &str, row: &str) -> Option<PeerEvent> {
             sent_ms: v.get("sent_ms").and_then(Value::as_u64),
             arrived_ms: v.get("arrived_ms").and_then(Value::as_u64).unwrap_or(0),
             inbox_key: Some(key.to_string()),
+            replayed: true,
         },
     })
 }

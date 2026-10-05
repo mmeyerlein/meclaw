@@ -1840,7 +1840,7 @@ field, which is what the `?error_code=` filter matches: `unresolved_path`, `hive
 `no_route`, `cell_inactive`, `ttl_expired`, `colony_endpoint_unimplemented`,
 `colony_endpoint_invalid`, `blob_unavailable`, `blob_recursion_too_deep`, `invalid_ubf_body`,
 `consumes_violation`, `contract_violation`, `slot_unbound`, `slot_park_overflow`,
-`shutdown_draining`, `hive_boundary`, `mailbox_full`, `peer_expired`, `peer_refused`. These strings are part of the stable API contract; new reasons
+`shutdown_draining`, `hive_boundary`, `mailbox_full`, `peer_expired`, `peer_refused`, `session_ended`, `replay_exhausted`. These strings are part of the stable API contract; new reasons
 extend the list, existing ones do not change their string form. `shutdown_draining` (GH #47) carries a new source
 emission that arrived during the shutdown drain; it is not routed, because that would start work the
 drain would then have to wait for.
@@ -1910,6 +1910,14 @@ Notes on the delivery-boundary codes:
   receipt, a credential that cannot be had). Nothing is retried; the cell dead-letters the message
   (`resolved_target` is the cell) next to its `refused` receipt. A refusal by a lane or by `egress`
   falls before booking and is a receipt only.
+- `session_ended` (GH #1016): a `voice` cell was asked to speak or advise (`in_speak`,
+  `in_advise`) into a session whose connection it held and lost — the caller hung up. The late
+  answer goes neither to the model nor on as an error; the cell dead-letters the message itself
+  (`resolved_target` is the cell). A session that connects again is a new call.
+- `replay_exhausted` (GH #1015): a delivery the colony logged to a cell and that cell never finished
+  was replayed on three starts and finished on none of them — the message takes the process down
+  with it. The fourth start dead-letters it (`resolved_target` is the cell) instead of replaying it
+  again; its `message_log` row stays. See `stability.en.md` § Delivery across a crash.
 
 When processing a cell emission in the outputs arm, exactly one of three disjoint paths applies, in
 this order (ruling A1, 2026-06-12):

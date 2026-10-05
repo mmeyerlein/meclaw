@@ -410,6 +410,8 @@ pub struct Live {
     pub ended: mpsc::UnboundedReceiver<usize>,
     /// How many of [`Self::starts`] were renewals.
     pub renewed_starts: Arc<AtomicUsize>,
+    /// Every message the cell handed to the colony as a dead letter (GH #1016).
+    pub dead_letters: mpsc::Receiver<meclaw_colony::ColonyMsg>,
     handler: tokio::task::JoinHandle<()>,
     io: tokio::task::JoinHandle<()>,
     listener: tokio::task::JoinHandle<()>,
@@ -810,7 +812,10 @@ async fn boot_full(
     io.cell_path = Path::new("/voice");
     io.surfaces = Arc::clone(&surfaces);
 
-    let mut cell = VoiceCell::new(Path::new("/voice"), io, &params, &raw);
+    // GH #1016: the colony inbox a cell dead-letters into, read by the test.
+    let (dead_tx, dead_letters) = mpsc::channel::<meclaw_colony::ColonyMsg>(64);
+    let mut cell =
+        VoiceCell::new(Path::new("/voice"), io, &params, &raw).with_dead_letters(dead_tx);
     let io_half = cell.split_io();
     let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(64);
     let io_task = tokio::spawn(VoiceCell::run_io(io_half, events_tx, reconfig_rx));
@@ -922,6 +927,7 @@ async fn boot_full(
         journal,
         ended,
         renewed_starts,
+        dead_letters,
         handler,
         io: io_task,
         listener,
