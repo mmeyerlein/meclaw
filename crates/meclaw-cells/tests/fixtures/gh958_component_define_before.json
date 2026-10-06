@@ -1,10 +1,10 @@
 {
-  "about": "sha256 of json.dumps(component.define arguments, sort_keys=True) per component, as compose.py defined them before the catalogue (GH #958); the embedded sheet (KIT_CSS) in a template is replaced by the marker <KIT_CSS> first -- the sheet's own equality is gh669's lock, and a sheet change must not move this golden",
+  "about": "sha256 of json.dumps(component.define arguments, sort_keys=True) per component, as compose.py defined them before the catalogue (GH #958); the embedded sheet (KIT_CSS) in a template is replaced by the marker <KIT_CSS> first -- the sheet's own equality is gh669's lock, and a sheet change must not move this golden. GH #1028 adds `canvas_rank` (an int, the window's place on the canvas) to display-view-custom and display-view-prose: their two hashes moved on purpose",
   "components": {
     "display-shell": "93d2399123794ea46236b8ce0e67c09570d52bf30c1f392f4b2f6aa6e675c337",
     "display-region": "92e781b734ff4530dcc1d8e5cb69ea87851078ab9a5625ca4e69f0886e2eb1ee",
-    "display-view-prose": "558ddbc043974880cf94ee4d4639b6ffa544d8b541b59b05fcaaae499fd88adc",
-    "display-view-custom": "57c32eda55349aa9c63ca53f51e84020fc025399a2fbcb00d16547362c19f8d9",
+    "display-view-prose": "2112027139b41c6b141ac9eff9866cd25bd937d19e7ac0354a7a99fc93450476",
+    "display-view-custom": "5a572abea55b46bf64b36d5f16f7b75f54f7b92cca129bc0e44fd72400bf65d9",
     "display-os": "5cf9bedf3e6b801c7db3e15b52aa933c579de21fff455a4e1873b4590d3bc292",
     "display-pane": "319583c21d6379dc761dc0aba1555882740b883b366e14ff3dc414de56c0dab9",
     "display-panel": "438d218b1f91f57ab10880285f5c5a3da54b66a239f86162978383f2106c5345",

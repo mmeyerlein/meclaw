@@ -17,7 +17,16 @@ pub struct TimerParams {
     pub schedules: Vec<ScheduleRow>,
     /// Operation timeout (A) for DB calls. Default 5000 ms.
     pub query_timeout_ms: u64,
+    /// GH #1019 (review B1): what this timer accepts from its mailbox. `None`
+    /// (absent) = every op and the `params` slot, as before. A list narrows it
+    /// to the named ops (`add`, `modify`, `remove`, `trigger`) plus `params`
+    /// when listed; the rest is refused as `op_not_accepted`. Birth-only, not an
+    /// overlay field: the gate cannot be lifted through the door it guards.
+    pub accept_ops: Option<Vec<String>>,
 }
+
+/// The names `accept_ops` may list.
+pub const ACCEPTABLE_OPS: &[&str] = &["add", "modify", "remove", "trigger", "params"];
 
 /// β: the `timer` runtime-overlay surface is **exactly** `query_timeout_ms`.
 ///
@@ -65,9 +74,29 @@ impl TimerParams {
                 schedules.push(row);
             }
         }
+        let accept_ops = match obj.get("accept_ops") {
+            None | Some(JsonValue::Null) => None,
+            Some(v) => {
+                let arr = v.as_array().ok_or("params.accept_ops: must be array")?;
+                let mut ops = Vec::with_capacity(arr.len());
+                for (i, item) in arr.iter().enumerate() {
+                    let name = item
+                        .as_str()
+                        .ok_or_else(|| format!("params.accept_ops[{i}]: must be string"))?;
+                    if !ACCEPTABLE_OPS.contains(&name) {
+                        return Err(format!(
+                            "params.accept_ops[{i}]: unknown op {name:?} (one of {ACCEPTABLE_OPS:?})"
+                        ));
+                    }
+                    ops.push(name.to_string());
+                }
+                Some(ops)
+            }
+        };
         Ok(Self {
             schedules,
             query_timeout_ms,
+            accept_ops,
         })
     }
 }
@@ -181,5 +210,16 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.contains("cron"), "expected cron-error, got: {err}");
+    }
+
+    #[test]
+    fn gh1019_accept_ops_is_absent_by_default_and_checked_when_set() {
+        assert!(TimerParams::parse(&json!({})).unwrap().accept_ops.is_none());
+        let p = TimerParams::parse(&json!({"accept_ops": ["trigger"]})).unwrap();
+        assert_eq!(p.accept_ops, Some(vec!["trigger".to_string()]));
+        let err = TimerParams::parse(&json!({"accept_ops": ["fire"]})).unwrap_err();
+        assert!(err.contains("accept_ops[0]"), "{err}");
+        let err = TimerParams::parse(&json!({"accept_ops": "trigger"})).unwrap_err();
+        assert!(err.contains("must be array"), "{err}");
     }
 }

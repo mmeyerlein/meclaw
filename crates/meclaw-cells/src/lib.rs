@@ -30,6 +30,7 @@ pub mod voice;
 pub mod web;
 pub mod web_fetch;
 pub mod web_search;
+pub mod websocket;
 pub use bash::{BashCell, BashCellFactory};
 pub use browser::BrowserCellFactory;
 pub use edit::{EditCell, EditCellFactory};

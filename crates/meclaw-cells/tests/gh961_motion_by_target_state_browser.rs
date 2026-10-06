@@ -36,8 +36,14 @@ use display_colony::{Boot, PROBE, SCREEN, boot, have_python, library_ships, repo
 use meclaw_core::serde_json::{Value, json};
 
 const DRIVER: &str = "workshop/tools/display-motion-browser.mjs";
-/// The laboratory WebKit runs in on this host; Chromium ignores it (OR-H5.3).
+/// The laboratory WebKit runs in on this host, sourced for every run except a Chromium
+/// one (the driver's default engine is WebKit). Sourced for Chromium too, a host without
+/// the laboratory read its `SKIP` line as the Chromium run's own, and the lock proved
+/// nothing there (XB-M review I-1: build02 skipped every Chromium run).
 const WKENV: &str = "workshop/tools/wkenv.sh";
+/// `sh -c` with `$1` the laboratory, the rest the driver and its arguments.
+const WITH_LAB: &str =
+    "case \" $* \" in *\" --engine chromium \"*) ;; *) . \"$1\" ;; esac; shift; exec node \"$@\"";
 /// The window that carries the field.
 const VIEW: &str = "motion";
 /// How many marks one write moves.
@@ -149,7 +155,7 @@ async fn drive(engine: &str, url: &str, api: &str, dir: &Path) -> Option<Value> 
         DRIVER_LIMIT,
         tokio::process::Command::new("sh")
             .arg("-c")
-            .arg(". \"$1\"; shift; exec node \"$@\"")
+            .arg(WITH_LAB)
             .arg("sh")
             .arg(repo(WKENV))
             .arg(repo(DRIVER))

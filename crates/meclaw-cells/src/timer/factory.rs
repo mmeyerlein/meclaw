@@ -207,6 +207,7 @@ fn make_build(
 > {
     let parsed = TimerParams::parse(&params)?;
     let seed_cap: Arc<Vec<ScheduleRow>> = Arc::new(parsed.schedules);
+    let accept_cap = parsed.accept_ops;
     // β: birth params Value, captured for the per-(re)spawn overlay restore of
     // `query_timeout_ms` (path C). Schedules are NOT overlay-managed (ops-driven).
     let birth_cap = params;
@@ -259,8 +260,9 @@ fn make_build(
         //    site. The helper mints the peace/stop/death_ack oneshot pairs
         //    internally and returns `(join, peace_rx, stop_tx, death_ack_rx)`. No
         //    `.await` inside the helper → await-free respawn corridor preserved.
-        let cell =
-            TimerCell::new(path_cap.clone(), active, query_timeout_ms).with_booted_at(booted_at);
+        let cell = TimerCell::new(path_cap.clone(), active, query_timeout_ms)
+            .with_booted_at(booted_at)
+            .with_accept_ops(accept_cap.clone());
         let db = DbConn::wrap(conn, Some(Duration::from_millis(query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(

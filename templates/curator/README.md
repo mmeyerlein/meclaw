@@ -1,4 +1,4 @@
-# `curator@1.7.2`
+# `curator@1.8.0`
 
 The window of one model, owned in one place, with a ledger of every call. Contract tables only; the prose follows with the program it belongs to.
 
@@ -96,6 +96,7 @@ The model behind the hive orders its system part with `history` after `identity`
 | `handover` | `renew_rounds` | 12 | rounds a renewed live session is told as text |
 | `intake` | `nothing_block` | "" | one JSON object: the sidecar nothing-form rendered after a sentence the model says beside a tool call, when it carries no block; empty = off |
 | `intake` | `pass_sections` | "" | sections that leave again unchanged on `sidecar` after their mark, comma-separated (a talky: `memory`) |
+| `intake` | `replay_channel_prefix` | "" | lab replay only, since 1.8.0 (GH #1018): a turn whose `context.channel` starts with this prefix and whose context carries `happened_at` (ISO 8601, the HTTP door puts a request header there) gives its episode that time instead of the ingest clock -- `turn_write` `hop.happened_at`, the member edge, the memory hive episode, extracted `valid_from`; the wall keeps the ingest clock. Empty = off, and every other channel or an unreadable time gets the ingest clock. The guard is the instance, not the channel: the channel name is the caller's at the HTTP door (and on the peer path), so with the prefix set any such caller can backdate by choosing a matching name; bridged channels (telegram, phone) never match unless the prefix collides with their names. Set only on a lab instance, never on a live one |
 | `history` | `read_budget` | 40000 | the most characters (the blocks' canonical JSON) one `history_read` answer carries; a larger read is refused with `too_large` and its size, never shortened |
 | `history` | `scan_budget` | 5000 | the most wall rows the round may see that one `history_search` reads, newest first (and one outline); a search cut there says `truncated_scan` with `cut_by` `scan_budget`, a turn range with more such rows is refused with `too_large`; rows of other rounds count toward no budget, only toward the row bound of twice it (below the history tools) |
 | `history` | `time_budget_ms` | 3000 | the most time one `history_search` spends from the call on; a match past it is interrupted and the search answers with its hits so far (`cut_by` `time_budget`); below the cell's `external_timeout_ms` |

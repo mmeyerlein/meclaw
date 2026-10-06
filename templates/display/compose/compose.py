@@ -1751,10 +1751,7 @@ body {
   overscroll-behavior: none;
   margin: 0;
   background-color: var(--ground);
-  background-image:
-    radial-gradient(52% 48% at 76% 22%, rgba(246, 201, 176, 0.9) 0%, rgba(246, 201, 176, 0) 62%),
-    radial-gradient(38% 34% at 8% 96%, rgba(226, 87, 63, 0.14) 0%, rgba(226, 87, 63, 0) 70%),
-    linear-gradient(178deg, var(--ground) 0%, var(--ground-2) 100%);
+  background-image: linear-gradient(178deg, var(--ground) 0%, var(--ground-2) 100%);
   background-attachment: fixed;
   background-repeat: no-repeat;
   font-family: var(--font-ui);
@@ -1765,12 +1762,25 @@ body {
   color: var(--fg-primary);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -2vw;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(52% 48% at 76% 22%, rgba(246, 201, 176, 0.9) 0%, rgba(246, 201, 176, 0) 62%),
+    radial-gradient(38% 34% at 8% 96%, rgba(226, 87, 63, 0.14) 0%, rgba(226, 87, 63, 0) 70%);
+  background-repeat: no-repeat;
+  will-change: transform;
   animation: display-light-drift 30s ease-in-out infinite alternate;
 }
 
 @keyframes display-light-drift {
-  from { background-position: 0 0, 0 0, 0 0; }
-  to { background-position: 2vw -1vw, -2vw 1vw, 0 0; }
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(2vw, -1vw, 0); }
 }
 
 body::after {
@@ -3023,6 +3033,12 @@ body::after {
   overscroll-behavior: contain;
 }
 
+.display-columns > [data-region="main"] > [data-level],
+.display-columns > [data-region="main"] > [data-view] > [data-level],
+.display-columns > [data-region="main"] > [data-view] > .display-stack > [data-level] {
+  order: var(--rank, 0);
+}
+
 .display-columns[data-exit="monitor"] > [data-region="main"] { grid-template-columns: repeat(3, minmax(0, calc((100% - 2 * var(--gap)) / 3))); }
 .display-columns[data-exit="tv"] > [data-region="main"] { grid-template-columns: repeat(2, minmax(0, calc((100% - var(--gap)) / 2))); }
 .display-columns[data-exit="phone"] > [data-region="main"] { grid-template-columns: minmax(0, 1fr); }
@@ -3510,6 +3526,8 @@ html[data-dock-open="0"] .display-columns[data-dock="shown"] {
 
 body:has([data-exit="tv"]) { animation: none; }
 
+body:has([data-exit="tv"])::before { animation: none; will-change: auto; }
+
 body:has([data-exit="tv"])::after { display: none; }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -3526,6 +3544,7 @@ body:has([data-exit="tv"])::after { display: none; }
 
   :is(.display-pane, .display-panel, .display-overlay, .display-ornament)::before { display: none; }
   body { background-image: none; animation: none; }
+  body::before { display: none; }
   body::after { display: none; }
 
   .display-input-field {
@@ -3609,6 +3628,7 @@ body:has([data-exit="tv"])::after { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   body { animation: none; }
+  body::before { animation: none; }
 
   .display-pane,
   .display-panel,
@@ -4013,6 +4033,11 @@ CATALOG_JSON = r"""{
       "describe": "A window that shows a title and a text, written by the screen for a prose view.",
       "curated": true,
       "props": {
+        "canvas_rank": {
+          "type": "int",
+          "required": false,
+          "describe": "The window's place on the canvas, written by the screen (GH #1028)."
+        },
         "view_id": {
           "type": "text",
           "required": false,
@@ -4051,6 +4076,11 @@ CATALOG_JSON = r"""{
       "layer": "content",
       "describe": "A bare wrapper around an application's own tree.",
       "props": {
+        "canvas_rank": {
+          "type": "int",
+          "required": false,
+          "describe": "The window's place on the canvas, written by the screen (GH #1028)."
+        },
         "view_id": {
           "type": "text",
           "required": false,
@@ -5681,7 +5711,8 @@ PROSE_TEMPLATE = (
     ' data-owner="{{owner}}" data-rung="{{rung}}" data-age="{{age}}"'
     ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
     ' data-led="{{led}}" data-pinned="{{pinned}}" data-topic="{{topic}}"'
-    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}"><div class="inner">'
+    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}"'
+    ' style="--rank: {{canvas_rank}}"><div class="inner">'
     '{{#if title}}<h2 class="display-pane-title display-lead">{{title}}</h2>{{/if}}'
     '<div class="display-pane-body">'
     '<p class="display-text display-line">{{body}}</p></div></div></section>'
@@ -5691,7 +5722,8 @@ PROSE_TEMPLATE = (
 # no class, because no sheet on this screen has a rule for one. What it looks
 # like is the business of the tree hung inside it.
 CUSTOM_TEMPLATE = (
-    '<div data-view="{{view_id}}" data-owner="{{owner}}">{{children}}</div>'
+    '<div data-view="{{view_id}}" data-owner="{{owner}}" style="--rank: {{canvas_rank}}">'
+    '{{children}}</div>'
 )
 
 # ---------------------------------------------------------------------------
@@ -10728,10 +10760,39 @@ def objects_from_state(state, rows, now, name, have=None):
     # § 6.3: the open canvas windows stand in the canvas in `canvas_order`, the leading
     # one first. A band below zero, so a window that is drawn at all stands ahead of
     # everything that is only a tile.
-    lane = canvas_order(state)
+    #
+    # GH #1028: the DOM order is NOT that order. Measured (display
+    # before-run): a window that opened AHEAD of others -- the leading one does -- made
+    # the client's keyed morph re-append every window after it; the browser saw all
+    # canvas sections removed and inserted again on every such patch (verdict -> DOM
+    # p50 1 063 ms). The morph moves nothing when the keyed children keep their relative
+    # order, so the windows keep the order they already stand in and a new one is
+    # appended; `ord` is renumbered in THAT order (still the band below zero). Where a
+    # window stands on the screen is `canvas_rank` (its place in `canvas_order`), which the
+    # wrapper writes as `--rank` and the sheet reads as the grid's `order`: a change of
+    # place is one attribute, never a move of a node.
+    lane = [oid for oid in canvas_order(state) if oid in want]
+    held = have or {}
+
+    def dom_key(i_oid):
+        i, oid = i_oid
+        h = held.get(oid)
+        if h and h.get("parent") == want[oid]["parent"] \
+                and isinstance(h.get("ord"), (int, float)):
+            return (0, h["ord"], oid)
+        return (1, i, oid)
+
+    in_dom = [oid for _, oid in sorted(enumerate(lane), key=dom_key)]
+    for k, oid in enumerate(in_dom):
+        want[oid]["ord"] = -(len(in_dom) - k) * ORD_STEP
     for i, oid in enumerate(lane):
-        if oid in want:
-            want[oid]["ord"] = -(len(lane) - i) * ORD_STEP
+        want[oid]["props"]["canvas_rank"] = i
+    for oid, spec in want.items():
+        if spec["component"] in ("display-view-custom", "display-view-prose") \
+                and "canvas_rank" not in spec["props"]:
+            # A window that is not open has no place on the canvas; a leaving one keeps
+            # the rank it held (`ghost` copied its props).
+            spec["props"]["canvas_rank"] = len(lane)
     # The dock, bottom -> top. `ord` runs the other way: the column is anchored at the
     # bottom edge, so what stands lowest needs the highest `ord` (OR-F29).
     entries = state["dock_order"]

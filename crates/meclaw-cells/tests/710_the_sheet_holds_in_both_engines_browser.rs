@@ -42,10 +42,14 @@ fn repo(rel: &str) -> std::path::PathBuf {
 
 const COMPOSE: &str = "templates/display/compose/compose.py";
 const DRIVER: &str = "workshop/tools/display-layout-browser.mjs";
-/// The laboratory WebKit runs in on this host. Sourced for BOTH engines, so a run has
-/// one shape: Chromium ignores every variable in it, and reading the file in one place
-/// is better than two code paths of which only one is ever exercised (OR-H5.3).
+/// The laboratory WebKit runs in on this host, sourced for every run except a Chromium
+/// one (the driver's default engine is WebKit). Sourced for Chromium too, a host without
+/// the laboratory read its `SKIP` line as the Chromium run's own, and the lock proved
+/// nothing there (XB-M review I-1: build02 skipped every Chromium run).
 const WKENV: &str = "workshop/tools/wkenv.sh";
+/// `sh -c` with `$1` the laboratory, the rest the driver and its arguments.
+const WITH_LAB: &str =
+    "case \" $* \" in *\" --engine chromium \"*) ;; *) . \"$1\" ;; esac; shift; exec node \"$@\"";
 
 /// Whether the template library travels in this tree (it does not in the published one).
 fn library_ships() -> bool {
@@ -95,7 +99,7 @@ fn drive(engine: &str, parts: &Path, out_dir: &Path) -> Option<Value> {
     }
     let run = Command::new("sh")
         .arg("-c")
-        .arg(". \"$1\"; shift; exec node \"$@\"")
+        .arg(WITH_LAB)
         .arg("sh")
         .arg(repo(WKENV))
         .arg(repo(DRIVER))

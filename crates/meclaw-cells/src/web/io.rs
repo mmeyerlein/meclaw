@@ -37,8 +37,9 @@
 //! from the shared half is where it always lived: the container id and the
 //! session token come from `meclaw_surface::session`.
 
+use crate::websocket::WebSocketUpgrade;
 use axum::Router;
-use axum::extract::{State, WebSocketUpgrade};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -1115,11 +1116,11 @@ pub(crate) fn router(io: WebIo) -> Router {
         // Ordered most-specific first: the client prefix cannot be a page,
         // because a page route never starts with `@` (the same reservation the
         // API side makes, for the same reason).
-        .route("/@client/:file", get(get_client))
+        .route("/@client/{file}", get(get_client))
         // Everything else is ONE handler over both declared surfaces — see
         // `get_path` for why pages and assets are not two competing routes.
         .route("/", get(get_path))
-        .route("/*path", get(get_path))
+        .route("/{*path}", get(get_path))
         .with_state(io)
 }
 

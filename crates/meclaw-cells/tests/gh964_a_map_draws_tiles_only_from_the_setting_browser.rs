@@ -36,7 +36,14 @@ fn repo(rel: &str) -> std::path::PathBuf {
 
 const COMPOSE: &str = "templates/display/compose/compose.py";
 const DRIVER: &str = "workshop/tools/display-map-browser.mjs";
+/// The laboratory WebKit runs in on this host, sourced for every run except a Chromium
+/// one (the driver's default engine is WebKit). Sourced for Chromium too, a host without
+/// the laboratory read its `SKIP` line as the Chromium run's own, and the lock proved
+/// nothing there (XB-M review I-1: build02 skipped every Chromium run).
 const WKENV: &str = "workshop/tools/wkenv.sh";
+/// `sh -c` with `$1` the laboratory, the rest the driver and its arguments.
+const WITH_LAB: &str =
+    "case \" $* \" in *\" --engine chromium \"*) ;; *) . \"$1\" ;; esac; shift; exec node \"$@\"";
 /// The test host. `.test` is reserved (RFC 2606): nothing outside the page's own
 /// network layer could ever answer it.
 const SETTING: &str = "https://tiles.example.test/{z}/{x}/{y}.png";
@@ -143,7 +150,7 @@ fn the_map_draws_in(engine: &str) {
     std::fs::write(td.path().join("blocks.html"), &body).expect("blocks.html");
     let out = match Command::new("sh")
         .arg("-c")
-        .arg(". \"$1\"; shift; exec node \"$@\"")
+        .arg(WITH_LAB)
         .arg("sh")
         .arg(repo(WKENV))
         .arg(repo(DRIVER))

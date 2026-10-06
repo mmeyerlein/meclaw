@@ -15,8 +15,9 @@
 //! none. `/info` is that question with a read for an answer (R-V6): the same
 //! declaration, minus the `session_id`, because nothing was opened.
 
+use crate::websocket::WebSocketUpgrade;
 use axum::Router;
-use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;

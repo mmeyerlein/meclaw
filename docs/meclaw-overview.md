@@ -4326,7 +4326,8 @@ template versions, and HTTP/OpenAPI conventions for auth, retry and timeout.
 | DB | `rusqlite` (decided in phase 5; `sqlx` rejected; `rusqlite="0.39"` in four crates; since P4 with the `functions` feature in `meclaw-cells` for registered scalar functions like `hamming()`) |
 | Graph (data structure) | `petgraph` |
 | Edge expressions | `cel` (crate; GitHub project `cel-rust`) |
-| HTTP API | `axum` |
+| HTTP API | `axum` 0.8 |
+| WebSocket (server) | own frame codec `meclaw-cells::websocket` (`tokio-util` `Framed`, `flate2`) with permessage-deflate (RFC 7692; GH #1024): no tungstenite release implements the extension, and it rejects RSV1 frames; messages of 4 KiB and more (level 6, in 16 KiB steps) travel compressed, smaller ones unchanged; clients (providers, tests) stay on `tokio-tungstenite` |
 | HTTP client | `reqwest` with the `rustls` feature (async, hyper-based, native Tokio runtime usage, a static binary possible) |
 | HTML templating (operator web UI) | `maud` (inline HTML in Rust macros, no external template directory) |
 | OpenAPI generation (planned; dependency wired, no annotations yet) | `utoipa` |

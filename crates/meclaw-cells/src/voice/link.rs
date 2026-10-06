@@ -24,7 +24,7 @@
 //! mutably by the read future cannot also be written to from a branch body. The
 //! halves are what the loop holds; the link itself is what a door hands over.
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use crate::websocket::{CloseFrame, Message, WebSocket};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use meclaw_colony::LinkFrame;

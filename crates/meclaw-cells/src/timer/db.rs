@@ -229,6 +229,24 @@ pub fn load_schedule(conn: &Connection, id: Uuid) -> rusqlite::Result<Option<Sch
     }
 }
 
+/// GH #1019: the ids of the ACTIVE rows named `name`, oldest first. A trigger
+/// by name fires only when this holds exactly one id; removed and completed rows
+/// are not firing targets, so they never make a name ambiguous.
+pub fn active_ids_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Vec<Uuid>> {
+    let mut stmt = conn.prepare(
+        "SELECT schedule_id FROM schedules
+          WHERE schedule_name = ?1 AND status = 'active'
+          ORDER BY created_at, schedule_id",
+    )?;
+    let ids = stmt
+        .query_map([name], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(ids
+        .into_iter()
+        .filter_map(|s| Uuid::parse_str(&s).ok())
+        .collect())
+}
+
 /// UPDATE the carried fields of an existing row. Returns rows_changed — the
 /// caller (handler) checks `== 1` for "known" vs. `== 0` for "unknown".
 /// `kind` is NOT exposed as an update argument: `modify` does not switch the type

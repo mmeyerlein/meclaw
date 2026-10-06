@@ -622,7 +622,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.7.2");
+    assert_eq!(t["version"], "1.8.0");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -2939,4 +2939,107 @@ fn an_ask_and_a_correction_are_marked_once_off_the_tap() {
         want,
         "no other tool, no block beside a call, no empty section, no legacy fence"
     );
+}
+
+// ----------------------------------------------------- GH #1018 replay time
+
+/// GH #1018: one turn and its answer on `channel`, with `happened_at` in the
+/// context where the HTTP door puts a request header. Returns the `happened_at`
+/// of every `turn_write` the round caused -- the value the member edge promotes
+/// to the memory hive's `context.happened_at`, the episode's time.
+fn replayed_times(h: &mut Hive, channel: &str, happened_at: &str) -> Vec<String> {
+    h.out.clear();
+    let hop = json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "phase": ""});
+    let ctx = json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "channel": channel,
+                     "audience_set": ROUND_E, "happened_at": happened_at});
+    h.lane(
+        "in_curate",
+        ctx,
+        hop,
+        json!({"messages": [user("we adopted a dog last week")]}),
+    );
+    let calls = h.routed("brain");
+    assert_eq!(calls.len(), 1, "one round, one call: {:?}", h.out);
+    let mut episodes = h.routed("turn_write");
+    h.out.clear();
+    h.tap(&calls[0], "stop", json!({}), json!([said("a dog!")]));
+    episodes.extend(h.routed("turn_write"));
+    assert_eq!(episodes.len(), 2, "the person's turn and the answer");
+    episodes
+        .iter()
+        .map(|m| {
+            m.hop["happened_at"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+const REPLAYED: &str = "2020-01-02T03:04:05Z";
+const REPLAYED_WALL: &str = "2020-01-02T03:04:05.000000Z";
+
+#[test]
+fn gh1018_a_replay_channel_keeps_the_time_of_its_turn() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::with(&[("intake", "replay_channel_prefix", json!("replay-"))]);
+    assert_eq!(
+        replayed_times(&mut h, "replay-c1-s1", REPLAYED),
+        [REPLAYED_WALL, REPLAYED_WALL],
+        "the turn and its answer carry the time the turn was said"
+    );
+    // The wall keeps the ingest clock: it is the curator's own ledger.
+    let walls = h.rows("SELECT DISTINCT at FROM wall");
+    assert!(
+        walls.iter().all(|r| r[0] != json!(REPLAYED_WALL)),
+        "{walls:?}"
+    );
+    // The rest of the way is shipped already and pinned here so it stays: the
+    // member edge promotes the writer's hop time to the memory hive's context,
+    // which the memory hive's writer stores as the episode's `happened_at`.
+    let member = read_json(&repo("templates/member/config.json"));
+    let edge = member["params"]["graph"]["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .find(|e| {
+            e["from"] == "./assistants"
+                && e["to"] == "./memory-hive"
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("'turn_write'"))
+        })
+        .expect("the member's episode edge");
+    assert_eq!(
+        edge["modifier"]["set_context"]["happened_at"],
+        json!("has(hop.happened_at) ? hop.happened_at : ''")
+    );
+}
+
+#[test]
+fn gh1018_off_by_default_and_never_on_a_live_channel() {
+    if !shipped() {
+        return;
+    }
+    assert_eq!(
+        cell_config("intake")["params"]["replay_channel_prefix"],
+        json!(""),
+        "the switch ships off"
+    );
+    for (prefix, channel, at) in [
+        ("", "replay-c1-s1", REPLAYED),           // switch off
+        ("replay-", "telegram-42", REPLAYED),     // a live channel
+        ("replay-", "replay-c1-s1", "last week"), // an unreadable time
+    ] {
+        let mut h = Hive::with(&[("intake", "replay_channel_prefix", json!(prefix))]);
+        let times = replayed_times(&mut h, channel, at);
+        assert!(
+            times
+                .iter()
+                .all(|t| !t.is_empty() && !t.starts_with("2020-")),
+            "prefix {prefix:?}, channel {channel:?}, time {at:?}: the ingest clock, got {times:?}"
+        );
+    }
 }

@@ -47,7 +47,7 @@
 //! decides. A viewer is then registered under that route, and a write to it
 //! reaches exactly the viewers of that page (Task 7).
 
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use crate::websocket::{Message as WsMessage, WebSocket};
 use futures_util::stream::{FuturesUnordered, SplitSink};
 use futures_util::{SinkExt, StreamExt};
 use meclaw_colony::{LinkFrame, LinkRequest};

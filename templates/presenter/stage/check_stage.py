@@ -231,6 +231,29 @@ def t_threshold(s, t):
     t.check("param default", s.judge(s.read_verdict(
         {"answers": {"topic": {"choice": "sample", "p": 0.6}}}, known), known,
         {"threshold": 0.5}), None)
+    # OR-HP-66: a threshold per topic of the presenter's own (`builtin_thresholds`); the
+    # decider gave 0.57-0.62 for plain search and work requests against the 0.7 of all.
+    own = dict(s.builtin_topics({"observed_topics": ["search", "work"], "catalog": CATALOG}))
+    own.update(known)
+
+    def o(topic, p, **params):
+        body = {"answers": {"topic": {"choice": topic, "p": {topic: p}}}, "model": "m"}
+        return s.judge(s.read_verdict(body, own), own, params)
+
+    low = {"search": 0.55}
+    t.check("own threshold: search at 0.6 is sure", o("search", 0.6, builtin_thresholds=low),
+            None)
+    t.check("own threshold: search at 0.5 is not", o("search", 0.5, builtin_thresholds=low),
+            "unsure")
+    t.check("own threshold: work keeps the default", o("work", 0.6, builtin_thresholds=low),
+            "unsure")
+    t.check("own threshold: as JSON text", o("search", 0.6, builtin_thresholds=json.dumps(low)),
+            None)
+    t.check("own threshold: out of (0, 1] keeps the default",
+            o("search", 0.6, builtin_thresholds={"search": 1.5}), "unsure")
+    t.check("own threshold: not for an app's topic",
+            o("sample", 0.6, builtin_thresholds={"sample": 0.1}), "unsure")
+    t.check("own threshold: default unchanged", o("search", 0.69), "unsure")
     t.check("confidence spelling", s.answer_of(
         {"topic": {"choice": "sample", "confidence": 0.8}}, "topic"), ("sample", 0.8))
     t.check("missing answer", s.answer_of({}, "topic"), (None, 0.0))
@@ -334,6 +357,12 @@ class Cell:
         vars(self.s)["_TEST_NOW"] = self.now
 
     def run(self, hop, body=None, ctx=None, reply_to="/x"):
+        screen = self.params.get("screen_audience")
+        if ctx is None and hop.get("route") == "turn" and screen:
+            # The member's observer edge stamps the member round on every turn, and a
+            # screen with a round shows that round: a turn without one opens nothing
+            # there (GH #1027). A table that wants a foreign or missing round says so.
+            ctx = {"audience_set": screen if isinstance(screen, str) else json.dumps(screen)}
         doc = {"envelope": {"header": {"hop": hop, "context": ctx or {}},
                             "reply_to": reply_to},
                "body": dict({"messages": []}, **(body or {})), "params": self.params}
@@ -824,8 +853,10 @@ def t_observe(s, t):
     t.check("observed topics off: nothing kept", call(c0, "bash", "d1", {"command": "ls"}), [])
 
     # Turn association: by turn_id where the call carries one, else the newest open turn of
-    # the same round, never a turn of another round, never a closed one.
-    c = observing(s)
+    # the same round, never a turn of another round, never a closed one. On a screen
+    # without a round: a turn of another round on the member's screen is closed on arrival
+    # since GH #1027 (`FOREIGN`), and this table is about the association alone.
+    c = observing(s, screen_audience=[])
     c.run({"route": "turn", "turn_id": "t1"}, {"messages": [{"type": "text", "text": "a"}]},
           ctx={"audience_set": json.dumps(ROUND)})
     c.tick(5)
@@ -1426,6 +1457,146 @@ def t_followup(s, t):
                 (c.pending("e1")["state"], c.pending("e2")["state"]), ("done", "showing"))
 
 
+def t_foreign_round(s, t):
+    """GH #1027: a turn whose round does not cover the screen's asks nothing and opens
+    nothing; the journal says `foreign_round`. Measured before: a guest's turn opened the
+    member's window with its working hint, and only the data were gated."""
+    c = Cell(s, screen_audience=["member:a"])
+    c.run({"route": "show_topics", "show_app": "/app"}, {"topics": [sample()]})
+    text = {"messages": [{"type": "text", "text": "her sample"}]}
+    out = c.run({"route": "turn", "turn_id": "g1"}, text,
+                ctx={"audience_set": json.dumps(["agent:x", "person:guest"])})
+    t.check("guest: no decider, no view", routes(out), [])
+    rows = journal_of(out)
+    t.check("guest journal", [r["fallback"] for r in rows], ["foreign_round"])
+    t.check("guest journal carries no text", "her sample" in json.dumps(rows), False)
+    t.check("guest turn is done", c.pending("g1")["state"], "done")
+    out = c.run({"route": "in_decision", "show_id": "g1"}, verdict("sample", 0.9, "rows"),
+                ctx=DEC_CTX)
+    t.check("a verdict for it opens nothing", routes(out), [])
+    out = c.run({"route": "turn", "turn_id": "n1"}, text, ctx={"audience_set": ""})
+    t.check("no round: foreign", [r["fallback"] for r in journal_of(out)], ["foreign_round"])
+    out = c.run({"route": "turn", "turn_id": "w1"}, text,
+                ctx={"audience_set": json.dumps(["member:a", "person:guest"])})
+    t.check("a wider round covers the screen", routes(out), ["decide"])
+    out = c.run({"route": "turn", "turn_id": "m1"}, text,
+                ctx={"audience_set": json.dumps(["agent:x", "member:a"])})
+    t.check("member: the decider is asked", "decide" in routes(out), True)
+    out = c.run({"route": "in_decision", "show_id": "m1"}, verdict("sample", 0.9, "rows"),
+                ctx=DEC_CTX)
+    t.check("member: the window opens", routes(out)[:2], ["view", "in_show"])
+    # A screen without a round keeps the old way: it shows `*` data only anyway.
+    c2 = Cell(s)
+    c2.run({"route": "show_topics", "show_app": "/app"}, {"topics": [sample()]})
+    out = c2.run({"route": "turn", "turn_id": "o1"}, text,
+                 ctx={"audience_set": json.dumps(["person:guest"])})
+    t.check("no screen round: asked as before", "decide" in routes(out), True)
+
+
+def t_star_only(s, t):
+    """R-HP-9 (c), `window_requires_star_data`: a member's turn on a screen that a third
+    party shares (the turn's round does not cover the screen's, a member of the screen's
+    round is in it) opens a window only when `*` data are left after the audience gate --
+    no window with the working hint, no standard block, nothing without data. Switched
+    off, the reading before (b): the window opens on the verdict, `*` data fill it, the
+    standard stands in."""
+    shared = ["member:a", "member:b"]
+    mine = json.dumps(["agent:x", "member:a"])
+    text = {"messages": [{"type": "text", "text": "her sample"}]}
+
+    def cell(**params):
+        c = Cell(s, screen_audience=shared, **params)
+        c.run({"route": "show_topics", "show_app": "/app"}, {"topics": [sample()]})
+        return c
+
+    def turn(c, tid, lead="rows"):
+        out = c.run({"route": "turn", "turn_id": tid}, text, ctx={"audience_set": mine})
+        t.check("%s: the decider is asked" % tid, "decide" in routes(out), True)
+        return c.run({"route": "in_decision", "show_id": tid},
+                     verdict("sample", 0.9, lead), ctx=DEC_CTX)
+
+    # (c) a private topic: the member's data never cover the third party -> no window
+    c = cell()
+    out = turn(c, "p1")
+    t.check("private: the app is asked, no window", routes(out), ["in_show"])
+    out = data(c, "p1", {"rows": {"audience_set": ["member:a"], "rows": [{"name": "x"}]}})
+    t.check("private: member data draw nothing", routes(out), [])
+    c.tick(4000)
+    out = c.run({"route": "in_tick"})
+    t.check("private: nothing to withdraw", routes(out), [])
+    t.check("private: journal no_data", [r["fallback"] for r in journal_of(out)], ["no_data"])
+    # (c) a public topic: the window opens with the `*` data only
+    c = cell()
+    turn(c, "q1")
+    out = data(c, "q1", {"rows": {"audience_set": ["*"], "rows": [
+        {"name": "open", "audience_set": ["*"]}, {"name": "hers", "audience_set": ["member:a"]}]}})
+    t.check("public: the window opens now", routes(out), ["view"])
+    t.check("public: it is a touch", "touched" in out[0]["content"]["props"], True)
+    lst = out[0]["content"]["children"][1]["children"][0]
+    t.check("public: only the `*` row", [r["props"].get("k") for r in lst["children"]], ["open"])
+    t.check("public: journal none", [r["fallback"] for r in journal_of(out)], ["none"])
+    # (c) the lead cannot stand on its `*` set: no standard block instead
+    c = cell()
+    turn(c, "v1")
+    out = data(c, "v1", {"rows": {"audience_set": ["*"], "value": {"n": 1}},
+                         "brief": {"audience_set": ["*"], "value": {"title": "Brief"}}})
+    t.check("no standard block instead", routes(out), [])
+    c.tick(4000)
+    out = c.run({"route": "in_tick"})
+    t.check("standard: nothing to withdraw", routes(out), [])
+    # (c) a member's turn never pulls the window of a covered turn of the same topic at
+    # its verdict: the window would leave the moment the private turn was judged, the
+    # third party's own window cut off and its leaving a side channel (XB-M review I-2).
+    covered = json.dumps(["agent:x"] + shared)
+    c = cell()
+    c.run({"route": "turn", "turn_id": "k1"}, text, ctx={"audience_set": covered})
+    out = c.run({"route": "in_decision", "show_id": "k1"}, verdict("sample", 0.9, "rows"),
+                ctx=DEC_CTX)
+    t.check("covered: the window opens on the verdict", routes(out)[:1], ["view"])
+    out = turn(c, "k2")
+    t.check("covered, then private verdict: no withdraw", routes(out), ["in_show"])
+    t.check("covered, then private verdict: the covered turn goes on", journal_of(out), [])
+    out = data(c, "k2", {"rows": {"audience_set": ["member:a"], "rows": [{"name": "x"}]}})
+    t.check("covered, then private data: nothing", routes(out), [])
+    out = data(c, "k1", {"rows": {"audience_set": ["*"], "rows": [{"name": "k1"}]}})
+    t.check("covered: its own data still fill its window", routes(out), ["view"])
+    # ... and a member's `*` data replace it only when they open the window
+    c = cell()
+    c.run({"route": "turn", "turn_id": "k3"}, text, ctx={"audience_set": covered})
+    c.run({"route": "in_decision", "show_id": "k3"}, verdict("sample", 0.9, "rows"),
+          ctx=DEC_CTX)
+    turn(c, "k4")
+    out = data(c, "k4", {"rows": {"audience_set": ["*"], "rows": [{"name": "open"}]}})
+    t.check("covered, then `*` data: the window is replaced", routes(out), ["view"])
+    t.check("covered, then `*` data: the covered turn leaves now",
+            [r["fallback"] for r in journal_of(out)], ["no_data", "none"])
+    # the switch off restores (b): the window on the verdict, the standard stands in
+    for off in (False, "false"):
+        c = cell(window_requires_star_data=off)
+        out = turn(c, "b1")
+        t.check("off %r: the window opens on the verdict" % (off,), routes(out)[:2],
+                ["view", "in_show"])
+        out = data(c, "b1", {"rows": {"audience_set": ["*"], "value": {"n": 1}},
+                             "brief": {"audience_set": ["*"], "value": {"title": "Brief"}}})
+        blocks = out[0]["content"]["children"][1]["children"]
+        t.check("off %r: standard instead" % (off,), [b["key"] for b in blocks],
+                ["show-sample-brief"])
+    c = cell(window_requires_star_data=False)
+    turn(c, "b2")
+    c.tick(4000)
+    out = c.run({"route": "in_tick"})
+    t.check("off: no data withdraws", routes(out), ["withdraw"])
+    # a turn of a foreign round (no member of the screen's round in it) opens nothing,
+    # whatever the switch says (GH #1027)
+    for sw in (True, False):
+        c = cell(window_requires_star_data=sw)
+        out = c.run({"route": "turn", "turn_id": "g1"}, text,
+                    ctx={"audience_set": json.dumps(["agent:x", "person:guest"])})
+        t.check("foreign (switch %s): asks nothing" % sw, routes(out), [])
+        t.check("foreign (switch %s): journal" % sw,
+                [r["fallback"] for r in journal_of(out)], ["foreign_round"])
+
+
 TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_threshold),
           ("BINDING", t_binding), ("AUDIENCE", t_audience), ("TURNS", t_turns),
           ("PARTIAL", t_partial),
@@ -1433,7 +1604,8 @@ TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_
           ("OBSERVE", t_observe), ("SEARCH", t_search), ("WORK", t_work),
           ("SOURCE", t_source), ("REGISTRY", t_registry), ("DATAROUND", t_data_round),
           ("FOLLOWUP", t_followup), ("RESULTS", t_results),
-          ("CONTRACT", t_contract)]
+          ("CONTRACT", t_contract), ("FOREIGN", t_foreign_round),
+          ("STARONLY", t_star_only)]
 
 
 def main(argv):

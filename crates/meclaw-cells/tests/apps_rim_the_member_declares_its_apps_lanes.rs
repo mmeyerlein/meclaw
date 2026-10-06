@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.5.6",
+            v, "2.5.7",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -436,12 +436,14 @@ fn the_versions_moved_with_the_declarations() {
              `assistant@3.7.1` (GH #995), the third digit; 2.5.5 only pins \
              `file-space@1.4.2` (GH #996), the third digit; 2.5.6 only pins \
              `file-space@1.4.3` and `memory-hive@3.8.4` and derives `./assistants` \
-             from `assistant@3.7.2` (GH #999), the third digit"
+             from `assistant@3.7.2` (GH #999), the third digit; 2.5.7 only pins \
+             `memory-hive@3.9.0` and derives `./assistants` from `assistant@3.7.3` \
+             (GH #1018, GH #1019), the third digit"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.7.2",
+            v, "3.7.3",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -489,7 +491,8 @@ fn the_versions_moved_with_the_declarations() {
              that handed a run, and it pins `talky@6.6.1` and `cogny@5.8.0`; 3.7.1 only \
              stamps the call's name as `context.called_tool` on the brains' tool edges \
              (GH #995), the third digit; 3.7.2 only pins `talky@6.6.2` and `cogny@5.8.1` \
-             (GH #999), the third digit"
+             (GH #999), the third digit; 3.7.3 only pins `talky@6.6.3` and `cogny@5.8.2` \
+             (GH #1018), the third digit"
         );
     }
 }

@@ -1659,6 +1659,41 @@ async fn an_explicit_row_is_reached_by_name_and_never_by_prose() {
     assert_eq!(pushes.len(), 1, "{ack}");
     assert_eq!(hop_of(&pushes[0], "subscriber"), "/sub_a");
     assert_eq!(inference_model(&h, &mut rx, "/sub_a", &subs).await, FLASH);
+    //     ... and a named tier (KR2 review, finding 3): a subscriber with no
+    //     requirement sits on `mid`, and `remap` of that tier onto the
+    //     explicit row reaches its brain with rank `tier`. The rank search
+    //     (`select`) still never offers it -- pinned in `llm_registry_template`.
+    //     The tier starts on DEEP: the global FAST -> FLASH replacement above
+    //     would move a FAST base onto FLASH before the remap (first red run).
+    admin(
+        &h,
+        &mut rx,
+        json!({"operation": "insert", "table": "tiers",
+               "row": {"tier": "mid", "model_id": DEEP, "since": "2026-09-26T00:00:00Z",
+                       "decided_by": "test", "active": 1}}),
+    )
+    .await;
+    command(
+        &h,
+        &mut rx,
+        json!({"op": "subscribe", "cell_path": "/sub_c", "start_model": BIRTH_C, "tier": "mid"}),
+    )
+    .await;
+    assert_eq!(inference_model(&h, &mut rx, "/sub_c", &subs).await, DEEP);
+    let (pushes, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "remap", "tier": "mid", "model_id": FLASH}),
+    )
+    .await;
+    let to_c: Vec<_> = pushes
+        .iter()
+        .filter(|p| hop_of(p, "subscriber") == "/sub_c")
+        .collect();
+    assert_eq!(to_c.len(), 1, "{ack}");
+    assert_eq!(hop_of(to_c[0], "rank"), "tier", "{ack}");
+    assert_eq!(body_of(to_c[0])["params"]["model"], FLASH, "{ack}");
+    assert_eq!(inference_model(&h, &mut rx, "/sub_c", &subs).await, FLASH);
 
     // (e) Retired, it is out of reach again: both cells leave it, and a new
     //     replacement onto it is refused.

@@ -52,9 +52,23 @@ pub enum TimerOp {
     /// firing to the I/O task, which pushes the same `Fire` frame the sleep arm
     /// pushes. The schedule keeps its cron; a one-shot keeps its `at`.
     Trigger {
-        /// PK of the row to fire.
-        schedule_id: Uuid,
+        /// The row to fire: its PK, or since GH #1019 its `schedule_name`.
+        target: TriggerTarget,
     },
+}
+
+/// What a `trigger` names (GH #1019). A template that mints its schedule id at
+/// instantiation (`${uuid7:...}`, the memory hive's nightly run) leaves a caller
+/// outside the colony no way to learn the id short of reading the timer's own
+/// `cell.db`; the name is in the template and is what the caller knows. The
+/// handler resolves a name to exactly one ACTIVE row and fires that row by id,
+/// so everything after the lookup is the GH #17 path unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerTarget {
+    /// The row's primary key.
+    Id(Uuid),
+    /// The row's `schedule_name`; refused unless exactly one active row has it.
+    Name(String),
 }
 
 /// GH #922: the detail prefix of the refusal of `catch_up` on a `cron` row;
@@ -110,6 +124,20 @@ fn no_op_object(obj: &serde_json::Map<String, JsonValue>) -> String {
     }
 }
 
+/// The op a body names, as [`TimerOp::parse`] reads it: `op` when it is a string,
+/// else `"add"` (the shorthand of an op-less body with a `schedule_id`), and
+/// `""` for a body that carries neither -- no op at all. One reading for the parser and for the
+/// `params.accept_ops` gate (KT review K4): before, the gate read a missing
+/// `op` as `""` while the parser read it as `add`, so a timer accepting `add`
+/// refused an op-less add the parser would have taken.
+pub(crate) fn op_name(v: &JsonValue) -> &str {
+    let Some(obj) = v.as_object() else { return "" };
+    if !obj.contains_key("op") && !obj.contains_key("schedule_id") {
+        return "";
+    }
+    obj.get("op").and_then(|x| x.as_str()).unwrap_or("add")
+}
+
 impl TimerOp {
     /// Parse + validate. On error: a string with a human-readable reason (the
     /// caller emits the error reply from it via `OutputSink`). Cron format errors
@@ -125,7 +153,21 @@ impl TimerOp {
         if !obj.contains_key("op") && !obj.contains_key("schedule_id") {
             return Err(no_op_object(obj));
         }
-        let op = obj.get("op").and_then(|x| x.as_str()).unwrap_or("add");
+        let op = op_name(v);
+        // GH #1019: a trigger without an id may name its schedule instead.
+        // Only `trigger`: an add or a modify names a schedule to create or to
+        // change, and a name is not unique there.
+        if op == "trigger" && !obj.contains_key("schedule_id") {
+            return match obj.get("schedule_name").and_then(|x| x.as_str()) {
+                Some(name) if !name.trim().is_empty() => Ok(TimerOp::Trigger {
+                    target: TriggerTarget::Name(name.to_string()),
+                }),
+                _ => Err(
+                    "schedule_id: required (a trigger may name its schedule_name instead)"
+                        .to_string(),
+                ),
+            };
+        }
         let id_s = obj
             .get("schedule_id")
             .and_then(|x| x.as_str())
@@ -136,7 +178,9 @@ impl TimerOp {
             // `trigger` carries nothing but the id: it fires the schedule as it
             // stands rather than describing a new one (GH #17). A trigger that
             // took fields would be a modify with a different name.
-            "trigger" => Ok(TimerOp::Trigger { schedule_id }),
+            "trigger" => Ok(TimerOp::Trigger {
+                target: TriggerTarget::Id(schedule_id),
+            }),
             "modify" => parse_modify(obj, schedule_id),
             "add" => parse_add(obj, schedule_id),
             other => Err(format!("op: unknown value {other:?}")),
@@ -443,6 +487,39 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(parsed, TimerOp::Trigger { .. }));
+    }
+
+    /// GH #1019: a trigger may name its schedule instead of its id; the name
+    /// alone is the target, and an id wins when both are there.
+    #[test]
+    fn gh1019_a_trigger_names_its_schedule_by_name() {
+        let parsed =
+            TimerOp::parse(&json!({"op": "trigger", "schedule_name": "nightly-dream"})).unwrap();
+        assert!(matches!(
+            parsed,
+            TimerOp::Trigger {
+                target: TriggerTarget::Name(ref n)
+            } if n == "nightly-dream"
+        ));
+        let both = TimerOp::parse(&json!({"op": "trigger", "schedule_name": "nightly-dream",
+                                          "schedule_id": "0190a3f2-0000-7000-8000-000000000001"}))
+        .unwrap();
+        assert!(matches!(
+            both,
+            TimerOp::Trigger {
+                target: TriggerTarget::Id(_)
+            }
+        ));
+        for empty in [
+            json!({"op": "trigger"}),
+            json!({"op": "trigger", "schedule_name": " "}),
+        ] {
+            let err = TimerOp::parse(&empty).unwrap_err();
+            assert!(err.starts_with("schedule_id:"), "got: {err}");
+        }
+        // Only a trigger: a remove by name stays a missing id.
+        let err = TimerOp::parse(&json!({"op": "remove", "schedule_name": "x"})).unwrap_err();
+        assert!(err.starts_with("schedule_id:"), "got: {err}");
     }
 
     /// GH #17: an op body that reaches the cell over the HTTP ingress carries a

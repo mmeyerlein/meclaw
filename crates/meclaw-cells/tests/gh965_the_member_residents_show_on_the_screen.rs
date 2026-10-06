@@ -45,7 +45,10 @@
 //!    room), a member-round topic (`files`) places nothing and is withdrawn after
 //!    `data_wait_ms` -- the answer arrived, and the gate is what held it. The colony's
 //!    counts (`["*"]`) still stand there: the positive control.
-//! 3. While the decider holds a `people` turn, its request carries the turn's text and the
+//! 3. On that shared screen, a covered turn's window stands while a member's private
+//!    turn of the same topic is judged: the private verdict withdraws nothing (no side
+//!    channel, XB-M review I-2), proven by a later covered window arriving first.
+//! 4. While the decider holds a `people` turn, its request carries the turn's text and the
 //!    topic descriptions and no person: affinity has not been read, nothing of it is on
 //!    the screen. The names reach the screen only after the verdict.
 //!
@@ -175,7 +178,7 @@ fn rendered_diff() -> Value {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "install_app", "request": "…",
                                          "params": {"scope": "/alex", "app": "presenter",
-                                                    "template": "presenter@1.2.2",
+                                                    "template": "presenter@1.2.3",
                                                     "screen": "display-main",
                                                     "generation": GENERATION,
                                                     "declaration": declaration,
@@ -475,7 +478,28 @@ async fn the_colony_topic_shows_the_real_colony_views_counts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_screen_with_a_third_party_shows_no_member_topic_but_the_counts() {
-    if !guard("a_screen_with_a_third_party_shows_no_member_topic_but_the_counts") {
+    // R-HP-9 (c), the shipped `window_requires_star_data`: the member's topic opens no
+    // window at all -- no hint, no block, nothing to withdraw.
+    third_party(
+        "a_screen_with_a_third_party_shows_no_member_topic_but_the_counts",
+        true,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_switch_off_opens_the_member_window_and_withdraws_it() {
+    // R-HP-9, the switch off: the reading before (b, R-DP-b) -- the window opens on the
+    // verdict, the gate holds the member's data, the window is withdrawn.
+    third_party(
+        "the_switch_off_opens_the_member_window_and_withdraws_it",
+        false,
+    )
+    .await;
+}
+
+async fn third_party(name: &str, star_only: bool) {
+    if !guard(name) {
         return;
     }
     if !shipped() {
@@ -487,6 +511,7 @@ async fn a_screen_with_a_third_party_shows_no_member_topic_but_the_counts() {
         data_wait_ms: 5_000,
         // The shipped built-in topics: this lock answers every question they add.
         builtin_topics: Value::Null,
+        window_requires_star_data: if star_only { Value::Null } else { json!(false) },
         ..Dials::default()
     })
     .await;
@@ -509,17 +534,21 @@ async fn a_screen_with_a_third_party_shows_no_member_topic_but_the_counts() {
          holds it: {body}"
     );
 
-    // The sentinel: the window's withdrawal reaches the screen. The screen takes the
-    // presenter's lane in order, so a block written before it would have arrived before.
-    s.c.wait_until("the files window is withdrawn at the screen", || async {
-        s.c.log(Some(SCREEN))
-            .await
-            .iter()
-            .any(|r| hop_of(r)["route"] == "in_withdraw" && body_of(r)["view_id"] == "show-files")
-    })
-    .await;
-    let rows = s.c.log(None).await;
     let stage = format!("{PRESENTER}/stage");
+    if !star_only {
+        // The sentinel: the window's withdrawal reaches the screen. The screen takes the
+        // presenter's lane in order, so a block written before it would have arrived before.
+        s.c.wait_until("the files window is withdrawn at the screen", || async {
+            s.c.log(Some(SCREEN)).await.iter().any(|r| {
+                hop_of(r)["route"] == "in_withdraw" && body_of(r)["view_id"] == "show-files"
+            })
+        })
+        .await;
+    }
+    // The turn ends `no_data` at the clock (the sentinel of (c): nothing opened).
+    let row = s.journal_of("t1").await;
+    assert_eq!(row["fallback"], json!("no_data"), "{row}");
+    let rows = s.c.log(None).await;
     let answered = rows
         .iter()
         .position(|r| {
@@ -528,19 +557,32 @@ async fn a_screen_with_a_third_party_shows_no_member_topic_but_the_counts() {
                 && hop_of(r)["resident"] == "file-space"
         })
         .expect("the answer reached stage");
-    let withdrawn = rows
+    let ended = rows
         .iter()
-        .position(|r| r.from_path == stage && hop_of(r)["route"] == "withdraw")
-        .expect("stage withdrew");
-    let tick = rows[..withdrawn]
+        .position(|r| {
+            r.from_path == stage
+                && if star_only {
+                    body_of(r).to_string().contains("no_data")
+                } else {
+                    hop_of(r)["route"] == "withdraw"
+                }
+        })
+        .expect("stage ended the turn");
+    let tick = rows[..ended]
         .iter()
         .rposition(|r| r.to_path == stage && hop_of(r)["route"] == "in_tick")
-        .expect("the clock struck before the withdrawal");
+        .expect("the clock struck before the turn ended");
     assert!(
         answered < tick,
         "the answer was handled before data_wait_ms ran out (else this run proves \
          nothing): answer at {answered}, tick at {tick}"
     );
+
+    // The positive control: the counts are everybody's and stand on the same screen. The
+    // screen takes the presenter's lane in order: what t1 drew arrived before this.
+    s.turn_in("t2", "how is the colony doing", round()).await;
+    s.ask().await.release(verdict("colony", "counts"));
+    s.wait_drawn("show-colony-counts").await;
     let at_screen: Vec<String> =
         s.c.log(Some(SCREEN))
             .await
@@ -548,10 +590,25 @@ async fn a_screen_with_a_third_party_shows_no_member_topic_but_the_counts() {
             .filter(|r| hop_of(r)["route"] == "in_view")
             .map(|r| body_of(r).to_string())
             .collect();
-    assert!(
+    assert_eq!(
         at_screen.iter().any(|b| b.contains("show-files-hint")),
-        "the window itself reached the screen: {at_screen:?}"
+        !star_only,
+        "the window itself reaches the screen only with the switch off: {at_screen:?}"
     );
+    if star_only {
+        assert!(
+            !at_screen.iter().any(|b| b.contains("show-files")),
+            "no trace of the member's topic on a shared screen: {at_screen:?}"
+        );
+        assert!(
+            !s.c.log(Some(SCREEN))
+                .await
+                .iter()
+                .any(|r| hop_of(r)["route"] == "in_withdraw"
+                    && body_of(r)["view_id"] == "show-files"),
+            "nothing opened, so nothing is withdrawn"
+        );
+    }
     for block in ["show-files-tree", "show-files-root", "/notes/plan.txt"] {
         assert!(
             !at_screen.iter().any(|b| b.contains(block)),
@@ -559,13 +616,64 @@ async fn a_screen_with_a_third_party_shows_no_member_topic_but_the_counts() {
         );
         assert!(!s.drawn(block).await, "{block} stands at web");
     }
-    let row = s.journal_of("t1").await;
-    assert_eq!(row["fallback"], json!("no_data"), "{row}");
+    s.c.shutdown().await;
+}
 
-    // The positive control: the counts are everybody's and stand on the same screen.
-    s.turn_in("t2", "how is the colony doing", round()).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_private_verdict_leaves_the_covered_window_standing() {
+    // R-HP-9 (c), XB-M review I-2: a member's turn opens no window on its verdict, so it
+    // pulls none either. Before, the private verdict withdrew an older covered turn's
+    // hint window of the same topic at once -- the third party's own window cut off, and
+    // its leaving told the room that a member's turn of this topic was just judged.
+    if !guard("a_private_verdict_leaves_the_covered_window_standing") {
+        return;
+    }
+    if !shipped() {
+        eprintln!("SKIP: the templates did not travel into this tree (GH #49)");
+        return;
+    }
+    let mut s = boot(Dials {
+        screen_audience: json!(["member:alex", "peer:x"]),
+        // Far past the run: the covered turn's own clock never withdraws its window here.
+        data_wait_ms: 60_000,
+        builtin_topics: Value::Null,
+        ..Dials::default()
+    })
+    .await;
+    warm(&s).await;
+    let covered = json!(["agent:sam", "member:alex", "peer:x"]);
+
+    // A covered turn of `graph` (its resident is not booted: the window stays a hint).
+    s.turn_in("k1", "show me the graph", covered.clone()).await;
+    s.ask().await.release(verdict("graph", "names"));
+    s.c.wait_until("the covered window reaches the screen", || async {
+        first_view_with(&s, "show-graph-hint").await.is_some()
+    })
+    .await;
+    // The member's private turn of the same topic, judged.
+    s.turn_in("k2", "show me my graph", round()).await;
+    s.ask().await.release(verdict("graph", "names"));
+    // The sentinel: a later covered window. The screen takes the presenter's lane in
+    // order, so a withdrawal written at k2's verdict would have arrived before it.
+    s.turn_in("k3", "how is the colony doing", covered).await;
     s.ask().await.release(verdict("colony", "counts"));
-    s.wait_drawn("show-colony-counts").await;
+    s.c.wait_until("the sentinel window reaches the screen", || async {
+        first_view_with(&s, "show-colony-hint").await.is_some()
+    })
+    .await;
+    let at_screen = s.c.log(Some(SCREEN)).await;
+    let sentinel = at_screen
+        .iter()
+        .position(|r| {
+            hop_of(r)["route"] == "in_view" && body_of(r).to_string().contains("show-colony-hint")
+        })
+        .expect("the sentinel stands in the screen's log");
+    assert!(
+        !at_screen[..sentinel]
+            .iter()
+            .any(|r| hop_of(r)["route"] == "in_withdraw" && body_of(r)["view_id"] == "show-graph"),
+        "the private verdict withdrew the covered turn's window (a side channel)"
+    );
     s.c.shutdown().await;
 }
 

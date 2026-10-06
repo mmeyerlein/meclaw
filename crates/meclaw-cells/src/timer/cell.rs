@@ -33,6 +33,11 @@ pub struct TimerCell {
     /// failed ([`TimerReplan`]). Opened by `split_io`; `None` before it (a
     /// cell whose I/O never ran has nothing to plan again).
     pub(crate) replan_tx: Option<mpsc::Sender<TimerReplan>>,
+    /// GH #1019 (review B1): `params.accept_ops`, `None` = everything. The
+    /// memory hive's clock takes only `trigger`: its one inbound edge is the
+    /// `clock_op` lane from outside the sealed rim, and an `add` there would
+    /// plant a strike the clock emits from INSIDE the hive, at any inner cell.
+    pub(crate) accept_ops: Option<Vec<String>>,
 }
 
 impl TimerCell {
@@ -46,7 +51,21 @@ impl TimerCell {
             query_timeout_ms,
             booted_at: chrono::Utc::now(),
             replan_tx: None,
+            accept_ops: None,
         }
+    }
+
+    /// GH #1019: narrow what the mailbox accepts (`params.accept_ops`).
+    pub fn with_accept_ops(mut self, accept_ops: Option<Vec<String>>) -> Self {
+        self.accept_ops = accept_ops;
+        self
+    }
+
+    /// Whether `what` (an op name or `params`) may pass this timer's mailbox.
+    fn accepts(&self, what: &str) -> bool {
+        self.accept_ops
+            .as_ref()
+            .is_none_or(|ops| ops.iter().any(|o| o == what))
     }
 
     /// GH #922: pin the boot instant to the one the factory loaded the plan
@@ -148,6 +167,17 @@ impl LongRunningCell for TimerCell {
             // standalone:
             // apply + persist + live-set, then return silently (no op follows).
             if let Some(params_val) = body_val.get("params") {
+                if !self.accepts("params") {
+                    crate::timer::emit::emit_op_error(
+                        sink,
+                        &msg,
+                        "op_not_accepted",
+                        "this timer does not accept a params update (params.accept_ops)",
+                        None,
+                    )
+                    .await;
+                    return;
+                }
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
                     None => {
@@ -233,6 +263,23 @@ impl LongRunningCell for TimerCell {
                     return;
                 }
             };
+
+            // GH #1019 (review B1): the gate sits before the parse, so a refused
+            // op is refused whole -- nothing of it is read, planned or written.
+            // KT review K4: the parser's own reading, so a missing `op` with a
+            // `schedule_id` is gated as the `add` it parses to.
+            let op_name = crate::timer::op::op_name(&op_val);
+            if !self.accepts(op_name) {
+                crate::timer::emit::emit_op_error(
+                    sink,
+                    &msg,
+                    "op_not_accepted",
+                    &format!("op {op_name:?} is not accepted here (params.accept_ops)"),
+                    tool_call_id.as_deref(),
+                )
+                .await;
+                return;
+            }
 
             // GH #231: ONE clock read decides this whole op. The guard below
             // and the snapshot at the end of every successful branch share it,
@@ -518,7 +565,69 @@ impl LongRunningCell for TimerCell {
                         }
                     }
                 }
-                crate::timer::op::TimerOp::Trigger { schedule_id } => {
+                crate::timer::op::TimerOp::Trigger { target } => {
+                    // GH #1019: a name resolves to exactly one active row
+                    // first; from there on it is the GH #17 path by id.
+                    let schedule_id = match target {
+                        crate::timer::op::TriggerTarget::Id(id) => id,
+                        crate::timer::op::TriggerTarget::Name(name) => {
+                            let lookup = name.clone();
+                            let ids = match db
+                                .call_with_timeout(move |c| {
+                                    crate::timer::db::active_ids_by_name(c, &lookup)
+                                })
+                                .await
+                            {
+                                Ok(r) => r.unwrap_or_default(),
+                                Err(meclaw_colony::QueryTimeout::Interrupted) => {
+                                    crate::timer::emit::emit_op_error_for(
+                                        sink,
+                                        &msg,
+                                        "query_timeout",
+                                        "trigger: name lookup exceeded query_timeout_ms",
+                                        tool_call_id.as_deref(),
+                                        op_schedule_id.as_deref(),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            };
+                            match ids.as_slice() {
+                                [one] => *one,
+                                [] => {
+                                    crate::timer::emit::emit_op_error_for(
+                                        sink,
+                                        &msg,
+                                        "schedule_not_found",
+                                        &format!("trigger: no active schedule named {name:?}"),
+                                        tool_call_id.as_deref(),
+                                        op_schedule_id.as_deref(),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                                many => {
+                                    // Two active rows under one name: firing
+                                    // either would be a guess, firing both
+                                    // two strikes for one order.
+                                    crate::timer::emit::emit_op_error_for(
+                                        sink,
+                                        &msg,
+                                        "invalid_params",
+                                        &format!(
+                                            "trigger: {} active schedules are named {name:?}; \
+                                             address one by schedule_id",
+                                            many.len()
+                                        ),
+                                        tool_call_id.as_deref(),
+                                        op_schedule_id.as_deref(),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            }
+                        }
+                    };
                     // GH #17: fire an EXISTING schedule once, now. The handler
                     // does the two checks it owns -- the row exists, the row is
                     // active -- and then hands the firing over. It emits nothing

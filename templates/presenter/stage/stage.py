@@ -57,7 +57,7 @@ PHASE_BOOT = "boot"
 PHASE_WRITE = "write"
 
 FALLBACKS = ("none", "unsure", "no_topic", "timeout", "error", "no_selector",
-             "invalid", "no_data")
+             "invalid", "no_data", "foreign_round")
 
 # The decider's call carries 1 + 2*N questions; the decider takes at most 64 (E.2).
 MAX_TOPICS = 31
@@ -72,6 +72,8 @@ DEFAULTS = {
     "data_wait_ms": 4000,
     "also_threshold": 0.5,
     "work_hint": "Working on it…",
+    # R-HP-9 (c): see `gate_round`. Off = the reading before (b, R-DP-b).
+    "window_requires_star_data": True,
 }
 
 PANE = "display-pane"
@@ -221,6 +223,13 @@ def iso_z(ms):
 def knob(params, key):
     v = params.get(key)
     d = DEFAULTS.get(key)
+    if isinstance(d, bool):
+        # A switch: a JSON boolean or its word; anything else keeps the default.
+        if isinstance(v, bool):
+            return v
+        w = str(v).strip().lower() if v is not None else ""
+        return {"true": True, "on": True, "1": True,
+                "false": False, "off": False, "0": False}.get(w, d)
     if isinstance(d, float):
         try:
             f = float(v)
@@ -275,6 +284,30 @@ def covers(audience_set, screen_round):
     if not want:
         return False
     return all(m in have for m in want)
+
+
+def gate_round(turn_round, screen_round, params):
+    """The audience gate before the window: what a turn of `turn_round` may open on a
+    screen of `screen_round`. One of
+
+    - "open": the round covers the screen's (or the screen has none) -- the window opens
+      on the verdict, as always;
+    - "foreign": no member of the screen's round is in the turn, or the turn has no
+      round -- nothing is asked, nothing opens (GH #1027);
+    - "star": a member of the screen's round is in the turn, but the round does not
+      cover the screen (a third party shares it) -- with `window_requires_star_data` on
+      (R-HP-9 c), the window opens only on `*` data left after the gate, never with the
+      working hint and never with the standard block instead, so a private topic leaves
+      no trace on a shared screen; off, "open" (R-DP-b: the window on the verdict, the
+      data gated).
+    """
+    screen = as_round(screen_round) or []
+    if not screen or covers(turn_round, screen):
+        return "open"
+    have = as_round(turn_round) or []
+    if not any(m in have for m in screen if m.startswith("member:")):
+        return "foreign"
+    return "star" if knob(params, "window_requires_star_data") else "open"
 
 
 def filter_set(data_set, screen_round):
@@ -734,9 +767,26 @@ def topic_missing(body):
         or "topic" in missing_of(body)
 
 
-def threshold_of(manifest, params):
+def a_threshold(t):
+    return isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t <= 1
+
+
+def threshold_of(manifest, params, own=None):
+    """The threshold a verdict on a topic must reach. `own` names one of the presenter's
+    own topics: `params.builtin_thresholds` may give it a threshold of its own (OR-HP-66:
+    the decider gave 0.57-0.62 for plain search and work requests against 0.7); an app's
+    topic keeps what its manifest says. Then the manifest's, then `threshold`."""
+    per = params.get("builtin_thresholds")
+    if isinstance(per, str):
+        try:
+            per = json.loads(per)
+        except ValueError:
+            per = None
+    t = per.get(own) if own is not None and isinstance(per, dict) else None
+    if a_threshold(t):
+        return float(t)
     t = manifest.get("threshold")
-    if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t <= 1:
+    if a_threshold(t):
         return float(t)
     return knob(params, "threshold")
 
@@ -747,7 +797,9 @@ def judge(v, known, params):
         return "no_topic"
     if v["topic"] is None:
         return "unsure"
-    if v["p"] < threshold_of(known[v["topic"]]["manifest"], params):
+    show = known[v["topic"]]
+    if v["p"] < threshold_of(show["manifest"], params,
+                             None if show.get("owner") else v["topic"]):
         return "unsure"
     return None
 
@@ -983,7 +1035,10 @@ def resolve(rec, manifest, cat):
             new.append((lead["key"], node))
         elif lead and lead["set"] in rec["sets"]:
             std = cands.get(manifest["standard"])
-            if std is not None and std["key"] != lead["key"]:
+            if rec.get("star_only"):
+                # R-HP-9 (c): no standard block stands in on a shared screen.
+                rec["first"] = "failed"
+            elif std is not None and std["key"] != lead["key"]:
                 snode = place(topic, std, rec["sets"], cat)
                 if snode is not None:
                     rec["first"] = "standard"
@@ -1238,6 +1293,19 @@ def lane_turn(body, hop, ctx, params, now):
     # when the turn is done.
     rec["text"] = text
     r["pending"][turn_id] = rec
+    gate = gate_round(rec["audience_set"], params.get("screen_audience"), params)
+    rec["star_only"] = gate == "star"
+    if gate == "foreign":
+        # GH #1027: the round is checked BEFORE anything opens. Measured: a guest's turn
+        # (`["agent:…", "person:guest"]`, the member not in it) asked the decider, and its
+        # sure verdict opened `show-calendar` with the working hint on all three outputs;
+        # the screen's round gated only the data. The open window alone told the screen
+        # that someone asked about the member's calendar. A round with no member of the
+        # screen's round in it -- or no round at all -- asks nothing, opens nothing, and
+        # its journal row says so. A screen without a round sees `*` data only and keeps
+        # the old way; a member's turn on a shared screen is `star` (R-HP-9).
+        return [bundle(PHASE_WRITE, prune(r, now) + finish(rec, "foreign_round", now))] + \
+            clock_ops(r, now)
     legs = prune(r, now) + w_pending(rec)
     return [decide_call(text, topics, turn_id), bundle(PHASE_WRITE, legs)] + \
         clock_ops(r, now)
@@ -1276,12 +1344,14 @@ def settled(rec, manifest):
     return True
 
 
-def supersede(r, rec, now):
+def supersede(r, rec, now, close_older=True):
     """One window per topic (P § 5): a newer turn of the topic replaces the older one.
     Returns `(legs, stale)` -- the writes that close every older open turn of the topic,
     and whether `rec` itself is older than a turn that already opened the window (then
     it opens nothing). A closed turn's deadline and late data never reach the newer
-    window (review I2); an older turn without a block journals `no_data`."""
+    window (review I2); an older turn without a block journals `no_data`.
+    `close_older=False` only asks `stale`: a turn that opens no window on its verdict
+    (R-HP-9 (c)) replaces nothing until its first block opens one (`feed`)."""
     legs = []
     stale = False
     # Older/newer is (arrival ms, arrival order): two turns of one millisecond were
@@ -1293,7 +1363,7 @@ def supersede(r, rec, now):
             continue
         if age(other) > age(rec) and other.get("t_window") is not None:
             stale = True
-        elif age(other) < age(rec) and other["state"] == "showing":
+        elif close_older and age(other) < age(rec) and other["state"] == "showing":
             legs += close(other, now) if other["placed"] else finish(other, "no_data", now)
     return legs, stale
 
@@ -1343,7 +1413,12 @@ def lane_decision(body, hop, params, now):
     why = judge(v, topics, params)
     if why:
         return [bundle(PHASE_WRITE, finish(rec, why, now))] + clock_ops(r, now)
-    older, stale = supersede(r, rec, now)
+    # R-HP-9 (c): a turn that opens no window on its verdict pulls none either. An older
+    # covered turn of the topic keeps its window until this turn's first `*` block
+    # replaces it (`feed`); withdrawn at the private verdict, it would cut off the third
+    # party's own window, and its leaving would tell the screen that a member's turn of
+    # this topic was just judged (XB-M review I-2).
+    older, stale = supersede(r, rec, now, close_older=not rec.get("star_only"))
     if stale:
         return [bundle(PHASE_WRITE, older + finish(rec, "no_data", now))] + clock_ops(r, now)
     show = topics[v["topic"]]
@@ -1353,7 +1428,8 @@ def lane_decision(body, hop, params, now):
     rec["owner"] = show["owner"]
     wait = manifest.get("data_wait_ms") or knob(params, "data_wait_ms")
     rec["data_deadline"] = now + int(wait)
-    rec["t_window"] = now - rec["arrived"]
+    if not rec.get("star_only"):
+        rec["t_window"] = now - rec["arrived"]
     tree = window(v["topic"], manifest, tid, [], knob(params, "work_hint"), now)
     if show["owner"]:
         ask = [emission("in_show", {"messages": [], "op": "data", "topic": v["topic"],
@@ -1372,7 +1448,10 @@ def lane_decision(body, hop, params, now):
         # now; an observed topic takes what was observed so far, and every later
         # observation of its kind is fed on arrival (`refill`).
         ask = source_reads(rec, manifest, params)
-    out = [a_view(v["topic"], tree)] + ask + [bundle(PHASE_WRITE, older + w_pending(rec))]
+    # R-HP-9 (c): a shared screen gets no window on the verdict -- only `*` data open
+    # one (`feed`).
+    view = [a_view(v["topic"], tree)] if not rec.get("star_only") else []
+    out = view + ask + [bundle(PHASE_WRITE, older + w_pending(rec))]
     if not show["owner"]:
         sets = own_sets(r, rec, v["topic"], params) if show.get("kind") == "observed" else {}
         if sets or rec["sets"]:
@@ -1420,13 +1499,24 @@ def feed(r, rec, manifest, sets, params, now):
         if rec["placed"] and settled(rec, manifest):
             return [bundle(PHASE_WRITE, close(rec, now))] + clock_ops(r, now)
         return [bundle(PHASE_WRITE, w_pending(rec))]
+    opens = rec["t_window"] is None
+    older = []
+    if opens:
+        # R-HP-9 (c): the first `*` block opens the window, so only now does this turn
+        # replace an older turn of the topic (one window per topic); a newer turn that
+        # opened it meanwhile keeps it, and this one ends with nothing on the screen.
+        older, stale = supersede(r, rec, now)
+        if stale:
+            return [bundle(PHASE_WRITE, finish(rec, "no_data", now))] + clock_ops(r, now)
     first = not rec["placed"]
     rec["placed"] += [k for k, _ in new]
     blocks = [node for _, node in rec.get("_nodes", [])] + [n for _, n in new]
     rec["_nodes"] = rec.get("_nodes", []) + new
-    tree = window(rec["topic"], manifest, tid, blocks, "", None)
+    if opens:
+        rec["t_window"] = now - rec["arrived"]
+    tree = window(rec["topic"], manifest, tid, blocks, "", now if opens else None)
     out = [a_view(rec["topic"], tree)]
-    legs = []
+    legs = older
     if first:
         rec["t_content"] = now - rec["arrived"]
         rec["fallback"] = fallback or "none"
@@ -1452,7 +1542,8 @@ def lane_tick(hop, now):
                 # The blocks stay; the turn closes and its words leave (review I1).
                 legs += close(rec, now)
             else:
-                out.append(withdraw(rec["topic"]))
+                if rec.get("t_window") is not None:
+                    out.append(withdraw(rec["topic"]))
                 legs += finish(rec, "no_data", now)
     if legs:
         out.append(bundle(PHASE_WRITE, legs))

@@ -245,6 +245,11 @@
       "describe": "A window that shows a title and a text, written by the screen for a prose view.",
       "curated": true,
       "props": {
+        "canvas_rank": {
+          "type": "int",
+          "required": false,
+          "describe": "The window's place on the canvas, written by the screen (GH #1028)."
+        },
         "view_id": {
           "type": "text",
           "required": false,
@@ -283,6 +288,11 @@
       "layer": "content",
       "describe": "A bare wrapper around an application's own tree.",
       "props": {
+        "canvas_rank": {
+          "type": "int",
+          "required": false,
+          "describe": "The window's place on the canvas, written by the screen (GH #1028)."
+        },
         "view_id": {
           "type": "text",
           "required": false,

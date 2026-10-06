@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.61.4, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.61.6, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.61.6: WebSocket frames above 4 KiB are compressed (permessage-deflate on an in-tree codec, axum 0.8); a timer
+  fires a schedule by name and can narrow the ops it accepts, so the memory hive's night runs on request; a lab
+  channel can replay turns at their own time; a foreign round's turn opens no window on a member's screen.
 - v0.61.4: a `web` page travels in parts, keyed down to the root children, encoded once per route and served
   with validators and gzip; joins arrive in pieces, viewers report their screen and backlog, and a bundle can answer
   with its refused legs only; peer delivery through a `meclaw` proxy is at-least-once with an idempotent receive

@@ -5,6 +5,9 @@
   },
   "params": {
     "query_timeout_ms": 5000,
+    "accept_ops": [
+      "trigger"
+    ],
     "schedules": [
       {
         "schedule_id": "${uuid7:nightly-dream}",
@@ -31,7 +34,7 @@
         "type": "string",
         "secret": false,
         "default": "0 0 3 * * *",
-        "description": "6-field Quartz cron of the nightly consolidation, in UTC. Documentation, not a params field of its own: a timer cell has no top-level `cron` param, the value lives inside the schedule at params.schedules[0].cron. Since GH #138 it is a LITERAL there rather than an environment token, so an instance retunes the night by overriding `schedules` (the key exists, which is what GH #294 asks of an override) or at runtime with a modify op by schedule_id -- and not by a colony-wide environment two members would have to share."
+        "description": "6-field Quartz cron of the nightly consolidation, in UTC. Documentation, not a params field of its own: a timer cell has no top-level `cron` param, the value lives inside the schedule at params.schedules[0].cron. Since GH #138 it is a LITERAL there rather than an environment token, so an instance retunes the night by overriding `schedules` (the key exists, which is what GH #294 asks of an override) -- and not by a colony-wide environment two members would have to share. Not at runtime: the clock is born with `accept_ops: [\"trigger\"]` (GH #1019), its one inbound edge is the hive's `clock_op` lane from outside the rim, and a `modify` there is refused as `op_not_accepted`."
       }
     },
     "emits": {
@@ -82,10 +85,10 @@
   },
   "description": {
     "purpose": "Fires the nightly consolidation. It sends, it does not generate: event_id becomes the run id and fired_at becomes the window end — the two values that make a dream run identifiable and idempotent.",
-    "use_when": "Inside the memory hive; change the schedule at runtime with add/modify/remove ops by schedule_id.",
+    "use_when": "Inside the memory hive; the night is retuned by overriding `schedules` at instantiation, at runtime only `trigger` is accepted (GH #1019).",
     "not_in_scope": "No catch-up. Missed firings are dropped by design — the next run's window starts at the last completed one, so a skipped night is covered automatically.",
     "emits_meaning": "hop.event_id/fired_at are promoted to context.dream_run/dream_to by the edge and clock the whole run; the body is a plain trigger.",
-    "consumes_meaning": "Schedule ops (add/modify/remove by schedule_id) as body.op.",
+    "consumes_meaning": "`{op: trigger, schedule_name|schedule_id}` via the hive's `clock_op` lane; every other op is refused as `op_not_accepted`.",
     "examples": [
       "03:00 -> dream-glue with dream_run=<event_id>, dream_to=<fired_at>"
     ]

@@ -296,10 +296,7 @@ body {
   overscroll-behavior: none;
   margin: 0;
   background-color: var(--ground);
-  background-image:
-    radial-gradient(52% 48% at 76% 22%, rgba(246, 201, 176, 0.9) 0%, rgba(246, 201, 176, 0) 62%),
-    radial-gradient(38% 34% at 8% 96%, rgba(226, 87, 63, 0.14) 0%, rgba(226, 87, 63, 0) 70%),
-    linear-gradient(178deg, var(--ground) 0%, var(--ground-2) 100%);
+  background-image: linear-gradient(178deg, var(--ground) 0%, var(--ground-2) 100%);
   background-attachment: fixed;
   background-repeat: no-repeat;
   font-family: var(--font-ui);
@@ -310,12 +307,32 @@ body {
   color: var(--fg-primary);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* The light, on its own layer (GH #1029). It drifted as the `background-position`
+ * of `body`, which is not compositable: every frame repainted the whole output,
+ * for ever -- measured headless beside a 60 fps control page: monitor 15-20 fps,
+ * phone 3-5 fps with nothing else happening. Moved by `transform`, the same drift
+ * is the compositor's alone. The layer overhangs the viewport by the drift, so
+ * no edge ever shows; under the grain (`::after`, later in the tree) and under
+ * the columns (z-index 1). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -2vw;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(52% 48% at 76% 22%, rgba(246, 201, 176, 0.9) 0%, rgba(246, 201, 176, 0) 62%),
+    radial-gradient(38% 34% at 8% 96%, rgba(226, 87, 63, 0.14) 0%, rgba(226, 87, 63, 0) 70%);
+  background-repeat: no-repeat;
+  will-change: transform;
   animation: display-light-drift 30s ease-in-out infinite alternate;
 }
 
 @keyframes display-light-drift {
-  from { background-position: 0 0, 0 0, 0 0; }
-  to { background-position: 2vw -1vw, -2vw 1vw, 0 0; }
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(2vw, -1vw, 0); }
 }
 
 /* Grain over the ground, under everything else. */
@@ -1949,12 +1966,28 @@ body::after {
  * against 3676, Chromium correct on both). The subtraction stands here, so both
  * engines lay out the same pixels: Chromium's tracks do not move by a hundredth.
  * A phone has one track and no gap and keeps `1fr`. */
+/* Where a window stands on the canvas is its `canvas_rank` (GH #1028), not its place in
+ * the DOM: the DOM keeps the order the windows arrived in, because the client's
+ * keyed morph re-appended every window behind one that opened ahead of them --
+ * all canvas sections removed and inserted again on every such patch. The
+ * wrapper writes `--rank`; the grid item is the window inside it (the wrapper
+ * and its stack generate no box), or the prose window itself. The price, chosen
+ * on purpose: the keyboard and a screen reader follow the DOM, so they read the
+ * windows in the order they arrived, not the leading one first -- speed of the
+ * screen before reading order (a moved node cost every window a re-insert). */
+.display-columns > [data-region="main"] > [data-level],
+.display-columns > [data-region="main"] > [data-view] > [data-level],
+.display-columns > [data-region="main"] > [data-view] > .display-stack > [data-level] {
+  order: var(--rank, 0);
+}
+
 .display-columns[data-exit="monitor"] > [data-region="main"] { grid-template-columns: repeat(3, minmax(0, calc((100% - 2 * var(--gap)) / 3))); }
 .display-columns[data-exit="tv"] > [data-region="main"] { grid-template-columns: repeat(2, minmax(0, calc((100% - var(--gap)) / 2))); }
 .display-columns[data-exit="phone"] > [data-region="main"] { grid-template-columns: minmax(0, 1fr); }
 
 /* The leading window on a phone: first and larger. `order` because the DOM
- * order is `canvas_order` and the leading one is already first; the token
+ * keeps the order the windows arrived in and `--rank` places them (GH #1028):
+ * `-1` puts the leading one ahead of every rank; the token
  * makes it larger than its siblings without naming a pixel here. A window
  * hangs in a wrapper that generates no box (§ 11), so it is a grid item
  * without being a child in the selector -- which is why these two reach by
@@ -2642,6 +2675,8 @@ html[data-dock-open="0"] .display-columns[data-dock="shown"] {
  * exit stands on the columns and this is their ancestor. */
 body:has([data-exit="tv"]) { animation: none; }
 
+body:has([data-exit="tv"])::before { animation: none; will-change: auto; }
+
 body:has([data-exit="tv"])::after { display: none; }
 
 /* ── 13. Fallbacks ───────────────────────────────────────────────────────
@@ -2664,6 +2699,7 @@ body:has([data-exit="tv"])::after { display: none; }
 
   :is(.display-pane, .display-panel, .display-overlay, .display-ornament)::before { display: none; }
   body { background-image: none; animation: none; }
+  body::before { display: none; }
   body::after { display: none; }
 
   .display-input-field {
@@ -2763,6 +2799,7 @@ body:has([data-exit="tv"])::after { display: none; }
  * only !important here. */
 @media (prefers-reduced-motion: reduce) {
   body { animation: none; }
+  body::before { animation: none; }
 
   .display-pane,
   .display-panel,

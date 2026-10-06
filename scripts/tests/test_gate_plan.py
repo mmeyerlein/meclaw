@@ -447,7 +447,7 @@ class Classify(unittest.TestCase):
             st["browser:display"].cmds,
             [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"],
              gp.CSP_LOCK_CMD, gp.MOTION_LOCK_CMD, gp.SLOW3G_LOCK_CMD,
-             gp.ORIENTATION_LOCK_CMD])
+             gp.ORIENTATION_LOCK_CMD, gp.KEEP_LOCK_CMD])
 
         # So does a diff on the display template itself -- the sheet is what it measures.
         self.assertIn("browser:display",
@@ -466,7 +466,7 @@ class Classify(unittest.TestCase):
                 ["scripts/test-tier.sh", "filter", "binary(/710_the_colony_holds/)",
                  "--run-ignored", "all"],
                 gp.CSP_LOCK_CMD, gp.MOTION_LOCK_CMD, gp.SLOW3G_LOCK_CMD,
-                gp.ORIENTATION_LOCK_CMD]
+                gp.ORIENTATION_LOCK_CMD, gp.KEEP_LOCK_CMD]
         for mode in ("integration", "release"):
             st_ir = by_name(gp.plan(["docs/x.md"], mode, repo=None))
             self.assertEqual(st_ir["browser:display"].scope, "sheet+colony", mode)
@@ -554,6 +554,23 @@ class Classify(unittest.TestCase):
             with self.subTest(diff=diff, mode=mode):
                 st = by_name(gp.plan(diff, mode, repo=None))
                 self.assertIn(gp.ORIENTATION_LOCK_CMD, st["browser:display"].cmds)
+        self.assertNotIn("browser:display",
+                         {s.name for s in gp.plan([lock], "ci", repo=None)})
+
+    def test_the_keep_lock_rides_the_browser_station(self):
+        # GH #1028: a new window ahead of others leaves their DOM nodes in place.
+        lock = ("crates/meclaw-cells/tests/"
+                "gh1028_a_new_window_keeps_the_others_in_place_browser.rs")
+        driver = "workshop/tools/display-keep-browser.mjs"
+        self.assertIn(lock, gp.BROWSER_LOCKS)
+        self.assertIn("display_browser", gp.classify([lock]))
+        self.assertIn("display_browser", gp.classify([driver]))
+        self.assertEqual(gp.KEEP_LOCK_CMD[-2:], ["--run-ignored", "all"])
+        for diff, mode in (([driver], "strand"), ([lock], "strand"),
+                           (["docs/x.md"], "integration"), (["docs/x.md"], "release")):
+            with self.subTest(diff=diff, mode=mode):
+                st = by_name(gp.plan(diff, mode, repo=None))
+                self.assertIn(gp.KEEP_LOCK_CMD, st["browser:display"].cmds)
         self.assertNotIn("browser:display",
                          {s.name for s in gp.plan([lock], "ci", repo=None)})
 

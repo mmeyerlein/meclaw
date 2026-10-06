@@ -67,6 +67,10 @@ pub struct Dials {
     /// `null` leaves the shipped `["search", "work"]`, `[]` is a presenter with no topic of
     /// its own.
     pub observed_topics: Value,
+    /// R-HP-9: the stage's `window_requires_star_data`; `null` leaves the shipped value
+    /// (on: a member's turn on a screen a third party shares opens a window only on `*`
+    /// data), `false` is the reading before (the window on the verdict).
+    pub window_requires_star_data: Value,
 }
 
 impl Default for Dials {
@@ -77,6 +81,7 @@ impl Default for Dials {
             screen_audience: json!([]),
             builtin_topics: json!([]),
             observed_topics: Value::Null,
+            window_requires_star_data: Value::Null,
         }
     }
 }
@@ -87,9 +92,14 @@ pub struct Stage {
     pub decider: mpsc::UnboundedReceiver<HeldRequest>,
     _decider: tokio::task::JoinHandle<()>,
     held: Vec<Message>,
+    /// The screen's round as dialled: `turn` stamps it on the turn, as the member's
+    /// observer edge stamps the member round (GH #1027 -- a turn without a round that
+    /// covers the screen opens nothing).
+    screen: Value,
 }
 
 pub async fn boot(d: Dials) -> Stage {
+    let screen = d.screen_audience.clone();
     let (addr, join, decider) = start_mock_server_held()
         .await
         .expect("the held decider binds on 127.0.0.1");
@@ -116,6 +126,9 @@ pub async fn boot(d: Dials) -> Stage {
             }
             if !d.observed_topics.is_null() {
                 v["params"]["observed_topics"] = d.observed_topics.clone();
+            }
+            if !d.window_requires_star_data.is_null() {
+                v["params"]["window_requires_star_data"] = d.window_requires_star_data.clone();
             }
         });
         // The app level: the screen lanes renamed on the way out (what `screen` draws),
@@ -169,6 +182,7 @@ pub async fn boot(d: Dials) -> Stage {
         decider,
         _decider: join,
         held: Vec::new(),
+        screen,
     }
 }
 
@@ -340,8 +354,14 @@ impl Stage {
             .await;
     }
 
-    /// One turn with text, as the member's observer edge hands it to an app.
+    /// One turn with text, as the member's observer edge hands it to an app: on a screen
+    /// with a round, under that round (the edge stamps the member round, and the screen
+    /// shows the member's round -- GH #1027); on a screen without one, with no round.
     pub async fn turn(&self, turn_id: &str, text: &str) {
+        let has_round = self.screen.as_array().is_some_and(|a| !a.is_empty());
+        if has_round {
+            return self.turn_in(turn_id, text, self.screen.clone()).await;
+        }
         self.c
             .h
             .send(to_presenter(

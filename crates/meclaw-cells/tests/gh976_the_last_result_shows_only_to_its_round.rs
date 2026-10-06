@@ -189,7 +189,7 @@ fn rendered_diff() -> Value {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "install_app", "request": "…",
                                          "params": {"scope": "/alex", "app": "presenter",
-                                                    "template": "presenter@1.2.2",
+                                                    "template": "presenter@1.2.3",
                                                     "screen": "display-main",
                                                     "generation": GENERATION,
                                                     "declaration": declaration,
@@ -562,11 +562,17 @@ async fn a_digest_is_shown_only_to_its_round() {
 
 /// One boot of the member colony with `screen` as the presenter's `screen_audience`, the
 /// apps grown in, and one scheduled digest kept for its holder.
-async fn boot_with_a_scheduled_digest(screen: Value) -> (Stage, tempfile::TempDir) {
+///
+/// `star_only` is the stage's `window_requires_star_data` (`null` = shipped, on).
+async fn boot_with_a_scheduled_digest(
+    screen: Value,
+    star_only: Value,
+) -> (Stage, tempfile::TempDir) {
     let s = boot(Dials {
         screen_audience: screen,
         data_wait_ms: 5_000,
         builtin_topics: Value::Null,
+        window_requires_star_data: star_only,
         ..Dials::default()
     })
     .await;
@@ -589,7 +595,8 @@ async fn a_scheduled_digest_shows_on_the_member_screen_and_no_other() {
 
     // 1. The member's screen: the scheduled digest is the member's, read under the round
     //    the builder's read edge stamps, and drawn as the `digest` card.
-    let (mut s, _templates) = boot_with_a_scheduled_digest(json!(["member:alex"])).await;
+    let (mut s, _templates) =
+        boot_with_a_scheduled_digest(json!(["member:alex"]), Value::Null).await;
     s.turn_in("t1", "what did the digest say", round()).await;
     s.ask().await.release(verdict("digest", "last"));
     s.wait_drawn("show-digest-last").await;
@@ -618,9 +625,28 @@ async fn a_scheduled_digest_shows_on_the_member_screen_and_no_other() {
 
     // 2. A screen of another round (it also shows another member): the same scheduled
     //    digest is answered under the member's round, which does not cover that screen --
-    //    it is not drawn.
+    //    it is not drawn, and (R-HP-9 c, the shipped switch) no window opens for it.
+    another_round(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_the_switch_off_the_digest_window_opens_and_is_withdrawn() {
+    if !guard("with_the_switch_off_the_digest_window_opens_and_is_withdrawn") {
+        return;
+    }
+    if !shipped() {
+        eprintln!("SKIP: the templates did not travel into this tree (GH #49)");
+        return;
+    }
+    // R-HP-9, `window_requires_star_data` off: the reading before (b, R-DP-b).
+    another_round(false).await;
+}
+
+/// Case 2 of the digest lock under one setting of `window_requires_star_data`.
+async fn another_round(star_only: bool) {
+    let dial = if star_only { Value::Null } else { json!(false) };
     let (mut s, _templates) =
-        boot_with_a_scheduled_digest(json!(["member:alex", "member:bob"])).await;
+        boot_with_a_scheduled_digest(json!(["member:alex", "member:bob"]), dial).await;
     s.turn_in("t1", "what did the digest say", round()).await;
     s.ask().await.release(verdict("digest", "last"));
     let (_, body) = answer_at_stage(&s, "daily-digest", "t1/last").await;
@@ -630,15 +656,39 @@ async fn a_scheduled_digest_shows_on_the_member_screen_and_no_other() {
         round(),
         "the app answers the member's round, the screen gates it: {body}"
     );
-    // The sentinel: the window's withdrawal reaches the screen, in the presenter's order.
-    s.c.wait_until("the digest window is withdrawn at the screen", || async {
-        s.c.log(Some(SCREEN))
-            .await
-            .iter()
-            .any(|r| hop_of(r)["route"] == "in_withdraw" && body_of(r)["view_id"] == "show-digest")
-    })
-    .await;
+    if !star_only {
+        // The sentinel: the window's withdrawal reaches the screen, in the presenter's order.
+        s.c.wait_until("the digest window is withdrawn at the screen", || async {
+            s.c.log(Some(SCREEN)).await.iter().any(|r| {
+                hop_of(r)["route"] == "in_withdraw" && body_of(r)["view_id"] == "show-digest"
+            })
+        })
+        .await;
+    }
+    let row = s.journal_of("t1").await;
+    assert_eq!(row["fallback"], json!("no_data"), "{row}");
+    if star_only {
+        // Nothing left stage for the window: no view and no withdrawal of `show-digest`
+        // in the whole log, so nothing can be on its way to the screen either.
+        let stage = format!("{PRESENTER}/stage");
+        let sent: Vec<String> =
+            s.c.log(None)
+                .await
+                .iter()
+                .filter(|r| r.from_path == stage && body_of(r)["view_id"] == "show-digest")
+                .map(|r| hop_of(r)["route"].to_string())
+                .collect();
+        assert!(
+            sent.is_empty(),
+            "stage sent for the digest window: {sent:?}"
+        );
+    }
     let at_screen = views_at_screen(&s).await;
+    assert_eq!(
+        at_screen.iter().any(|b| b.contains("show-digest")),
+        !star_only,
+        "the digest window reaches a shared screen only with the switch off: {at_screen:?}"
+    );
     for never in ["show-digest-last", OUR_LEAD] {
         assert!(
             !at_screen.iter().any(|b| b.contains(never)),

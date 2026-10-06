@@ -1,4 +1,4 @@
-# `memory-hive@3.8.4`
+# `memory-hive@3.9.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -939,7 +939,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.8.4` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.9.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1346,7 +1346,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.6",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.7",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1478,12 +1478,28 @@ The timer is called `clock` since 3.2.0 ([#551](https://github.com/mmeyerlein/me
 ruling R-0904-5: a `timer` whose schedules carry nothing but the tick is named `clock`; a tick
 whose NAME carries the semantics, like `session-keeper/night`, keeps it). It has no top-level
 `cron` param -- a timer's schedule lives inside `params.schedules[]` -- so the value is a literal
-there and an instance retunes the night by overriding the whole `schedules` key, or at runtime
-with a `modify` op by `schedule_id`.
+there and an instance retunes the night by overriding the whole `schedules` key. The clock takes
+no `modify` at runtime: it is born with `accept_ops: ["trigger"]` (below).
 
 | where | default | effect |
 |---|---|---|
 | `params.schedules[0].cron` | `0 0 3 * * *` | 6-field Quartz schedule of the nightly run, **in UTC**. The `timer` cell type plans every occurrence on `DateTime<Utc>` and has no timezone knob (`crates/meclaw-cells/src/timer/io.rs`), so the default fires at 03:00 UTC — 05:00 in Berlin summer time, 04:00 in winter. Pick the field for the UTC hour you want, not for the local one |
+
+**The night, now (`clock_op`, since 3.9.0, [#1019](https://github.com/mmeyerlein/meclaw/issues/1019)).** The
+hive is sealed and its clock sits behind the rim, so a POST at `<hive>/clock` ends as
+`hive_boundary`. The lane `clock_op` at the hive path is the way in: the body is a timer op, and
+`{"messages": [], "op": "trigger", "schedule_name": "nightly-dream"}` runs one night now, exactly
+as the cron strike would (same body, its own `dream_run`/`dream_to`, its own `consolidation_log`
+row), while the cron and the next due time stay as they were. The name is the address because the
+schedule id is minted at instantiation and no API reads it; `schedule_id` works as well when the
+caller has it. A replay fires one night per recorded day this way and reads the receipt in
+`consolidation_log`; an unknown name is refused by the timer (`schedule_not_found`) and fires
+nothing. The lane carries `trigger` and nothing else: the clock is born with
+`accept_ops: ["trigger"]`, so `add`, `modify`, `remove` and a `params` slot arriving there are
+refused as `op_not_accepted` and change nothing. An `add` would otherwise plant a strike the clock
+emits from inside the hive, at any inner cell past the rim, and a `modify` or `remove` could move or
+switch off the night. The refusal is the timer's own error message; no edge carries it on, so it
+lands as a dead letter where the run would have been read.
 
 ### No model call over an unchanged store ([#857](https://github.com/mmeyerlein/meclaw/issues/857))
 

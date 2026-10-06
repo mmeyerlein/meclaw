@@ -1,4 +1,4 @@
-# `presenter@1.2.2`
+# `presenter@1.2.3`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -89,6 +89,8 @@ after `data_wait_ms` the view is withdrawn.
 | `data_wait_ms` | 4000 | how long an open window waits for a placeable block; a manifest value wins |
 | `also_threshold` | 0.5 | confidence the second block needs |
 | `screen_audience` | `[]` | the screen's round (canonical list) |
+| `window_requires_star_data` | `true` | on a screen a third party shares (a member's turn whose round does not cover the screen's), a window opens only on `*` data left after the audience gate -- no working hint, no standard block, nothing without data; `false` opens it on the verdict as before |
+| `builtin_thresholds` | `{}` | a threshold of its own for one of the presenter's own topics (`search`, `work` and those of `builtin_topics`), by name, each in (0, 1]; a topic not named takes `threshold`, an app's topic keeps its manifest's |
 | `work_hint` | `Working on it…` | the hint's text |
 | `catalog` | the display's block copy | written by `scripts/display_sync.py` only |
 | `observed_topics` | `["search", "work"]` | the presenter's own observed topics offered to the decider |
@@ -191,10 +193,16 @@ other endpoint is refused (`model_refused`) and the registry records the refusal
 
 ## The journal
 
-One row per turn that asked: `turn_id, topic, p, lead, also, fallback, late, t_verdict_ms,
+One row per turn: `turn_id, topic, p, lead, also, fallback, late, t_verdict_ms,
 t_window_ms, t_content_ms, model, at, audience_set, missing`. `fallback` is one of `none` (the lead
 stands, or the one block of a topic with one candidate), `unsure`, `no_topic`, `timeout`, `error`, `no_selector`, `invalid` (the standard
-stands instead of the lead) and `no_data` (withdrawn). The three times count from the turn's
+stands instead of the lead), `no_data` (withdrawn, or never opened) and `foreign_round` (no member of the screen's round is
+in the turn's round, or the turn has none: the decider is not asked and nothing opens -- a
+window alone would tell the screen what someone else asked; a screen without a round skips this
+check). A member's turn on a screen a third party shares is asked as usual; with
+`window_requires_star_data` on, its window opens with the first block bound from `*` data (the
+window time is then the time to that block), and without such data it journals `no_data`
+with nothing shown. The three times count from the turn's
 arrival at `stage`: to the verdict, to the emission of the window, to the first block. The
 row never carries the turn's text. `missing` is the JSON list of question keys the decider
 left unanswered (`[]` for a whole verdict): a missing `topic` is an `error` (nothing opens), a

@@ -113,7 +113,10 @@ pub(crate) fn mounted_router(io: WebhookIo) -> Router {
     let limit = io.max_body_bytes;
     Router::new()
         .route(&format!("/{mount}/"), axum::routing::post(post_root))
-        .route(&format!("/{mount}/*rest"), axum::routing::post(post_rest))
+        .route(
+            &format!("/{mount}/{{*rest}}"),
+            axum::routing::post(post_rest),
+        )
         .layer(DefaultBodyLimit::max(limit))
         .with_state(io)
 }

@@ -86,6 +86,11 @@
         {
           "route": "in_model",
           "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to the llm cell it is addressed to (`./closer`, `./dialectic`, `./dreamer`, `./judge`), past every other cell, because a params body is not a request. This hive has 4 llm cells, so the door reads `hop.subscriber` -- the cell path the registry addresses a push by -- and one edge per cell carries only the pushes whose path ends in that cell's name. The guard is permissive (the form of GH #478): a message with no subscriber at all -- which the registry never sends -- would reach every llm cell, and that is what lets the substrate's lane check see a door for the lane. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
+        },
+        {
+          "route": "clock_op",
+          "context": [],
+          "because": "a timer op for this hive's own clock from outside the sealed rim (GH #1019): body `{op: trigger, schedule_name: \"nightly-dream\"}` (or `schedule_id`) runs the nightly consolidation once, now, exactly as the cron strike would -- same body, same `dream_run`/`dream_to`, its own `consolidation_log` row -- and leaves the cron and the next due time as they were. The schedule id is minted at instantiation and is not readable over the API, so the name is the address a lab replay or an operator has; before this lane the clock was reachable only from inside the hive, and a POST at the clock's own path ended as `hive_boundary`. The lane carries `trigger` and nothing else: the clock is born with `accept_ops: [\"trigger\"]`, so `add`, `modify`, `remove` and a `params` slot are refused as `op_not_accepted` and change nothing -- an `add` would otherwise plant a strike the clock emits from inside the hive, at any inner cell past the rim. Nothing answers on the rim: a refused op (`schedule_not_found` for an unknown name) is the timer's own error message, the run is read where it lands -- in `consolidation_log`"
         }
       ],
       "emits": [
@@ -361,6 +366,11 @@
               "batch_id": "hop.batch_id"
             }
           }
+        },
+        {
+          "from": ".",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'clock_op'"
         },
         {
           "from": "./clock",
@@ -1279,7 +1289,7 @@
     "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one MEMBER's memory behind ITS OWN PATH (ADR-0002 E1 -- agents are lenses on it, a second agent of the same member inherits what that member knows). `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The transfer lane (#243) carries the content OUT as a versioned document and back IN to a running hive, so a memory is an asset with an identity of its own rather than a side effect of one deployment. The recall tool (#552) is the same memory reached the way a model reaches any tool: `tool_call` in, one `tool_result` out, and the declaration handed out on `in_schemas` by the hive that enforces it. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
     "use_when": "Instantiate once per member; wire the lanes at the hive path in the same mutation. Every write lane needs the provenance of the turn on its ingress context (audience_set, channel, and speaker/agent_id), every read lane the asking round (audience_now, channel).",
     "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph.",
-    "contract_in": "Ten lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_close_pass -- this session is over, read it whole once. in_export -- write the remembered content out as a document. in_import -- take one part of such a document in, idempotently. tool_call -- one `memory_recall` call a brain made, correlated by `hop.tool_call_id` (#552). in_schemas -- what does that tool look like. in_affect -- file how one remembered turn read (GH #936). in_alias -- these spellings mean this id (GH #948); `in_query` with a `subject` asks for the newest facts of one canonical subject. Which cell serves a lane is this hive's business.",
+    "contract_in": "The lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_close_pass -- this session is over, read it whole once. in_export -- write the remembered content out as a document. in_import -- take one part of such a document in, idempotently. tool_call -- one `memory_recall` call a brain made, correlated by `hop.tool_call_id` (#552). in_schemas -- what does that tool look like. in_affect -- file how one remembered turn read (GH #936). in_alias -- these spellings mean this id (GH #948); `in_query` with a `subject` asks for the newest facts of one canonical subject. Which cell serves a lane is this hive's business. clock_op -- run this hive's nightly schedule now, by name (GH #1019).",
     "contract_out": "Seven lanes, out of the hive path. bundle -- the answer to a question. close_report -- what the close pass did with one session. dump -- the transfer document, part by part, and the receipt of an applied part. reject -- something this hive would not take; the body says which and why. tool_result -- the answer to one `memory_recall` call, refusals included, stamped `hop.tool_name = memory_recall` on the way out (GH #937 -- an observer of named tools filters on it). tool_schemas -- this memory's own declaration of that tool (#552). alias_ack -- what an `in_alias` bound and refused (GH #948)."
   }
 }

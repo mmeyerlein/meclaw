@@ -1,4 +1,4 @@
-# `display@2.10.3`
+# `display@2.10.4`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -215,7 +215,12 @@ Every output shows the same open windows, the same rungs, the same levels. What 
 the rendering. A monitor puts canvas windows side by side, up to three in a row and further
 ones below. A tv puts up to two side by side, with larger type and fewer details. A phone
 stacks them, the leading one on top. When the open windows do not fit, the canvas scrolls
-and the page does not, and no window is missing.
+and the page does not, and no window is missing. Where a window stands is its
+`canvas_rank`, written as `--rank` and read as the grid's `order`; the DOM keeps the order
+the windows arrived in, so a new window moves no standing node
+([#1028](https://github.com/mmeyerlein/meclaw/issues/1028)). The price is chosen: the
+keyboard and a screen reader follow the DOM and read the windows in arrival order, not the
+leading one first.
 
 `inputs` gates what is bound. Without `pointer` and without `touch` there are no hover rules
 and no press. Without `audio` there is no hold: a long press is a press, the browser records
