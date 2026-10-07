@@ -391,8 +391,28 @@ fn make_build(
         bot_token,
         emit_to,
         max_document_bytes,
+        bot_token_grant_id,
+        credential_wait_ms,
+        credential_backoff_max_ms,
         ..
     } = ProxyParams::parse(&params)?;
+    // GH #1059 (OR-VG-4): a grant set → the literal is never used, not even
+    // while the box is missing. Said once per birth, by param name, never value.
+    if crate::credential::literal_is_ignored(bot_token_grant_id.as_deref(), Some(&bot_token)) {
+        tracing::warn!(
+            "proxy: params.bot_token is ignored because params.bot_token_grant_id is set — the \
+             token comes sealed from the vault"
+        );
+    }
+    let bot_token = if bot_token_grant_id.is_some() {
+        String::new()
+    } else {
+        bot_token
+    };
+    let credential_wait = crate::proxy::io::CredentialWait {
+        wait_ms: credential_wait_ms,
+        backoff_max_ms: credential_backoff_max_ms,
+    };
 
     // Owned clones moved into the multi-call closure.
     let birth_cap = params;
@@ -460,6 +480,11 @@ fn make_build(
         // GH #907: the store a fetched document is committed to -- the same
         // handle the delivery boundary gets, on birth and respawn alike.
         .with_blob_store(blob_cap.clone());
+        // GH #1059: a grant's connector is born without a token and asks for it.
+        let cell = match bot_token_grant_id.as_deref() {
+            Some(grant) => cell.with_credential(grant, credential_wait),
+            None => cell,
+        };
         let db = DbConn::wrap(conn, Some(Duration::from_millis(query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(
@@ -500,7 +525,39 @@ fn make_build_slack(
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     // Parsed once, outside the closure: a params error must surface as a spawn
     // failure, not as a panic on the respawn path.
-    let parsed = SlackParams::parse(&params)?;
+    let mut parsed = SlackParams::parse(&params)?;
+    // GH #1059 (OR-VG-4): a grant set → its literal is never used, not even
+    // while the box is missing. Said once per birth, by param name, never value.
+    if crate::credential::literal_is_ignored(
+        parsed.app_token_grant_id.as_deref(),
+        Some(&parsed.app_token),
+    ) {
+        tracing::warn!(
+            "proxy: params.app_token is ignored because params.app_token_grant_id is set — the \
+             token comes sealed from the vault"
+        );
+    }
+    if crate::credential::literal_is_ignored(
+        parsed.bot_token_grant_id.as_deref(),
+        Some(&parsed.bot_token),
+    ) {
+        tracing::warn!(
+            "proxy: params.bot_token is ignored because params.bot_token_grant_id is set — the \
+             token comes sealed from the vault"
+        );
+    }
+    // Blanked rather than kept: the client is built from these fields, and a
+    // literal that is not in the client cannot be sent by any later path.
+    if parsed.app_token_grant_id.is_some() {
+        parsed.app_token = String::new();
+    }
+    if parsed.bot_token_grant_id.is_some() {
+        parsed.bot_token = String::new();
+    }
+    let credential_wait = crate::proxy::io::CredentialWait {
+        wait_ms: parsed.credential_wait_ms,
+        backoff_max_ms: parsed.credential_backoff_max_ms,
+    };
 
     let path_cap = path;
     let outputs_cap = outputs_tx;
@@ -532,7 +589,13 @@ fn make_build_slack(
         // 4. Build the client + cell (sync).
         let client =
             crate::proxy::slack::client::SlackClient::new(&parsed).expect("SlackClient::new");
+        // GH #1059: a grant's connector is born without that token and asks.
         let cell = crate::proxy::slack::cell::SlackCell::new(&parsed, client);
+        let cell = cell.with_credential(
+            parsed.app_token_grant_id.as_deref(),
+            parsed.bot_token_grant_id.as_deref(),
+            credential_wait,
+        );
         let db = DbConn::wrap(conn, Some(Duration::from_millis(parsed.query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(

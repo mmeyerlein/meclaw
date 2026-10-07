@@ -49,6 +49,28 @@ pub struct TemplateRequires {
     /// Environment variables the instance needs; stays a token and binds late.
     #[serde(default)]
     pub env: BTreeMap<String, RequiredKey>,
+    /// GH #1061: the vault credentials the template's cells spend through a
+    /// grant. A secret is never an environment variable of a template (#801):
+    /// it is deposited with `meclaw --vault-add <cred_ref>` and delivered
+    /// sealed, so the declaration names the credential and its consumers
+    /// instead of a variable. Informational -- nothing at instantiation can
+    /// check a vault it does not open, so it is read, never enforced.
+    #[serde(default)]
+    pub credentials: Vec<RequiredCredential>,
+}
+
+/// One vault credential a template's cells spend (GH #1061).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredCredential {
+    /// The vault name the grant delivers, e.g. `cred:openrouter`.
+    pub cred_ref: String,
+    /// Paths of the consuming cells, relative to the template root (`.` = the root cell).
+    #[serde(default)]
+    pub consumers: Vec<String>,
+    /// Why the template needs it and how it is deposited.
+    #[serde(default)]
+    pub because: Option<String>,
 }
 
 /// One declared key: what it holds, whether it may be omitted, and why it exists.
@@ -177,5 +199,23 @@ mod tests {
             rendered.contains(&named.display().to_string()),
             "the message must name the file it read, got {rendered}"
         );
+    }
+
+    /// GH #1061: a template names the vault credentials it spends, not variables.
+    #[test]
+    fn gh1061_a_template_declares_the_credentials_it_spends() {
+        let td = TempDir::new().unwrap();
+        let dir = write_template(
+            &td,
+            "summarizer",
+            r#"{"name": "summarizer", "requires": {"credentials": [
+                {"cred_ref": "cred:openrouter", "consumers": ["writer"],
+                 "because": "deposit with meclaw --vault-add cred:openrouter"}]}}"#,
+        );
+        let req = read_requires(&dir).unwrap();
+        assert_eq!(req.credentials.len(), 1);
+        assert_eq!(req.credentials[0].cred_ref, "cred:openrouter");
+        assert_eq!(req.credentials[0].consumers, vec!["writer".to_string()]);
+        assert!(req.env.is_empty());
     }
 }

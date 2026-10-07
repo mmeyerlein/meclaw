@@ -1,6 +1,6 @@
 # meclaw
 
-meclaw is a workflow substrate whose topology is a directory tree. Every directory with a
+meclaw is an open-source Rust framework for agentic systems, built on a workflow substrate whose topology is a directory tree. Every directory with a
 `config.json` is a node, one binary reads the tree at boot, and nodes talk only over declared
 edges. Seven words carry the model: colony, cell, hive, edge, hop, mutation, template vs. instance.
 

@@ -5,7 +5,7 @@ pub use echo::EchoCellFactory;
 pub mod emit_once;
 pub use emit_once::EmitOnceMockCellFactory;
 pub mod hang;
-pub use hang::HangCellFactory;
+pub use hang::{HangCellFactory, set_respawn_rewire_pause_ms_for_test};
 pub mod long_running_receipt;
 pub use long_running_receipt::LongRunningReceiptFactory;
 pub mod multi_update;

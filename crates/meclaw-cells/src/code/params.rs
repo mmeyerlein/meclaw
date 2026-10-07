@@ -149,6 +149,9 @@ impl CodeParams {
         // GH #907: validated with the rest so a bad value fails at birth; the
         // factory reads it again for the attachment reader (see the fn).
         parse_attachment_timeout_ms(raw)?;
+        // GH #1060: validated with the rest; the factory reads it again for the
+        // credential slot (same pattern as `attachment_timeout_ms`).
+        parse_credential(raw)?;
         Ok(CodeParams {
             runner: runner.to_string(),
             script,
@@ -171,6 +174,40 @@ impl CodeParams {
             _ => self.max_concurrency.unwrap_or(4),
         }
     }
+}
+
+/// GH #1060: the name of the environment entry a granted credential reaches
+/// the script in, unless `params.credential_env` names another.
+pub const DEFAULT_CREDENTIAL_ENV: &str = "MECLAW_CREDENTIAL";
+
+/// GH #1060: the grant block (`credential_grant_id`, `credential_wait_max`,
+/// `credential_wait_ms`) and the name of the environment entry the opened
+/// credential travels in (`credential_env`, default [`DEFAULT_CREDENTIAL_ENV`];
+/// empty = the default). The name must be a plain identifier — it becomes an
+/// environment key of the script's process.
+pub fn parse_credential(
+    raw: &Value,
+) -> Result<(crate::credential::CredentialParams, String), String> {
+    let grant = crate::grant_slot::parse_credential_params(raw)?;
+    let env = match raw.get("credential_env") {
+        None | Some(Value::Null) => DEFAULT_CREDENTIAL_ENV.to_string(),
+        Some(Value::String(s)) if s.is_empty() => DEFAULT_CREDENTIAL_ENV.to_string(),
+        Some(Value::String(s)) if is_env_name(s) => s.clone(),
+        Some(_) => {
+            return Err(
+                "params.credential_env must be an environment name ([A-Za-z_][A-Za-z0-9_]*)".into(),
+            );
+        }
+    };
+    Ok((grant, env))
+}
+
+fn is_env_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// GH #907: default operation timeout of one attachment read, in ms -- the
@@ -404,6 +441,26 @@ mod tests {
         assert_eq!(parse_attachment_timeout_ms(&v).unwrap(), 250);
         for bad in [json!(0), json!(-1), json!("5s"), json!(1.5)] {
             v["attachment_timeout_ms"] = bad.clone();
+            assert!(CodeParams::parse(&v).is_err(), "{bad} must be refused");
+        }
+    }
+
+    /// GH #1060: the entry name defaults to `MECLAW_CREDENTIAL`, takes a plain
+    /// identifier, and refuses anything that could not be an environment key.
+    #[test]
+    fn gh1060_the_credential_entry_is_a_plain_name() {
+        let base = json!({"runner": "python3", "script_inline": "print(1)"});
+        let (grant, env) = parse_credential(&base).unwrap();
+        assert_eq!(env, DEFAULT_CREDENTIAL_ENV);
+        assert_eq!(grant.grant(), None, "no grant unless one is set");
+        let mut v = base.clone();
+        v["credential_env"] = json!("EMBED_KEY");
+        v["credential_grant_id"] = json!("g-1");
+        let (grant, env) = parse_credential(&v).unwrap();
+        assert_eq!((grant.grant(), env.as_str()), (Some("g-1"), "EMBED_KEY"));
+        for bad in [json!("1KEY"), json!("A-B"), json!("A B"), json!(7)] {
+            let mut v = base.clone();
+            v["credential_env"] = bad.clone();
             assert!(CodeParams::parse(&v).is_err(), "{bad} must be refused");
         }
     }

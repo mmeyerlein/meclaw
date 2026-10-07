@@ -775,6 +775,32 @@ pub async fn boot_renewing_failing(raw: Value, renew_after_ms: u64, renew_grace_
     .await
 }
 
+/// Boot a duplex cell around a fake model with the two edge knobs of GH #1055
+/// set: how long a session opened while the line rings waits for its media
+/// connection, and the duck. Both reach the I/O half from `params.duplex`
+/// through the factory, which this fixture does not run.
+#[allow(dead_code)]
+pub async fn boot_edge(
+    raw: Value,
+    prewarm_ttl_ms: u64,
+    duck: meclaw_cells::voice::duck::DuckParams,
+) -> Live {
+    let wired = wire_fake(false, false, RATE);
+    boot_core(
+        raw,
+        Some(wired.provider.clone()),
+        Some(wired),
+        QUIET_MS,
+        CAP_MS,
+        CLOSE_GRACE_MS,
+        TICK_MS,
+        meclaw_cells::voice::params::DEFAULT_RENEW_AFTER_MS,
+        meclaw_cells::voice::params::DEFAULT_RENEW_GRACE_MS,
+        (prewarm_ttl_ms, duck),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn boot_full(
     raw: Value,
@@ -786,6 +812,34 @@ async fn boot_full(
     tick_ms: u64,
     renew_after_ms: u64,
     renew_grace_ms: u64,
+) -> Live {
+    boot_core(
+        raw,
+        duplex,
+        wired,
+        quiet_ms,
+        cap_ms,
+        close_grace_ms,
+        tick_ms,
+        renew_after_ms,
+        renew_grace_ms,
+        (0, meclaw_cells::voice::duck::DuckParams::default()),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn boot_core(
+    raw: Value,
+    duplex: Option<Arc<dyn DuplexProvider>>,
+    wired: Option<Wired>,
+    quiet_ms: u64,
+    cap_ms: u64,
+    close_grace_ms: u64,
+    tick_ms: u64,
+    renew_after_ms: u64,
+    renew_grace_ms: u64,
+    edge: (u64, meclaw_cells::voice::duck::DuckParams),
 ) -> Live {
     let params = VoiceParams::parse(&raw).expect("the fixture params parse");
     let surfaces = Arc::new(SurfaceRegistry::new());
@@ -809,6 +863,8 @@ async fn boot_full(
     io.duplex_tick_ms = tick_ms;
     io.duplex_renew_after_ms = renew_after_ms;
     io.duplex_renew_grace_ms = renew_grace_ms;
+    io.duplex_prewarm_ttl_ms = edge.0;
+    io.duck = edge.1;
     io.cell_path = Path::new("/voice");
     io.surfaces = Arc::clone(&surfaces);
 

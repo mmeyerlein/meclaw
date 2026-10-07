@@ -24,6 +24,13 @@
           "route": "in_refused",
           "context": [],
           "because": "a push a subscriber's own llm cell refused (GH #863), carried back on the road the push came by: its path (`hop.refused_subscriber`), the model it refused (`hop.refused_model`) and why (`meta.error.detail`). The hand marks the subscriber row `refused` when the refused model is the one it holds, and journals it otherwise; it answers nothing. Never a command: the door stamps its own origin, and a body on this lane is never read as an op"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./translate"
+          ],
+          "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
         }
       ],
       "emits": [
@@ -42,6 +49,13 @@
         {
           "route": "error",
           "because": "the lane could not be served. The parent MUST wire it"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./translate"
+          ],
+          "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },
@@ -138,7 +152,7 @@
         {
           "from": "./translate",
           "to": "./hand",
-          "condition": "context.registry_origin == 'translate'"
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && context.registry_origin == 'translate'"
         },
         {
           "from": "./select",

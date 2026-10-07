@@ -143,7 +143,7 @@ A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT: an intention is
 `fact_kind: foresight` on the matter -- `lives_in`, never `wants_to_move_to`.
 
 ENTITIES ARE VERBATIM: names and values are copied byte for byte, never translated or
-corrected.
+corrected. So is `quote`: the words of the turn each fact rests on, never paraphrased.
 
 A TURN MARKED [peer <ref> · <name>] ON ITS FIRST LINE is that participant's words:
 record what they STATED, `subject` what it is about, and `source` their <ref>, copied

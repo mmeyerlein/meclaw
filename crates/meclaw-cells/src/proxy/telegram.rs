@@ -102,6 +102,20 @@ impl TelegramClient {
         }
     }
 
+    /// GH #1059: the same client with the bot token the vault delivered. The
+    /// connector of a grant is born without a token and gets it here, once its
+    /// sealed box opened; everything else (reqwest client, base URL, document
+    /// ceiling) is kept.
+    #[must_use]
+    pub fn with_bot_token(&self, bot_token: &str) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            base_url: self.base_url.clone(),
+            bot_token: bot_token.to_string(),
+            max_document_bytes: self.max_document_bytes,
+        }
+    }
+
     /// Long-Poll `getUpdates`. A-Timeout via `tokio::time::timeout`. Telegram-
     /// side timeout via the query param `timeout=<sec>`. The W7 tripwire is
     /// validated in `ProxyParams::parse` — here it is only respected.
@@ -119,7 +133,7 @@ impl TelegramClient {
         let resp = tokio::time::timeout(client_timeout, fut)
             .await
             .map_err(|_| TelegramError::Transient("client timeout".into()))?
-            .map_err(|e| TelegramError::Transient(format!("send: {e}")))?;
+            .map_err(|e| TelegramError::Transient(format!("send: {}", e.without_url())))?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(TelegramError::Permanent(format!("auth: {status}")));
@@ -138,7 +152,7 @@ impl TelegramClient {
         let json: JsonValue = resp
             .json()
             .await
-            .map_err(|e| TelegramError::Transient(format!("json: {e}")))?;
+            .map_err(|e| TelegramError::Transient(format!("json: {}", e.without_url())))?;
         if json.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             return Err(TelegramError::Transient(format!("ok=false: {json}")));
         }
@@ -246,7 +260,7 @@ impl TelegramClient {
         let resp = tokio::time::timeout(client_timeout, fut)
             .await
             .map_err(|_| TelegramError::Transient("client timeout".into()))?
-            .map_err(|e| TelegramError::Transient(format!("send: {e}")))?;
+            .map_err(|e| TelegramError::Transient(format!("send: {}", e.without_url())))?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(TelegramError::Permanent(format!("auth: {status}")));
@@ -290,7 +304,7 @@ impl TelegramClient {
         let resp = tokio::time::timeout(client_timeout, fut)
             .await
             .map_err(|_| TelegramError::Transient("client timeout".into()))?
-            .map_err(|e| TelegramError::Transient(format!("send: {e}")))?;
+            .map_err(|e| TelegramError::Transient(format!("send: {}", e.without_url())))?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(TelegramError::Permanent(format!("auth: {status}")));

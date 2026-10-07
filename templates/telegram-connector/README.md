@@ -1,4 +1,4 @@
-# `telegram-connector@2.1.0`
+# `telegram-connector@2.1.1`
 
 A Telegram chat as one cell. One `proxy`, one credential, one wire in and one
 wire out. No persona, no llm cell, no answer of its own -- it carries turns
@@ -116,18 +116,110 @@ deserialises them as `uint`, and a bare `hop.user_id == 12345` is silently
 
 ## The credential
 
-`params.bot_token` is `${TELEGRAM_BOT_TOKEN}`, substituted once, at
-instantiation, out of the colony's `.env`. After that the `config.json` is a
-bootstrap imprint and nothing rewrites it: rotating the token means editing
-`.env` and restarting.
+`params.bot_token_grant_id` is `grant:telegram-bot@template-telegram-connector/bot`: the bot token comes sealed from an
+access hive, and `params.bot_token` is empty (deprecated, removed in 0.63.0, #801). A
+single cell cannot seed its own grant, so the level that grows it brings the broker, the
+grant and the two edges in the same mutation (`seed_rows` writes through the mutation door):
 
-A second connector in the same colony needs its own variable. The template is one
+```json
+{
+  "scope": "/",
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "access",
+        "template": "access@2.5.1"
+      },
+      {
+        "name": "telegram-connector",
+        "template": "telegram-connector@2.1.1"
+      }
+    ],
+    "seed_rows": [
+      {
+        "target": "./access/store",
+        "table": "grants",
+        "rows": [
+          {
+            "grant_id": "grant:telegram-bot@template-telegram-connector/bot",
+            "requester": "agent:telegram-connector",
+            "capability": "credential.read",
+            "subject": "template:telegram-connector",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:telegram-bot",
+            "purpose": "let the connector poll and answer its Telegram bot",
+            "issued_at": "2026-10-07T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "template-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          }
+        ]
+      },
+      {
+        "target": "./access/store",
+        "table": "grant_events",
+        "rows": [
+          {
+            "id": "ev-telegram-connector-bot",
+            "grant_id": "grant:telegram-bot@template-telegram-connector/bot",
+            "event": "granted",
+            "at": "2026-10-07T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "credential_grant_id is immutable, so the grant has to exist before the cell that names it asks (#801)"
+            }
+          }
+        ]
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./telegram-connector",
+        "to": "./access",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:telegram-connector'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./telegram-connector",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:telegram-bot@template-telegram-connector/bot'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+Then deposit the token once, on stdin, with no colony running:
+`meclaw --root <root> --vault /access/vault --vault-add cred:telegram-bot`. The vault must be able to unlock itself: `access/vault` `key_source` `systemd-cred` for a unit, `plainfile` for a local run.
+The connector polls only once the box is opened; a send before that answers
+`credential_pending`. Drain `./access`'s `error` lane like the connector's own.
+
+A second connector in the same colony names its own grant. The template is one
 cell, so `override_params` takes the flat form -- there is no path inside it to
 address:
 
 ```json
-{"name": "telegram-connector-2", "template": "telegram-connector@2.1.0",
- "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN_2}"}}
+{"name": "telegram-connector-2", "template": "telegram-connector@2.1.1",
+ "override_params": {"bot_token_grant_id": "grant:telegram-bot-2@template-telegram-connector/bot-2"}}
 ```
 
 **One `getUpdates` consumer per token.** A second poller on the same token gets
@@ -184,9 +276,10 @@ this node itself:
     "add_nodes": [
       {
         "name": "telegram",
-        "template": "telegram-connector@2.1.0",
+        "template": "telegram-connector@2.1.1",
         "birth": "inactive",
         "override_params": {
+          "bot_token_grant_id": "",
           "bot_token": "parked",
           "base_url": "http://127.0.0.1:9"
         }
@@ -237,8 +330,8 @@ credential -- the graph swap `swap_nodes` was re-dedicated for:
         "match": {"name": "telegram"},
         "with": {
           "name": "telegram-live",
-          "template": "telegram-connector@2.1.0",
-          "params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}
+          "template": "telegram-connector@2.1.1",
+          "params": {"bot_token_grant_id": "grant:telegram-bot@template-telegram-connector/bot"}
         }
       }
     ]
@@ -260,9 +353,10 @@ Three things to know about that swap:
   `cell_id` and `cell.db` stay, and swinging the edges back is a mutation like
   any other.
 
-**The token stays a `${VAR}` everywhere it is real.** A mutation body naming a
-value ships a secret into the `mutation_log`; the substitution happens once, at
-instantiation, out of the colony's `.env`.
+**The real token never stands in a manifest.** A mutation body naming a value ships
+a secret into the `mutation_log`; the armed node names its grant, and the token comes
+sealed from the vault (§ *The credential*). Draw the ask and answer edges to `./access`
+on the parked node, so the swap swings them onto the armed one.
 
 ## The switchover order
 
@@ -285,8 +379,8 @@ replays whatever it still holds and the cursor catches up on the first poll.
 There is nothing to copy out of the old cell, which is what makes the swap a
 topology operation rather than a data one.
 
-**The credential is an operator step, not a builder one.** Where the token lives
-in a vault instead of `.env`, the value is put in by hand
+**The credential is an operator step, not a builder one.** The token lives in the
+vault, and the value is put in by hand
 (`meclaw --vault-add`, on stdin, never in a mutation body) and the grant rows
 travel in the seed, in place **before** the first spawn of the cell that will
 spend them. A builder only ever emits a `credential_grant_id`; it never emits a

@@ -2122,6 +2122,31 @@ fn every_declared_out_lane_has_an_emitter_and_an_edge() {
             );
             continue;
         }
+        // GH #1061 (#801): `credential_request` is the judge asking for its
+        // key. It leaves the hive on a v-lane the PARENT draws, from
+        // `./argus/judge` straight to the shell's broker -- the hive path is
+        // not on that road, so the edge is asked of `meclaw-os`.
+        if route == "credential_request" {
+            let shell: meclaw_core::serde_json::Value = meclaw_core::serde_json::from_str(
+                &std::fs::read_to_string(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../templates/meclaw-os/config.json"),
+                )
+                .expect("templates/meclaw-os/config.json"),
+            )
+            .expect("the shell config parses");
+            assert!(
+                shell["params"]["graph"]["edges"]
+                    .as_array()
+                    .is_some_and(|es| {
+                        es.iter().any(|e| {
+                            e["from"] == "./argus/judge" && e["lane"] == "credential_request"
+                        })
+                    }),
+                "no v-lane carries the judge's `credential_request` to a broker"
+            );
+            continue;
+        }
         assert!(
             edges.iter().any(|e| e["to"] == "."
                 && e["condition"]

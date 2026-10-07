@@ -65,6 +65,9 @@ use road::{
 use std::collections::{BTreeMap, HashMap};
 use tokio::sync::{mpsc, oneshot};
 
+// GH #1061: the road support already loads it (`duplicate_mod`).
+use road::organism_assistant;
+
 const APP: &str = "probe-app";
 const PERSON: &str = "owner";
 const RUN: &str = "r-995-1";
@@ -370,7 +373,9 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs) {
     let bare = root.join("remotes").join("remote.git");
     git_init_bare(&bare);
     owner_overrides(&main, &base, &bare);
-    let grown = read_json(&repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
     write_json(
         &main.join("assistants/config.json"),
         &json!({"cell": {"type": "hive"},

@@ -78,12 +78,24 @@ where the far side takes one. The built-in cells:
 
 | Cell | Deduplicated by message id | Window that remains |
 |---|---|---|
-| `store` | yes — writes book the id in `meclaw_consumed`, same savepoint as the write; a repeat answers `{"duplicate": true}` with `rows_affected: 0`, not the first write's answer | none for writes; reads run again |
-| `proxy` Telegram / Slack (outgoing) | yes — the id is booked in `consumed` before the platform call | a crash between booking and the call loses that message instead of sending it twice |
+| `store` | yes — writes book the id and their answer (`rows_affected`, payload) in `meclaw_consumed`, same savepoint as the write; a repeat writes nothing and answers what the first write answered, so a caller that branches on `rows_affected` (a compare-and-set claim) takes the same branch. Reads are not booked, the read legs of a bundle that writes included | none for writes; every read runs again, see below |
+| `proxy` Telegram / Slack (outgoing) | yes — the id is booked in `consumed` before the platform call, the platform's answer after it; a repeat sends nothing and answers as the original did: silent after a confirmed send, the original's `send_failed` after a failed one, `send_failed` with the detail `unconfirmed: …` when the answer was never booked | a crash between booking and the call loses that message instead of sending it twice, and its repeat reports it as `unconfirmed` |
 | `proxy` `meclaw` (peer) | yes — `peer_outbox` / `peer_inbox` and the frame id | see below |
 | `llm` | no — the call runs again (cost); its follow-up emissions carry derived ids and are dropped when logged | one paid call per replayed delivery |
 | `bash`, `process`, `file`, `edit`, `code`, `web` | no | the effect may happen twice within the window |
 | `subcolony` | no | the child colony may receive the input twice |
+
+A record booked before 0.61.7 holds the id without the answer. A repeat of such an id still writes or
+sends nothing, but the store answers it as before the upgrade, `rows_affected: 0` and
+`{"duplicate": true}`, and the Telegram and Slack proxies report it as `unconfirmed`.
+
+A read leg in a bundle that also writes is not booked either. When such a bundle is repeated after
+a crash, its write legs answer from the book and its read legs run again, so a read leg can see a
+later state than the first answer saw: any write that went through between the first delivery and
+the crash, including one from another message. A caller that writes and reads back in one bundle
+(a claim followed by a look at the claimed rows, a value parked and read again) must tolerate a
+read that is newer than its writes. Where it cannot, it reads in a message of its own after the
+write's answer arrived, or checks what it reads against the write's own answer.
 
 An ingress that holds a durable key for what it hands on stamps it into the hop as `delivery_key`
 (the `meclaw` peer mount: its inbox key), and a hand-on it repeats from its own book after a start

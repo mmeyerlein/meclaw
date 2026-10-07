@@ -29,6 +29,7 @@ import subprocess
 import time
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -1155,6 +1156,33 @@ class TestToken(TokenTestCase):
         self.assertNotIn("STALE", res.stdout)
         self.assertEqual(["%s/kit" % WAVE], self.waiting())
 
+    def utc(self, minutes):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.T0 + 60 * minutes))
+
+    def test_a_waiter_beyond_the_ttl_that_does_not_take_its_token_drops_out(self):
+        """GH #1053: a standing tree is no proof that its builder still
+        polls. A waiter beyond the TTL that leaves an offered token untaken
+        for one poll period leaves the queue with an event line, and the one
+        behind it gets the token -- before, the queue stood still until the
+        orchestrator dropped it by hand."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
+        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
+        self.assertEqual(3, self.take("welle-x/x", minutes=1).returncode)
+        self.token("release", "--strand", "welle-x/a", minutes=100)
+        res = self.token("who", minutes=101)
+        self.assertIn("#1 %s/kit  waiting 101 min  waiting beyond the ttl  offered a token at %s"
+                      % (WAVE, self.utc(100)), res.stdout)
+        res = self.take("welle-x/x", minutes=111)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("dropped %s/kit from the queue -- waiter past ttl, did not take" % WAVE,
+                      res.stderr)
+        self.assertEqual(["welle-x/x"], self.holders())
+        self.assertEqual([], self.waiting())
+        self.assertRegex(self.log(), r"\tdropped\t%s/kit\t[^\t]*\twaiter past ttl, did not take"
+                         % re.escape(WAVE))
+
     def test_a_waiter_whose_worktree_is_gone_leaves_the_queue(self):
         """The one automatic exit of a waiter with a tree (review I1): the
         tree is gone, the entry goes at the next `take`, and the one behind
@@ -1417,6 +1445,19 @@ class TestTokenLanes(TokenTestCase):
         self.assertEqual(0, res.returncode)
         self.assertEqual("north", res.stdout.strip())
 
+    def test_a_threads_word_in_the_host_file_does_not_break_the_token(self):
+        # `threads=<n>` is a lane's width cap (the readers that predate it
+        # look at the first two words only): armed, held and named as ever.
+        (self.repo.parent / "lanes").write_text(
+            "north  builder@north.example.invalid  bmc-north.example.invalid  threads=12\n"
+            "south  builder@south.example.invalid  threads=8\n"
+            "spare  builder@spare.example.invalid\n")
+        self.arm("--lanes", "north,south,spare")
+        res = self.take("welle-x/a")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane north", res.stdout.strip())
+        self.assertIn("lanes: north south spare", self.token("who").stdout)
+
     def test_lanes_and_max_together_refuse(self):
         res = self.token("init", "--lanes", "north", "--max", "2")
         self.assertEqual(2, res.returncode)
@@ -1495,6 +1536,83 @@ class TestTokenLanes(TokenTestCase):
         res = self.token("release", "--strand", "welle-x/b")
         self.assertIn("no waiter takes lane north", res.stderr)
         self.assertNotIn("next in the queue: welle-x/c", res.stderr)
+
+    def _past_ttl_waiter_before_a_free_lane(self):
+        """The measured case of GH #1053 (2026-10-07 00:12): lane south free,
+        the head of the queue waits in a standing tree far beyond the TTL and
+        never takes it, a strand behind it keeps asking."""
+        self.arm("--lanes", "south")
+        self.take("welle-x/a")
+        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
+        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
+        self.assertEqual(3, self.take("welle-x/x", minutes=1).returncode)
+        res = self.token("release", "--strand", "welle-x/a", minutes=100)
+        self.assertIn("next in the queue: %s/kit (lane south" % WAVE, res.stderr)
+
+    def test_who_names_the_lane_offered_to_a_waiter(self):
+        self._past_ttl_waiter_before_a_free_lane()
+        res = self.token("who", minutes=101)
+        self.assertIn("#1 %s/kit  waiting 101 min  waiting beyond the ttl  offered south at %s"
+                      % (WAVE, time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                             time.gmtime(self.T0 + 6000))), res.stdout)
+        self.assertNotIn("offered", res.stdout.split("#2", 1)[1].splitlines()[0])
+
+    def test_an_offered_lane_stands_for_one_poll_period(self):
+        self._past_ttl_waiter_before_a_free_lane()
+        res = self.take("welle-x/x", minutes=109)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertNotIn("dropped", res.stderr)
+        self.assertEqual(["%s/kit" % WAVE, "welle-x/x"], self.waiting())
+
+    def test_a_waiter_beyond_the_ttl_that_does_not_take_its_lane_drops_out(self):
+        """Measured 2026-10-07 00:12: two waiters 96-115 min beyond the TTL
+        in standing trees never took build04; the `take` of the third left
+        them standing and the lane stood empty for about 30 min."""
+        self._past_ttl_waiter_before_a_free_lane()
+        res = self.take("welle-x/x", minutes=110)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("lane south", res.stdout.strip())
+        self.assertIn("dropped %s/kit from the queue -- waiter past ttl, did not take lane south"
+                      % WAVE, res.stderr)
+        self.assertEqual([], self.waiting())
+        self.assertIn("\tdropped\t%s/kit\t" % WAVE, self.log())
+        # the dropped strand comes back at the end of the queue
+        res = self.take(None, cwd=self.tree, minutes=111)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("%s/kit is #1 in the queue" % WAVE, res.stderr)
+
+    def test_the_next_waiter_gets_the_lane_offered_in_turn(self):
+        """The drop hands the lane on: the next waiter gets its own poll
+        period, it is not dropped in the same breath."""
+        self.arm("--lanes", "south")
+        self.take("welle-x/a")
+        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
+        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
+        self.assertEqual(3, self.take("welle-x/x", minutes=30).returncode)
+        self.assertEqual(3, self.take("welle-x/y", minutes=31).returncode)
+        self.token("release", "--strand", "welle-x/a", minutes=100)
+        res = self.take("welle-x/y", minutes=110)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("dropped %s/kit" % WAVE, res.stderr)
+        self.assertNotIn("dropped welle-x/x", res.stderr)
+        self.assertIn("welle-x/y is #2 in the queue", res.stderr)
+        self.assertEqual(["welle-x/x", "welle-x/y"], self.waiting())
+        self.assertEqual({"lane": "south", "at": self.T0 + 110 * 60},
+                         self.state()["waiting"][0]["offered"])
+
+    def test_a_waiter_within_the_ttl_keeps_an_offered_lane(self):
+        """Within the TTL an untaken offer is the normal case -- the builder
+        is woken by the orchestrator, and that can take a while."""
+        self.arm("--lanes", "south")
+        self.take("welle-x/a")
+        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
+        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
+        self.assertEqual(3, self.take("welle-x/x", minutes=1).returncode)
+        self.token("release", "--strand", "welle-x/a", minutes=10)
+        res = self.take("welle-x/x", minutes=60)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertNotIn("dropped", res.stderr)
+        self.assertEqual(["%s/kit" % WAVE, "welle-x/x"], self.waiting())
 
     def test_a_named_waiter_keeps_its_lane_against_a_later_take(self):
         self.arm("--lanes", "south,north")
@@ -1727,6 +1845,67 @@ class TestGateHost(TokenTestCase):
 
     def wt(self):
         return self.remote / "wt" / "kit"
+
+    def lanes_with(self, text):
+        (self.repo.parent / "lanes").write_text(text)
+
+    def gate_call(self):
+        # The remote command line of the gate run, as the fake ssh logged it.
+        return next(l for l in self.ssh_log.read_text().splitlines() if "scripts/gate.sh" in l)
+
+    def test_a_lane_without_threads_runs_at_full_width(self):
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("CARGO_BUILD_JOBS", self.gate_call())
+        self.assertNotIn("NEXTEST_TEST_THREADS", self.gate_call())
+
+    def test_threads_in_the_host_file_cap_the_gate_on_that_lane(self):
+        self.lanes_with(HOST_LANES.replace("north  builder@north.example.invalid",
+                                           "north  builder@north.example.invalid  bmc-n.example.invalid  threads=7"))
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("NEXTEST_TEST_THREADS=7 CARGO_BUILD_JOBS=7 scripts/gate.sh", self.gate_call())
+
+    def test_the_cap_stands_without_a_bmc_word_and_binds_to_its_own_lane(self):
+        self.lanes_with(HOST_LANES.replace("south  builder@south.example.invalid",
+                                           "south  builder@south.example.invalid  threads=5"))
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("CARGO_BUILD_JOBS", self.gate_call())   # north has no cap
+        self.ssh_log.write_text("")
+        res = self.host_gate(PLAN_HOST, "--host", "south")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("NEXTEST_TEST_THREADS=5 CARGO_BUILD_JOBS=5 scripts/gate.sh", self.gate_call())
+
+    def test_a_threads_word_that_is_no_number_is_no_cap(self):
+        for word in ("threads=abc", "threads=0", "threads=", "threads=-3"):
+            self.lanes_with(HOST_LANES.replace("north  builder@north.example.invalid",
+                                               "north  builder@north.example.invalid  " + word))
+            self.ssh_log.write_text("")
+            res = self.host_gate(PLAN_HOST, "--host", "north")
+            self.assertEqual(0, res.returncode, word + res.stdout + res.stderr)
+            self.assertNotIn("CARGO_BUILD_JOBS", self.gate_call(), word)
+
+    def test_strand_test_takes_the_cap_of_the_held_lane(self):
+        env = self.fake_cargo()
+        self.lanes_with(HOST_LANES.replace("north  builder@north.example.invalid",
+                                           "north  builder@north.example.invalid  threads=6"))
+        self.arm("--lanes", "north,south")
+        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
+        res = self.strand_test("binary(~gh1_x)", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("NEXTEST_TEST_THREADS=6 CARGO_BUILD_JOBS=6 scripts/test-tier.sh filter",
+                      self.ssh_log.read_text())
+
+    def test_strand_test_without_a_cap_runs_at_nproc(self):
+        env = self.fake_cargo()
+        self.arm("--lanes", "north,south")
+        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
+        res = self.strand_test("binary(~gh1_x)", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        log = self.ssh_log.read_text()
+        self.assertIn("NEXTEST_TEST_THREADS=$(nproc) scripts/test-tier.sh filter", log)
+        self.assertNotIn("CARGO_BUILD_JOBS", log)
 
     def test_the_gate_runs_on_the_host_and_comes_back_green(self):
         res = self.host_gate(PLAN_HOST, "--host", "north")
@@ -2324,6 +2503,43 @@ class TestGateHost(TokenTestCase):
         gate = self.host_gate(PLAN_HOST, "--host", "north")
         self.assertEqual(0, gate.returncode, gate.stdout + gate.stderr)
         self.assertTrue(gate.stdout.splitlines()[0].endswith(" overlay " + local), gate.stdout)
+
+    def test_a_file_changed_since_the_last_sync_is_never_older_than_the_lane_build(self):
+        # GH #1071: the overlay carried the local mtime. A file edited while
+        # the lane still compiled the previous sync arrived OLDER than the
+        # artefacts of that build, and cargo kept the stale binary -- a lane
+        # run tested code that was no longer the code under test. Measured
+        # 07.10.: three edited test files, a green/red verdict on old code.
+        readme = self.tree / "README.md"
+        old = time.time() - 1000
+        os.utime(readme, (old, old))
+        self.assertEqual(0, self.host_gate(PLAN_HOST, "--host", "north").returncode)
+        # The lane builds now; the edit lands with a time from before it.
+        built = time.time()
+        readme.write_text("edited during the lane build\n")
+        os.utime(readme, (old + 10, old + 10))
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        there = self.wt() / "README.md"
+        self.assertEqual("edited during the lane build\n", there.read_text())
+        self.assertGreaterEqual(there.stat().st_mtime, built - 1,
+                                "the changed file looks older than the lane's last build")
+
+    def test_an_unchanged_overlay_file_keeps_its_time_on_the_lane(self):
+        # GH #1071, the other half: a file whose content the lane already had
+        # is not stamped new -- it keeps the carried local time, never newer
+        # than what the lane last built, so an unchanged tree rebuilds nothing.
+        readme = self.tree / "README.md"
+        old = time.time() - 1000
+        os.utime(readme, (old, old))
+        self.assertEqual(0, self.host_gate(PLAN_HOST, "--host", "north").returncode)
+        there = self.wt() / "README.md"
+        first = there.stat().st_mtime
+        res = self.host_gate(PLAN_HOST, "--host", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertLessEqual(there.stat().st_mtime, first,
+                             "an unchanged overlay file was stamped new: every run rebuilds")
+        self.assertAlmostEqual(readme.stat().st_mtime, there.stat().st_mtime, delta=1)
 
     def test_a_host_tree_that_differs_is_refused(self):
         res = self.host_gate(PLAN_HOST, "--host", "north", env={"FAKE_RSYNC_DROP": "1"})

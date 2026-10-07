@@ -113,9 +113,17 @@ pub fn cells_defining(func: &str) -> Vec<String> {
         .collect()
 }
 
-/// Run a program under python3, the program itself on stdin (a single argv
-/// string is capped at 128 KiB).
+#[path = "warm_python.rs"]
+mod warm_python;
+
+/// Run a program under python3: in the substrate's warm harness, one child
+/// per script (GH #1048, `warm_python.rs` says why and what it measured); a
+/// document that is not one line runs cold, the program itself on stdin (a
+/// single argv string is capped at 128 KiB).
 pub fn run_python(script: &str, stdin_doc: &str) -> std::process::Output {
+    if let Some(out) = warm_python::run(script, stdin_doc) {
+        return out;
+    }
     let src = format!(
         concat!(
             "import sys, io\n",

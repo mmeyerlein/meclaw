@@ -125,10 +125,12 @@ const SCRIPTED: &[Scripted] = &[
         documented: &[],
     },
     // GH #1042 fix round 1: the room bind's reach, the session keeper's idle
-    // window (pinned to the keeper's own value in gh1042).
+    // window (pinned to the keeper's own value in gh1042). GH #1079: whether a
+    // per-turn fact without the words it rests on is filed at all -- a switch,
+    // read by `_flag` (a boolean param; the script's literal is python's).
     Scripted {
         cell: "extract-glue",
-        knobs: &[("generation_idle_ms", "_int")],
+        knobs: &[("generation_idle_ms", "_int"), ("require_quote", "_flag")],
         documented: &[],
     },
 ];
@@ -149,11 +151,12 @@ const SUBSTRATE_CODE_PARAMS: &[&str] = &[
 /// The provider lane, name by name -- the ONLY `${...}` tokens the hive may
 /// still carry after the migration (ruling R-0904-6; the gate reads the same
 /// classes off the name in `scripts/check_tree_rules.py` § R6).
+/// `MEMORY_EMBED_API_KEY` left the list with GH #1060: the embedder's bearer is
+/// a granted environment entry of each run, not a token in the script text.
 const ENV_LANE: &[&str] = &[
     "MEMORY_LLM_BASE_URL",
     "MEMORY_EMBED_ENDPOINT",
     "MEMORY_EMBED_MODEL",
-    "MEMORY_EMBED_API_KEY",
     "MEMORY_EMBED_DIM",
     "MODEL_CLOSER",
     "MODEL_DREAMER",
@@ -351,6 +354,13 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
                 .unwrap_or_else(|| panic!("{cell}: the script does not read {knob} with {kind}"));
             let rest = &src[at + needle.len()..];
             let lit = &rest[..rest.find(')').expect("closing paren")];
+            // A `_flag` default is python's own literal.
+            let lit = match lit.trim() {
+                "True" => "true",
+                "False" => "false",
+                "None" => "null",
+                other => other,
+            };
             let lit: Value = meclaw_core::serde_json::from_str(lit).unwrap_or_else(|e| {
                 panic!("{cell}/{knob}: script literal {lit:?} is not json ({e})")
             });
@@ -390,9 +400,9 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 46,
-        "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040) \
-         and `generation_idle_ms` (GH #1042)"
+        total, 47,
+        "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040), \
+         `generation_idle_ms` (GH #1042) and `require_quote` (GH #1079)"
     );
 }
 

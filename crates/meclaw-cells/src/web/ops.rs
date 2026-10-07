@@ -103,6 +103,64 @@ pub fn apply(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
     }
 }
 
+/// One leg's result: its outcome, what it touched, and its own duration in
+/// milliseconds.
+pub type Applied = (OpOutcome, Touched, i64);
+
+/// Apply the database legs of one message, in call order, in ONE transaction.
+///
+/// GH #1030: every leg used to be its own autocommit transaction on its own
+/// trip to the blocking pool. Profiled on the gate host (release, 1 600 figure
+/// updates on a pool of 1 600, `tests/gh1030_web_bundle_cost.rs`), one bundle
+/// took 245 ms: 100 ms for the autocommitted legs — the same legs inside one
+/// transaction took 23 ms — ≈ 110 ms for the trips, 34 ms for the re-render.
+/// So the cost per leg was mostly the commit and the trip, both per leg.
+///
+/// The transaction is the write path, not an atomicity promise: every leg
+/// keeps its own outcome, and a refused leg leaves its siblings written, as a
+/// bundle always did. Two failures are the transaction's own, and both are
+/// answered rather than hidden — SQLite ending it by itself (a full disk, an
+/// I/O error) and a `COMMIT` that fails: every leg of the lost part that said
+/// it wrote is turned into a refusal. Without a transaction (a refused
+/// `BEGIN`), every leg commits on its own, as before.
+pub fn apply_all(conn: &Connection, legs: &[Value]) -> Vec<Applied> {
+    let mut out: Vec<Applied> = Vec::with_capacity(legs.len());
+    let mut open = conn.execute_batch("BEGIN").is_ok();
+    let mut first = 0;
+    for args in legs {
+        let started = std::time::Instant::now();
+        let (outcome, touched) = apply(conn, args);
+        out.push((outcome, touched, started.elapsed().as_millis() as i64));
+        if open && conn.is_autocommit() {
+            unwritten(
+                &mut out[first..],
+                "the database rolled the bundle's transaction back",
+            );
+            open = conn.execute_batch("BEGIN").is_ok();
+            first = out.len();
+        }
+    }
+    if open && let Err(e) = conn.execute_batch("COMMIT") {
+        let _ = conn.execute_batch("ROLLBACK");
+        unwritten(
+            &mut out[first..],
+            &format!("the bundle's transaction did not commit: {e}"),
+        );
+    }
+    out
+}
+
+/// Turn every leg of `legs` that says it wrote into a refusal: its write is
+/// gone with the transaction. A read (a payload) stays what it was.
+fn unwritten(legs: &mut [Applied], why: &str) {
+    for (outcome, touched, _) in legs {
+        if !outcome.is_error() && outcome.payload.is_null() {
+            *outcome = OpOutcome::refused(&outcome.operation, "invalid_input", why);
+            *touched = Touched::default();
+        }
+    }
+}
+
 /// A required string argument.
 fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, OpOutcome> {
     args.get(key).and_then(Value::as_str).ok_or_else(|| {
@@ -1154,5 +1212,113 @@ mod tests {
         // The text prop beside it stays writable.
         let (reply, _) = set_editable(&c, "o", "t", &json!("y"));
         assert_eq!(reply, EventReply::Ok);
+    }
+
+    /// A pool for the bundle tests: one component, one object standing
+    /// before the bundle (so a `query` leg has something to read).
+    fn bundle_conn() -> Connection {
+        let c = conn();
+        c.execute_batch(
+            r#"INSERT INTO components (name, template, prop_schema, editable)
+                 VALUES ('p', '<p>{{t}}</p>', '{"t":"text"}', '[]');
+               INSERT INTO objects (id, parent, component, ord, props)
+                 VALUES ('pre', NULL, 'p', 0, '{"t":"x"}');"#,
+        )
+        .unwrap();
+        c
+    }
+
+    fn create(id: &str) -> Value {
+        json!({"op": "object.create", "component": "p", "id": id, "props": {"t": "y"}})
+    }
+
+    fn ids(c: &Connection) -> Vec<String> {
+        let mut stmt = c.prepare("SELECT id FROM objects ORDER BY id").unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn refused_with(leg: &Applied, needle: &str) {
+        let (outcome, touched, _) = leg;
+        assert_eq!(
+            outcome.error_code.as_deref(),
+            Some("invalid_input"),
+            "{outcome:?}"
+        );
+        let text = outcome.error_text.as_deref().unwrap_or_default();
+        assert!(text.contains(needle), "{needle:?} not in {text:?}");
+        assert_eq!(*touched, Touched::default());
+    }
+
+    /// GH #1030 review: a `COMMIT` that fails loses every write of the bundle,
+    /// so every leg that said it wrote is answered as a refusal, the reads keep
+    /// their payload, and the transaction is rolled back rather than left open.
+    /// The failure is a deferred foreign key: the leg itself succeeds, the
+    /// check runs at `COMMIT` and refuses it with the transaction still open.
+    #[test]
+    fn a_commit_that_fails_refuses_every_write_of_the_bundle_and_keeps_its_reads() {
+        let c = bundle_conn();
+        c.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE guard (id TEXT PRIMARY KEY);
+             CREATE TABLE orphan (
+               ref TEXT REFERENCES guard(id) DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER late AFTER INSERT ON objects WHEN NEW.id = 'late'
+               BEGIN INSERT INTO orphan VALUES ('nowhere'); END;",
+        )
+        .unwrap();
+        let out = apply_all(
+            &c,
+            &[
+                create("a"),
+                json!({"op": "query", "id": "pre"}),
+                create("late"),
+            ],
+        );
+        assert_eq!(out.len(), 3);
+        refused_with(&out[0], "did not commit");
+        assert!(!out[1].0.is_error(), "{:?}", out[1].0);
+        assert_eq!(out[1].0.payload["object"]["id"], "pre");
+        refused_with(&out[2], "did not commit");
+        assert!(
+            c.is_autocommit(),
+            "the failed COMMIT left a transaction open"
+        );
+        assert_eq!(ids(&c), vec!["pre".to_string()]);
+    }
+
+    /// GH #1030 review: SQLite ending the transaction by itself mid-bundle (a
+    /// full disk, an I/O error; here a trigger's `RAISE(ROLLBACK)`) takes the
+    /// writes before it along, so those legs become refusals; the failing leg
+    /// keeps its own refusal, a read keeps its payload, and the legs after it
+    /// run in a new transaction and stay written.
+    #[test]
+    fn a_transaction_the_database_ends_itself_refuses_the_writes_before_it_only() {
+        let c = bundle_conn();
+        c.execute_batch(
+            "CREATE TRIGGER boom BEFORE INSERT ON objects WHEN NEW.id = 'boom'
+               BEGIN SELECT RAISE(ROLLBACK, 'the disk is gone'); END;",
+        )
+        .unwrap();
+        let out = apply_all(
+            &c,
+            &[
+                create("a"),
+                json!({"op": "query", "id": "pre"}),
+                create("boom"),
+                create("c"),
+            ],
+        );
+        assert_eq!(out.len(), 4);
+        refused_with(&out[0], "rolled the bundle's transaction back");
+        assert!(!out[1].0.is_error(), "{:?}", out[1].0);
+        assert_eq!(out[1].0.payload["object"]["id"], "pre");
+        refused_with(&out[2], "the disk is gone");
+        assert!(!out[3].0.is_error(), "{:?}", out[3].0);
+        assert_eq!(out[3].0.rows_affected, 1);
+        assert!(c.is_autocommit(), "the bundle left a transaction open");
+        assert_eq!(ids(&c), vec!["c".to_string(), "pre".to_string()]);
     }
 }

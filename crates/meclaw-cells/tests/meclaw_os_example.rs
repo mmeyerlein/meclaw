@@ -73,11 +73,31 @@ fn example_path(rel: &str) -> std::path::PathBuf {
 /// here -- and the paths are spelled out rather than formatted, so the export's
 /// R2b check can read the names off them (GH #9: a runtime path a gate cannot
 /// see is the whole defect class).
-const GROWN_FROM: [(&str, &str); 4] = [
+const GROWN_FROM: [(&str, &str); 5] = [
     ("door", "templates/door"),
     ("firewall", "templates/firewall"),
     ("talky", "templates/talky"),
+    ("access", "templates/access"),
     ("terminal", "templates/terminal"),
+];
+
+/// GH #1061 (#801): the provider key is a vault grant now. The seed carries the
+/// grant half of `./access` (hive marker, store with its seeded grants, vault
+/// config) and the test deposits a key COLD, before the first boot, exactly as
+/// `scripts/start.sh` does.
+const VAULT_CELL: &str = "/main/access/vault";
+const VAULT_PASSPHRASE: &[u8] = b"meclaw-os-example-passphrase";
+
+/// The files the seed carries since GH #1061: the two it always had plus the
+/// grant half of the access hive.
+const SEED_FILES: [&str; 7] = [
+    "colony.json",
+    "main/access/config.json",
+    "main/access/store/config.json",
+    "main/access/store/seed/grant_events.jsonl",
+    "main/access/store/seed/grants.jsonl",
+    "main/access/vault/config.json",
+    "main/config.json",
 ];
 
 /// The second declaration names exactly one template, and it ships too.
@@ -115,7 +135,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// MEASURED. GH #926 an eleventh (`stats`, the read-only counting lane):
 /// 1 + 4 + 23 + 1 = twenty-nine. MEASURED. GH #949 a twelfth (`reader`, an
 /// app's read of its own round): 1 + 4 + 24 + 1 = thirty. MEASURED.
-const CELLS_AFTER_GROW: usize = 30;
+/// GH #1061: the access hive's six
+/// (`store`, `vault`, `invoke`, `policy`, `sweep`, `clock`) -- thirty-six.
+const CELLS_AFTER_GROW: usize = 36;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -138,7 +160,9 @@ const CELLS_AFTER_GROW: usize = 30;
 /// 29 + 18 = forty-seven. MEASURED. GH #949 gives each curator a twelfth
 /// (`reader`): nineteen, and one more in [`CELLS_AFTER_GROW`] -- 30 + 19 =
 /// forty-nine. Measured in the strand gate (50 with the probe, against 48).
-const CELLS_AFTER_COGNY: usize = 49;
+/// GH #1061: plus the access hive's six cells in both counts (the checked-in
+/// store and vault, and the four the instantiation grows around them).
+const CELLS_AFTER_COGNY: usize = 55;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -193,8 +217,14 @@ fn the_seed_carries_two_files_and_not_one_cell() {
     files.sort();
     assert_eq!(
         files,
-        vec!["colony.json".to_string(), "main/config.json".to_string()],
+        SEED_FILES.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
         "the seed grew a file -- either it belongs in a template or the README lies"
+    );
+    let access = read_json(&seed.join("main/access/config.json"));
+    assert_eq!(
+        access["params"]["graph"]["edges"],
+        json!([]),
+        "the access marker draws NO edge: the instantiation draws the hive's own"
     );
 
     let hive = read_json(&seed.join("main/config.json"));
@@ -394,6 +424,10 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
         ("store".to_string(), Arc::new(StoreCellFactory)),
         ("timer".to_string(), Arc::new(TimerCellFactory)),
         ("llm".to_string(), Arc::new(LlmCellFactory)),
+        (
+            "vault".to_string(),
+            Arc::new(meclaw_cells::vault::VaultCellFactory),
+        ),
     ]
 }
 
@@ -427,9 +461,31 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
             v["params"]["base_url"] = json!(base_url)
         });
     }
+    // GH #1061: the key file the vault opens itself from (0600, as the vault
+    // refuses a loose one), named in `.env` by its non-secret token, and the
+    // test key deposited COLD -- the vault was never woken, so `add` lays its
+    // database down first (GH #1063).
+    let key_file = root.join("vault.key");
+    std::fs::write(&key_file, VAULT_PASSPHRASE).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    meclaw_cells::vault::user_channel::add(
+        root,
+        VAULT_CELL,
+        "cred:openrouter",
+        b"test-key",
+        VAULT_PASSPHRASE,
+    )
+    .expect("the cold deposit into the checked-in vault");
     std::fs::write(
         root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\nMODEL_CORE=gpt-4o-mock\n",
+        format!(
+            "MECLAW_VAULT_KEY_FILE={}\nMODEL_BRAIN=gpt-4o-mock\nMODEL_CORE=gpt-4o-mock\n",
+            key_file.display()
+        ),
     )
     .unwrap();
 }
@@ -546,12 +602,14 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     let td = tempfile::TempDir::new().unwrap();
     build_root(&td, &mock.base_url);
 
-    // --- the seed alone: NOTHING. Not one cell.
+    // --- the seed alone: the two checked-in cells of the access hive and
+    // nothing else (GH #1061).
     let h = boot(&td).await;
     let before = registry_paths(&h).await;
-    assert!(
-        before.is_empty(),
-        "the seed booted with cells in it -- it is supposed to be empty: {before:?}"
+    assert_eq!(
+        before,
+        vec!["/access/store".to_string(), "/access/vault".to_string()],
+        "the seed booted with more than the grant half of ./access: {before:?}"
     );
 
     // --- ONE declaration
@@ -573,6 +631,8 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
         "/talky/dispatcher",
         "/talky/brain",
         "/talky/errors",
+        "/access/invoke",
+        "/access/vault",
         "/sink",
     ] {
         assert!(
@@ -591,7 +651,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus thirty instantiated ones: {after:?}"
+        "two checked-in cells plus thirty-four instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.

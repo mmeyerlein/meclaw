@@ -91,6 +91,17 @@
           "route": "clock_op",
           "context": [],
           "because": "a timer op for this hive's own clock from outside the sealed rim (GH #1019): body `{op: trigger, schedule_name: \"nightly-dream\"}` (or `schedule_id`) runs the nightly consolidation once, now, exactly as the cron strike would -- same body, same `dream_run`/`dream_to`, its own `consolidation_log` row -- and leaves the cron and the next due time as they were. The schedule id is minted at instantiation and is not readable over the API, so the name is the address a lab replay or an operator has; before this lane the clock was reachable only from inside the hive, and a POST at the clock's own path ended as `hive_boundary`. The lane carries `trigger` and nothing else: the clock is born with `accept_ops: [\"trigger\"]`, so `add`, `modify`, `remove` and a `params` slot are refused as `op_not_accepted` and change nothing -- an `add` would otherwise plant a strike the clock emits from inside the hive, at any inner cell past the rim. Nothing answers on the rim: a refused op (`schedule_not_found` for an unknown name) is the timer's own error message, the run is read where it lands -- in `consolidation_log`"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./closer",
+            "./dialectic",
+            "./dreamer",
+            "./judge",
+            "./embed"
+          ],
+          "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
         }
       ],
       "emits": [
@@ -133,6 +144,17 @@
         {
           "route": "tool_schemas",
           "because": "this memory's OWN declaration, one `{name, description, parameters}` for `memory_recall`, plus in `unknown[]` the asked names it does not serve. Provider-neutral, like the tools hive's answer. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question. Since 3.4.0 it also carries `sidecar[]` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)): the section this memory asks for IN RETURN, `{section: \"memory\", required: true, schema, instruction}`, on every answer of the lane including the one that served no asked name -- a section is not a response to a name, it is what this hive asks of whoever talks to it. An asking collector merges the offers of all its answerers and composes one block contract out of them (GH #529, one column over)"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./closer",
+            "./dialectic",
+            "./dreamer",
+            "./judge",
+            "./embed"
+          ],
+          "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },
@@ -417,7 +439,7 @@
         {
           "from": "./dreamer",
           "to": "./dream-glue",
-          "condition": "!has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "store_origin": "'dream'",
@@ -433,7 +455,7 @@
         {
           "from": "./judge",
           "to": "./dream-glue",
-          "condition": "!has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "store_origin": "'dream'",
@@ -475,7 +497,7 @@
         {
           "from": "./closer",
           "to": "./close-glue",
-          "condition": "!has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "store_origin": "'close'",
@@ -615,7 +637,7 @@
         {
           "from": "./dialectic",
           "to": "./recall",
-          "condition": "!has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "mem_phase": "'answer'"

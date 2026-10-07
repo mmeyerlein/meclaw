@@ -7,7 +7,8 @@
     "provider": "openai",
     "model": "${ctx.model}",
     "requirement": "Condenses the older part of an exchange with a model into a short plain report of what was said, in order, adding nothing and judging nothing. It needs faithful summarising over a transcript of several thousand tokens and must keep to a stated length. Nobody waits on it and it runs only when a cache has gone cold or a window has grown too long, so a small, inexpensive model is enough.",
-    "api_key": "${OPENROUTER_API_KEY}",
+    "api_key": "",
+    "credential_grant_id": "",
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.2,
     "external_timeout_ms": 60000,
@@ -22,6 +23,18 @@
         "type": "string",
         "secret": false,
         "description": "The summarizer's model; the template carries `ctx.model`, and the llm-registry may move it through the hive's `in_model` door."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "description": "Provider API key. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #801: the grant this cell presents to get its provider credential SEALED from an access hive instead of carrying a key. It ships EMPTY, which is no grant at all; whoever grows the cell (the builder recipe or the colony's own template) sets it through `override_params`, and the credential then arrives over the credential v-lane and is opened in RAM only. Immutable: a new grant is a new instance."
       }
     },
     "emits": {
@@ -36,6 +49,17 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "finish_reason": {
           "type": "string",
           "values": [
@@ -132,6 +156,10 @@
           "required": false
         },
         "params": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
           "type": "object",
           "required": false
         }

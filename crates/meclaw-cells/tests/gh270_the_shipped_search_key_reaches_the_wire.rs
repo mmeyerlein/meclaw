@@ -2,7 +2,8 @@
 //! endpoint records.
 //!
 //! `templates/_cell-types/web_search-min/config.json` declares the credential
-//! as `"api_key": "${SEARCH_API_KEY:-}"`, and its `contract.settings` calls it
+//! as `"api_key": "${SEARCH_API_KEY:-}"` (since #1061 the literal `""`, the key
+//! comes sealed under a grant), and its `contract.settings` calls it
 //! an *optional* bearer token with the default `""`. The shipped `.env.example`
 //! goes one step further and ships the variable **set to empty**, with the
 //! sentence "SEARCH_API_KEY is optional and may be left empty for an
@@ -78,8 +79,16 @@ fn install_resolved_template(
         .expect("the reference web_search config is on disk");
     let cfg: meclaw_core::JsonValue = meclaw_core::serde_json::from_str(&raw)
         .expect("the reference web_search config parses as JSON");
-    let resolved = meclaw_colony::mutation::substitute::substitute_env_only(&cfg, env)
+    let mut resolved = meclaw_colony::mutation::substitute::substitute_env_only(&cfg, env)
         .expect("the reference config substitutes");
+    // GH #1061 (#801): the reference config reads no key out of the
+    // environment any more (`"api_key": ""`, a grant names the sealed one). A
+    // CONFIGURED key is therefore the literal an instance still may write for
+    // one release -- the same value the variable used to carry, so both halves
+    // of the claim keep measuring the filter and not the substitution.
+    if let Some(key) = env.get(KEY_VAR) {
+        resolved["params"]["api_key"] = meclaw_core::serde_json::json!(key);
+    }
 
     let templates_root = td.path().join("templates");
     let tpl = templates_root.join("web_search-min");

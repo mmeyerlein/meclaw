@@ -205,6 +205,23 @@ pub trait CellFactory: Send + Sync {
         Ok(())
     }
 
+    /// GH #1077 — what every connection to this type's `cell.db` must carry.
+    ///
+    /// Some cell types install things on the CONNECTION rather than in the
+    /// database file — the `store` registers its stemming FTS5 tokenizer and
+    /// scalar functions — and a connection without them cannot even run the
+    /// triggers of its own tables. The cell's own `DbConn` gets this setup from
+    /// the factory; a door that opens a second connection to the same file
+    /// (`seed_rows` writes through the colony, not through the cell) asks the
+    /// factory for it here, so there is one place that names it. Measured
+    /// before: the first `seed_rows` into a store table with a full-text index
+    /// was refused `no such tokenizer: meclaw_stem_v1`.
+    ///
+    /// Default: `None` — nothing beyond the cell.db base setup.
+    fn connection_setup(&self) -> Option<crate::db_conn::ReopenSetup> {
+        None
+    }
+
     /// Pre-spawn validation of the cell's ON-DISK assets (issue #56).
     ///
     /// `validate_params` only sees the `params` block; a cell type whose

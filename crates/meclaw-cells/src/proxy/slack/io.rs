@@ -98,6 +98,123 @@ pub enum SlackReconfig {
     /// Swap the Web API base URL; the client is rebuilt around the immutable
     /// tokens, which never cross the params surface.
     SetBaseUrl(String),
+    /// GH #1059: a token the vault delivered sealed, opened by the handler. The
+    /// I/O half of a grant's connector sleeps until every token it waits for
+    /// came this way; `Secret` prints `<sealed>`, so a `{:?}` of this frame
+    /// cannot leak it.
+    Credential {
+        /// Which of the two tokens this is.
+        slot: SlackTokenSlot,
+        /// The delivered token.
+        token: crate::credential::Secret,
+    },
+}
+
+/// GH #1059: the two credentials of one Slack connector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlackTokenSlot {
+    /// The app-level token (`xapp-…`): opens the Socket Mode connection.
+    App,
+    /// The bot token (`xoxb-…`): posts the answers.
+    Bot,
+}
+
+/// What the I/O half hands its handler.
+///
+/// GH #1059: an enum because a sleeping connector's I/O half also reports the
+/// end of a credential round without a box — the handler then asks again. The
+/// connection loop itself only ever sends [`SlackEvent::Inbound`] (via `From`).
+#[derive(Debug, Clone)]
+pub enum SlackEvent {
+    /// A user event that survived the loop guard.
+    Inbound(SlackInbound),
+    /// GH #1059: no sealed token arrived within the round's wait. Never a Slack
+    /// event, so it touches neither the dedup table nor thread ownership.
+    CredentialRoundExpired {
+        /// The round that starts now (1 = the `on_start` question).
+        round: u32,
+        /// Its wait in ms (doubling, capped at `credential_backoff_max_ms`).
+        wait_ms: u64,
+    },
+}
+
+impl From<SlackInbound> for SlackEvent {
+    fn from(inbound: SlackInbound) -> Self {
+        Self::Inbound(inbound)
+    }
+}
+
+/// GH #1059: how a connector of a grant waits for its tokens.
+#[derive(Debug, Clone, Copy)]
+pub struct SlackTokenWait {
+    /// The round schedule (`credential_wait_ms`, `credential_backoff_max_ms`).
+    pub wait: crate::proxy::io::CredentialWait,
+    /// The app token comes from the vault (`app_token_grant_id`).
+    pub need_app: bool,
+    /// The bot token comes from the vault (`bot_token_grant_id`).
+    pub need_bot: bool,
+}
+
+/// GH #1059: the sleeping start of a grant's connector. Opens no connection
+/// and calls no Web API until EVERY token that comes from the vault arrived
+/// (`cfg.client` then carries them); returns `false` when the handler is gone.
+///
+/// Both tokens, not just the app token the socket needs: a connection opened
+/// before the bot token would take events in whose answers could only fail
+/// with `credential_pending` — a bot that listens but cannot speak.
+///
+/// Every round that ends incomplete is reported to the handler
+/// ([`SlackEvent::CredentialRoundExpired`]), which asks again for whatever is
+/// still missing: a lost `on_start` question would otherwise leave the
+/// connector asleep for ever. A params update in between is applied to `cfg`
+/// and does not restart the wait (the clock's deadline is absolute).
+pub async fn wait_for_slack_tokens(
+    cfg: &mut SlackIoConfig,
+    wait: SlackTokenWait,
+    events_tx: &mpsc::Sender<SlackEvent>,
+    reconfig_rx: &mut mpsc::Receiver<SlackReconfig>,
+) -> bool {
+    use crate::credential_rounds::{RoundClock, Wake, next_wake};
+    let SlackTokenWait {
+        wait,
+        mut need_app,
+        mut need_bot,
+    } = wait;
+    let mut clock = RoundClock::start(wait.wait_ms, wait.backoff_max_ms);
+    while need_app || need_bot {
+        match next_wake(reconfig_rx, &mut clock).await {
+            Wake::Reconfig(SlackReconfig::Credential { slot, token }) => {
+                cfg.client = swap_token(&cfg.client, slot, &token);
+                match slot {
+                    SlackTokenSlot::App => need_app = false,
+                    SlackTokenSlot::Bot => need_bot = false,
+                }
+            }
+            Wake::Reconfig(SlackReconfig::SetBaseUrl(url)) => {
+                cfg.client = cfg.client.with_base_url(&url);
+            }
+            Wake::Closed => return false,
+            Wake::RoundExpired { round, wait_ms } => {
+                let event = SlackEvent::CredentialRoundExpired { round, wait_ms };
+                if events_tx.send(event).await.is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// GH #1059: the client with one delivered token swapped in.
+fn swap_token(
+    client: &SlackClient,
+    slot: SlackTokenSlot,
+    token: &crate::credential::Secret,
+) -> SlackClient {
+    match slot {
+        SlackTokenSlot::App => client.with_app_token(token.expose()),
+        SlackTokenSlot::Bot => client.with_bot_token(token.expose()),
+    }
 }
 
 /// The reconnect loop: connect, pump, and reconnect on every ending.
@@ -109,8 +226,20 @@ pub enum SlackReconfig {
 ///
 /// Shutdown is the reconfig channel closing, matching the Telegram I/O task.
 pub async fn run_slack_io(
-    mut cfg: SlackIoConfig,
+    cfg: SlackIoConfig,
     events_tx: mpsc::Sender<SlackInbound>,
+    reconfig_rx: mpsc::Receiver<SlackReconfig>,
+) {
+    run_slack_io_into(cfg, events_tx, reconfig_rx).await;
+}
+
+/// [`run_slack_io`], generic over the event type (GH #1059): the cell sends
+/// [`SlackEvent`], a bare loop [`SlackInbound`] — the loop itself only ever
+/// sends inbound events, converted with `From`. A separate function so the
+/// public one keeps its concrete channel type.
+pub(crate) async fn run_slack_io_into<E: From<SlackInbound> + Send>(
+    mut cfg: SlackIoConfig,
+    events_tx: mpsc::Sender<E>,
     mut reconfig_rx: mpsc::Receiver<SlackReconfig>,
 ) {
     let mut backoff = Backoff::new();
@@ -134,6 +263,12 @@ pub async fn run_slack_io(
                             cfg.client = cfg.client.with_base_url(&url);
                             continue;
                         }
+                        // GH #1059: a token delivered again (a re-asked grant)
+                        // replaces the one in use from the next connect on.
+                        Some(SlackReconfig::Credential { slot, token }) => {
+                            cfg.client = swap_token(&cfg.client, slot, &token);
+                            continue;
+                        }
                     }
                 }
                 _ = tokio::time::sleep(sleep_for) => {}
@@ -150,9 +285,13 @@ pub async fn run_slack_io(
                         cfg.client = cfg.client.with_base_url(&url);
                         continue;
                     }
+                    Some(SlackReconfig::Credential { slot, token }) => {
+                        cfg.client = swap_token(&cfg.client, slot, &token);
+                        continue;
+                    }
                 }
             }
-            end = connect_and_run(
+            end = connect_and_run_into(
                 &cfg.client,
                 &events_tx,
                 &mut own_app_id,
@@ -229,6 +368,30 @@ pub enum ConnectionEnd {
 pub async fn connect_and_run(
     client: &SlackClient,
     tx: &mpsc::Sender<SlackInbound>,
+    own_app_id: &mut Option<String>,
+    bot_user_id: Option<&str>,
+    connect_timeout: Duration,
+    idle_timeout: Duration,
+    liveness: &meclaw_colony::IoLivenessMark,
+) -> ConnectionEnd {
+    connect_and_run_into(
+        client,
+        tx,
+        own_app_id,
+        bot_user_id,
+        connect_timeout,
+        idle_timeout,
+        liveness,
+    )
+    .await
+}
+
+/// [`connect_and_run`], generic over the event type (GH #1059, see
+/// [`run_slack_io_into`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn connect_and_run_into<E: From<SlackInbound> + Send>(
+    client: &SlackClient,
+    tx: &mpsc::Sender<E>,
     own_app_id: &mut Option<String>,
     bot_user_id: Option<&str>,
     connect_timeout: Duration,
@@ -317,7 +480,10 @@ pub async fn connect_and_run(
                     continue;
                 }
                 if let Some(event) = parse_user_event(&payload)
-                    && tx.send(SlackInbound { envelope_id, event }).await.is_err()
+                    && tx
+                        .send(SlackInbound { envelope_id, event }.into())
+                        .await
+                        .is_err()
                 {
                     // Handler is gone; this connection has no consumer left.
                     return ConnectionEnd::Closed;

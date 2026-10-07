@@ -649,7 +649,8 @@ impl StatefulCell for StoreCell {
             // GH #1015 (OR-HV-61): after a crash the colony replays open
             // deliveries, so this message may already have taken effect; the
             // write is booked under its id in the same savepoint and a replay
-            // answers `duplicate` instead of writing again.
+            // answers what the first write answered instead of writing again
+            // (GH #1043).
             let once_key = msg.id.to_string();
             let outcome = if self.query_timeout().is_some() {
                 match db
@@ -787,6 +788,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 3, "a replayed message must not write a second row");
+    }
+
+    fn call(id: &str, op: meclaw_core::serde_json::Value) -> meclaw_core::serde_json::Value {
+        json!({"origin":"assistant","type":"tool_call","id":id,"text":op.to_string()})
+    }
+
+    /// What a replay must repeat, per leg: rows, refusal, payload text.
+    fn legs_of(em: &meclaw_core::CellEmission) -> Vec<meclaw_core::serde_json::Value> {
+        let results = em.content["results"].as_array().expect("bundle results");
+        let turns = em.content["messages"].as_array().expect("bundle turns");
+        results
+            .iter()
+            .zip(turns)
+            .map(|(r, t)| json!([r["rows_affected"], r.get("error_code"), t["text"]]))
+            .collect()
+    }
+
+    /// GH #1043, the window that stays (documented in `docs/stability.en.md`):
+    /// a claim bundle — a compare-and-set `update` plus a `select` in ONE
+    /// message — replayed after a later write answers its write leg from the
+    /// book and runs its read leg again, so the read sees the later state.
+    /// Read legs are not booked: the shipped file space reads values larger
+    /// than any bound worth keeping back in its writing bundles, and a kept
+    /// answer would stay in the book for good (review of #1043, taken back).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gh1043_a_replayed_claim_bundle_answers_its_write_as_booked_and_reads_again() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER, state TEXT);
+             INSERT INTO items VALUES (1, 'open'); INSERT INTO items VALUES (2, 'open');",
+        )
+        .unwrap();
+        let mut db = DbConn::wrap(conn, None);
+        let mut cell = StoreCell::new(
+            StoreParams::parse(&json!({"schema": {"items": {"id": "int", "state": "text"}}}))
+                .unwrap(),
+        );
+        let (sink, mut orx) = sink_pair();
+        let claim = MessageBuilder::new(Path::new("/store"))
+            .body(Body::Inline(json!({"messages":[
+                call("c", json!({"operation":"update","table":"items",
+                    "set":{"state":"claimed"},"where":{"id":1,"state":"open"}})),
+                call("s", json!({"operation":"select","table":"items",
+                    "columns":["id","state"],"order_by":[{"col":"id"}]})),
+            ]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        cell.handle(claim.clone(), &sink, &mut db).await;
+        let first = legs_of(&orx.recv().await.unwrap());
+        // A later message moves the book on before the "kill".
+        let later = MessageBuilder::new(Path::new("/store"))
+            .body(Body::Inline(json!({"messages":[
+                call("l", json!({"operation":"update","table":"items",
+                    "set":{"state":"done"},"where":{"id":2}})),
+            ]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        cell.handle(later, &sink, &mut db).await;
+        orx.recv().await.unwrap();
+        // The replay of the claim bundle (same `Message.id`).
+        cell.handle(claim, &sink, &mut db).await;
+        let replay = legs_of(&orx.recv().await.unwrap());
+        assert_eq!(first[0][0], json!(1), "the first claim moved the row");
+        assert_eq!(replay[0], first[0], "the write leg answers as booked");
+        let seen = |leg: &meclaw_core::serde_json::Value| leg[2].as_str().unwrap_or("").to_string();
+        assert!(
+            seen(&first[1]).contains(r#""id":2,"state":"open""#),
+            "the first read saw row 2 open: {first:?}"
+        );
+        assert!(
+            seen(&replay[1]).contains(r#""id":2,"state":"done""#),
+            "the replayed read runs again and sees the later write: {replay:?}"
+        );
     }
 
     // ---- β2: runtime params-overlay (store) ----

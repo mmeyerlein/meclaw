@@ -1,4 +1,4 @@
-# `llm-registry@2.8.0`
+# `llm-registry@2.8.1`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -358,7 +358,8 @@ model like this:
 
 `show` names the rank `prose` with the translator's sentence as `because`. The translator itself
 is a plain `llm` cell with a **start value** (`${LLM_REGISTRY_TRANSLATOR_MODEL:-…}`,
-`${LLM_REGISTRY_TRANSLATOR_BASE_URL:-…}`, the key `${OPENROUTER_API_KEY:-}`); no `update` edge
+`${LLM_REGISTRY_TRANSLATOR_BASE_URL:-…}`; the key comes from the vault through a credential
+grant, `credential_grant_id`, #801); no `update` edge
 reaches it and the registry never resolves it, so a broken translator can never stand between the
 registry and a repair. Without a key the registry still boots, resolves and pushes, and every
 translation fails into the journal. The instructions it is given travel in the question's
@@ -618,8 +619,12 @@ The page bounds are params of the cells that read them, not environment
 `params` key of its cell, as a `contract.settings` entry beside it, and as the literal the shipped
 script falls back to. What is left in `.env` for this template is the translator's start value
 and nothing else: `LLM_REGISTRY_TRANSLATOR_MODEL` (default `anthropic/claude-opus-5.5`),
-`LLM_REGISTRY_TRANSLATOR_BASE_URL` (default the gateway above) and `OPENROUTER_API_KEY`, all
-three with defaults, so the registry boots without any of them.
+`LLM_REGISTRY_TRANSLATOR_BASE_URL` (default the gateway above), both
+with defaults, so the registry boots without either. The translator's key is no environment
+value (#801): `./translate` names a grant (`meclaw-os` seeds
+`grant:openrouter@colony-os/llm-registry-translate`) and the key lives in the vault -- deposit it
+with `meclaw --vault-add cred:openrouter` (stdin); the vault has to be unlockable (`access/vault`
+`key_source` systemd-cred for a unit, plainfile for a local run).
 
 | param | cell | default | what it bounds |
 |---|---|---|---|

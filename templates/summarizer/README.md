@@ -1,4 +1,4 @@
-# `summarizer@2.2.6`
+# `summarizer@2.2.7`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -183,8 +183,21 @@ from `2.0.2` keeps its own `templates/` copy and goes on reading its `.env`. Wha
 stops working is the reverse: an old environment line in a colony grown from
 `2.1.0` is read by nothing at all, and says so nowhere.
 
-What does NOT move: `OPENROUTER_API_KEY` and `ctx.model` on `./writer`. A
-credential in a `config.json` is a credential in the repository.
+What does NOT move: `ctx.model` on `./writer`.
+
+## Credentials
+
+No key lives in `.env` or in this tree (#801). The grants are seeded with the template (`access/store/seed/`); deposit each credential once, on stdin:
+
+| credential | cells |
+|---|---|
+| `cred:openrouter` | `writer` |
+
+```sh
+meclaw --root <root> --vault <instance>/access/vault --vault-add <credential>
+```
+
+The vault must be able to unlock itself: `access/vault` `key_source` `systemd-cred` for a unit, `plainfile` for a local run.
 
 ## The protocol, row by row
 

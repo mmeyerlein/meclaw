@@ -104,7 +104,7 @@
         {
           "from": "./judge",
           "to": "./mutator",
-          "condition": "!has(hop.refused_subscriber)"
+          "condition": "!has(hop.refused_subscriber) && (!has(hop.route) || hop.route != 'credential_request')"
         },
         {
           "from": "./judge",
@@ -247,6 +247,44 @@
         },
         {
           "from": "./probe",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./judge",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:steward/judge'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": "./judge",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-steward/judge'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          }
+        },
+        {
+          "from": "./access",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {

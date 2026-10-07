@@ -11,7 +11,7 @@
 use meclaw_cells::proxy::slack::cell::SlackCell;
 use meclaw_cells::proxy::slack::client::SlackClient;
 use meclaw_cells::proxy::slack::db::setup_slack_schema;
-use meclaw_cells::proxy::slack::io::SlackInbound;
+use meclaw_cells::proxy::slack::io::{SlackEvent, SlackInbound};
 use meclaw_cells::proxy::slack::params::SlackParams;
 use meclaw_cells::proxy::slack::wire::{SlackEventKind, SlackUserEvent};
 use meclaw_colony::{DbConn, LongRunningCell};
@@ -64,11 +64,14 @@ fn event(
     }
 }
 
-fn inbound(envelope_id: &str, event: SlackUserEvent) -> SlackInbound {
+/// GH #1059: the cell's event is `SlackEvent` (it also carries the end of a
+/// credential round); a user event is its `Inbound` arm.
+fn inbound(envelope_id: &str, event: SlackUserEvent) -> SlackEvent {
     SlackInbound {
         envelope_id: envelope_id.to_string(),
         event,
     }
+    .into()
 }
 
 /// Drains whatever the cell emitted through the origin sink.

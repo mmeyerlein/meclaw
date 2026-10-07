@@ -2,7 +2,9 @@
   "cell": { "type": "web_search" },
   "params": {
     "endpoint": "${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}",
-    "api_key": "${SEARCH_API_KEY:-}",
+    "api_key": "",
+    "credential_grant_id": "",
+    "credential_wait_max": 8,
     "external_timeout_ms": 15000,
     "max_concurrency": 8
   },
@@ -19,7 +21,19 @@
         "type": "string",
         "secret": true,
         "default": "",
-        "description": "Optional bearer token for the search endpoint. Empty or absent = no Authorization header -- the cell filters the empty string, so `${SEARCH_API_KEY:-}` with the variable unset queries the endpoint anonymously."
+        "description": "Optional bearer token for the search endpoint. Empty or absent = no Authorization header -- the cell filters the empty string, so the shipped empty key queries the endpoint anonymously; where the endpoint wants a bearer token, name a grant in `credential_grant_id` instead. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The grant this cell presents to get its key sealed from an access hive instead of carrying it in `api_key` (GH #560, #801). Ships EMPTY, which is no grant: the cell then runs on its `api_key` literal, or anonymously where the endpoint takes that. Set it at instantiation together with the ask and answer edges to an access hive."
+      },
+      "credential_wait_max": {
+        "type": "number",
+        "secret": false,
+        "default": 8,
+        "description": "GH #1061: how many calls park while the sealed key is in flight -- and, once it is open, how many calls besides the 8 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((8 + 1) / 8) = 2 searches of external_timeout_ms (15 s) and then runs its own, 2 x 15 + 15 = 45 s <= the colony's message_timeout_default_ms 60 s. Raise it only together with a message_timeout."
       }
     },
     "emits": {
@@ -27,8 +41,23 @@
         "messages": { "type": "array", "required": true }
       },
       "hop": {
-        "operation": { "type": "string", "values": ["web_search"], "required": true },
-        "result_count": { "type": "number", "required": true },
+        "route": {
+          "type": "string",
+          "values": ["credential_request"],
+          "required": false
+        },
+        "grant_id": { "type": "string", "required": false },
+        "operation": {
+          "type": "string",
+          "values": ["web_search"],
+          "required": true,
+          "optional_on_route": ["credential_request"]
+        },
+        "result_count": {
+          "type": "number",
+          "required": true,
+          "optional_on_route": ["credential_request"]
+        },
         "duration_ms": { "type": "number", "required": false },
         "bytes": { "type": "number", "required": false },
         "error_code": { "type": "string", "required": false }
@@ -36,7 +65,12 @@
     },
     "consumes": {
       "body": {
-        "messages": { "type": "array", "required": true }
+        "messages": {
+          "type": "array",
+          "required": false,
+          "description": "messages is not required at the substrate (GH #1061): the sealed credential box reaches this cell with body.sealed alone, and a required key here would refuse it at delivery as consumes_violation; the cell itself still refuses a send without it."
+        },
+        "sealed": { "type": "object", "required": false }
       }
     },
     "capabilities": ["network:search"]

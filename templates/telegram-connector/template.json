@@ -1,14 +1,23 @@
 {
   "name": "telegram-connector",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": {
-    "purpose": "A Telegram surface as ONE cell: the credential-bearing proxy, on its own. This is the building block underneath the demo bots -- the same proxy cell they carry, extracted, so a channel can be put in front of an agent somebody else assembled. Since 2.0.0 there is no hive around it: the level that holds the connector owns the lanes, and that level is channels (GH #303). Since 2.1.0 ([#907](https://github.com/mmeyerlein/meclaw/issues/907)) a document up to `max_document_bytes` (20 MiB) is committed to the colony blob store and the turn carries only its reference in `attachments[]`; an addition, so it is the second digit.",
+    "purpose": "A Telegram surface as ONE cell: the credential-bearing proxy, on its own. This is the building block underneath the demo bots -- the same proxy cell they carry, extracted, so a channel can be put in front of an agent somebody else assembled. Since 2.0.0 there is no hive around it: the level that holds the connector owns the lanes, and that level is channels (GH #303). Since 2.1.0 ([#907](https://github.com/mmeyerlein/meclaw/issues/907)) a document up to `max_document_bytes` (20 MiB) is committed to the colony blob store and the turn carries only its reference in `attachments[]`; an addition, so it is the second digit. Since 2.1.1 ([#801](https://github.com/mmeyerlein/meclaw/issues/801)) the proxy takes its bot token as a sealed vault grant (`bot_token_grant_id`) from its own `./access` instead of `TELEGRAM_BOT_TOKEN`; deposit it with `meclaw --vault-add`. Where a key comes from is a repair of the promise, so it is the third digit.",
     "use_when": "Wherever a topology needs a Telegram channel that feeds something ELSE. Instantiate with add_nodes and wire the CELL -- the address is the node itself, not a hive path plus a lane name. The outbound edge MUST promote hop.chat_id (and hop.user_id where the screening needs it) to context, or the reply has no chat to go to.",
     "not_in_scope": "No screening, no allowlist, no persona, no answer of its own -- that is what the firewall template and the agent behind it are for. No session, no memory, no history. No lane normalisation either: the connector emits ONE wire and the level around it sorts it. Not a bot either: this is the wire, and the agent behind it answers. A complete bot is this connector plus something that produces answers -- see the talky template.",
     "examples": [
       "DIRECTIONS - in: an edge onto the CELL carrying the finished assistant turn; context.chat_id selects the chat. out: every emission leaves on the same wire and the caller tells them apart by hop.error_code -- without it, one user-origin turn per inbound message (hop carries chat_id/user_id/message_id/platform); with it, the connector's own failure (missing_chat_id/missing_assistant_turn/send_failed/invalid_body). Wiring the inbound edge and NOT draining the failures is the one mistake this template cannot refuse for you any more: the hive that used to pair them with required_drains is gone, and the pairing is owed by the level that holds the connector.",
-      "Credential: params.bot_token is ${TELEGRAM_BOT_TOKEN}, immutable per cell -- rotation means .env plus restart. A second instance in the same colony takes its own variable via override_params, in the flat form, because a single-cell template has nothing to address.",
+      "Credential: the bot token comes sealed from the vault under params.bot_token_grant_id (GH #1059, #801), immutable per cell. A single cell cannot seed its own grant: the README shows the manifest that grows an access hive beside it. A second instance in the same colony names its own grant via override_params, in the flat form, because a single-cell template has nothing to address.",
       "ONE getUpdates consumer per token: a second poller on the same token gets 409 Conflict and the two steal each other's updates. One instance per token, and never inside something that gets instantiated more than once."
+    ]
+  },
+  "requires": {
+    "credentials": [
+      {
+        "cred_ref": "cred:telegram-bot",
+        "consumers": ["."],
+        "because": "deposit with `meclaw --vault-add cred:telegram-bot` (#801)"
+      }
     ]
   },
   "tags": ["telegram", "proxy", "connector", "channel", "surface"],

@@ -8,7 +8,8 @@
     "base_url": "${STEWARD_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}",
     "model": "${STEWARD_JUDGE_MODEL:-anthropic/claude-opus-5.5}",
     "requirement": "Decides whether the colony should change itself under the older name of the control loop: it weighs measurements against a charter, reasons through what would happen otherwise and states a decision with its way back. It needs the strongest reasoning available and careful, structured output of a few thousand tokens. Nobody waits on it, so up to two minutes and a high price per call are acceptable.",
-    "api_key": "${OPENROUTER_API_KEY}",
+    "api_key": "",
+    "credential_grant_id": "grant:openrouter@template-steward/judge",
     "external_timeout_ms": 120000,
     "system_order": [
       "role",
@@ -43,7 +44,14 @@
       "api_key": {
         "type": "string",
         "secret": true,
-        "description": "OPENROUTER_API_KEY -- bound late, never stored in the tree."
+        "description": "OPENROUTER_API_KEY -- bound late, never stored in the tree. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801).",
+        "default": ""
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "grant:openrouter@template-steward/judge",
+        "description": "The grant this cell presents to get its provider key sealed from `./access` instead of carrying it in `api_key` (GH #560, #801). The template seeds this grant in `access/store/seed/grants.jsonl`; deposit the credential with `meclaw --vault-add`. Immutable: a different grant is a new cell."
       }
     },
     "consumes": {
@@ -59,6 +67,10 @@
         "params": {
           "type": "object",
           "required": false
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
         }
       }
     },
@@ -70,6 +82,17 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "model": {
           "type": "string",
           "required": false

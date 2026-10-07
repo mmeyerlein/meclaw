@@ -381,6 +381,12 @@ impl Lab {
         }
     }
 
+    /// The cell's own database file (`<cell dir>/cell.db`), for a test that
+    /// reads what a write left in it through a connection of its own.
+    pub fn cell_db(&self) -> std::path::PathBuf {
+        self._dir.path().join("web").join("cell.db")
+    }
+
     /// The page as served on a GET (shell included).
     pub async fn get_page(&self) -> String {
         self.get_page_at("/").await
@@ -823,6 +829,8 @@ pub mod backlog_lab {
         pub session: String,
         /// Frames it has read.
         pub frames: Arc<AtomicU64>,
+        /// Bytes it has read (GH #1067: the rate the app really wrote).
+        pub bytes: Arc<AtomicU64>,
         /// Bytes per second the reader takes; 0 is unthrottled.
         pub rate: Arc<AtomicU64>,
         /// The reading task.
@@ -891,15 +899,27 @@ pub mod backlog_lab {
         .expect("join");
         let _ = ws.next().await.expect("open").expect("join reply");
         let frames = Arc::new(AtomicU64::new(0));
+        let bytes = Arc::new(AtomicU64::new(0));
         let rate = Arc::new(AtomicU64::new(rate));
         let task = {
-            let (frames, rate) = (Arc::clone(&frames), Arc::clone(&rate));
+            let (frames, bytes, rate) =
+                (Arc::clone(&frames), Arc::clone(&bytes), Arc::clone(&rate));
             tokio::spawn(async move {
                 let mut taken: u64 = 0;
                 let mut since = Instant::now();
+                let mut paced_at = rate.load(Ordering::Relaxed);
                 while let Some(Ok(m)) = ws.next().await {
                     frames.fetch_add(1, Ordering::Relaxed);
+                    bytes.fetch_add(m.len() as u64, Ordering::Relaxed);
                     let r = rate.load(Ordering::Relaxed);
+                    // GH #1067: a new rate starts its own budget. Kept, the
+                    // bytes taken at the old rate would be re-priced at the
+                    // new one and the reader would stall for the difference.
+                    if r != paced_at {
+                        paced_at = r;
+                        taken = 0;
+                        since = Instant::now();
+                    }
                     if r == 0 {
                         taken = 0;
                         since = Instant::now();
@@ -914,8 +934,27 @@ pub mod backlog_lab {
         Reader {
             session: token.split('.').next().expect("nonce").to_string(),
             frames,
+            bytes,
             rate,
             task,
+        }
+    }
+
+    /// GH #1067: hold a slow reader to the app's measured pace.
+    ///
+    /// Under full-suite load a strand gate's app made one pass per 415 ms
+    /// instead of [`PASS`]: a full tranche (~23 KB) then came at ~55 KB/s,
+    /// a fixed 50 KB/s reader kept up and no `high` came in 30 s. Scaled by
+    /// the measured mean pass, the reader (joined at `base`) stays ~3.6x
+    /// slower than the full tranche at any load, as on an idle host. Only a
+    /// change of more than a tenth moves it: every move restarts the
+    /// reader's budget.
+    fn pace(rate: &AtomicU64, base: u64, started: Instant, passes: u64) {
+        let mean = started.elapsed().as_secs_f64() / passes.max(1) as f64;
+        let paced = (base as f64 * PASS.as_secs_f64() / mean.max(PASS.as_secs_f64())) as u64;
+        let now = rate.load(Ordering::Relaxed);
+        if now.abs_diff(paced) > now / 10 {
+            rate.store(paced, Ordering::Relaxed);
         }
     }
 
@@ -926,9 +965,19 @@ pub mod backlog_lab {
         d: Duration,
         round: &mut u64,
     ) -> Vec<(Instant, Vec<Value>)> {
+        drive_paced(live, d, round, PASS).await
+    }
+
+    /// [`drive`] with the app's pass interval set to `pass`.
+    pub async fn drive_paced(
+        live: &mut Live,
+        d: Duration,
+        round: &mut u64,
+        pass: Duration,
+    ) -> Vec<(Instant, Vec<Value>)> {
         let mut samples = Vec::new();
         let end = Instant::now() + d;
-        let mut tick = tokio::time::interval(PASS);
+        let mut tick = tokio::time::interval(pass);
         while Instant::now() < end {
             tick.tick().await;
             *round += 1;
@@ -938,37 +987,100 @@ pub mod backlog_lab {
         samples
     }
 
-    /// Drive full tranches until `session` has been reported at `level`
+    /// Drive full tranches until `slow` has been reported at `level`
     /// (`high` = true), then `after` more. Panics after 30 s: a failure
     /// marker, not a measurement.
     pub async fn drive_until(
         live: &mut Live,
-        session: &str,
+        slow: &Reader,
         high: bool,
         after: Duration,
         round: &mut u64,
     ) -> Vec<(Instant, Vec<Value>)> {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        drive_until_paced(live, slow, high, after, round, PASS)
+            .await
+            .0
+    }
+
+    /// [`drive_until`] with the app's pass interval set to `pass` -- a
+    /// starved app (GH #1067). While it waits for `high`, and for `after`
+    /// past it (GH #1080), the slow reader runs at the app's measured pace ([`pace`]), as in [`lab_paced`]:
+    /// T1, T2 and T5 drive full tranches against a 50 KB/s reader, the
+    /// arithmetic that left T7 without a `high` in a gate. Returns the samples and what the run up to
+    /// the level measured (`passes`, `secs`, `pass_ms`, `wrote_bps`,
+    /// `reader_bps`; the other fields stay 0).
+    pub async fn drive_until_paced(
+        live: &mut Live,
+        slow: &Reader,
+        high: bool,
+        after: Duration,
+        round: &mut u64,
+        pass: Duration,
+    ) -> (Vec<(Instant, Vec<Value>)>, Lab) {
+        let started = Instant::now();
+        let base = slow.rate.load(Ordering::Relaxed);
+        let read_before = slow.bytes.load(Ordering::Relaxed);
+        let mut lab = Lab::default();
         let mut samples = Vec::new();
+        let mut queued = 0;
+        // What the app wrote to the slow viewer is what it read plus what
+        // still waits on its queue (the kernel's few KB aside): a starved app
+        // shows as a write rate the reader keeps up with.
+        let settle = |lab: &mut Lab, queued: u64| {
+            lab.secs = started.elapsed().as_secs_f64();
+            let wrote = slow.bytes.load(Ordering::Relaxed) - read_before + queued;
+            lab.wrote_bps = (wrote as f64 / lab.secs) as u64;
+            lab.pass_ms = (lab.secs * 1000.0 / lab.passes.max(1) as f64) as u64;
+            lab.reader_bps = slow.rate.load(Ordering::Relaxed);
+        };
+        let mut tick = tokio::time::interval(pass);
         loop {
-            samples.extend(drive(live, Duration::from_millis(500), round).await);
-            if live
-                .heard()
-                .await
+            let heard = live.heard().await;
+            if heard
                 .iter()
-                .any(|h| h.session == session && h.high == high)
+                .any(|h| h.session == slow.session && h.high == high)
             {
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "no {} for {session} in 30 s: {:?}",
-                if high { "high" } else { "clear" },
-                live.heard().await
-            );
+            if started.elapsed() >= Duration::from_secs(30) {
+                settle(&mut lab, queued);
+                panic!(
+                    "no {} for {} in 30 s: {}: {} passes in {:.1} s; heard {heard:?}",
+                    if high { "high" } else { "clear" },
+                    slow.session,
+                    lab.why_no_high(),
+                    lab.passes,
+                    lab.secs
+                );
+            }
+            tick.tick().await;
+            *round += 1;
+            lab.passes += 1;
+            live.pass(*round, FIGURES).await;
+            if high && base > 0 {
+                pace(&slow.rate, base, started, lab.passes);
+            }
+            let rows = live.viewers().await;
+            queued = row_of(&rows, &slow.session).map_or(0, |r| num(r, "bytes"));
+            samples.push((Instant::now(), rows));
         }
-        samples.extend(drive(live, after, round).await);
-        samples
+        settle(&mut lab, queued);
+        // GH #1080: the reader stays paced for `after` too. Released to the
+        // rate it had at the level while the app starved further, it drained
+        // the queue and T5's last sample showed 0 bytes for the slow viewer.
+        let end = Instant::now() + after;
+        let mut passes = lab.passes;
+        while Instant::now() < end {
+            tick.tick().await;
+            *round += 1;
+            passes += 1;
+            live.pass(*round, FIGURES).await;
+            if high && base > 0 {
+                pace(&slow.rate, base, started, passes);
+            }
+            samples.push((Instant::now(), live.viewers().await));
+        }
+        (samples, lab)
     }
 
     /// How the app sizes its next tranche.
@@ -1036,10 +1148,56 @@ pub mod backlog_lab {
         pub first_high_secs: Option<f64>,
         /// The tranche after each reaction of the app: (heard `high`, new k).
         pub reactions: Vec<(bool, usize)>,
+        /// GH #1067: the mean time between two app passes, ms (nominal
+        /// [`PASS`]; a starved app is slower).
+        pub pass_ms: u64,
+        /// GH #1067: bytes per second the app wrote to each viewer, as the
+        /// fast readers took them.
+        pub wrote_bps: u64,
+        /// GH #1067: the slow reader's rate at the end, bytes per second.
+        pub reader_bps: u64,
+    }
+
+    impl Lab {
+        /// GH #1067: why a run that waited for `high` never heard one.
+        ///
+        /// A strand gate failed with "no high in 30 s" after 72 passes in
+        /// 30 s (415 ms per pass, nominal 125): a full tranche (~23 KB) every
+        /// 415 ms is ~55 KB/s against a 50 KB/s reader, so the slow viewer
+        /// was never behind. Before this the message showed `secs: 0.0`,
+        /// `fast_fps: 0.0` and `frame_bytes: 0` because they were computed
+        /// after the loop, which read as "no frame reached any viewer".
+        pub fn why_no_high(&self) -> String {
+            if self.wrote_bps == 0 {
+                "no viewer read a single frame".to_string()
+            } else if self.wrote_bps < 2 * self.reader_bps {
+                format!(
+                    "the app never outran the slow reader: it wrote {} B/s per viewer \
+                     at {} ms per pass (nominal {} ms) against a reader of {} B/s -- \
+                     a starved app, not a deaf cell",
+                    self.wrote_bps,
+                    self.pass_ms,
+                    PASS.as_millis(),
+                    self.reader_bps
+                )
+            } else {
+                format!(
+                    "the app wrote {} B/s per viewer against a reader of {} B/s and \
+                     the cell reported nothing",
+                    self.wrote_bps, self.reader_bps
+                )
+            }
+        }
     }
 
     /// One lab run: two fast viewers, optionally a slow one, and `app`.
     pub async fn lab(slow: bool, app: App, until: Until) -> Lab {
+        lab_paced(slow, app, until, PASS).await
+    }
+
+    /// [`lab`] with the app's pass interval set to `pass` -- a starved app
+    /// (GH #1067: 415 ms per pass in a strand gate under full-suite load).
+    pub async fn lab_paced(slow: bool, app: App, until: Until, pass: Duration) -> Lab {
         let mut live = start(opted_in()).await;
         let a = join(live.port, 0).await;
         let b = join(live.port, 0).await;
@@ -1062,22 +1220,43 @@ pub mod backlog_lab {
         let mut slow_frames = 0u64;
         let mut slow_bytes = 0u64;
         let fast_before = a.frames.load(Ordering::Relaxed) + b.frames.load(Ordering::Relaxed);
+        let fast_bytes_before = a.bytes.load(Ordering::Relaxed) + b.bytes.load(Ordering::Relaxed);
         let started = Instant::now();
-        let mut tick = tokio::time::interval(PASS);
+        let mut tick = tokio::time::interval(pass);
+        let settle = |lab: &mut Lab, ages: &mut Vec<u64>, slow_frames: u64, slow_bytes: u64| {
+            lab.secs = started.elapsed().as_secs_f64();
+            let fast =
+                a.frames.load(Ordering::Relaxed) + b.frames.load(Ordering::Relaxed) - fast_before;
+            lab.fast_fps = fast as f64 / 2.0 / lab.secs;
+            let wrote = a.bytes.load(Ordering::Relaxed) + b.bytes.load(Ordering::Relaxed)
+                - fast_bytes_before;
+            lab.wrote_bps = (wrote as f64 / 2.0 / lab.secs) as u64;
+            lab.pass_ms = (lab.secs * 1000.0 / lab.passes.max(1) as f64) as u64;
+            lab.reader_bps = s.as_ref().map_or(0, |s| s.rate.load(Ordering::Relaxed));
+            lab.frame_bytes = slow_bytes.checked_div(slow_frames).unwrap_or(0);
+            ages.sort_unstable();
+            lab.p95_ms = ages
+                .get((ages.len() * 95 / 100).min(ages.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(0);
+            lab.max_ms = ages.last().copied().unwrap_or(0);
+        };
         loop {
-            match until {
+            let marker = match until {
                 Until::After(d) if started.elapsed() >= d => break,
                 Until::High if lab.highs > 0 => break,
                 Until::HighThenClear if lab.cleared_after_high => break,
-                Until::High => assert!(
-                    started.elapsed() < Duration::from_secs(30),
-                    "no high in 30 s: {lab:?}"
-                ),
-                Until::HighThenClear => assert!(
-                    started.elapsed() < Duration::from_secs(60),
-                    "no high then clear in 60 s: {lab:?}"
-                ),
-                Until::After(_) => {}
+                Until::High => Some(("no high in 30 s", Duration::from_secs(30))),
+                Until::HighThenClear => {
+                    Some(("no high then clear in 60 s", Duration::from_secs(60)))
+                }
+                Until::After(_) => None,
+            };
+            if let Some((what, limit)) = marker
+                && started.elapsed() >= limit
+            {
+                settle(&mut lab, &mut ages, slow_frames, slow_bytes);
+                panic!("{what}: {}: {lab:?}", lab.why_no_high());
             }
             tick.tick().await;
             let heard = live.heard().await;
@@ -1118,6 +1297,15 @@ pub mod backlog_lab {
             }
             lab.passes += 1;
             live.pass(lab.passes, k).await;
+            // GH #1067: a run that waits for `high` holds the slow reader to
+            // the app's real pace (see [`pace`]). A measuring run
+            // (`Until::After`) keeps the fixed rate: its numbers are a
+            // phone's, not a ratio.
+            if !matches!(until, Until::After(_))
+                && let Some(s) = s.as_ref()
+            {
+                pace(&s.rate, SLOW, started, lab.passes);
+            }
             let rows = live.viewers().await;
             for r in &rows {
                 if s.as_ref()
@@ -1132,17 +1320,7 @@ pub mod backlog_lab {
                 }
             }
         }
-        lab.secs = started.elapsed().as_secs_f64();
-        let fast =
-            a.frames.load(Ordering::Relaxed) + b.frames.load(Ordering::Relaxed) - fast_before;
-        lab.fast_fps = fast as f64 / 2.0 / lab.secs;
-        lab.frame_bytes = slow_bytes.checked_div(slow_frames).unwrap_or(0);
-        ages.sort_unstable();
-        lab.p95_ms = ages
-            .get((ages.len() * 95 / 100).min(ages.len().saturating_sub(1)))
-            .copied()
-            .unwrap_or(0);
-        lab.max_ms = ages.last().copied().unwrap_or(0);
+        settle(&mut lab, &mut ages, slow_frames, slow_bytes);
         for r in [Some(a), Some(b), s].into_iter().flatten() {
             r.task.abort();
         }

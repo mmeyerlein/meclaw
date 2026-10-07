@@ -52,6 +52,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 const ALPHA: &str = "alpha";
 const BETA: &str = "beta";
 const COUNTERPART: &str = "peer:north";
@@ -277,7 +280,9 @@ fn main_config() -> Value {
 /// The container edges the recipe renders for one generation, out of the
 /// shipped example (byte-pinned to the recipe by gh466).
 fn container_edges(who: &str) -> Vec<Value> {
-    let ex = read_json(&repo("examples/organism/grow-assistant.json"));
+    let ex = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
     let raw = meclaw_core::serde_json::to_string(&ex["diff"]["add_edges"]).expect("edges");
     let renamed = raw.replace("scribe", who);
     meclaw_core::serde_json::from_str::<Vec<Value>>(&renamed).expect("edges parse")

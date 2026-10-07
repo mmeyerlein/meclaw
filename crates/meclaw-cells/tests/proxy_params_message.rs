@@ -162,11 +162,15 @@ async fn params_update_signals_io_reconfig_setpolling() {
         .await
         .expect("SetPolling within 1 s")
         .unwrap();
+    // GH #1059: `ProxyReconfig` grew a `Credential` frame — the pattern is refutable now.
     let ProxyReconfig::SetPolling {
         long_poll_timeout_ms,
         long_poll_request_secs,
         ..
-    } = rc;
+    } = rc
+    else {
+        panic!("expected the SetPolling frame");
+    };
     assert_eq!(long_poll_timeout_ms, 40000);
     assert_eq!(long_poll_request_secs, 20);
 }
@@ -205,7 +209,9 @@ async fn base_url_update_live_signals_new_url_to_io() {
         .await
         .expect("SetPolling within 1 s")
         .unwrap();
-    let ProxyReconfig::SetPolling { base_url, .. } = rc;
+    let ProxyReconfig::SetPolling { base_url, .. } = rc else {
+        panic!("expected the SetPolling frame");
+    };
     assert_eq!(
         base_url, "http://127.0.0.1:9999",
         "the new base_url must reach the I/O-task live (path B)"

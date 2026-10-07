@@ -7,7 +7,8 @@
     "provider": "openai",
     "base_url": "${LLM_REGISTRY_TRANSLATOR_BASE_URL:-https://openrouter.ai/api/v1}",
     "model": "${LLM_REGISTRY_TRANSLATOR_MODEL:-anthropic/claude-opus-5.5}",
-    "api_key": "${OPENROUTER_API_KEY:-}",
+    "api_key": "",
+    "credential_grant_id": "",
     "temperature": 0,
     "external_timeout_ms": 60000,
     "system_order": [
@@ -36,16 +37,28 @@
       "api_key": {
         "type": "string",
         "secret": true,
-        "description": "OPENROUTER_API_KEY -- bound late, never stored in the tree. Empty is allowed: the registry still boots, resolves and pushes, and every translation fails loudly into the journal until a key is there."
+        "description": "Provider API key. Ships empty: the registry boots, resolves and pushes without one, and every translation fails loudly into the journal until the colony grants it a credential. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801).",
+        "default": ""
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #801: the grant this cell presents to get its provider credential SEALED from an access hive instead of carrying a key. It ships EMPTY, which is no grant at all; whoever grows the cell (the builder recipe or the colony's own template) sets it through `override_params`, and the credential then arrives over the credential v-lane and is opened in RAM only. Immutable: a new grant is a new instance."
       }
     },
     "consumes": {
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false,
+          "description": "Not required (GH #1061): the sealed credential box the access hive delivers on `in_sealed` carries `sealed` and nothing else, and a required key here would refuse it at delivery."
         },
         "system": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
           "type": "object",
           "required": false
         }
@@ -63,6 +76,17 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "finish_reason": {
           "type": "string",
           "required": true

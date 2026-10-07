@@ -20,7 +20,7 @@
         },
         {
           "route": "call_ringing",
-          "because": "the switch is ringing a number this channel dialled. Nothing is said yet and nobody has answered, so it moves the row and raises no turn -- an agent that were told about every ring would be told the same thing twice a moment later"
+          "because": "the switch is ringing: a number this channel dialled, or an inbound leg before the dialplan answers it. Nothing is said yet and nobody has answered, so it moves the row and raises no turn; the media half is handed it too and, with `duplex.prewarm_ttl_ms` set, opens the call's live session during the ring (GH #1055) -- an agent that were told about every ring would be told the same thing twice a moment later"
         },
         {
           "route": "call_answered",
@@ -166,6 +166,62 @@
           "from": "./signal",
           "to": "./voice",
           "condition": "has(hop.route) && hop.route == 'in_session'"
+        },
+        {
+          "from": "./voice",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:freeswitch/voice'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": "./voice",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:deepgram@template-voice/stt'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": "./voice",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:cartesia@template-voice/tts'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_op",
+              "phone_origin",
+              "phone_phase",
+              "phone_tool_call_id",
+              "phone_user",
+              "phone_verified"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./voice",
+          "condition": "has(hop.route) && (hop.route == 'call_ringing' || hop.route == 'call_ended')"
         },
         {
           "from": ".",

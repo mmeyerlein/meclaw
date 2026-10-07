@@ -44,21 +44,28 @@ touching a line of cell code.
 # open http://127.0.0.1:7777/ui/
 ```
 
-The `llm` cells talk to an OpenAI-compatible endpoint (OpenRouter by default). Give them a key,
-either by exporting it before you start the daemon or by dropping it in `examples/swarm/.env`:
-
-```
-OPENROUTER_API_KEY=sk-...
-```
-
-Then start the daemon pointed at that env file:
+**The key is a vault grant (#801).** The model cell holds no key: `api_key` is empty and `credential_grant_id` names a grant seeded in `main/access/store/seed/`; the cell asks `./access` for `cred:openrouter` and gets it sealed. The vault opens itself from `key_source: plainfile` (for a long-running unit: `systemd-cred`). The wiring is [`vault-pilot`](../vault-pilot/)'s. To give it a key:
 
 ```bash
+# 1. grow the broker around the checked-in grant half of ./access (once)
+./target/release/meclaw --root ./examples/swarm --templates ./templates \
+                        --apply ./examples/swarm/grow-access.json
+
+# 2. a vault passphrase in a 0600 file outside the checkout, named in the colony's .env
+KEYFILE="$HOME/.local/share/meclaw/swarm.vault-key"
+(umask 077; mkdir -p "$(dirname "$KEYFILE")"; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$KEYFILE")
+printf 'MECLAW_VAULT_KEY_FILE=%s\n' "$KEYFILE" > ./examples/swarm/.env
+
+# 3. the credential into the vault, from stdin, before the daemon runs
+printf '%s' "$OPENROUTER_KEY" | ./target/release/meclaw --root ./examples/swarm \
+    --vault /main/access/vault --vault-key-source plainfile --vault-key-file "$KEYFILE" \
+    --vault-add cred:openrouter
+
 ./target/release/meclaw --root ./examples/swarm --daemon --api 127.0.0.1:7777 --env ./examples/swarm/.env
 ```
 
-No key? The colony still boots and the UI still loads. The `llm` cell just returns an auth
-error as a normal message instead of an answer. Nothing crashes.
+No deposit? The colony still boots and the UI still loads. The `llm` cell answers with
+`credential_pending` as a normal message instead of an answer. Nothing crashes.
 
 ## Drive it
 

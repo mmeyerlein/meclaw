@@ -1,5 +1,5 @@
 {
-  "scope": "/os/orgs/acme/members/alex/assistants",
+  "scope": "/os/orgs/acme/members/alex",
   "ctx": {
     "model": "${MODEL_CORE}",
     "model_fast": "${MODEL_CORE_FAST}",
@@ -8,53 +8,72 @@
   "diff": {
     "add_nodes": [
       {
-        "name": "scribe",
-        "template": "assistant@3.7.7",
+        "name": "assistants/scribe",
+        "template": "assistant@3.7.10",
         "override_params": {
           "cogny/brain": {
-            "temperature": 0.2
+            "temperature": 0.2,
+            "api_key": "",
+            "credential_grant_id": "grant:openrouter@member-alex/cogny"
+          },
+          "talky/brain": {
+            "api_key": "",
+            "credential_grant_id": "grant:openrouter@member-alex/talky"
+          },
+          "talky/curator/summarizer": {
+            "credential_grant_id": "grant:openrouter@member-alex/talky-curator-summarizer"
+          },
+          "talky-chat/brain": {
+            "api_key": "",
+            "credential_grant_id": "grant:openrouter@member-alex/talky-chat"
+          },
+          "talky-chat/curator/summarizer": {
+            "credential_grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer"
+          },
+          "cogny/curator/summarizer": {
+            "credential_grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer"
           }
         }
       }
     ],
     "add_edges": [
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
-        "from": ".",
-        "to": "./scribe/cogny",
+        "from": "./assistants",
+        "to": "./assistants/scribe/cogny",
         "lane": "in_bundle",
         "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe' && has(hop.recall_caller) && hop.recall_caller == 'cogny'"
       },
       {
-        "from": ".",
-        "to": "./scribe/talky",
+        "from": "./assistants",
+        "to": "./assistants/scribe/talky",
         "lane": "in_bundle",
         "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'",
         "default": true
       },
       {
-        "from": ".",
-        "to": "./scribe/talky-chat",
+        "from": "./assistants",
+        "to": "./assistants/scribe/talky-chat",
         "lane": "in_bundle",
         "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe' && has(hop.recall_caller) && hop.recall_caller == 'talky-chat'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./scribe/talky",
-        "to": ".",
+        "from": "./assistants/scribe/talky",
+        "to": "./assistants",
         "lane": "recall",
         "condition": "has(hop.route) && hop.route == 'recall'",
         "modifier": {
@@ -70,8 +89,8 @@
         }
       },
       {
-        "from": "./scribe/cogny",
-        "to": ".",
+        "from": "./assistants/scribe/cogny",
+        "to": "./assistants",
         "lane": "recall",
         "condition": "has(hop.route) && hop.route == 'recall'",
         "modifier": {
@@ -86,8 +105,8 @@
         }
       },
       {
-        "from": "./scribe/talky-chat",
-        "to": ".",
+        "from": "./assistants/scribe/talky-chat",
+        "to": "./assistants",
         "lane": "recall",
         "condition": "has(hop.route) && hop.route == 'recall'",
         "modifier": {
@@ -103,8 +122,8 @@
         }
       },
       {
-        "from": "./scribe/talky",
-        "to": ".",
+        "from": "./assistants/scribe/talky",
+        "to": "./assistants",
         "lane": "brief",
         "condition": "has(hop.route) && hop.route == 'brief'",
         "modifier": {
@@ -114,15 +133,15 @@
         }
       },
       {
-        "from": ".",
-        "to": "./scribe/talky",
+        "from": "./assistants",
+        "to": "./assistants/scribe/talky",
         "lane": "in_briefing",
         "condition": "has(hop.route) && hop.route == 'in_briefing' && has(context.assistant) && context.assistant == 'scribe'",
         "default": true
       },
       {
-        "from": "./scribe/talky-chat",
-        "to": ".",
+        "from": "./assistants/scribe/talky-chat",
+        "to": "./assistants",
         "lane": "brief",
         "condition": "has(hop.route) && hop.route == 'brief'",
         "modifier": {
@@ -132,14 +151,14 @@
         }
       },
       {
-        "from": ".",
-        "to": "./scribe/talky-chat",
+        "from": "./assistants",
+        "to": "./assistants/scribe/talky-chat",
         "lane": "in_briefing",
         "condition": "has(hop.route) && hop.route == 'in_briefing' && has(context.assistant) && context.assistant == 'scribe' && has(hop.brief_surface) && hop.brief_surface == 'talky-chat'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'tool'",
         "modifier": {
           "set_context": {
@@ -148,8 +167,8 @@
         }
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'schemas'",
         "modifier": {
           "set_context": {
@@ -158,58 +177,58 @@
         }
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_tool' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_menu' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_delegation' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_renewed' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_candidate' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'sidecar'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'write'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'turn_write'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'error'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'thing_seen'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'build'",
         "modifier": {
           "set_context": {
@@ -218,44 +237,388 @@
         }
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_export' && has(context.assistant) && context.assistant == 'scribe'"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_import' && has(context.assistant) && context.assistant == 'scribe'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'export_done'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'dump'"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_stats' && has(context.assistant) && context.assistant == 'scribe'"
       },
       {
-        "from": "./scribe",
-        "to": ".",
+        "from": "./assistants/scribe",
+        "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'stats'"
       },
       {
-        "from": ".",
-        "to": "./scribe",
+        "from": "./assistants",
+        "to": "./assistants/scribe",
         "condition": "has(hop.route) && hop.route == 'in_turn' && !has(context.assistant) && has(hop.owner) && hop.owner.contains('/assistants/scribe/')"
+      },
+      {
+        "from": "./assistants/scribe/talky/brain",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky/brain",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/talky/curator/summarizer",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky-curator-summarizer'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky/curator/summarizer",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-curator-summarizer'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/talky-chat/brain",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky-chat'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky-chat/brain",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/talky-chat/curator/summarizer",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky-chat-curator-summarizer'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky-chat/curator/summarizer",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-curator-summarizer'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/cogny/brain",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/cogny'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/cogny/brain",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/cogny'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/cogny/curator/summarizer",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/cogny-curator-summarizer'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/cogny/curator/summarizer",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/cogny-curator-summarizer'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      }
+    ],
+    "seed_rows": [
+      {
+        "target": "./access/store",
+        "table": "grants",
+        "rows": [
+          {
+            "grant_id": "grant:openrouter@member-alex/talky",
+            "requester": "agent:scribe/talky",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky/brain against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/talky-curator-summarizer",
+            "requester": "agent:scribe/talky-curator-summarizer",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky/curator/summarizer against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/talky-chat",
+            "requester": "agent:scribe/talky-chat",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky-chat/brain against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
+            "requester": "agent:scribe/talky-chat-curator-summarizer",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky-chat/curator/summarizer against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/cogny",
+            "requester": "agent:scribe/cogny",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's cogny/brain against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer",
+            "requester": "agent:scribe/cogny-curator-summarizer",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's cogny/curator/summarizer against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          }
+        ]
+      },
+      {
+        "target": "./access/store",
+        "table": "grant_events",
+        "rows": [
+          {
+            "id": "ev-organism-0000000001",
+            "grant_id": "grant:openrouter@member-alex/talky",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000002",
+            "grant_id": "grant:openrouter@member-alex/talky-curator-summarizer",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000003",
+            "grant_id": "grant:openrouter@member-alex/talky-chat",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000004",
+            "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000005",
+            "grant_id": "grant:openrouter@member-alex/cogny",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000006",
+            "grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          }
+        ]
       }
     ]
   }

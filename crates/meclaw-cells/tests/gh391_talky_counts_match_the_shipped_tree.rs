@@ -171,6 +171,7 @@ fn word(n: usize) -> &'static str {
         // GH #953: the curator's `turn_write` also reaches the session keeper
         // as its answer receipt (`in_answered`) -- fifty-seven.
         (57, "fifty-seven"),
+        (58, "fifty-eight"),
     ]
     .into_iter()
     .collect();

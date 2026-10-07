@@ -1,4 +1,4 @@
-# `daily-digest@2.2.0`
+# `daily-digest@2.2.1`
 
 Scheduled fetch-and-forward: timer → web_fetch → format (code) → Telegram proxy.
 
@@ -49,11 +49,19 @@ this template's own shape: the hive instantiates **inactive**, so nothing fires 
 crossing edge is drawn, and the mutation that draws it is the mutation that names the chat.
 An empty chat id delivers nowhere rather than somewhere wrong.
 
-What stays in `.env` is the provider lane and nothing else:
+## Credentials
 
-| Variable | Purpose |
+No key lives in `.env` or in this tree (#801). The grants are seeded with the template (`access/store/seed/`); deposit each credential once, on stdin:
+
+| credential | cells |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Bot token of the `notifier` proxy |
+| `cred:telegram-bot` | `notifier` |
+
+```sh
+meclaw --root <root> --vault <instance>/access/vault --vault-add <credential>
+```
+
+The vault must be able to unlock itself: `access/vault` `key_source` `systemd-cred` for a unit, `plainfile` for a local run.
 
 ```json
 {"add_nodes": [{"name": "daily-digest", "template": "daily-digest",
@@ -133,8 +141,8 @@ second digit.
 ## Status
 
 All gates pass against core tag `post-migration-substrate-fixes` (timer/proxy factories
-wired, proxy inbound reads the header compartments). Live run needs real tokens in the
-repo-root `.env`.
+wired, proxy inbound reads the header compartments). Live run needs the bot token
+deposited in the vault.
 
 ## Lanes
 

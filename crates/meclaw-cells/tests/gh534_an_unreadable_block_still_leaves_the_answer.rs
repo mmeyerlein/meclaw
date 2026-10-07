@@ -251,11 +251,14 @@ fn the_spelling_of_the_fence_does_not_decide_whether_the_reader_sees_it() {
 
 #[test]
 fn a_tool_round_is_still_never_taken_apart() {
-    // The one exception that stands: a completion carrying calls belongs to the
-    // dispatcher whole, fence or no fence (GH #378). Cutting here would build
-    // the mixed form that strands a round, which is a worse failure than a
-    // block a reader sees.
-    let text = format!("Moment.\n\n```memory\n{BLOCK}\n```");
+    // A completion carrying calls belongs to the dispatcher (GH #378): its
+    // calls, its turns and their order leave as they came, and nothing of it
+    // reaches a section lane. The exception this test used to pin -- the fence
+    // stays in the sentence beside the call -- is retracted like the one above
+    // (GH #1036): that sentence is the interim answer every channel and app of
+    // the turn receives, and in a running colony they all received the fence.
+    let block = format!("```memory\n{BLOCK}\n```");
+    let text = format!("Moment.\n\n{block}");
     let input = json!({
         "header": {"hop": {"finish_reason": "tool_calls"}},
         "messages": [
@@ -267,8 +270,18 @@ fn a_tool_round_is_still_never_taken_apart() {
     let out = emit_all(&splitter(), &input);
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(
-        out[0]["messages"], input["messages"],
-        "byte-identical, fence included: {out:?}"
+        out[0]["messages"].as_array().map(Vec::len),
+        Some(2),
+        "{out:?}"
     );
+    assert_eq!(
+        out[0]["messages"][0], input["messages"][0],
+        "the call is byte-identical: {out:?}"
+    );
+    assert_eq!(
+        out[0]["messages"][1]["text"], "Moment.",
+        "the fence leaves: {out:?}"
+    );
+    assert_eq!(out[0]["sidecar_raw"], block.as_str(), "{out:?}");
     assert!(out[0]["header"].get("sidecar").is_none(), "{out:?}");
 }

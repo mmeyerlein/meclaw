@@ -285,7 +285,7 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
 
     // A template that is not the shipped generation names its own brains, and
     // the recipe does not guess them.
-    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.5");
+    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.1.6");
     assert_eq!(other.len(), 1, "{other:?}");
     // And a scope the generation does not lie under renders nothing either.
     let elsewhere = render(json!({"model_registry_scope": "/elsewhere"}), &template);
@@ -512,6 +512,21 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
     let root = td.path();
     copy_tree(&repo("examples/organism/seed"), root);
     copy_tree(&repo("templates"), &root.join("templates"));
+    // GH #1061 (#801): the shell's translator names a grant and asks the
+    // shell's broker, and this tree deposits no key -- every translation
+    // would be refused and no package would ever be pushed. Anonymous, it
+    // speaks to the stub as it did when the key came out of `.env`.
+    let marker = root.join("templates/meclaw-os/llm-registry/config.json");
+    let mut m: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(&marker).expect("the shell's registry marker"),
+    )
+    .expect("the marker parses");
+    m["override_params"]["translate"]["credential_grant_id"] = json!("");
+    std::fs::write(
+        &marker,
+        meclaw_core::serde_json::to_string_pretty(&m).unwrap(),
+    )
+    .expect("write the marker");
     std::fs::write(
         root.join(".env"),
         "OPENROUTER_API_KEY=test-key\n\
@@ -611,17 +626,21 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
             "anthropic/claude-opus-5.5".to_string(),
         ),
     ];
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let mut got = Vec::new();
-    while std::time::Instant::now() < deadline {
-        if let Some(db) = find_store_db(root) {
-            got = subscriber_rows(&db);
-            if got.len() >= want.len() {
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    // GH #1069: waited on the rows as an event, like the two push tests
+    // below. A fixed 30 s window here saw only the judge's row in 3 of 5
+    // iterations of a loaded series (build03, 12 threads beside 24 busy
+    // loops, 2026-10-07): the generation was still being grown.
+    until_progress(
+        "every subscriber row of the grown generation and member",
+        || find_store_db(root).is_some_and(|db| subscriber_rows(&db).len() >= want.len()),
+        || {
+            find_store_db(root).map_or(0, |db| subscriber_rows(&db).len() as i64)
+                + log_count(root, "to_path LIKE ?1", &["%llm-registry%"])
+        },
+        || format!("{:#?}", find_store_db(root).map(|db| subscriber_rows(&db))),
+    )
+    .await;
+    let got = find_store_db(root).map_or_else(Vec::new, |db| subscriber_rows(&db));
     assert_eq!(
         got, want,
         "the grown generation's three brains and three curator summarizers (GH #877) and \
@@ -764,6 +783,106 @@ fn system_text(body: &Value) -> String {
         .to_string()
 }
 
+/// How long a road may stand still before a wait on it is red (the 30 s
+/// failure-marker convention). It is a STALL window: progress reopens it.
+const STALL: Duration = Duration::from_secs(30);
+
+/// The most one event wait may take in all, progress or not: four stall
+/// windows, half the nextest budget of the test (8 x 30 s).
+const CEILING: Duration = Duration::from_secs(4 * 30);
+
+/// Until `done` holds. The wait is on EVENTS, not on the clock (GH #1069, the
+/// GH #987 pattern): every change of `progress` opens a fresh window of
+/// `STALL`, and only a road that moves nothing for that long is red, with
+/// `diagnose` as the reason. `CEILING` bounds the whole wait: a road that keeps
+/// moving without arriving (a retry that re-sends, a counter that grows with
+/// every delivery) is red too, instead of resetting the window until nextest
+/// kills the test without a diagnosis (review V0b M-1).
+async fn until_progress(
+    what: &str,
+    done: impl Fn() -> bool,
+    progress: impl Fn() -> i64,
+    diagnose: impl Fn() -> String,
+) {
+    let start = std::time::Instant::now();
+    let mut seen = progress();
+    let mut window = start + STALL;
+    while !done() {
+        let now = progress();
+        if now != seen {
+            seen = now;
+            window = std::time::Instant::now() + STALL;
+        }
+        assert!(
+            std::time::Instant::now() < window,
+            "{what}: not reached, and the road made no progress for {STALL:?}: {}",
+            diagnose()
+        );
+        assert!(
+            start.elapsed() < CEILING,
+            "{what}: not reached within {CEILING:?}, though the road kept moving: {}",
+            diagnose()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// How many deliveries of the colony's `message_log` match `filter`, with
+/// `args` bound as `?1`, `?2`, ... -- read from outside and read-only, an
+/// observation of the run, never a part of the mechanism.
+fn log_count(root: &std::path::Path, filter: &str, args: &[&str]) -> i64 {
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        root.join("colony.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return 0;
+    };
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM message_log WHERE {filter}"),
+        rusqlite::params_from_iter(args.iter()),
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+}
+
+/// The logged hops whose headers or body match `needle`, as
+/// `from -> to route=...`, in log order: the road a push took, for a failure
+/// message.
+fn road(root: &std::path::Path, needle: &str) -> Vec<String> {
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        root.join("colony.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT from_path, to_path, headers FROM message_log \
+         WHERE headers LIKE ?1 OR COALESCE(body_payload, '') LIKE ?1 ORDER BY rowid",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([needle], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })
+    .map(|rows| {
+        rows.filter_map(Result::ok)
+            .map(|(from, to, headers)| {
+                let h: Value = meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
+                format!(
+                    "{from} -> {to} route={} error_code={}",
+                    h["hop"]["route"].as_str().unwrap_or_default(),
+                    h["hop"]["error_code"].as_str().unwrap_or_default()
+                )
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// Review M-5: a push measured where it lands, on the road the tree ships.
 /// The operator posts `override_set target` at the SHELL's rim; the registry
 /// resolves it, `meclaw-os` restamps its `update` into `./orgs` as `in_model`,
@@ -780,8 +899,9 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
     const M2: &str = "test/m2";
     const PROMPT: &str = "P -- the lines test/m2 needs in every system prompt.";
     let brain = format!("{GEN}/talky/brain");
+    // GH #1052: one canned answer per turn the push budget below can take.
     let mock = MockOpenAI::start(
-        (0..12)
+        (0..128)
             .map(|i| canned_chat_completion(&format!("answer {i}"), "stop"))
             .collect(),
     )
@@ -790,6 +910,21 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
     let root = td.path();
     copy_tree(&repo("examples/organism/seed"), root);
     copy_tree(&repo("templates"), &root.join("templates"));
+    // GH #1061 (#801): the shell's translator names a grant and asks the
+    // shell's broker, and this tree deposits no key -- every translation
+    // would be refused and no package would ever be pushed. Anonymous, it
+    // speaks to the stub as it did when the key came out of `.env`.
+    let marker = root.join("templates/meclaw-os/llm-registry/config.json");
+    let mut m: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(&marker).expect("the shell's registry marker"),
+    )
+    .expect("the marker parses");
+    m["override_params"]["translate"]["credential_grant_id"] = json!("");
+    std::fs::write(
+        &marker,
+        meclaw_core::serde_json::to_string_pretty(&m).unwrap(),
+    )
+    .expect("write the marker");
     // The catalogue row the replacement points at: no endpoint of its own (the
     // brain keeps the one it was born with), a parameter and a prompt block.
     let seed = root.join("templates/llm-registry/store/seed/models.jsonl");
@@ -864,16 +999,33 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
         );
     }
     // The subscriber row first: the replacement is refused for a path nobody
-    // subscribed.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while std::time::Instant::now() < deadline {
-        if find_store_db(root).is_some_and(|db| subscriber_rows(&db).len() >= 3) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    // subscribed (`no_subscriber`, templates/llm-registry/hand,
+    // `script_inline`: the `override_set` / `scope == "target"` refusal).
+    //
+    // GH #1069: waited on THE BRAIN's row, as an event. This used to wait for
+    // "three rows" inside a fixed 30 s and walk on silently at its end -- but
+    // the shell's judge and the member's four memory cells are five rows
+    // before the generation's receipt is read at all, so under host load
+    // (gate 2026-10-07, 1320 s) the operator's command overtook the brain's
+    // own row, was refused, and the push the turns below wait for never left.
+    let brain_row = || {
+        find_store_db(root).is_some_and(|db| subscriber_rows(&db).iter().any(|(p, _)| *p == brain))
+    };
+    until_progress(
+        "the grown brain's subscriber row",
+        brain_row,
+        || {
+            find_store_db(root).map_or(0, |db| subscriber_rows(&db).len() as i64)
+                + log_count(root, "to_path LIKE ?1", &["%llm-registry%"])
+        },
+        || format!("{:#?}", find_store_db(root).map(|db| subscriber_rows(&db))),
+    )
+    .await;
+    // The rows the wait above saw, for the measurement line of the push.
+    let subscribers = find_store_db(root).map_or(0, |db| subscriber_rows(&db).len());
 
     // The operator, at the shell's rim.
+    let pushed_at = std::time::Instant::now();
     let cmd = json!({"op": "override_set", "scope": "target", "match": brain, "model_id": M2});
     h.send(
         MessageBuilder::new(Path::new("/os"))
@@ -886,12 +1038,54 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
     )
     .await;
 
+    // GH #1069: the push delivered at the brain, waited for as an event. The
+    // turns below were the only clock: ten of them, 300 ms apart, about four
+    // seconds for registry, shell, `./orgs`, `talky` and the door -- a road of
+    // several script cells that host load stretched past it. Every logged hop
+    // naming the replacement is progress; only a road that stops is red, and
+    // its rows are the diagnosis (a refusal ends it as visibly as a stall).
+    // The brain takes its mailbox in order, so a turn sent after this delivery
+    // is read after the push.
+    let needle = format!("%{M2}%");
+    until_progress(
+        "the push of the replacement delivered to the grown brain",
+        || {
+            log_count(
+                root,
+                "to_path = ?2 AND headers LIKE '%\"in_model\"%' \
+                 AND (headers LIKE ?1 OR COALESCE(body_payload, '') LIKE ?1)",
+                &[needle.as_str(), brain.as_str()],
+            ) > 0
+        },
+        || {
+            log_count(
+                root,
+                "headers LIKE ?1 OR COALESCE(body_payload, '') LIKE ?1",
+                &[needle.as_str()],
+            )
+        },
+        || format!("{:#?}", road(root, &needle)),
+    )
+    .await;
+
     // A turn at the brain, until the push has landed: the push and
     // the turn travel different roads, so the first turns may still see the
     // start value. What is claimed is where the push ENDS.
+    //
+    // GH #1052: the push had TEN turns, 300 ms apart -- about three seconds
+    // for a road of five hops (registry, meclaw-os, ./orgs, the grown edge,
+    // the door) -- and missed them once in a full gate on a loaded lane. Its
+    // budget is now a deadline, a sixth of the nextest budget (8 x 30 s), and
+    // the turn at which it landed is printed against it: the measurement on a
+    // pass, the finding on a miss. The delivery wait above (GH #1069) runs
+    // inside that budget, so the first turn is always sent: a push that was
+    // delivered late is judged by the turn after it, not by the clock alone.
+    const PUSH_BUDGET: Duration = Duration::from_secs(40);
     let mut last = Value::Null;
     let mut moved = false;
-    for _ in 0..10 {
+    let mut turns = 0;
+    while !moved && (turns == 0 || pushed_at.elapsed() < PUSH_BUDGET) {
+        turns += 1;
         let before = mock.recorded_requests().await.len();
         // Sent as the composite's own curator, the cell that feeds the brain
         // since GH #889 (it was the collector before); what is measured is the
@@ -939,7 +1133,16 @@ async fn a_push_on_the_shipped_road_reaches_the_grown_brain() {
         );
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    assert!(moved, "the push never reached the grown brain: {last}");
+    let landed = format!(
+        "turn {turns}, {} ms after the override (budget {} ms, {subscribers} subscriber rows)",
+        pushed_at.elapsed().as_millis(),
+        PUSH_BUDGET.as_millis()
+    );
+    eprintln!("GH #1052 measure: push landed={moved} at {landed}");
+    assert!(
+        moved,
+        "the push never reached the grown brain ({landed}): {last}"
+    );
     assert_eq!(last["max_tokens"], 777, "and its parameters: {last}");
     assert!(
         system_text(&last).starts_with(PROMPT),
@@ -970,6 +1173,21 @@ async fn a_refused_push_on_the_shipped_road_reaches_show() {
     let root = td.path();
     copy_tree(&repo("examples/organism/seed"), root);
     copy_tree(&repo("templates"), &root.join("templates"));
+    // GH #1061 (#801): the shell's translator names a grant and asks the
+    // shell's broker, and this tree deposits no key -- every translation
+    // would be refused and no package would ever be pushed. Anonymous, it
+    // speaks to the stub as it did when the key came out of `.env`.
+    let marker = root.join("templates/meclaw-os/llm-registry/config.json");
+    let mut m: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(&marker).expect("the shell's registry marker"),
+    )
+    .expect("the marker parses");
+    m["override_params"]["translate"]["credential_grant_id"] = json!("");
+    std::fs::write(
+        &marker,
+        meclaw_core::serde_json::to_string_pretty(&m).unwrap(),
+    )
+    .expect("write the marker");
     // The catalogue row the replacement points at: an endpoint of its own,
     // which the brain was not born on and has no allow list for.
     let seed = root.join("templates/llm-registry/store/seed/models.jsonl");
@@ -1044,13 +1262,21 @@ async fn a_refused_push_on_the_shipped_road_reaches_show() {
             "{outcome:?}"
         );
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while std::time::Instant::now() < deadline {
-        if find_store_db(root).is_some_and(|db| subscriber_rows(&db).len() >= 3) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    // GH #1069: the brain's own row, as an event -- the operator's command
+    // must not overtake it (the push test above says why).
+    until_progress(
+        "the grown brain's subscriber row",
+        || {
+            find_store_db(root)
+                .is_some_and(|db| subscriber_rows(&db).iter().any(|(p, _)| *p == brain))
+        },
+        || {
+            find_store_db(root).map_or(0, |db| subscriber_rows(&db).len() as i64)
+                + log_count(root, "to_path LIKE ?1", &["%llm-registry%"])
+        },
+        || format!("{:#?}", find_store_db(root).map(|db| subscriber_rows(&db))),
+    )
+    .await;
 
     // The operator, at the shell's rim.
     let cmd = json!({"op": "override_set", "scope": "target", "match": brain, "model_id": M2});
@@ -1065,15 +1291,27 @@ async fn a_refused_push_on_the_shipped_road_reaches_show() {
     )
     .await;
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let mut seen = None;
-    while std::time::Instant::now() < deadline {
-        seen = find_store_db(root).and_then(|db| refusal_of(&db, &brain));
-        if seen.as_ref().is_some_and(|(_, r)| !r.is_empty()) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    // GH #1069: the refusal booked on the brain's row, as an event; every
+    // logged hop naming the replacement is progress.
+    let needle = format!("%{M2}%");
+    until_progress(
+        "the brain's refusal booked on its subscriber row",
+        || {
+            find_store_db(root)
+                .and_then(|db| refusal_of(&db, &brain))
+                .is_some_and(|(_, r)| !r.is_empty())
+        },
+        || {
+            log_count(
+                root,
+                "headers LIKE ?1 OR COALESCE(body_payload, '') LIKE ?1",
+                &[needle.as_str()],
+            )
+        },
+        || format!("{:#?}", road(root, &needle)),
+    )
+    .await;
+    let seen = find_store_db(root).and_then(|db| refusal_of(&db, &brain));
     let dead: Vec<String> = h
         .drain_dead_letters()
         .await

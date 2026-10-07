@@ -7,11 +7,12 @@
 //! This file carries the two channel vocabularies of the dual task. The logic
 //! that speaks them arrives with step 4 of strand t1.
 
+use crate::credential::CredentialSlots;
 use crate::voice::connection::APPEND_MAX_CHARS;
 use crate::voice::contract::{AppendKind, DuplexEvent, Speaker, SttEvent};
 use crate::voice::io::{VoiceIo, run_io};
 use crate::voice::live_turns::{self, TurnAction, TurnInput, TurnState};
-use crate::voice::params::{VoiceOverlay, VoiceParams};
+use crate::voice::params::{CredentialSlot, VoiceOverlay, VoiceParams};
 use crate::voice::turns::{self, Action, Input, SessionState};
 use crate::voice::wire::{ClientFrame, Mode, ServerFrame, SpeakEndReason, WireErrorCode};
 use meclaw_colony::{DbConn, LongRunningCell};
@@ -208,6 +209,20 @@ pub enum VoiceEvent {
         /// as a number that climbs, which needs no threshold to justify.
         count: u32,
     },
+    /// GH #1059: a vaulted slot's credential round ended without a box. Sent
+    /// by the I/O half, which owns the slot's clock; the handler asks again
+    /// with a fresh recipient. Without it a lost `on_start` question (broker
+    /// not spawned yet, vault locked, an error instead of a box) would leave
+    /// the slot without a key for the whole life: nothing parked here opens a
+    /// new round the way an `llm` turn does.
+    CredentialRoundExpired {
+        /// The slot still waiting.
+        slot: CredentialSlot,
+        /// The round that starts now (1 = the `on_start` question).
+        round: u32,
+        /// Its wait in ms (doubling, capped at `credential_backoff_max_ms`).
+        wait_ms: u64,
+    },
 }
 
 impl VoiceEvent {
@@ -294,12 +309,33 @@ pub enum VoiceReconfig {
         /// [`crate::voice::io::ToConnection::Advise`].
         takeover: Option<u32>,
     },
+    /// Open the duplex session of a call whose line still rings, so the
+    /// media connection that names it finds the model ready (GH #1055).
+    Prewarm {
+        /// The call, as the media connection will name it (`?session=`).
+        session_id: String,
+    },
+    /// The call ended; an early session nobody connected to is closed.
+    DropPrewarm {
+        /// The call that ended.
+        session_id: String,
+    },
     /// Close this session's connection with a code.
     Close {
         /// The session to close.
         session_id: String,
         /// The WebSocket close code, e.g. [`crate::voice::wire::CLOSE_SESSION_REPLACED`].
         code: u16,
+    },
+    /// GH #1059: the key of `slot`, opened from the vault's sealed box. The
+    /// I/O half builds the slot's adapter with it; sessions waiting on the
+    /// slot start, later ones find it at once. `Secret` prints `<sealed>`, so
+    /// a `{:?}` of this frame cannot leak it.
+    Credential {
+        /// The slot the key is for.
+        slot: CredentialSlot,
+        /// The delivered key.
+        secret: crate::credential::Secret,
     },
 }
 
@@ -534,6 +570,21 @@ pub struct VoiceCell {
     /// same split for the same reason (its `push` channel beside the reconfig
     /// one), and the receiving end lives in [`VoiceIo::from_handler`].
     to_io: mpsc::Sender<VoiceReconfig>,
+    /// GH #1059: the grants this cell spends, one entry per provider slot that
+    /// names one. Empty for a cell on literal keys alone.
+    grants: Vec<(CredentialSlot, String)>,
+    /// GH #1059: key pairs and opened keys of those grants, RAM-only — every
+    /// (re)start asks again. Nothing is ever parked in it: a session waits in
+    /// the I/O half, where the key is used, not here.
+    credentials: CredentialSlots<()>,
+    /// Review V2 M2 (GH #1061): the newest round each grant was asked in.
+    /// Slots that share a grant share the question, and with equal waits
+    /// their clocks expire together: without this, every later round asked
+    /// twice and the first box came back `Late`.
+    asked_round: HashMap<String, u32>,
+    /// GH #1059: carried for the overlay only (immutable; the I/O half's
+    /// clocks read the value of their life).
+    credential_backoff_max_ms: u64,
 }
 
 impl VoiceCell {
@@ -559,6 +610,10 @@ impl VoiceCell {
         // disagree at birth, whoever built the I/O half.
         io.speak_plain = params.speak_plain;
         io.release_grace_ms = params.release_grace_ms;
+        // GH #1059: nothing is ever parked in the credential slots (a session
+        // waits in the I/O half), so no round expires with items to answer.
+        let on_expired: crate::credential::ExpiryFn<()> =
+            std::sync::Arc::new(|_, _| Box::pin(async {}));
         Self {
             to_io,
             path,
@@ -587,6 +642,115 @@ impl VoiceCell {
             stt_raw: raw.get("stt").cloned().unwrap_or(Value::Null),
             tts_raw: raw.get("tts").cloned(),
             duplex_raw: raw.get("duplex").filter(|v| !v.is_null()).cloned(),
+            grants: CredentialSlot::ALL
+                .into_iter()
+                .filter_map(|s| params.slot_grant(s).map(|g| (s, g.to_string())))
+                .collect(),
+            credentials: CredentialSlots::new(
+                crate::credential::default_credential_wait_ms(),
+                crate::credential::default_credential_wait_max(),
+                on_expired,
+            ),
+            credential_backoff_max_ms: params.credential_backoff_max_ms,
+            asked_round: HashMap::new(),
+        }
+    }
+
+    /// GH #1059: the public recipient key of `slot`'s question in flight
+    /// (tests/diagnosis; never a secret).
+    #[must_use]
+    pub fn credential_recipient_hex(&self, slot: CredentialSlot) -> Option<String> {
+        let (_, grant) = self.grants.iter().find(|(s, _)| *s == slot)?;
+        self.credentials.recipient_hex(grant)
+    }
+
+    /// GH #1059: ask the access hive for the key of `grant`. A source emission
+    /// on this cell's own path like every other one; the template's edge on
+    /// `hop.route == "credential_request"` decides where it goes. Slots that
+    /// share one grant share the question.
+    async fn ask_for_credential(&mut self, grant: &str, sink: &OriginSink) {
+        let content = match self.credentials.request(grant) {
+            Ok(content) => content,
+            Err(e) => {
+                tracing::error!(
+                    path = self.path.as_str(),
+                    error = %e,
+                    "voice: no random source for a credential request"
+                );
+                return;
+            }
+        };
+        tracing::info!(
+            path = self.path.as_str(),
+            grant = %grant,
+            slots = %self.slots_of(grant).join(","),
+            "voice: asking the vault for a provider credential"
+        );
+        let _ = sink
+            .emit(CellOutput {
+                target: self.path.clone(),
+                content,
+            })
+            .await;
+    }
+
+    /// GH #1059: the slot names that spend `grant`, for log lines.
+    fn slots_of(&self, grant: &str) -> Vec<&'static str> {
+        self.grants
+            .iter()
+            .filter(|(_, g)| g == grant)
+            .map(|(s, _)| s.as_str())
+            .collect()
+    }
+
+    /// GH #1059: take a sealed delivery. Opened → every slot of that grant gets
+    /// the key over the I/O seam (its adapter is built with it). Not opened →
+    /// the slot stays without a key and its next round asks again — no retry
+    /// path of its own. Never answered with an emission, never echoes a value.
+    async fn accept_credential(&mut self, content: &Value) {
+        match self.credentials.accept_sealed(content).await {
+            Ok(accepted) => {
+                let Some(secret) = self.credentials.secret_handle(&accepted.grant) else {
+                    tracing::warn!(
+                        path = self.path.as_str(),
+                        grant = %accepted.grant,
+                        "voice: the sealed credential opened empty — the slot stays without a key"
+                    );
+                    return;
+                };
+                let slots: Vec<CredentialSlot> = self
+                    .grants
+                    .iter()
+                    .filter(|(_, g)| *g == accepted.grant)
+                    .map(|(s, _)| *s)
+                    .collect();
+                tracing::info!(
+                    path = self.path.as_str(),
+                    grant = %accepted.grant,
+                    slots = %self.slots_of(&accepted.grant).join(","),
+                    "voice: credential received sealed and opened in RAM"
+                );
+                for slot in slots {
+                    let secret = secret.clone();
+                    let _ = self
+                        .to_io
+                        .send(VoiceReconfig::Credential { slot, secret })
+                        .await;
+                }
+            }
+            Err(refusal) => match refusal.detail() {
+                None => tracing::warn!(
+                    path = self.path.as_str(),
+                    "voice: a sealed box of an earlier credential round arrived late and was \
+                     discarded"
+                ),
+                Some(detail) => tracing::warn!(
+                    path = self.path.as_str(),
+                    %detail,
+                    "voice: the sealed credential was refused — the slot stays without a key and \
+                     asks again after the round's wait"
+                ),
+            },
         }
     }
 
@@ -607,6 +771,7 @@ impl VoiceCell {
             stt: self.stt_raw.clone(),
             tts: self.tts_raw.clone(),
             duplex: self.duplex_raw.clone(),
+            credential_backoff_max_ms: self.credential_backoff_max_ms,
         }
     }
 
@@ -805,6 +970,40 @@ impl VoiceCell {
         // carries a sender somebody verified, so the two coincide here.
         header.insert("user_id".into(), json!(sender));
         header.insert("verified_user".into(), json!(sender));
+    }
+
+    /// A fact of the line (GH #1055): a ring opens the call's duplex session
+    /// early, an end closes one nobody connected to.
+    ///
+    /// Measured on a telephone line (five calls, quiet window): pickup to the
+    /// first syllable was 1.84 s p50 / 2.14 s p95, because the session was
+    /// opened only when the media fork connected after the pickup — the
+    /// provider handshake (median 505 ms) and the greeting's time to first
+    /// audio (median 938 ms) were both spent with the caller on the line. A
+    /// ring lasts longer than both together.
+    async fn line_fact(&self, msg: &Message, route: &str) {
+        if !self.duplex {
+            return;
+        }
+        let call = ["call_uuid", "call_id", "session_id"].iter().find_map(|k| {
+            msg.headers
+                .hop
+                .get(*k)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+        let Some(session_id) = call else {
+            tracing::debug!(%route, "voice: a line fact without a call id, ignored");
+            return;
+        };
+        let cmd = if route == "call_ringing" {
+            VoiceReconfig::Prewarm { session_id }
+        } else {
+            VoiceReconfig::DropPrewarm { session_id }
+        };
+        let _ = self.to_io.send(cmd).await;
     }
 
     /// The `in_session` lane (GH #979): who is speaking in one session.
@@ -2092,6 +2291,30 @@ impl LongRunningCell for VoiceCell {
         }
     }
 
+    /// GH #1059: every granted slot asks for its key before anything else —
+    /// one question per grant. Key pairs and keys are RAM-only, so a respawn
+    /// asks again; the I/O half meanwhile takes sessions and holds each one
+    /// at most its slot's `credential_wait_ms` for the key.
+    #[allow(clippy::manual_async_fn)]
+    fn on_start<'a>(
+        &'a mut self,
+        sink: &'a OriginSink,
+        _db: &'a mut DbConn,
+    ) -> impl Future<Output = ()> + Send + 'a {
+        async move {
+            let mut asked: Vec<String> = Vec::new();
+            let grants: Vec<String> = self.grants.iter().map(|(_, g)| g.clone()).collect();
+            for grant in grants {
+                if asked.contains(&grant) {
+                    continue;
+                }
+                self.ask_for_credential(&grant, sink).await;
+                self.asked_round.insert(grant.clone(), 1);
+                asked.push(grant);
+            }
+        }
+    }
+
     /// The inbound leg: `in_speak`, and the params slot.
     #[allow(clippy::manual_async_fn)]
     fn handle<'a>(
@@ -2116,6 +2339,13 @@ impl LongRunningCell for VoiceCell {
                 return;
             };
 
+            // GH #1059: a sealed credential, before everything else. It never
+            // touches `cell.db` and is never answered with an emission.
+            if body.get("sealed").is_some() {
+                self.accept_credential(body).await;
+                return;
+            }
+
             // The params slot first and exclusively: a message carrying it is
             // not something to say out loud.
             if let Some(params_val) = body.get("params") {
@@ -2136,6 +2366,20 @@ impl LongRunningCell for VoiceCell {
                         .await;
                     }
                 }
+                return;
+            }
+
+            // THE LINE, NOT THE CALLER (GH #1055). `call_ringing` and
+            // `call_ended` are facts of the switch; the telephony hive hands
+            // them here as well as to its signalling half. They are handled
+            // before anything reads a text, and they answer nothing: no lane,
+            // no refusal, no dead letter. A cascade cell, or a duplex cell
+            // with `prewarm_ttl_ms: 0`, has nothing to open early and ignores
+            // both.
+            if let Some(route @ ("call_ringing" | "call_ended")) =
+                msg.headers.hop.get("route").and_then(|v| v.as_str())
+            {
+                self.line_fact(&msg, route).await;
                 return;
             }
 
@@ -2330,6 +2574,36 @@ impl LongRunningCell for VoiceCell {
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             match event {
+                // GH #1059: a slot's round ended without a box → ask again,
+                // fresh recipient. A box that opened in between makes it moot.
+                VoiceEvent::CredentialRoundExpired {
+                    slot,
+                    round,
+                    wait_ms,
+                } => {
+                    let grant = self
+                        .grants
+                        .iter()
+                        .find(|(s, _)| *s == slot)
+                        .map(|(_, g)| g.clone());
+                    // A second slot of the same grant whose clock ran out in
+                    // the same round finds the question already out (M2).
+                    if let Some(grant) = grant
+                        && self.credentials.secret(&grant).is_none()
+                        && self.asked_round.get(&grant).is_none_or(|r| *r < round)
+                    {
+                        self.asked_round.insert(grant.clone(), round);
+                        tracing::warn!(
+                            path = self.path.as_str(),
+                            round,
+                            wait_ms,
+                            grant = %grant,
+                            "voice: no sealed {} credential arrived in time — asking again",
+                            slot.as_str()
+                        );
+                        self.ask_for_credential(&grant, sink).await;
+                    }
+                }
                 VoiceEvent::MountFailed(e) => {
                     // The cell stays alive and is simply not reachable under
                     // that name: a name collision must not look like a crash

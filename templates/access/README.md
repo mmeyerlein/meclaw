@@ -1,4 +1,4 @@
-# `access@2.5.0`
+# `access@2.5.1`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -675,7 +675,8 @@ consequences of where it stands:
   member's own graph that touches this hive.
 - **Its `store` normally takes its grants through the mutation door.** A
   `seed_rows` declaration writes the `grants` and `grant_events` rows the brains
-  name (`examples/organism/grow-credentials.json` is the shipped form). Note what
+  name (`examples/organism/grow-assistant.json` carries them beside the generation it
+  grows). Note what
   that does to the shipped seed: `seed_rows` creates the `cell.db` if the store has
   never woken, and a `seed/<table>.jsonl` lands only on a **fresh** database — so
   such a store carries the rows the manifest wrote and not the seven `policy` rows
@@ -780,14 +781,14 @@ Two lanes, and the line between them is the ruling of
 knob is a **param** of the cell that reads it; only the provider lane stays in
 `.env`, because a secret in a `config.json` is a secret in the repository.
 
-Since `access@2.5.0` every knob below is a param. Two brokers in one colony can
+Since `access@2.5.1` every knob below is a param. Two brokers in one colony can
 therefore be bounded apart -- which an environment they share could not say --
 and the manifest that grows one sets them with `override_params`, keyed by cell
 path:
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "access", "template": "access@2.5.0",
+ "nodes": [{"name": "access", "template": "access@2.5.1",
             "override_params": {
               "policy": {"max_ttl_ms": 3600000, "policy_rows": 1000},
               "sweep":  {"sweep_rows": 500},

@@ -64,7 +64,9 @@
 # that cannot drive a browser here still counts in the total (`browser_short`). NOTE a finding to
 # read, not a judgement on the commit (advisories, tree-sync, lock-wait, and
 # `corpus-committed` in `strand`: there the committed corpus is allowed to be
-# behind the sources of a commit that has not been written yet). ASK a
+# behind the sources of a commit that has not been written yet; and
+# `slow-tests` over the mark in `strand`: a time moves with the host's load,
+# the integration pass grades it). ASK a
 # question for the owner, not a finding: the station cannot say whether the
 # commit is good without a measurement nobody has made yet (see A QUESTION
 # FOR THE OWNER). The summary is RED when any station is RED, else ASK when
@@ -1501,6 +1503,30 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
         else
             report "$name" "$scope" "$s_secs" NOTE "$log_rel" \
                 "the corpus is stale; regenerate it and commit it with this change"
+        fi
+    elif [ "$name" = "slow-tests" ]; then
+        # The slow lock grades a time, and a time moves with the load of the
+        # host: at 12 threads two tests sat at 88-98 % of their mark, and a
+        # strand would go red over a test its diff never touched (GH #1046,
+        # review I1). So a strand NOTEs a test over the mark -- the name stays
+        # in the log -- and the one integration pass grades it. Exit 2 is a
+        # broken lock (no JUnit file, a filter it cannot read, a debt without
+        # an issue), which no load explains: RED in every mode. The station's
+        # last `SLOW-VERDICT` line is the reason, so the debt it carries stands
+        # in the GATE line and not only in the log.
+        slow_reason=$(sed -n 's/^SLOW-VERDICT //p' "$log" | tail -n 1)
+        if [ "$rc" -eq 0 ]; then
+            report "$name" "$scope" "$s_secs" GREEN "$log_rel" "$slow_reason"
+        elif [ "$rc" -eq 1 ] && [ "$mode" = strand ]; then
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" \
+                "${slow_reason:+$slow_reason; }named in the log, integration grades it RED"
+        else
+            report "$name" "$scope" "$s_secs" RED "$log_rel" "$slow_reason"
+            tail -n 20 "$log" | sed 's/^/    | /'
+            if [ "$fail_fast" = 1 ]; then
+                echo "gate: --fail-fast -- stopping after $name." >&2
+                break
+            fi
         fi
     elif [ "$name" = "persona-receipt" ]; then
         if ! persona_receipt_report "$name" "$scope" "$s_secs" "$log_rel" "$log" "$rc" \

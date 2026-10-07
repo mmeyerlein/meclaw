@@ -1,4 +1,4 @@
-# `voice@2.5.0`
+# `voice@2.6.1`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -85,7 +85,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.5.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.6.1",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -231,7 +231,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -265,7 +265,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -471,7 +471,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -536,12 +536,11 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
-That instance needs neither `.env` line. It is also why `requires.env` declares
-both keys and requires neither -- see *The credentials* below.
+That instance needs neither credential -- see *The credentials* below.
 
 **The `openai` adapters speak to any OpenAI-compatible endpoint.** `base_url` is
 an ordinary config URL on both of them, so a local server implementing the same
@@ -549,11 +548,11 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
-           "api_key": "${LOCAL_TTS_KEY}",
+           "credential_grant_id": "<grant of that server's key>",
            "model": "<the model that server serves>",
            "voice": "<the voice that server serves>"}}}
 ```
@@ -594,7 +593,7 @@ handing text to a synthesiser and no seam between them to tune. Two ship:
 
 | provider | what it is | the block carries |
 |---|---|---|
-| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms` |
+| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms`, `prewarm_ttl_ms`, `barge_duck_ms`, `barge_release_ms`, `barge_level_dbfs`, `barge_echo_margin_db` |
 | `echo` | the loopback, which needs no credential and knows only `sample_rate` | -- |
 
 **`echo` is here for the reason `echo` is always here.** A trait with one
@@ -613,9 +612,9 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {"duplex": {"provider": "gpt_live",
-                                "api_key": "${OPENAI_API_KEY}",
+                                "credential_grant_id": "<grant of the live model's key>",
                                 "instructions": "<who the model is for this session>",
                                 "sample_rate": 24000},
                      "stt": null, "tts": null}}
@@ -626,7 +625,7 @@ session, and it cannot be changed while the session runs. `greeting` is said
 once after the session opens, so the model speaks first; empty means it waits
 for the caller. Both live in the `duplex` block, which carries a credential and
 is therefore off the runtime params surface exactly like `stt` and `tts`:
-rotation means `.env` plus a restart, and tuning means a respawn.
+rotation means depositing the key again and a restart, and tuning means a respawn.
 
 **A running session can still be told something, and that is the `in_advise`
 lane.** It is the one thing a duplex session offers that a cascade cannot: a
@@ -721,21 +720,144 @@ running, and a socket that drops still ends the call.
 
 ## The credentials
 
-`params.stt.api_key` and `params.tts.api_key` are `${DEEPGRAM_API_KEY}` and
-`${CARTESIA_API_KEY}`, substituted once, at instantiation, out of the colony's
-`.env`. After that the `config.json` is a bootstrap imprint and nothing rewrites
-it: rotating a key means editing `.env` and restarting.
+`params.stt.credential_grant_id` is `grant:deepgram@template-voice/stt` and `params.tts.credential_grant_id`
+is `grant:cartesia@template-voice/tts`: each key comes sealed from an access hive under its own
+grant, and both `api_key` literals are empty (deprecated, removed in 0.63.0, #801). A
+single cell cannot seed its own grants, so the level that grows it brings the broker, the
+grants and the edges in the same mutation (`seed_rows` writes through the mutation door):
 
-**Neither token carries a default, and that is on purpose.** A colony that grows
-the shipped configuration without both lines in its `.env` does not start: it
-stops with `env_var_missing` naming the variable, which is the loud failure a
-token without a default exists for. `template.json` declares both under
-`requires.env` so a builder reads the environment surface instead of discovering
-it -- declared, but not `required`, and the second half is the load-bearing one:
-`stt.provider` is a param, an instantiation may override it onto `echo`, and the
-requirement walk reads the TEMPLATE and never the `override_params` beside it.
-Requiring either key here would therefore refuse the one configuration that is
-meant to cost nothing.
+```json
+{
+  "scope": "/",
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "access",
+        "template": "access@2.5.1"
+      },
+      {
+        "name": "voice",
+        "template": "voice@2.6.1"
+      }
+    ],
+    "seed_rows": [
+      {
+        "target": "./access/store",
+        "table": "grants",
+        "rows": [
+          {
+            "grant_id": "grant:deepgram@template-voice/stt",
+            "requester": "agent:voice",
+            "capability": "credential.read",
+            "subject": "template:voice",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:deepgram",
+            "purpose": "let the voice cell's recogniser authenticate at its provider",
+            "issued_at": "2026-10-07T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "template-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:cartesia@template-voice/tts",
+            "requester": "agent:voice",
+            "capability": "credential.read",
+            "subject": "template:voice",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ]
+            },
+            "cred_ref": "cred:cartesia",
+            "purpose": "let the voice cell's synthesiser authenticate at its provider",
+            "issued_at": "2026-10-07T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "template-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          }
+        ]
+      },
+      {
+        "target": "./access/store",
+        "table": "grant_events",
+        "rows": [
+          {
+            "id": "ev-voice-stt",
+            "grant_id": "grant:deepgram@template-voice/stt",
+            "event": "granted",
+            "at": "2026-10-07T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "credential_grant_id is immutable, so the grant has to exist before the cell that names it asks (#801)"
+            }
+          },
+          {
+            "id": "ev-voice-tts",
+            "grant_id": "grant:cartesia@template-voice/tts",
+            "event": "granted",
+            "at": "2026-10-07T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "credential_grant_id is immutable, so the grant has to exist before the cell that names it asks (#801)"
+            }
+          }
+        ]
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./voice",
+        "to": "./access",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:voice'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./voice",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:deepgram@template-voice/stt'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./voice",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:cartesia@template-voice/tts'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+Then deposit both keys once, on stdin, with no colony running:
+`meclaw --root <root> --vault /access/vault --vault-add cred:deepgram` (and `cred:cartesia`).
+The vault must be able to unlock itself: `access/vault` `key_source` `systemd-cred` for a unit, `plainfile` for a local run. A session waits for its keys; drain `./access`'s `error` lane like
+the cell's own. `requires.credentials` in `template.json` names both. An `echo`
+instance overrides the blocks and needs neither.
 
 **Neither provider block is on the runtime update surface at all**, and that is
 a stronger statement than immutability. A `proxy`'s `bot_token` IS a key of its
@@ -769,16 +891,16 @@ that fails is the wiring and not the credential-shaped guess in the config. It i
 still a **placeholder** -- an English-timbre voice next to `language: "de"` -- and
 every real instance names its own.
 
-**Wanting the voice in `.env` after all is one line, and it goes in the
+**Wanting the voice id in the environment after all is one line, and it goes in the
 MANIFEST.** R6 binds the shipped template, not the mutation that instantiates it:
 an operator who keeps voice ids beside the credentials writes the token into the
 instantiating manifest's `override_params`, where it is substituted at
-instantiation exactly like the two api keys.
+instantiation.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {"tts": {"provider": "cartesia",
-                             "api_key": "${CARTESIA_API_KEY}",
+                             "credential_grant_id": "grant:cartesia@template-voice/tts",
                              "voice": "${CARTESIA_VOICE}"}}}
 ```
 
@@ -791,9 +913,9 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.5.0",
+{"name": "channels/voice", "template": "voice@2.6.1",
  "override_params": {"tts": {"provider": "elevenlabs",
-                             "api_key": "${ELEVENLABS_API_KEY}",
+                             "credential_grant_id": "<grant of the elevenlabs key>",
                              "voice": "${ELEVENLABS_VOICE}"}}}
 ```
 
@@ -821,3 +943,48 @@ and the vendor accepts as the end of the generation.
   `session-keeper` is for, one level up.
 - **Not a level.** It normalises nothing on anybody else's behalf; the level that
   holds it decides what its three lanes mean, and that level is `channels`.
+
+## Early session and ducking (GH #1055)
+
+Two knobs of the `gpt_live` block, both off unless set.
+
+**`prewarm_ttl_ms`** (default `0`). A `call_ringing` message with `hop.call_uuid` opens
+the call's live session at once and parks it; the connection whose `?session=` names
+that call adopts it, with what the model already said — its greeting among it.
+`call_ended`, or this deadline, closes a parked session nobody connected to; a second
+ring of the same call, or a ring of a call already connected, opens nothing. Neither
+lane answers anything. Measured on a telephone line before the change: pickup to first
+syllable 1.84 s p50, of which the handshake (median 505 ms) and the greeting's time to
+first audio (median 938 ms) both fell after the pickup. Provider time is spent from the
+ring on.
+
+A live model streams a continuous channel in real time, silence included, in 100 ms
+chunks. While the session is parked the cell reads that channel, so the provider never
+waits on a queue nobody empties however long the line rings, and feeds the model 20 ms
+frames of digital silence, the line it would hear from a quiet caller. Everything
+before the first audible 20 ms (`barge_level_dbfs`, RMS) is dropped; from there the
+model's audio is kept, up to 15 s (the oldest goes first beyond that), and its events
+are kept whole. At the pickup the kept audio goes out at once — the greeting is the
+first thing the caller hears — and as much of the model's following silence as was
+sent ahead is dropped, so the line plays in real time again within that many seconds
+of quiet. Audible chunks always pass.
+
+**`barge_duck_ms`** (default `0`), **`barge_release_ms`** (`300`), **`barge_level_dbfs`**
+(`-35`). When the caller's frames stay above the level for `barge_duck_ms` while the
+model's audio is voiced, the model's audio is replaced by silence of the same length
+until the caller has been quiet for `barge_release_ms`. The provider paces its output in
+real time (lead about one chunk), so what a caller who cuts in goes on hearing is the
+model still speaking until it yields on its own — measured 0.12 to 1.52 s on the same
+line, while the transcript-based barge-in never fired because the caller's words arrive
+as text after the model has stopped. The model is told nothing and no spoken section
+ends: whether the caller interrupted or only said "mhm" stays the model's call; a
+backchannel costs a few hundred milliseconds of its words. A silent model is never
+ducked. Both levels are RMS: the caller's per frame, the model's per chunk and over its
+last 300 ms.
+
+**`barge_echo_margin_db`** (`10`). A caller frame closes the gate only when its RMS
+reaches the model's RMS over the last 300 ms minus this margin. An unbalanced telephone
+hybrid hands the far end back 6 to 12 dB down; a caller who talks over the model sits
+within a few dB of it. At `10`, an echo 12 dB under the model never ducks it and a
+caller 6 dB under it does. Once the gate is closed the model's echo is gone too, so
+the release reads the level alone.

@@ -212,7 +212,7 @@ PIN-cogny-serves-its-own-wall	templates/cogny/README.md	**One tool family is ser
 PIN-curator-history-own-wall-only	templates/curator/README.md	and never another model's wall	pinned	a_model_reads_its_own_wall_and_never_another
 PIN-curator-history-never-shortened	templates/curator/README.md	a larger read is refused with `too_large` and its size, never shortened	pinned	read_over_budget_is_too_large_never_cut
 PIN-no-silencer	templates/terminal/README.md	A `reject` or an `error` lane has exactly **two** honest states	pinned	no_shipped_topology_routes_a_refusal_into_a_cell_that_swallows_it
-PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **six declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level
+PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **five declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level
 PIN-web-asset-route-de	docs/cell-types.md	erst wird die materialisierte Seitenkarte gefragt, dann die Asset-Karte	pinned	a_page_and_an_asset_do_not_shadow_each_other
 PIN-web-asset-route-en	docs/cell-types.en.md	the materialised page map is asked first, the asset map second	pinned	a_page_and_an_asset_do_not_shadow_each_other
 PIN-web-asset-content-type-de	docs/cell-types.md	Der `Content-Type` stammt aus der Zeile, nicht aus dem Dateinamen	pinned	a_seeded_asset_is_served_with_its_row_content_type_and_body

@@ -258,13 +258,16 @@ fn a_sentence_beside_a_consult_call_is_handed_the_nothing_form() {
     );
 }
 
-/// A block the model DID write beside a call stays its own: the round is
-/// untouched and no nothing form is laid over it.
+/// A block the model DID write beside a call stays its own: no nothing form is
+/// laid over it. Since splitter contract 1.0.4 (GH #1036) it leaves the
+/// sentence -- the interim path carried it to every channel and app -- and
+/// rides as `sidecar_raw`, exactly as written; the call itself is untouched.
 #[test]
 fn a_block_written_beside_a_call_gets_no_second_one() {
     let (input, half) = split_round(&format!("{BESIDE_CALL}\n\n{BLOCK}"));
-    assert_eq!(half["messages"], input["messages"], "{half}");
-    assert!(half.get("sidecar_raw").is_none(), "{half}");
+    assert_eq!(half["messages"][0], input["messages"][0], "{half}");
+    assert_eq!(half["messages"][1]["text"], BESIDE_CALL, "{half}");
+    assert_eq!(half["sidecar_raw"], BLOCK, "{half}");
 }
 
 /// Review I-2: an unfenced object in the section form is one attempt, read and

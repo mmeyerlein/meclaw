@@ -13,7 +13,7 @@ _Where agents build agents._
 
 </div>
 
-meclaw is a framework for composing complex agentic systems, not just agents: fast, secure, ontology-grounded, auditable and made for agents to build with, in one Rust binary. Use it to try a new harness structure in an afternoon, to grow an agentic OS of your own, or to build the next thing before it has a name.
+meclaw is an open-source Rust framework for composing complex agentic systems, not just agents: fast, secure, ontology-grounded, auditable and made for agents to build with, in one binary. Use it to try a new harness structure in an afternoon, to grow an agentic OS of your own, or to build the next thing before it has a name.
 
 meclaw-os is the reference implementation: a complete agentic OS, grown on that substrate and nothing else.
 

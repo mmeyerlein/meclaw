@@ -74,6 +74,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+// GH #1061: the road support already loads it (`duplicate_mod`).
+use road::organism_assistant;
+
 /// The failure-marker convention of this repo, not a timing discriminator --
 /// generous, because the lock runs on build lanes slower than a desk.
 const DEADLINE: Duration = Duration::from_secs(120);
@@ -174,7 +177,9 @@ fn member_edges() -> Vec<Value> {
 /// generation and `in_candidate` into it. The recipe is the builder's
 /// `_assistant_level` (K's), which this road grows the generation with.
 fn the_generation_lets_sightings_out_and_briefs_in() {
-    let grown = road::read_json(&road::repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&road::read_json(&road::repo(
+        "examples/organism/grow-assistant.json",
+    )));
     let edges = grown["diff"]["add_edges"]
         .as_array()
         .cloned()
@@ -228,7 +233,9 @@ fn build(td: &tempfile::TempDir, stubs: &road::Stubs, embed: &str) {
         &main.join("graph-space"),
         0,
     );
-    let grown = road::read_json(&road::repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&road::read_json(&road::repo(
+        "examples/organism/grow-assistant.json",
+    )));
     road::write_json(
         &main.join("assistants/config.json"),
         &json!({"cell": {"type": "hive"},

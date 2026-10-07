@@ -749,9 +749,11 @@ def main(argv):
     rc = 0
     if "--model-only" in picked:
         model = load(os.path.join(HERE, "run_model.py"), "run_model")
-        n = sum(1 for _ in scs)
+        # With ids picked the counter counts those ids, so that a test per scenario
+        # reads `MODEL 1/1` like every other stage (GH #1046: test 710 split per id).
+        n = sum(1 for sc in scs if not only or sc["id"] in only)
         rc |= model.main(["run_model.py"] + sorted(only))
-        print("MODEL %s" % ("see above" if only else "%d/%d" % (n, n) if rc == 0 else "FAIL"))
+        print("MODEL %s" % ("%d/%d" % (n, n) if rc == 0 else "FAIL"))
     compose = load(COMPOSE, "compose")
     if "--pure-only" in picked:
         rc |= stage("PURE", scs, only, {}, lambda sc: run_pure(compose, fixtures, sc))
@@ -782,7 +784,10 @@ def main(argv):
     if "--hops-only" in picked:
         rc |= stage("HOPS", scs, only, COLONY_ONLY,
                     lambda sc: run_hops(compose, fixtures, sc))
-        size, where = largest_header(compose, fixtures, scs)
+        # Only over the picked ids: a run per scenario would otherwise replay all 116
+        # here for one informational line (GH #1046, ~7 s of an 8 s run per id).
+        size, where = largest_header(compose, fixtures,
+                                     [sc for sc in scs if not only or sc["id"] in only])
         print("HOPS largest internal header %d B (%s)" % (size, where))
     if "--idle-only" in picked:
         rc |= single("IDLE", [("20 strokes, judge off", lambda: run_idle(False)),

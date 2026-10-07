@@ -32,6 +32,9 @@
 
 use std::collections::BTreeSet;
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_core::serde_json::{Map, Value};
@@ -79,7 +82,8 @@ fn hive_edges(rel: &str) -> Vec<EdgeSpec> {
 }
 
 fn recipe_edges(rel: &str) -> Vec<EdgeSpec> {
-    let doc = read_json(rel);
+    // GH #1061: the generation is read as its container reads it.
+    let doc = organism_assistant::at_the_container(&read_json(rel));
     let raw = doc["diff"]["add_edges"]
         .as_array()
         .unwrap_or_else(|| panic!("{rel}: no diff.add_edges"))

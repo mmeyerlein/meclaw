@@ -114,6 +114,83 @@ pub fn refuse_manifest_at_the_single_door(payload: &JsonValue) -> Result<(), Mut
     ))
 }
 
+/// GH #1076 — the door refuses a body whose work is not under `diff`.
+///
+/// `handle_mutation` reads an ABSENT `diff` as the empty one, and the two
+/// checks before this one could not see the gap: [`refuse_unknown_diff_keys`]
+/// looks INSIDE the diff, [`refuse_manifest_at_the_single_door`] discriminates
+/// on `manifest` alone. Measured while seeding a store: a caller sent
+/// `{"scope": …, "seed_rows": [ … ]}` — the operation one level too high — and
+/// was answered `committed` eleven times while the store held 0 of the 2 500
+/// rows it sent. Same class as GH #581: "committed" for "did nothing".
+///
+/// Three refusals, all `schema` (README § Stability: no new token):
+/// - a top-level key that is a diff operation ([`DIFF_OPERATIONS`]) — even
+///   BESIDE a `diff`, because the door would apply the diff and drop the
+///   misplaced operation without a word; the message names the key;
+/// - a body with no `diff` at all — there is nothing to apply;
+/// - a body that is no object (an array, `null`, a string, a number) — it
+///   reads as no `diff` just the same; the likely one is manifest entries sent
+///   without their `{"manifest": …}` wrapper.
+///
+/// Not refused: an explicit empty `diff: {}` (the no-op GH #422 pins with its
+/// three-key reply) and every other top-level key (`comment`, `ctx`,
+/// `messages`, a client's correlation field), which stay ignored exactly as
+/// `gh422_the_single_mutation_body_does_not_move` pins them. A `diff` that is
+/// not an object stays [`validate_post_state`]'s long-standing verdict.
+///
+/// Pre-destructive and spurless like GH #581: the caller runs this BEFORE the
+/// id is minted, so the refusal opens no mutation-log row. A manifest inherits
+/// it entry by entry, since every entry goes through the same door.
+pub fn refuse_a_body_without_its_diff(payload: &JsonValue) -> Result<(), MutationError> {
+    let Some(obj) = payload.as_object() else {
+        return Err(MutationError::Schema(format!(
+            "this body is {} — a mutation body is an object, \
+             {{\"scope\": …, \"diff\": {{…}}}}, and several declarations go in \
+             {{\"manifest\": [ … ]}}. Refused rather than ignored — a body \
+             nothing reads would have committed without effect.",
+            match payload {
+                JsonValue::Array(_) => "an array, not an object",
+                JsonValue::Null => "null, not an object",
+                JsonValue::String(_) => "a string, not an object",
+                JsonValue::Number(_) => "a number, not an object",
+                JsonValue::Bool(_) => "a boolean, not an object",
+                JsonValue::Object(_) => "an object",
+            },
+        )));
+    };
+    let misplaced: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|k| DIFF_OPERATIONS.contains(k))
+        .collect();
+    if !misplaced.is_empty() {
+        let first = misplaced[0];
+        return Err(MutationError::Schema(format!(
+            "this body carries {} at the top level: {}. A diff operation belongs \
+             inside `diff` — {{\"scope\": …, \"diff\": {{\"{first}\": …}}}} — and \
+             the door would have applied none of it. Refused rather than ignored \
+             — a body nothing reads would have committed without effect.",
+            if misplaced.len() == 1 {
+                "a diff operation"
+            } else {
+                "diff operations"
+            },
+            misplaced.join(", "),
+        )));
+    }
+    if obj.get("diff").is_none() {
+        return Err(MutationError::Schema(format!(
+            "this body carries no `diff`, so the door has nothing to apply. A \
+             mutation is {{\"scope\": …, \"diff\": {{…}}}}; the diff keys this \
+             colony executes are: {}. Refused rather than ignored — a body \
+             nothing reads would have committed without effect.",
+            DIFF_OPERATIONS.join(", "),
+        )));
+    }
+    Ok(())
+}
+
 /// T10 — schema check + template existence.
 ///
 /// T11 extends this with match patterns and naming uniqueness; T11b adds

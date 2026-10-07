@@ -3,7 +3,7 @@
 //! WHAT THIS FILE IS
 //! =================
 //! `examples/organism/` is a colony with **zero cells checked in**: a
-//! `colony.json`, one empty root hive, and six declarations. Applied in order
+//! `colony.json`, one empty root hive, and five declarations. Applied in order
 //! they instantiate the four composition levels of this wave and one channel
 //! into the THIRD of them — a shell, an organisation, a person, one Telegram
 //! channel of that person, and one generation of that person's agent.
@@ -58,6 +58,9 @@ use meclaw_colony::{
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{JsonValue, Message, Path, Uuid};
 use meclaw_testing::ColonyHandle;
+
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -72,18 +75,19 @@ fn repo(rel: &str) -> std::path::PathBuf {
         .join(rel)
 }
 
-/// The six declarations, in the order an operator applies them: shell, then
-/// organisation, then member, then assistant, then channel, then the credential
-/// v-lanes (GH #560). Each one carries its own absolute `scope`, so unlike the
-/// five of GH #277 they are applied verbatim, scope included — the example is ONE
-/// tree, not six side by side.
-const DECLARATIONS: [&str; 6] = [
+/// The five declarations, in the order an operator applies them: shell, then
+/// organisation, then member, then assistant, then channel. The assistant is
+/// the credentialled generation (GH #560, GH #1061): its credential v-lanes and
+/// grants ride in the same declaration, which therefore stands at the member.
+/// Each one carries its own absolute `scope`, so unlike the five of GH #277
+/// they are applied verbatim, scope included — the example is ONE tree, not
+/// five side by side.
+const DECLARATIONS: [&str; 5] = [
     "examples/organism/grow-os.json",
     "examples/organism/grow-org.json",
     "examples/organism/grow-member.json",
     "examples/organism/grow-assistant.json",
     "examples/organism/grow-channel.json",
-    "examples/organism/grow-credentials.json",
 ];
 
 const ASSISTANT: &str = "/os/orgs/acme/members/alex/assistants/scribe";
@@ -539,8 +543,15 @@ async fn grow(extras: Vec<Value>) -> Grown {
 /// The sixth mutation of GH #302's third bullet: a second assistant under the
 /// same member, derived from the shipped declaration by changing the name and
 /// the parameter — which is exactly the edit an operator makes.
+///
+/// Derived from the level as its container reads it (GH #1061): the shipped
+/// declaration is the credentialled one, and its grants are scribe's — a
+/// renamed copy would seed the same grant ids a second time.
 fn second_assistant() -> Value {
-    let raw = std::fs::read_to_string(repo("examples/organism/grow-assistant.json")).unwrap();
+    let level = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
+    let raw = meclaw_core::serde_json::to_string(&level).unwrap();
     let mut v: Value = meclaw_core::serde_json::from_str(&raw.replace("scribe", "aide")).unwrap();
     v["diff"]["add_nodes"][0]["override_params"]["cogny/brain"]["temperature"] = json!(0.9);
     v
@@ -596,7 +607,7 @@ const SECOND_CHANNEL_NODE: &str = "telegram-2";
 /// hand-writing edges.*
 ///
 /// The measurement is on the FILES, and it is sharper than "few edges": every
-/// endpoint of every `add_edges` entry in the six declarations resolves either
+/// endpoint of every `add_edges` entry in the five declarations resolves either
 /// to the root path of a node the SAME diff instantiates, or to the **open
 /// container** that node is instantiated into — the address the level above
 /// ships for precisely this purpose (`orgs`, `members`, `assistants`,
@@ -677,8 +688,14 @@ fn a_the_declarations_hand_write_no_edge_that_reaches_inside_a_template() {
                         let p = Path::resolve(&Path::new(&scope), n);
                         resolved.starts_with(&format!("{}/", p.as_str()))
                     });
+                // GH #1061 — the credentialled generation: its v-lanes' other
+                // end is the member's own broker (`./access`), a child of the
+                // level the declaration STANDS at, and the connect point is the
+                // broker's port. Still nothing reaches into a foreign interior.
+                let at_the_standing_level =
+                    v_lane && Path::resolve(&Path::new(&scope), raw).parent().as_str() == scope;
                 assert!(
-                    allowed.contains(&resolved) || inside_a_born_node,
+                    allowed.contains(&resolved) || inside_a_born_node || at_the_standing_level,
                     "{file}: the edge endpoint {raw:?} resolves to {resolved}, which is \
                      neither a node this diff instantiates nor the open container it is \
                      instantiated into. An endpoint anywhere else reaches into an interior \
@@ -691,7 +708,7 @@ fn a_the_declarations_hand_write_no_edge_that_reaches_inside_a_template() {
     }
     assert!(
         edges_seen > 0,
-        "the six declarations draw no edge at all — the assertion would be vacuous"
+        "the five declarations draw no edge at all — the assertion would be vacuous"
     );
 }
 

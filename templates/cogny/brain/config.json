@@ -7,7 +7,7 @@
     "provider": "openai",
     "model": "${ctx.model}",
     "requirement": "The reasoning core of an assistant: it plans, works through tools over several steps and answers what a conversation hands over as too hard for the voice. It needs strong multi-step reasoning, dependable tool calling and a long context of up to a hundred thousand tokens. A minute or more per answer is acceptable, and since it is called far less often than the voice, a higher price per call is acceptable too.",
-    "api_key": "${OPENROUTER_API_KEY}",
+    "api_key": "",
     "credential_grant_id": "",
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
@@ -35,8 +35,8 @@
       "api_key": {
         "type": "string",
         "secret": true,
-        "default": "${OPENROUTER_API_KEY}",
-        "description": "Provider API key"
+        "default": "",
+        "description": "Provider API key. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
       },
       "credential_grant_id": {
         "type": "string",

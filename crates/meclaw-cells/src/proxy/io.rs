@@ -63,6 +63,16 @@ pub enum ProxyEvent {
         /// Telegram `update_id`.
         update_id: i64,
     },
+    /// GH #1059: no sealed bot token arrived within the round's wait. Sent by
+    /// the SLEEPING I/O half (a connector of a grant polls nothing until its
+    /// box opened); the handler asks again with a fresh recipient. Never a
+    /// Telegram update, so it moves no cursor.
+    CredentialRoundExpired {
+        /// The round that starts now (1 = the `on_start` question).
+        round: u32,
+        /// Its wait in ms (doubling, capped at `credential_backoff_max_ms`).
+        wait_ms: u64,
+    },
 }
 
 impl ProxyEvent {
@@ -72,6 +82,9 @@ impl ProxyEvent {
             ProxyEvent::UserMessage { update_id, .. }
             | ProxyEvent::Document { update_id, .. }
             | ProxyEvent::Skipped { update_id } => *update_id,
+            // Not an update: `run_io` only moves the cursor for polled events,
+            // and -1 could not move it past anything.
+            ProxyEvent::CredentialRoundExpired { .. } => -1,
         }
     }
 }
@@ -106,6 +119,13 @@ pub enum ProxyReconfig {
         long_poll_timeout_ms: u64,
         /// New Telegram-side long-poll wait (`timeout=<sec>`).
         long_poll_request_secs: u64,
+    },
+    /// GH #1059: the bot token, opened from the vault's sealed box. The I/O
+    /// half of a grant's connector sleeps until this frame; on a running loop
+    /// it swaps the token of the poll client. `Secret` prints `<sealed>`.
+    Credential {
+        /// The delivered bot token.
+        bot_token: crate::credential::Secret,
     },
 }
 
@@ -331,6 +351,10 @@ pub fn run_io(
                         long_poll_request_secs = new_secs;
                         continue;
                     }
+                    Some(ProxyReconfig::Credential { bot_token }) => {
+                        client = client.with_bot_token(bot_token.expose());
+                        continue;
+                    }
                     None => break,
                 },
                 result = &mut work => match result {
@@ -372,6 +396,57 @@ pub fn run_io(
                         tracing::warn!(?reason, "get_updates permanent (5min sleep)");
                         backoff.after_permanent_failure();
                     }
+                }
+            }
+        }
+    }
+}
+
+/// GH #1059: how a connector of a grant waits for its bot token.
+#[derive(Debug, Clone, Copy)]
+pub struct CredentialWait {
+    /// Wait of the first round (`credential_wait_ms`).
+    pub wait_ms: u64,
+    /// Ceiling of the doubling wait (`credential_backoff_max_ms`).
+    pub backoff_max_ms: u64,
+}
+
+/// GH #1059: the sleeping start of a grant's connector. Polls nothing and
+/// returns `true` once the bot token arrived (`cfg.client` then carries it);
+/// `false` when the handler is gone. Every round that ends without a box is
+/// reported to the handler (`ProxyEvent::CredentialRoundExpired`), which asks
+/// again — without that, a lost `on_start` question (broker not spawned yet,
+/// vault locked, an error instead of a box) would leave the connector asleep
+/// for ever: unlike an llm turn, nothing parked here starts a new round. A
+/// params update in between is applied to `cfg` and does not restart the wait.
+pub async fn wait_for_bot_token(
+    cfg: &mut RunIoConfig,
+    wait: CredentialWait,
+    events_tx: &mpsc::Sender<ProxyEvent>,
+    reconfig_rx: &mut mpsc::Receiver<ProxyReconfig>,
+) -> bool {
+    use crate::credential_rounds::{RoundClock, Wake, next_wake};
+    let mut clock = RoundClock::start(wait.wait_ms, wait.backoff_max_ms);
+    loop {
+        match next_wake(reconfig_rx, &mut clock).await {
+            Wake::Reconfig(ProxyReconfig::Credential { bot_token }) => {
+                cfg.client = cfg.client.with_bot_token(bot_token.expose());
+                return true;
+            }
+            Wake::Reconfig(ProxyReconfig::SetPolling {
+                base_url,
+                long_poll_timeout_ms,
+                long_poll_request_secs,
+            }) => {
+                cfg.client = cfg.client.with_base_url(&base_url);
+                cfg.long_poll_timeout_ms = long_poll_timeout_ms;
+                cfg.long_poll_request_secs = long_poll_request_secs;
+            }
+            Wake::Closed => return false,
+            Wake::RoundExpired { round, wait_ms } => {
+                let event = ProxyEvent::CredentialRoundExpired { round, wait_ms };
+                if events_tx.send(event).await.is_err() {
+                    return false;
                 }
             }
         }

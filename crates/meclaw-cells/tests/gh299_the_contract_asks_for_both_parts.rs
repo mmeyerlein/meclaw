@@ -546,7 +546,14 @@ fn the_shown_fact_shape_is_the_one_the_validator_accepts() {
         .as_array()
         .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
-    for key in ["subject", "predicate", "claim", "fact_kind", "valid_from"] {
+    for key in [
+        "subject",
+        "predicate",
+        "claim",
+        "fact_kind",
+        "valid_from",
+        "quote",
+    ] {
         assert!(
             fact["properties"].get(key).is_some(),
             "the fact schema declares {key:?}: {fact}"
@@ -713,4 +720,324 @@ fn the_contract_file_points_at_its_consumers() {
         "and the drift lock that holds it -- this file, since the two-lane lock \
          it replaces lost its second lane with the batch prompt (#298)"
     );
+}
+
+// ───────────────────────── the quote a fact rests on (GH #1079)
+//
+// Every fact the offer asks for carries `quote`: the person's words it rests
+// on, copied exactly. The ingress does not check those words against the turn
+// -- it never sees the turn's text in the same phase (the bind reads columns
+// without `text`) -- the asking side does, where the turn is still in hand.
+// What the ingress CAN hold is the presence: with `require_quote` on, a fact
+// that names no words of anybody is dropped on its own, with a receipt, and the
+// rest of the block is filed. Off (the shipped default) is byte-for-byte the
+// lane as it was. Either way the quote is evidence for the asker and is never
+// a column: the parked fact carries exactly the keys it carried before.
+
+/// A fact that names the words it rests on.
+fn quoted_fact() -> serde_json::Value {
+    serde_json::json!({"subject": "user", "predicate": "friend_of", "claim": "Werner",
+                       "fact_kind": "world", "valid_from": null,
+                       "quote": "I miss Werner's patient ways"})
+}
+
+/// The same block as the splitter hands it on (GH #607): the section object
+/// parsed under `payload`, with the provenance the gate requires (#244).
+fn memory_section(
+    facts: serde_json::Value,
+    params: serde_json::Value,
+    close: bool,
+) -> serde_json::Value {
+    let mut ctx = serde_json::json!({"store_origin": "inline", "mem_phase": "inline",
+                                     "session_id": SESSION,
+                                     "audience_set": AUDIENCE, "channel": CHANNEL});
+    let mut payload = serde_json::json!({"facts": facts, "topic": {"movement": "continue"}});
+    if close {
+        ctx["close_pass"] = serde_json::json!("1");
+        payload["audience_set"] = serde_json::json!(["member:user", "agent:assistant"]);
+    }
+    serde_json::json!({
+        "header": {"context": ctx, "hop": {"route": "sidecar", "section": "memory"}},
+        "section": "memory",
+        "payload": payload,
+        "messages": [],
+        "params": params
+    })
+}
+
+/// The facts a block parked in `scratch` on its way to the bind.
+fn parked_facts(msgs: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let ops = store_ops(msgs);
+    let park = ops
+        .iter()
+        .find(|o| o["operation"] == "insert" && o["table"] == "scratch")
+        .unwrap_or_else(|| panic!("the block was not parked: {msgs:?}"));
+    let payload: serde_json::Value =
+        serde_json::from_str(park["row"]["payload"].as_str().expect("payload text"))
+            .expect("parked payload json");
+    payload["facts"].as_array().expect("parked facts").clone()
+}
+
+fn rejects(msgs: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    msgs.iter()
+        .filter(|m| m["header"]["route"] == "reject")
+        .collect()
+}
+
+/// Every message this cell emits is checked against its own declared `emits`
+/// in-cell, so a reason the contract does not list would turn the receipt --
+/// and every op emitted beside it -- into a contract violation.
+fn assert_within_contract(msgs: &[serde_json::Value]) {
+    let raw = std::fs::read_to_string(GLUE_CONFIG).expect("extract-glue config");
+    let cfg: meclaw_core::serde_json::Value =
+        meclaw_core::serde_json::from_str(&raw).expect("config json");
+    let emits: meclaw_core::EmitsBlock =
+        meclaw_core::serde_json::from_value(cfg["contract"]["emits"].clone()).expect("emits");
+    let compiled = meclaw_core::CompiledEmits::compile(&emits).expect("compile emits");
+    for m in msgs {
+        let m: meclaw_core::serde_json::Value =
+            meclaw_core::serde_json::from_str(&m.to_string()).expect("message json");
+        meclaw_core::validate_emits(&m, &compiled)
+            .unwrap_or_else(|e| panic!("extract-glue emits outside its contract: {e}\n{m}"));
+    }
+}
+
+#[test]
+fn inline_fact_without_quote_rejected_when_required() {
+    let facts = serde_json::json!([
+        quoted_fact(),
+        {"subject": "user", "predicate": "lives_in", "claim": "Lisbon",
+         "fact_kind": "world", "valid_from": null},
+        {"subject": "user", "predicate": "likes", "claim": "jazz",
+         "fact_kind": "world", "valid_from": null, "quote": "   "}
+    ]);
+    let msgs = emit(memory_section(
+        facts,
+        serde_json::json!({"require_quote": "1"}),
+        false,
+    ));
+    let parked = parked_facts(&msgs);
+    assert_eq!(
+        parked
+            .iter()
+            .map(|f| f["claim"].clone())
+            .collect::<Vec<_>>(),
+        [serde_json::json!("Werner")],
+        "only the fact that names its words is filed; the rest of the block stays: {msgs:?}"
+    );
+    let refused = rejects(&msgs);
+    assert_eq!(refused.len(), 1, "one receipt for the block: {msgs:?}");
+    assert_eq!(
+        refused[0]["header"]["reject_reason"], "quote_missing",
+        "{msgs:?}"
+    );
+    let text = refused[0]["messages"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.contains('2'),
+        "the receipt counts the dropped facts: {text}"
+    );
+    assert!(
+        !text.contains("Lisbon") && !text.contains("jazz"),
+        "and never echoes what they said: {text}"
+    );
+    assert_within_contract(&msgs);
+
+    // A block whose every fact names no words files nothing: write-free, the
+    // turn keeps its `pending` row, and the refusal says why.
+    let bare = serde_json::json!([{"subject": "user", "predicate": "lives_in",
+                                   "claim": "Lisbon", "fact_kind": "world",
+                                   "valid_from": null}]);
+    let msgs = emit(memory_section(
+        bare,
+        serde_json::json!({"require_quote": "1"}),
+        false,
+    ));
+    assert!(store_ops(&msgs).is_empty(), "nothing is written: {msgs:?}");
+    let refused = rejects(&msgs);
+    assert_eq!(refused.len(), 1, "{msgs:?}");
+    assert_eq!(
+        refused[0]["header"]["reject_reason"], "quote_missing",
+        "{msgs:?}"
+    );
+    assert_within_contract(&msgs);
+}
+
+#[test]
+fn inline_fact_without_quote_kept_when_not_required() {
+    let facts = serde_json::json!([
+        quoted_fact(),
+        {"subject": "user", "predicate": "lives_in", "claim": "Lisbon",
+         "fact_kind": "world", "valid_from": null}
+    ]);
+    // The shipped default and an explicit "0" are the lane as it was.
+    for params in [
+        serde_json::json!({}),
+        serde_json::json!({"require_quote": "0"}),
+    ] {
+        let msgs = emit(memory_section(facts.clone(), params.clone(), false));
+        let parked = parked_facts(&msgs);
+        assert_eq!(parked.len(), 2, "{params}: both facts are filed: {msgs:?}");
+        assert!(rejects(&msgs).is_empty(), "{params}: no receipt: {msgs:?}");
+        assert!(
+            parked.iter().all(|f| f.get("quote").is_none()),
+            "{params}: the quote is evidence for the asker, never a column: {parked:?}"
+        );
+    }
+    // The close pass writes its own fact form (close-glue) and asks for no
+    // quote, so the switch is the per-turn contract's and not the pass's.
+    let bare = serde_json::json!([{"subject": "user", "predicate": "lives_in",
+                                   "claim": "Lisbon", "fact_kind": "world",
+                                   "valid_from": null}]);
+    let msgs = emit(memory_section(
+        bare,
+        serde_json::json!({"require_quote": "1"}),
+        true,
+    ));
+    assert_eq!(
+        parked_facts(&msgs).len(),
+        1,
+        "the close pass files it: {msgs:?}"
+    );
+    assert!(rejects(&msgs).is_empty(), "{msgs:?}");
+}
+
+/// The knob is a switch, and it reads like one. The composites that turn it on
+/// write `require_quote: true`, and a reading that only knew the string "1"
+/// took that for "off" without a word -- the operator believed the lane held
+/// the quote, and it filed every fact as before. On is `true`, `"true"`, `1`
+/// and `"1"`; off is `false`, `"false"`, `0`, `"0"`, a blanked line and null.
+/// Anything else is a typo, and the lane refuses to run on it rather than run
+/// as if it were off.
+#[test]
+fn require_quote_is_a_switch_and_a_typo_stops_the_lane() {
+    let bare = serde_json::json!([{"subject": "user", "predicate": "lives_in",
+                                   "claim": "Lisbon", "fact_kind": "world",
+                                   "valid_from": null}]);
+    for on in [
+        serde_json::json!(true),
+        serde_json::json!("true"),
+        serde_json::json!("True"),
+        serde_json::json!(1),
+        serde_json::json!("1"),
+        serde_json::json!(" 1 "),
+    ] {
+        let msgs = emit(memory_section(
+            bare.clone(),
+            serde_json::json!({ "require_quote": on }),
+            false,
+        ));
+        assert!(
+            store_ops(&msgs).is_empty(),
+            "{on} is on: nothing is written: {msgs:?}"
+        );
+        let refused = rejects(&msgs);
+        assert_eq!(refused.len(), 1, "{on} is on: {msgs:?}");
+        assert_eq!(
+            refused[0]["header"]["reject_reason"], "quote_missing",
+            "{on} is on: {msgs:?}"
+        );
+    }
+    for off in [
+        serde_json::json!(false),
+        serde_json::json!("false"),
+        serde_json::json!(0),
+        serde_json::json!("0"),
+        serde_json::json!(""),
+        serde_json::Value::Null,
+    ] {
+        let msgs = emit(memory_section(
+            bare.clone(),
+            serde_json::json!({ "require_quote": off }),
+            false,
+        ));
+        assert_eq!(parked_facts(&msgs).len(), 1, "{off} is off: {msgs:?}");
+        assert!(rejects(&msgs).is_empty(), "{off} is off: {msgs:?}");
+    }
+    for typo in [
+        serde_json::json!("yes"),
+        serde_json::json!("ture"),
+        serde_json::json!("on"),
+        serde_json::json!(2),
+        serde_json::json!(1.5),
+        serde_json::json!(["1"]),
+        serde_json::json!({}),
+    ] {
+        let doc = memory_section(
+            bare.clone(),
+            serde_json::json!({ "require_quote": typo }),
+            false,
+        );
+        let out = run_script_on_stdin(&glue_script(), &meclaw_testing::code_stdin_bytes(&doc));
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "{typo} is neither on nor off, and the lane must not run as if it were off: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            err.contains("require_quote"),
+            "{typo}: the refusal names the knob: {err}"
+        );
+    }
+}
+
+#[test]
+fn every_reject_reason_the_ingress_emits_is_declared_in_its_contract() {
+    // The `code` cell checks each emission against its own `contract.emits`
+    // and drops the WHOLE output on one violation (`contract_violation`), so a
+    // receipt whose reason the enum does not list takes every op emitted beside
+    // it down with it. `unknown_source` and `ambiguous_speaker` (GH #849) were
+    // emitted next to the stage op of a sourced block and listed nowhere, which
+    // turned a block with one unbindable fact into a block with none filed.
+    let raw = std::fs::read_to_string(GLUE_CONFIG).expect("extract-glue config");
+    let cfg: serde_json::Value = serde_json::from_str(&raw).expect("config json");
+    let script = cfg["params"]["script_inline"].as_str().expect("script");
+    let declared: Vec<&str> = cfg["contract"]["emits"]["hop"]["reject_reason"]["values"]
+        .as_array()
+        .expect("declared reject reasons")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    let mut emitted = Vec::new();
+    for (open, close) in [
+        ("\"reject_reason\": \"", "\""),
+        ("source_note(\n            \"", "\""),
+        ("source_note(\"", "\""),
+    ] {
+        for (at, _) in script.match_indices(open) {
+            let tail = &script[at + open.len()..];
+            emitted.push(tail[..tail.find(close).expect("closing quote")].to_string());
+        }
+    }
+    // `inline_reject(text, "<reason>")`: the reason is the last literal before
+    // the call closes.
+    for (at, _) in script.match_indices("inline_reject(") {
+        let call = &script[at..at + script[at..].find("\")\n").map_or(0, |e| e + 1)];
+        if let Some((_, reason)) = call.rsplit_once(",\n") {
+            let reason = reason.trim().trim_matches('"');
+            if !reason.is_empty() && reason.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                emitted.push(reason.to_string());
+            }
+        }
+    }
+    for want in [
+        "quote_missing",
+        "unknown_source",
+        "ambiguous_speaker",
+        "missing_channel",
+    ] {
+        assert!(
+            emitted.iter().any(|e| e == want),
+            "the scan finds the emitted reason {want:?}: {emitted:?}"
+        );
+    }
+    for reason in &emitted {
+        assert!(
+            declared.contains(&reason.as_str()),
+            "extract-glue emits reject_reason {reason:?} but its contract declares only \
+             {declared:?} -- the cell would drop the whole output as contract_violation"
+        );
+    }
 }

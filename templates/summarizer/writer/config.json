@@ -7,7 +7,8 @@
     "provider": "openai",
     "model": "${ctx.model}",
     "requirement": "Condenses a batch of closed conversation into a short prose summary. It needs faithful summarising that adds nothing, clear plain language and a context of a few thousand tokens. Nobody waits on it and it runs once per batch, so a small, inexpensive model is enough.",
-    "api_key": "${OPENROUTER_API_KEY}",
+    "api_key": "",
+    "credential_grant_id": "grant:openrouter@template-summarizer/writer",
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.2,
     "system_order": [
@@ -26,8 +27,14 @@
       "api_key": {
         "type": "string",
         "secret": true,
-        "default": "${OPENROUTER_API_KEY}",
-        "description": "Provider API key"
+        "default": "",
+        "description": "Provider API key. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "grant:openrouter@template-summarizer/writer",
+        "description": "The grant this cell presents to get its provider key sealed from `./access` instead of carrying it in `api_key` (GH #560, #801). The template seeds this grant in `access/store/seed/grants.jsonl`; deposit the credential with `meclaw --vault-add`. Immutable: a different grant is a new cell."
       }
     },
     "emits": {
@@ -42,6 +49,17 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "finish_reason": {
           "type": "string",
           "values": [
@@ -51,7 +69,10 @@
             "content_filter",
             "error"
           ],
-          "required": true
+          "required": true,
+          "optional_on_route": [
+            "credential_request"
+          ]
         },
         "tokens_prompt": {
           "type": "number",
@@ -130,6 +151,10 @@
           "required": false
         },
         "params": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
           "type": "object",
           "required": false
         }

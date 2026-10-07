@@ -361,6 +361,14 @@ pub fn build_staging_tree_from_templates(
         // `echo` resolves to the highest version, and the instance has to name
         // the version it actually got).
         let provenance = provenance_of(tpl);
+        // GH #1034: grown here and named by a `swap_nodes[].with` of the same
+        // diff, an `llm` cell is the twin of the one it replaces and takes what
+        // it does not bring itself -- the budget before the patch validates the
+        // params, the seed before the seed, the system rows after it.
+        let twin = super::twin::resolve(root, scope, diff, name, &staging_path);
+        if let Some(original) = &twin {
+            super::twin::inherit_budget(original, &staging_path, n)?;
+        }
         // add_nodes: fresh `cell.id` minted inside patch_and_substitute_config.
         let (
             cell_type,
@@ -372,7 +380,14 @@ pub fn build_staging_tree_from_templates(
             mailbox_size,
             header_view,
         ) = patch_and_substitute_config(&staging_path, env, ctx, n, Some(&provenance), factories)?;
+        let own_seed = twin
+            .as_ref()
+            .map(|original| super::twin::carry_seed(original, &staging_path))
+            .transpose()?;
         seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
+        if let (Some(original), Some(own_seed)) = (&twin, own_seed) {
+            super::twin::carry_system(original, &staging_path, own_seed)?;
+        }
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
             staging_path,
@@ -472,6 +487,12 @@ pub fn build_staging_tree_from_templates(
             }
             m
         });
+        // GH #1034: the with-side of a swap of an `llm` cell is its twin
+        // (`with.params` counts as declared, like a template param).
+        let twin = super::twin::resolve(root, scope, diff, name, &staging_path);
+        if let Some(original) = &twin {
+            super::twin::inherit_budget(original, &staging_path, &override_node)?;
+        }
         let (
             cell_type,
             params,
@@ -489,7 +510,14 @@ pub fn build_staging_tree_from_templates(
             Some(&provenance),
             factories,
         )?;
+        let own_seed = twin
+            .as_ref()
+            .map(|original| super::twin::carry_seed(original, &staging_path))
+            .transpose()?;
         seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
+        if let (Some(original), Some(own_seed)) = (&twin, own_seed) {
+            super::twin::carry_system(original, &staging_path, own_seed)?;
+        }
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
             staging_path,

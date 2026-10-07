@@ -93,27 +93,51 @@ the hop table, the restore semantics, and the sizing formula for shapes that do 
 2. Send `/newbot`. Pick a display name, then a username ending in `bot` (for example
    `meclaw_research_bot`).
 3. BotFather replies with a token that looks like `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`.
-   That is your `TELEGRAM_BOT_TOKEN`.
+   That is the bot token you deposit as `cred:telegram-bot` below.
 4. Open a chat with your new bot and send it a message so it has someone to talk to.
 
 ## Configure `.env`
 
-Create `examples/telegram-research/.env`:
+No credential goes into it (#801): `/planner` (`cred:openrouter`) and `/proxy`
+(`cred:telegram-bot`) name grants seeded in `main/access/store/seed/` and get their keys sealed
+from `./access`; the vault opens itself from `key_source: plainfile` (`systemd-cred` for a
+long-running unit). The wiring is [`vault-pilot`](../vault-pilot/)'s. Grow the broker, make a
+passphrase file and deposit both, before the first start:
+
+```bash
+# 1. grow the broker around the checked-in grant half of ./access (once)
+./target/release/meclaw --root ./examples/telegram-research --templates ./templates \
+                        --apply ./examples/telegram-research/grow-access.json
+
+# 2. a vault passphrase in a 0600 file outside the checkout, named in the colony's .env
+KEYFILE="$HOME/.local/share/meclaw/telegram-research.vault-key"
+(umask 077; mkdir -p "$(dirname "$KEYFILE")"; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$KEYFILE")
+printf 'MECLAW_VAULT_KEY_FILE=%s\n' "$KEYFILE" > ./examples/telegram-research/.env
+
+# 3. the credential into the vault, from stdin, before the daemon runs
+printf '%s' "$OPENROUTER_KEY" | ./target/release/meclaw --root ./examples/telegram-research \
+    --vault /main/access/vault --vault-key-source plainfile --vault-key-file "$KEYFILE" \
+    --vault-add cred:openrouter
+printf '%s' "$BOT_TOKEN" | ./target/release/meclaw --root ./examples/telegram-research \
+    --vault /main/access/vault --vault-key-source plainfile --vault-key-file "$KEYFILE" \
+    --vault-add cred:telegram-bot
+```
+
+Then add the non-secret settings to `examples/telegram-research/.env`:
 
 ```
-# Telegram bot token from BotFather
-TELEGRAM_BOT_TOKEN=123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
 # Any OpenAI-compatible endpoint. OpenRouter shown; swap for OpenAI, vLLM, Ollama, LiteLLM.
-OPENROUTER_API_KEY=sk-...
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 
 # A search endpoint that answers GET <endpoint>?q=<query> with {"results":[{title,url,snippet}]}.
 # A local SearXNG instance with format=json works, or front your provider (Brave, etc.) with a
 # small shim that returns that shape.
 SEARCH_ENDPOINT=http://127.0.0.1:8888/search?format=json
-SEARCH_API_KEY=
 ```
+
+`/searcher` ships with an EMPTY `credential_grant_id`: the default endpoint needs no key. A keyed
+provider takes a grant like the other two (seed a row for `cred:search`, add its two edges to
+`grow-access.json`, `--vault-add cred:search`).
 
 The `web_fetch` tool (`/reader`) needs no key. The search tool (`/searcher`) speaks a generic
 `{results:[...]}` shape on purpose, so it is provider-agnostic. Point it at something that

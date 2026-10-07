@@ -75,15 +75,22 @@ curl -fsSL https://github.com/mmeyerlein/meclaw/releases/latest/download/start.s
     | OPENROUTER_API_KEY=sk-... sh
 ```
 
-With a key, the script writes one file, the colony's `.env`, mode `0600`
-before the first byte lands:
+With a key, the script writes the key to no file (#801). It makes up a vault
+passphrase, puts it in a `0600` file next to the colony
+(`colonies/<name>.vault-key`), and seals the key into the colony's vault with
+`meclaw --vault-add cred:openrouter` (key on stdin) before the first boot; the
+vault opens itself from that file. The colony's `.env` carries only non-secret
+tokens:
 
 ```
-OPENROUTER_API_KEY=sk-...
+MECLAW_VAULT_KEY_FILE=/home/you/.local/share/meclaw/colonies/meclaw-os-<stamp>.vault-key
 MODEL_BRAIN=openai/gpt-5.6-luna
 MODEL_CORE=openai/gpt-5.6-luna
 ...
 ```
+
+For a long-running colony, move the passphrase into a systemd credential
+(vault `key_source: systemd-cred`) instead of a file.
 
 The key is never printed. Which model token a declaration reads is the
 declaration's business, so the file carries every one the shipped declarations
@@ -125,11 +132,12 @@ curl -s -X POST 127.0.0.1:7777/colony/mutations \
 The answer is `{"mutation":{"id":"...","outcome":"committed"}}`; a rejection
 names a code and changes nothing on disk. Without a key the file is
 `examples/hard-shell/grow.json` (three cells); with a key it is
-`examples/meclaw-os/grow.json` (seventeen cells, the shipped assistant). With
-`MECLAW_EXAMPLE=organism` the root is `examples/organism/seed-ref`, whose
-`cell.type: "ref"` marker grows the shell on the first boot, so the file posted
-here is `examples/organism/grow-door.json` and the three levels below the shell
-are [Getting started](getting-started.md). The READMEs under
+`examples/meclaw-os/grow.json` (seventeen cells, the shipped assistant, plus
+the access hive its key is granted from). `MECLAW_EXAMPLE=organism` asks for no
+key: its members' brains take theirs from each member's own vault, which exists
+only after the member is grown (#801). The run boots the shell, opens its front
+door and writes `deposit-key.sh` next to the colony;
+[Getting started](getting-started.md) grows the levels and runs it. The READMEs under
 [`examples/`](../examples/README.md) say what each colony is.
 
 ## Step 6: use it
@@ -157,7 +165,7 @@ takes it apart.
 | Variable | Meaning | Default |
 |---|---|---|
 | `OPENROUTER_API_KEY` | set, the run grows the assistant and asks nothing | unset, the run asks on a terminal and otherwise boots the keyless colony |
-| `MECLAW_EXAMPLE` | which colony to grow: `hard-shell`, `meclaw-os` or `organism` | `meclaw-os` with a key, `hard-shell` without |
+| `MECLAW_EXAMPLE` | which colony to grow: `hard-shell`, `meclaw-os` or `organism` (asks no key; the key goes in later with `deposit-key.sh`, #801) | `meclaw-os` with a key, `hard-shell` without |
 | `MECLAW_MODEL` | the slug written to every `MODEL_*` token in the colony's `.env` | `openai/gpt-5.6-luna` |
 | `MECLAW_VERSION` | install this version; `v1.2.3` and `1.2.3` mean the same | latest |
 | `MECLAW_INSTALL_DIR` | where the binary goes | `~/.local/bin` |

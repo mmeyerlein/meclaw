@@ -108,9 +108,9 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
 /// names (`access` and `terminal` — both shipped, both behind the presence
 /// guard above, so a partial tree skips instead of failing on a missing
 /// directory), and an `.env` that carries a base URL and nothing else.
-/// `EXAMPLE_PROVIDER_KEY` stays UNSET on purpose — that is what makes the
-/// sealed lane the only way this model can authenticate, and therefore what
-/// makes the assertion below a proof.
+/// No provider key anywhere: the brain's `api_key` is the empty literal (GH
+/// #1061) — that is what makes the sealed lane the only way this model can
+/// authenticate, and therefore what makes the assertion below a proof.
 fn build_root(root: &std::path::Path, base_url: &str) {
     copy_tree(&repo("examples/vault-pilot/seed"), root);
     for name in ["access", "terminal"] {
@@ -409,13 +409,12 @@ async fn a_one_manifest_grows_the_broker_and_the_grant_is_on_disk_before_the_boo
         brain["params"]["credential_grant_id"], GRANT_ID,
         "the model names a grant the seed does not carry: {brain}"
     );
-    // An environment token survives in the file LITERALLY and is resolved on
-    // every read, so what is pinned here is the FORM: a `${VAR:-}` whose default
-    // is empty. With the variable unset that resolves to the empty string, which
-    // is not a bearer (GH #271) — and a cell with no bearer is a cell that has to
-    // ask. A literal key here would make the sealed lane unreachable.
+    // Since GH #1061 (#801) the param is the empty literal: no `${…}` token of
+    // the secret class stands in a shipped example. The empty string is not a
+    // bearer (GH #271) — and a cell with no bearer is a cell that has to ask. A
+    // literal key here would make the sealed lane unreachable.
     assert_eq!(
-        brain["params"]["api_key"], "${EXAMPLE_PROVIDER_KEY:-}",
+        brain["params"]["api_key"], "",
         "the pilot model must hold no bearer of its own: {brain}"
     );
 

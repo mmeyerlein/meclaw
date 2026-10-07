@@ -1,4 +1,4 @@
-# `presenter@1.2.6`
+# `presenter@1.2.7`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -113,7 +113,8 @@ it like a row: a screen sees a result only when that result's round covers it, a
 of the residents' road never reaches a screen wider than the member's round.
 
 The decider is `decide` (`PRESENTER_DECIDE_MODEL`, `PRESENTER_DECIDE_BASE_URL`, e.g.
-`https://openrouter.ai/api`, `PRESENTER_DECIDE_API_KEY` or a `credential_grant_id`). Empty
+`https://openrouter.ai/api`, and a `credential_grant_id` for its key, which lives in the vault:
+`meclaw --vault-add cred:openrouter`, #801). Empty
 model: every turn ends as `no_selector` and nothing is shown. A model registry can push a package through the
 `in_model` door straight onto `decide`; as shipped no such edge is drawn, and a refused push
 leaves as `model_refused`. The door drops the hive's inner context, and a refusal that does not

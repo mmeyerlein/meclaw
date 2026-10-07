@@ -278,7 +278,7 @@ fn talky_keeps_today_raw_yesterday_summarised_older_dropped() {
     if !shipped() {
         return;
     }
-    clear_of_midnight(120);
+    clear_of_midnight();
     let mut h = hive_of("talky", &[("policy", "keep_recent", json!(1))]);
     h.row(
         days_ago(3, 12),
@@ -466,14 +466,43 @@ fn a_task_segment_ends_at_the_day_change_without_marks() {
     );
 }
 
+/// GH #1033 -- the wait for midnight left the lookback on the day before.
+/// `clear_of_midnight` slept until one second past midnight, and the tests
+/// then placed their rows up to 60 s behind the clock: yesterday. Measured on
+/// the strand gate of 2026-10-05 (nextest from ~23:57:10Z, 12 threads): four
+/// curator tests ran 77-91 s -- an ~80 s wait each -- and the two whose rows
+/// sit 60 s and 30 s back failed at the asserts "the older task is condensed"
+/// and `shrunk == [r1]`; isolated, 12.8 s later, both were green. Load was
+/// never the cause, the clock was. For every second of the day: after the
+/// wait, the span from the furthest row back to the end of the run lies on
+/// one UTC day, and the wait stays inside a third of the nextest budget
+/// (8 x 30 s, GH #1046).
+#[test]
+fn a_midnight_wait_leaves_the_whole_span_on_one_day() {
+    const DAY: i64 = 86_400;
+    for since in 0..DAY {
+        let wait = midnight_wait_s(since, LOOKBACK_S, RUN_AHEAD_S);
+        let t = (since + wait).rem_euclid(DAY);
+        assert!(
+            t >= LOOKBACK_S && t + RUN_AHEAD_S < DAY,
+            "at {since} s past midnight a wait of {wait} s lands at {t} s: the rows \
+             {LOOKBACK_S} s back or the run {RUN_AHEAD_S} s ahead fall on another day"
+        );
+        assert!(
+            wait <= 80,
+            "at {since} s past midnight the wait is {wait} s, over a third of the budget"
+        );
+    }
+}
+
 #[test]
 fn consult_keeps_the_task_raw() {
     if !shipped() {
         return;
     }
-    clear_of_midnight(120);
+    clear_of_midnight();
     let mut h = hive_of("cogny", &[("policy", "keep_recent", json!(1))]);
-    let base = chrono::Utc::now() - chrono::Duration::seconds(60);
+    let base = backdated(60);
     let at = |s: i64| base + chrono::Duration::seconds(s);
     h.row(at(1), "s", "k1", "user", &user("task one"), 0);
     h.row(
@@ -591,7 +620,7 @@ fn under_pressure(cap: i64) -> (Hive, String) {
     );
     h.row(days_ago(1, 9), "s", "y1", "user", &user("yesterday"), 0);
     h.row(days_ago(1, 10), "s", "y1", "assistant", &said("yes"), 1);
-    let base = chrono::Utc::now() - chrono::Duration::seconds(30);
+    let base = backdated(30);
     let at = |s: i64| base + chrono::Duration::seconds(s);
     let big = format!("{}\nsecond line", "A".repeat(3000));
     h.row(at(1), "s", "r1", "user", &user("look twice"), 0);
@@ -628,7 +657,7 @@ fn old_tool_results_shrink_before_segments() {
     if !shipped() {
         return;
     }
-    clear_of_midnight(120);
+    clear_of_midnight();
     let r1 = id(&tool_result(
         "c1",
         &format!("{}\nsecond line", "A".repeat(3000)),
@@ -969,7 +998,7 @@ fn a_pinned_block_survives_the_tier_cut() {
     if !shipped() {
         return;
     }
-    clear_of_midnight(120);
+    clear_of_midnight();
     let keep = user("keep me, the owner's rule");
     let mut h = hive_of("talky", &[("policy", "keep_recent", json!(1))]);
     h.row(days_ago(3, 12), "s", "d3", "user", &keep, 0);
@@ -1670,7 +1699,7 @@ fn seeded(
 /// Three earlier sessions: `s0` under {e,a,b}, `s1` under {e,b}, `s9` from
 /// before the rule.
 fn three_sessions(h: &mut Hive) {
-    let base = chrono::Utc::now() - chrono::Duration::seconds(60);
+    let base = backdated(60);
     let at = |s: i64| base + chrono::Duration::seconds(s);
     seeded(
         h,
@@ -1716,9 +1745,7 @@ fn three_sessions(h: &mut Hive) {
 
 /// A pin another hive set through `in_pin`, under the audience `aud`.
 fn pinned(h: &mut Hive, text: &str, aud: Option<&str>) {
-    let stamp = (chrono::Utc::now() - chrono::Duration::seconds(30))
-        .format("%Y-%m-%dT%H:%M:%S%.6fZ")
-        .to_string();
+    let stamp = backdated(30).format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
     let hash = held(
         h,
         &json!({"type": "pin", "source": "orga", "text": text}),
@@ -1838,7 +1865,7 @@ fn a_round_without_an_audience_sees_only_what_no_round_declared_and_is_marked_on
     }
     let mut h = Hive::new();
     three_sessions(&mut h);
-    let base = chrono::Utc::now() - chrono::Duration::seconds(30);
+    let base = backdated(30);
     seeded(
         &mut h,
         base,
@@ -2535,7 +2562,7 @@ const ROUNDS: [(&str, Option<&str>); 6] = [
 
 /// The wall rows and blocks of `rounds`, one user turn each, a second apart.
 fn rebuild_wall(rounds: &[(&str, Option<&str>)]) -> (Vec<Value>, Vec<Value>) {
-    let now = chrono::Utc::now() - chrono::Duration::seconds(60);
+    let now = backdated(60);
     let (mut wall, mut blocks) = (Vec::new(), Vec::new());
     for (i, (text, aud)) in rounds.iter().enumerate() {
         let el = user(text);

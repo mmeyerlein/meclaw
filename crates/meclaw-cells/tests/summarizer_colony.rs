@@ -47,7 +47,23 @@ fn patch_writer(root: &std::path::Path, base_url: &str) {
     let mut v: Value = meclaw_core::serde_json::from_str(&txt).unwrap();
     v["params"]["base_url"] = json!(base_url);
     v["params"]["model"] = json!("gpt-4o-mock");
+    // GH #1061 (#801): the shipped writer names a grant and asks the hive's
+    // own broker. The mock wants no key, so this tree takes the broker out
+    // (its ref has no library here) and the writer goes anonymous.
+    v["params"]["credential_grant_id"] = json!("");
     std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(root.join("main/sum/access"));
+    let hp = root.join("main/sum/config.json");
+    let mut hive: Value =
+        meclaw_core::serde_json::from_str(&std::fs::read_to_string(&hp).unwrap()).unwrap();
+    if let Some(edges) = hive["params"]["graph"]["edges"].as_array_mut() {
+        edges.retain(|e| e["from"] != "./access" && e["to"] != "./access");
+    }
+    std::fs::write(
+        &hp,
+        meclaw_core::serde_json::to_string_pretty(&hive).unwrap(),
+    )
+    .unwrap();
 }
 
 /// Stand-in for the collector: emits the c3 write-batch form -- messages[] the

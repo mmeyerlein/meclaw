@@ -198,17 +198,20 @@ fn levels() -> Vec<Level> {
         },
         Level {
             name: "member",
-            params: json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex"}),
+            // GH #1061 -- the member's own vault opens itself from the passphrase
+            // file the colony names, so the brains' grants can be answered.
+            params: json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
+                   "override_params": {"access/vault": {
+                       "key_source": "plainfile",
+                       "key_file": "${MECLAW_VAULT_KEY_FILE:-}"}}}),
             file: "grow-member.json",
             index: 0,
         },
+        // GH #1061 -- the shipped generation is the CREDENTIALLED one: its
+        // brains hold no key and spend a grant from the member's broker.
         Level {
             name: "assistant",
-            params: json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                   "name": "scribe",
-                   "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
-                           "model_surface": "${MODEL_SURFACE}"},
-                   "override_params": {"cogny/brain": {"temperature": 0.2}}}),
+            params: credentialled_wish(),
             file: "grow-assistant.json",
             index: 0,
         },
@@ -256,6 +259,11 @@ fn rendered_counts() -> Vec<(&'static str, usize)> {
             // what the child is filled with.
             let mut params = lv.params;
             params["template"] = json!("a-template@1.0.0");
+            // The TRANSIT edges: the credential road is a second, opt-in part
+            // of the same declaration (GH #560) and not the level's count.
+            if let Some(p) = params.as_object_mut() {
+                p.remove("credential");
+            }
             let d = grow(params);
             let n = d["diff"]["add_edges"].as_array().expect("add_edges").len();
             (lv.name, n)
@@ -419,7 +427,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
 fn a_level_the_table_does_not_carry_is_refused_by_name() {
     let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.18"}}));
+                   "template": "org@2.1.21"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("level_unknown"),
@@ -435,7 +443,7 @@ fn a_level_the_table_does_not_carry_is_refused_by_name() {
     // and the switch refuses it one cell earlier, before an inference is bought
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.18"}}));
+                   "template": "org@2.1.21"}}));
     assert_eq!(early["header"]["error_code"], json!("level_unknown"));
     assert_eq!(early["header"]["route"], json!("error"));
 }
@@ -447,7 +455,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
     // live under, because a typo would otherwise silently buy an inference.
     let out = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os/orgs/acme/members/alex", "level": "channel",
-                   "name": "telegram", "template": "telegram-connector@2.1.0"}}));
+                   "name": "telegram", "template": "telegram-connector@2.1.1"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("recipe_params_incomplete")
@@ -461,7 +469,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@3.7.7 under \
+        "request": "grow an assistant named scribe from assistant@3.7.10 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));
@@ -482,7 +490,7 @@ fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     // A channel without its default agent is likewise incomplete for the fast
     // lane, and likewise not an error: nobody named a recipe.
     let chan = run_classify(json!({
-        "request": "grow a channel named telegram from telegram-connector@2.1.0 \
+        "request": "grow a channel named telegram from telegram-connector@2.1.1 \
                     under /os/orgs/acme/members/alex"}));
     assert_eq!(chan["header"]["route"], json!("design"));
 }
@@ -538,6 +546,10 @@ fn door_params() -> Value {
         .params;
     params["template"] = json!("a-template@1.0.0");
     params["door"] = json!(true);
+    // The door is counted against the TRANSIT edges, like the table above.
+    if let Some(p) = params.as_object_mut() {
+        p.remove("credential");
+    }
     params
 }
 
@@ -587,7 +599,7 @@ fn the_door_is_one_edge_more_and_the_readme_counts_it() {
 #[test]
 fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
     let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
-                        "template": "member@2.5.14", "door": true});
+                        "template": "member@2.5.17", "door": true});
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
                                     "params": params.clone()}));
     assert_eq!(early["header"]["route"], json!("error"));
@@ -638,7 +650,7 @@ fn a_door_that_is_not_a_boolean_is_refused_by_name() {
     // The sentence lane reads the same key, and a key beats the words.
     let ctx = json!({"model": "m", "model_fast": "f", "model_surface": "s"});
     let spoken = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@3.7.7 under \
+        "request": "grow an assistant named scribe from assistant@3.7.10 under \
                     /os/orgs/acme/members/alex",
         "ctx": ctx, "door": "true"}));
     assert_eq!(
@@ -686,21 +698,21 @@ fn the_grow_sentence_hears_the_door() {
     };
     assert_eq!(
         door_of(
-            "grow the member's door named reception from assistant@3.7.7 under \
+            "grow the member's door named reception from assistant@3.7.10 under \
              /os/orgs/acme/members/alex"
         ),
         json!(true)
     );
     assert_eq!(
         door_of(
-            "grow an assistant named scribe from assistant@3.7.7 under \
+            "grow an assistant named scribe from assistant@3.7.10 under \
              /os/orgs/acme/members/alex as the member's door"
         ),
         json!(true)
     );
     assert_eq!(
         door_of(
-            "grow an assistant named scribe from assistant@3.7.7 under \
+            "grow an assistant named scribe from assistant@3.7.10 under \
              /os/orgs/acme/members/alex"
         ),
         Value::Null,
@@ -712,18 +724,18 @@ fn the_grow_sentence_hears_the_door() {
     // one sender on one lane, and every unaddressed turn would be answered
     // twice (review of #835, Minor 1, measured on both sentences below).
     for mention in [
-        "grow an assistant named helper from assistant@3.7.7 under \
+        "grow an assistant named helper from assistant@3.7.10 under \
          /os/orgs/acme/members/alex next to the member's door",
-        "grow an assistant named helper from assistant@3.7.7 under \
+        "grow an assistant named helper from assistant@3.7.10 under \
          /os/orgs/acme/members/alex, not as the door",
-        "grow an assistant named helper from assistant@3.7.7 under \
+        "grow an assistant named helper from assistant@3.7.10 under \
          /os/orgs/acme/members/alex, never as the member's door",
         // A possessive is a noun of the door, not a request to be one: `\b`
         // sits in front of the apostrophe, and this drew a second door (review
         // of the #812 fix strand, Minor 2).
-        "grow an assistant named helper from assistant@3.7.7 under \
+        "grow an assistant named helper from assistant@3.7.10 under \
          /os/orgs/acme/members/alex, to stand in as the door's relief",
-        "grow an assistant named helper from assistant@3.7.7 under \
+        "grow an assistant named helper from assistant@3.7.10 under \
          /os/orgs/acme/members/alex, to stand in as the member’s door’s relief",
     ] {
         assert_eq!(
@@ -734,7 +746,7 @@ fn the_grow_sentence_hears_the_door() {
     }
     assert_eq!(
         door_of(
-            "grow an assistant named scribe from assistant@3.7.7 under \
+            "grow an assistant named scribe from assistant@3.7.10 under \
              /os/orgs/acme/members/alex as its door"
         ),
         json!(true),
@@ -743,7 +755,7 @@ fn the_grow_sentence_hears_the_door() {
     // A MEMBER sentence is untouched by the new words: "member" still means the
     // level, and only "member's door" means the switch.
     let member = run_classify(json!({
-        "request": "grow a member named alex from member@2.5.14 under /os/orgs/acme"}));
+        "request": "grow a member named alex from member@2.5.17 under /os/orgs/acme"}));
     let payload: Value =
         meclaw_core::serde_json::from_str(member["messages"][0]["text"].as_str().expect("payload"))
             .expect("json payload");
@@ -778,9 +790,9 @@ fn a_null_door_is_an_absent_key_in_the_sentence() {
         payload["params"]["door"].clone()
     };
     for asked in [
-        "grow the member's door named reception from assistant@3.7.7 under \
+        "grow the member's door named reception from assistant@3.7.10 under \
          /os/orgs/acme/members/alex",
-        "grow an assistant named scribe from assistant@3.7.7 under \
+        "grow an assistant named scribe from assistant@3.7.10 under \
          /os/orgs/acme/members/alex as the member's door",
     ] {
         assert_eq!(
@@ -798,17 +810,19 @@ fn a_null_door_is_an_absent_key_in_the_sentence() {
 
 // ---------------------------------------------- the credential lanes (GH #560)
 
-/// The wish that grows a generation with no key of its own. The three values
-/// inside `credential` are the ones `examples/organism/grow-credentials.json`
-/// carries, so the rendered edges and the shipped example can be compared byte
-/// for byte — the same discipline the six levels above run under.
+/// The wish that grows a generation with no key of its own. The values inside
+/// `credential` are the ones `examples/organism/grow-assistant.json` carries
+/// (GH #1061: the shipped generation IS the credentialled one, and
+/// `cred:openrouter` is the name `scripts/start.sh` deposits under), so the
+/// rendered declaration and the shipped example can be compared byte for byte
+/// — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@3.7.7",
+           "name": "scribe", "template": "assistant@3.7.10",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},
-           "credential": {"cred_ref": "cred:example-provider:primary",
+           "credential": {"cred_ref": "cred:openrouter",
                           "subject": "member:alex",
                           "expires_at": "2099-01-01T00:00:00.000000Z",
                           "rule_id": "alex-credential-read"}})
@@ -851,7 +865,10 @@ fn without_the_stamps(v: &Value) -> Value {
 
 #[test]
 fn the_credential_lanes_are_the_ones_the_example_carries() {
-    let Some(want) = examples("grow-credentials.json") else {
+    // GH #1061 -- the shipped generation IS the credentialled declaration, so
+    // the example that carries the road is `grow-assistant.json` itself; there
+    // is no separate credential file any more to apply after it.
+    let Some(want) = examples("grow-assistant.json") else {
         return; // a tree without the examples cannot make this assertion
     };
     let decls = grown_with_credential();
@@ -877,25 +894,33 @@ fn the_credential_lanes_are_the_ones_the_example_carries() {
         got["diff"]["add_nodes"][0]["name"],
         json!("assistants/scribe")
     );
+    assert_eq!(
+        got["diff"]["add_nodes"], want[0]["diff"]["add_nodes"],
+        "the node and its grant ids are not the ones \
+         examples/organism/grow-assistant.json carries"
+    );
 
-    // The four v-lanes are the LAST four edges of the one declaration: the
-    // level's own transit edges are drawn first and the credential road behind
-    // them, and order is semantics here as everywhere else.
+    // The level's own transit edges first and the credential road behind them,
+    // byte for byte and IN ORDER: order is semantics here as everywhere else.
     let edges = got["diff"]["add_edges"].as_array().expect("add_edges");
-    let want_edges = want[0]["diff"]["add_edges"]
-        .as_array()
-        .expect("the example's credential edges");
+    let credential = edges
+        .iter()
+        .filter(|e| {
+            e.get("lane")
+                .and_then(|l| l.as_str())
+                .is_some_and(|l| l == "credential_request" || l == "in_sealed")
+        })
+        .count();
     assert!(
-        edges.len() > want_edges.len(),
+        credential > 0 && edges.len() > credential,
         "the one declaration carries the level's transit edges as well as the \
-         credential road — it has {} edges",
+         credential road — it has {} edges, {credential} of them credential lanes",
         edges.len()
     );
     assert_eq!(
-        &edges[edges.len() - want_edges.len()..],
-        want_edges.as_slice(),
-        "the rendered credential v-lanes are not the ones \
-         examples/organism/grow-credentials.json carries"
+        got["diff"]["add_edges"], want[0]["diff"]["add_edges"],
+        "the rendered edges are not the ones \
+         examples/organism/grow-assistant.json carries"
     );
     // And the grants travel in the same breath, byte for byte but for the
     // stamps: the example stays the byte truth of this road.
@@ -903,7 +928,7 @@ fn the_credential_lanes_are_the_ones_the_example_carries() {
         without_the_stamps(&got["diff"]["seed_rows"]),
         without_the_stamps(&want[0]["diff"]["seed_rows"]),
         "the rendered grants are not the ones \
-         examples/organism/grow-credentials.json carries"
+         examples/organism/grow-assistant.json carries"
     );
 }
 
@@ -912,8 +937,8 @@ fn both_brains_give_up_the_key_they_have_and_name_a_grant() {
     let decls = grown_with_credential();
     let overrides = &decls[0]["diff"]["add_nodes"][0]["override_params"];
     for (asker, handle) in [
-        ("talky", "grant:example-provider-primary@member-alex/talky"),
-        ("cogny", "grant:example-provider-primary@member-alex/cogny"),
+        ("talky", "grant:openrouter@member-alex/talky"),
+        ("cogny", "grant:openrouter@member-alex/cogny"),
     ] {
         let slot = &overrides[format!("{asker}/brain")];
         // The empty key is the SWITCH: a brain asks for a credential only while
@@ -951,8 +976,9 @@ fn the_grants_travel_in_the_same_declaration_as_the_lanes() {
         assert_eq!(row["target"], json!("./access/store"));
         assert_eq!(
             row["rows"].as_array().expect("rows").len(),
-            2,
-            "ONE grant per consumer: the answer edge is addressed by \
+            6,
+            "ONE grant per consumer (GH #1061: the three brains and their three \
+             curators; the search tool stays anonymous without a search credential): the answer edge is addressed by \
              `hop.grant_id`, and two brains sharing a handle would each be \
              handed the other's sealed box"
         );
@@ -963,9 +989,9 @@ fn the_grants_travel_in_the_same_declaration_as_the_lanes() {
     let first = &rows[0]["rows"][0];
     assert_eq!(
         first["grant_id"],
-        json!("grant:example-provider-primary@member-alex/talky")
+        json!("grant:openrouter@member-alex/talky")
     );
-    assert_eq!(first["cred_ref"], json!("cred:example-provider:primary"));
+    assert_eq!(first["cred_ref"], json!("cred:openrouter"));
     assert_eq!(first["subject"], json!("member:alex"));
     assert_eq!(first["requester"], json!("agent:scribe/talky"));
     // The horizon is the wish's, never the renderer's.

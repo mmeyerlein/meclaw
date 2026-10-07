@@ -156,7 +156,10 @@ fn the_contract_is_one_result_lane_and_one_declared_reach() {
     let accepts: Vec<&str> = contract.accepts.iter().map(|l| l.route.as_str()).collect();
     assert_eq!(
         accepts,
-        vec!["tool_call", "in_build_result", "in_schemas"],
+        // GH #1061 (#801): `in_sealed` is web_search's key, answered by the
+        // member's broker over a v-lane -- a reply to a question this hive
+        // asked, not a fourth thing a caller has to know.
+        vec!["tool_call", "in_build_result", "in_schemas", "in_sealed"],
         "the tools hive takes a call in, takes the builder's answer back in, and — since \
          1.2.0 (GH #464) — takes a caller's declaration of the tool NAMES it uses. The \
          third lane is a question about this hive rather than a fourth thing a caller has \
@@ -167,7 +170,9 @@ fn the_contract_is_one_result_lane_and_one_declared_reach() {
     let emits: Vec<&str> = contract.emits.iter().map(|l| l.route.as_str()).collect();
     assert_eq!(
         emits,
-        vec!["tool_result", "build", "tool_schemas"],
+        // GH #1061 (#801): `credential_request` is web_search asking the
+        // member's broker for its key -- no result, a question of its own.
+        vec!["tool_result", "build", "tool_schemas", "credential_request"],
         "there is exactly ONE result lane, `tool_result` — whatever the tool was. A \
          second RESULT lane would put the choice of tool back into the caller's edge \
          table, which is the coupling this hive exists to remove; a tool's own refusal \

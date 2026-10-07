@@ -394,7 +394,7 @@ fn under_package_pressure(soft: i64) -> (Hive, String) {
         ("policy", "quality_cap", json!(1_000_000)),
         ("policy", "keep_rounds", json!(1)),
     ]);
-    let base = chrono::Utc::now() - chrono::Duration::seconds(30);
+    let base = backdated(PACKAGE_BACKDATE_S);
     let at = |s: i64| base + chrono::Duration::seconds(s);
     let big = format!("{}\nsecond line", "A".repeat(3000));
     h.row(at(1), "s", "r1", "user", &user("look twice"), 0);
@@ -434,7 +434,7 @@ fn a_package_rebuild_aims_at_the_share_of_input_soft() {
     if !shipped() {
         return;
     }
-    clear_of_midnight(120);
+    clear_of_midnight();
     let r1 = id_of(&tool_result(
         "c1",
         &format!("{}\nsecond line", "A".repeat(3000)),
@@ -448,6 +448,37 @@ fn a_package_rebuild_aims_at_the_share_of_input_soft() {
     // A soft limit of 100 000: an aim of 70 000, room enough.
     let (h, _) = under_package_pressure(100_000);
     assert_eq!(h.plan()["shrunk"], json!([]));
+}
+
+/// How far behind the clock `under_package_pressure` places its rows.
+const PACKAGE_BACKDATE_S: i64 = 30;
+const _: () = assert!(PACKAGE_BACKDATE_S <= LOOKBACK_S);
+
+/// GH #1062 -- the wait for midnight ended one second past it, and
+/// `under_package_pressure` then placed its rows 30 s back: at 23:59:31 of the
+/// day before. The strand gate of 2026-10-07 (~00:00Z) failed at
+/// `shrunk == [r1]` after 120.7 s, a 120 s wait and a run of a few seconds.
+/// For every second of the day: after `clear_of_midnight`'s wait, the rows
+/// from 30 s back to the end of the run lie on one UTC day.
+#[test]
+fn the_midnight_wait_covers_the_package_backdate() {
+    const DAY: i64 = 86_400;
+    for since in 0..DAY {
+        let wait = midnight_wait_s(since, LOOKBACK_S, RUN_AHEAD_S);
+        let t = (since + wait).rem_euclid(DAY);
+        assert!(
+            t >= PACKAGE_BACKDATE_S && t + RUN_AHEAD_S < DAY,
+            "at {since} s past midnight a wait of {wait} s lands at {t} s: the rows \
+             {PACKAGE_BACKDATE_S} s back fall on the day before"
+        );
+    }
+}
+
+/// A backdate past what `clear_of_midnight` waits for is refused, not placed.
+#[test]
+#[should_panic(expected = "outside the 60 s clear_of_midnight waits for")]
+fn a_backdate_past_the_lookback_is_refused() {
+    let _ = backdated(LOOKBACK_S + 1);
 }
 
 fn id_of(el: &Value) -> String {

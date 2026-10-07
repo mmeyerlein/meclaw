@@ -729,26 +729,61 @@ impl LongRunningCell for WebCell {
             // it into a `Touched` that also names slots would hide it.
             let mut merged_root = false;
 
+            // GH #1030: the database legs go to the database in ONE call and
+            // ONE transaction (`ops::apply_all`), not one trip to the blocking
+            // pool and one commit per leg — those two were ≈ 85 % of a bundle
+            // of 1 600 updates (profile in `tests/gh1030_web_bundle_cost.rs`).
+            // `viewers` is not the database's and is answered below, in its
+            // place among the legs.
+            let mut ids = Vec::with_capacity(calls.len());
+            let mut is_viewers = Vec::with_capacity(calls.len());
+            let mut db_legs = Vec::with_capacity(calls.len());
             for (args, id) in calls {
-                let op_started = std::time::Instant::now();
-                let (outcome, touched) =
-                    if args.get("op").and_then(Value::as_str) == Some(ops::VIEWERS_OP) {
-                        // GH #1006: read-only, and not the database's — the
-                        // counters live in the I/O half's viewer table, so
-                        // the handler asks over the push channel and waits
-                        // for the answer instead of taking that half's lock.
-                        // A closed channel (the I/O half is gone) is no
-                        // viewers, not an error.
-                        let (respond, rows) = tokio::sync::oneshot::channel();
-                        let _ = self.push_tx.send(WebReconfig::Viewers { respond }).await;
-                        let rows = rows.await.unwrap_or_default();
+                let viewers = args.get("op").and_then(Value::as_str) == Some(ops::VIEWERS_OP);
+                if !viewers {
+                    db_legs.push(args);
+                }
+                is_viewers.push(viewers);
+                ids.push(id);
+            }
+            let mut applied = if db_legs.is_empty() {
+                Vec::new()
+            } else {
+                db.call(move |conn| ops::apply_all(conn, &db_legs)).await
+            }
+            .into_iter();
+
+            for (viewers, id) in is_viewers.into_iter().zip(ids) {
+                let (outcome, touched, dur) = if viewers {
+                    let op_started = std::time::Instant::now();
+                    // GH #1006: read-only, and not the database's — the
+                    // counters live in the I/O half's viewer table, so the
+                    // handler asks over the push channel and waits for the
+                    // answer instead of taking that half's lock. A closed
+                    // channel (the I/O half is gone) is no viewers, not an
+                    // error.
+                    let (respond, rows) = tokio::sync::oneshot::channel();
+                    let _ = self.push_tx.send(WebReconfig::Viewers { respond }).await;
+                    let rows = rows.await.unwrap_or_default();
+                    (
+                        OpOutcome::read(ops::VIEWERS_OP, json!({ "viewers": rows })),
+                        ops::Touched::default(),
+                        op_started.elapsed().as_millis() as i64,
+                    )
+                } else {
+                    // `apply_all` answers every leg it was given, in order.
+                    applied.next().unwrap_or_else(|| {
                         (
-                            OpOutcome::read(ops::VIEWERS_OP, json!({ "viewers": rows })),
+                            OpOutcome::refused(
+                                "unknown",
+                                "invalid_input",
+                                "the leg was not applied",
+                            ),
                             ops::Touched::default(),
+                            0,
                         )
-                    } else {
-                        db.call(move |conn| ops::apply(conn, &args)).await
-                    };
+                    })
+                };
 
                 // One diff per write for a SINGLE call, immediately. A bundle
                 // pushes once, after the loop.
@@ -781,7 +816,6 @@ impl LongRunningCell for WebCell {
                     }
                 }
 
-                let dur = op_started.elapsed().as_millis() as i64;
                 if bundle {
                     legs.push(BundleLeg::from_outcome(
                         &outcome,

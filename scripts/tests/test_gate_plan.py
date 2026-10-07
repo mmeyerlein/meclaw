@@ -89,6 +89,30 @@ class Classify(unittest.TestCase):
             "binary_id(=meclaw-cells::reads_the_doc)")
         self.assertTrue(st["tests"].cargo)
 
+    def test_the_slow_lock_follows_the_tests_station(self):
+        """GH #1046: wherever nextest runs, the slow lock reads its times right
+        after it -- and nowhere else, and not in ci, where `tests` does not run."""
+        names = [s.name for s in gp.plan(["crates/meclaw-cells/src/lib.rs"],
+                                         "strand", repo=None)]
+        self.assertIn("tests", names)
+        self.assertEqual(names[names.index("tests") + 1], "slow-tests")
+        st = by_name(gp.plan(["crates/meclaw-cells/src/lib.rs"], "strand", repo=None))
+        self.assertEqual(st["slow-tests"].cmds, [["python3", "scripts/slow_tests.py"]])
+        self.assertTrue(st["slow-tests"].run)
+        ci = by_name(gp.plan(["crates/meclaw-cells/src/lib.rs"], "ci", repo=None))
+        self.assertFalse(ci["slow-tests"].run)
+        docs = by_name(gp.plan(["README.md"], "strand", repo=None))
+        self.assertEqual("tests" in docs, "slow-tests" in docs)
+
+    def test_the_station_table_names_the_slow_lock(self):
+        """The docstring of `gate_plan.py` is THE station table (AGENTS.md,
+        Gates und Tiers); a station missing there is a station nobody looks up
+        (review I2 of GH #1046)."""
+        rows = [ln for ln in gp.__doc__.splitlines()
+                if ln.startswith("    slow-tests ")]
+        self.assertEqual(len(rows), 1, "no `slow-tests` row in the station table")
+        self.assertIn("right after `tests`", rows[0])
+
     def test_rule_8_covers_every_path_outside_crates(self):
         """Workflows, plans fixtures and prose all have readers."""
         repo = reader_repo(self, {
@@ -1258,6 +1282,7 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_precheck",
             "scripts.tests.test_display_sync",
             "scripts.tests.test_nextest_quarantine",
+            "scripts.tests.test_slow_tests",
             "scripts.tests.test_roadmap_anchors"]])
 
     def test_the_quarantine_config_is_gate_infrastructure(self):
@@ -1913,6 +1938,27 @@ class IgnoredOnlyBinariesAreNoTarget(unittest.TestCase):
         self.assertEqual(
             gp.test_filter(["scripts/test-tier.sh"], "ci", repo=repo),
             " + ".join("binary_id(=meclaw-cells::%s)" % s for s in sorted(doubtful)))
+
+    def test_an_expression_macro_in_a_test_body_is_no_doubt(self):
+        """`tokio::select! { .. }` is an expression, it never makes a test
+        item: an ignored-only binary that uses it still runs 0 tests. Taken as
+        doubt, `gh1004_viewport_event_measure` (one `#[ignore]` test, a
+        `select!` in its body, `scripts/strand.sh` in its doc) stayed the one
+        target of the `tests` station for every `strand.sh` diff, and nextest
+        ended RED on "no tests to run" (GH #1053 strand gate, 2026-10-07)."""
+        repo = reader_repo(self, {
+            "measure": ('// run with scripts/test-tier.sh\n'
+                        '#[tokio::test]\n#[ignore = "wall clock"]\nasync fn m() {\n'
+                        '    tokio::select! {\n        _ = a => {}\n    }\n'
+                        '    futures::join! { a, b };\n}\n'),
+            "normal": "// scripts/test-tier.sh\n#[test]\nfn t() {}\n"})
+        self.assertEqual(
+            gp.test_filter(["scripts/test-tier.sh"], "ci", repo=repo),
+            "binary_id(=meclaw-cells::normal)")
+
+    def test_the_real_tree_does_not_select_the_viewport_measure(self):
+        expr = gp.test_filter(["scripts/strand.sh"], "ci") or ""
+        self.assertNotIn("gh1004_viewport_event_measure", expr)
 
     def test_the_counter_parser(self):
         self.assertEqual(gp._test_counts(IGNORED_ONLY), (1, 0))

@@ -73,9 +73,17 @@ fn the_reach_is_declared_once_and_the_result_lane_stays_alone() {
         1,
         "one result lane, whatever the tool was"
     );
+    // GH #1061 (#801): the fourth is `credential_request`, web_search asking
+    // the member's broker for its sealed key -- its argument is in the
+    // contract (`because`), and it is no result.
+    assert_eq!(
+        emits.iter().filter(|r| *r == "credential_request").count(),
+        1,
+        "the key ask is one lane: {emits:?}"
+    );
     assert_eq!(
         emits.len(),
-        3,
+        4,
         "the surface emits a result, reaches once, and — since GH #464 — hands out its own \
          declarations. A FOURTH outward lane needs its own argument, in this contract, \
          before it exists in an edge: {emits:?}"

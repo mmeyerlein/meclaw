@@ -248,6 +248,19 @@ enum RelayCmd {
     Pause(oneshot::Sender<()>),
 }
 
+/// GH #1022 -- the relay's own account of the moment it went silent: which
+/// branch stopped it (`channel`: it forwarded the read's labelled beat;
+/// `slot`: the label reached the slot because the channel was full; `pause`:
+/// the test stopped it), when, and how many beats it had forwarded by then.
+/// The catch lock prints it next to every trip the supervisor reported, so the
+/// next miss names its moment instead of `Elapsed(())`.
+#[derive(Debug)]
+struct Quiet {
+    via: &'static str,
+    at: tokio::time::Instant,
+    forwarded: u64,
+}
+
 /// The relay of halves 2 and 3: forwards the colony's real beats to the
 /// supervisor and goes silent for good when the read has declared itself —
 /// seen on the channel OR in the label slot, because under load the channel
@@ -259,20 +272,22 @@ fn spawn_relay(
     relay_tx: mpsc::Sender<Beat>,
     mut slot: LabelSlotReader,
     mut cmd_rx: mpsc::Receiver<RelayCmd>,
+    quiet_tx: oneshot::Sender<Quiet>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        loop {
+        let mut forwarded: u64 = 0;
+        let via = loop {
             tokio::select! {
                 biased;
                 cmd = cmd_rx.recv() => {
                     if let Some(RelayCmd::Pause(ack)) = cmd {
                         let _ = ack.send(());
                     }
-                    break;
+                    break "pause";
                 }
                 label = slot.changed() => {
                     if label.is_some_and(|w| w.as_str() == LABEL) {
-                        break;
+                        break "slot";
                     }
                 }
                 b = hb_rx.recv() => {
@@ -281,12 +296,18 @@ fn spawn_relay(
                     if relay_tx.send(b).await.is_err() {
                         return;
                     }
+                    forwarded += 1;
                     if inside_the_read {
-                        break;
+                        break "channel";
                     }
                 }
             }
-        }
+        };
+        let _ = quiet_tx.send(Quiet {
+            via,
+            at: tokio::time::Instant::now(),
+            forwarded,
+        });
         // Silent from here: what a read that does not return looks like from
         // outside. Both channels stay open until the test aborts the relay.
         let _hold = (hb_rx, relay_tx);
@@ -305,17 +326,62 @@ fn spawn_relay(
 /// longer fails the test, because under `LogOnly` follow-up trips are normal
 /// (GH #748). The claim that stays is the positive one: a trip naming the read
 /// arrives within 30 s.
-async fn trip_naming_the_read(trip_rx: &mut mpsc::Receiver<WatchdogTrip>) -> WatchdogTrip {
-    tokio::time::timeout(Duration::from_secs(30), async {
+async fn trip_naming_the_read(rig: &mut Rig, read_at: tokio::time::Instant) -> WatchdogTrip {
+    // GH #1022 catch lock: every trip passed over, with its arrival after the
+    // read, and the relay's silence -- printed on a pass as the measurement
+    // (`named trip after N ms` against window and budget) and on a miss as the
+    // finding, so the next occurrence carries its data instead of `Elapsed(())`.
+    let mut passed: Vec<String> = Vec::new();
+    let named = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let trip = trip_rx.recv().await.expect("the supervisor reports");
+            let trip = rig.trip_rx.recv().await.expect("the supervisor reports");
             if trip.work_item.as_ref().map(|w| w.as_str()) == Some(LABEL) {
                 return trip;
             }
+            passed.push(format!(
+                "+{} ms {:?} silent {} ms beats {}",
+                read_at.elapsed().as_millis(),
+                trip.work_item.as_ref().map(|w| w.as_str().to_owned()),
+                trip.silent_for.as_millis(),
+                trip.beats_seen
+            ));
         }
     })
-    .await
-    .expect("a loop that stopped talking inside a declared read must trip under its name")
+    .await;
+    let quiet = match rig.quiet_rx.try_recv() {
+        Ok(q) => format!(
+            "relay silent via {} at {:+} ms from the read, {} beats forwarded",
+            q.via,
+            q.at.saturating_duration_since(read_at).as_millis() as i128
+                - read_at.saturating_duration_since(q.at).as_millis() as i128,
+            q.forwarded
+        ),
+        Err(_) => "relay never went silent".to_owned(),
+    };
+    let budget = |t: &WatchdogTrip| {
+        (
+            t.nominal_window().as_millis(),
+            t.work_item_budget().as_millis(),
+        )
+    };
+    match named {
+        Ok(trip) => {
+            let (window, items) = budget(&trip);
+            eprintln!(
+                "GH #1022 measure: named trip after {} ms (window {window} ms, work-item budget \
+                 {items} ms); {quiet}; {} trips passed over",
+                read_at.elapsed().as_millis(),
+                passed.len()
+            );
+            trip
+        }
+        Err(_) => panic!(
+            "a loop that stopped talking inside a declared read must trip under its name: \
+             no named trip within 30 s (GH #1022); {quiet}; {} trips passed over: {:?}",
+            passed.len(),
+            passed.iter().take(12).collect::<Vec<_>>()
+        ),
+    }
 }
 
 fn assert_named_read_trip(trip: &WatchdogTrip) {
@@ -343,6 +409,7 @@ struct Rig {
     hb_tx: mpsc::Sender<Beat>,
     trip_rx: mpsc::Receiver<WatchdogTrip>,
     cmd_tx: mpsc::Sender<RelayCmd>,
+    quiet_rx: oneshot::Receiver<Quiet>,
     relay: tokio::task::JoinHandle<()>,
     watchdog: tokio::task::JoinHandle<()>,
     _td: tempfile::TempDir,
@@ -370,7 +437,8 @@ async fn rig(period_ms: u64) -> Rig {
     let (trip_tx, trip_rx) = mpsc::channel::<WatchdogTrip>(64);
     let (armed_tx, armed_rx) = oneshot::channel::<()>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<RelayCmd>(1);
-    let relay = spawn_relay(hb_rx, relay_tx, reader.observe(), cmd_rx);
+    let (quiet_tx, quiet_rx) = oneshot::channel::<Quiet>();
+    let relay = spawn_relay(hb_rx, relay_tx, reader.observe(), cmd_rx, quiet_tx);
     let watchdog = tokio::spawn(meclaw_colony::watchdog::run_watchdog_with_label_slot(
         relay_rx,
         trip_tx,
@@ -398,6 +466,7 @@ async fn rig(period_ms: u64) -> Rig {
         hb_tx,
         trip_rx,
         cmd_tx,
+        quiet_rx,
         relay,
         watchdog,
         _td: td,
@@ -430,10 +499,11 @@ impl Rig {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_trip_inside_a_read_names_the_endpoint() {
     let mut rig = rig(50).await;
+    let read_at = tokio::time::Instant::now();
     emit_read(&rig.outputs_tx).await;
     let _ = tokio::time::timeout(Duration::from_secs(30), rig.stub.rx.recv()).await;
 
-    let trip = trip_naming_the_read(&mut rig.trip_rx).await;
+    let trip = trip_naming_the_read(&mut rig, read_at).await;
     assert_named_read_trip(&trip);
     rig.finish().await;
 }
@@ -461,10 +531,11 @@ async fn a_trip_inside_a_read_names_the_endpoint_under_a_full_channel() {
     while rig.hb_tx.try_send(Beat::Parked).is_ok() {}
     assert_eq!(rig.hb_tx.capacity(), 0, "the heartbeat channel is full");
 
+    let read_at = tokio::time::Instant::now();
     emit_read(&rig.outputs_tx).await;
     let _ = tokio::time::timeout(Duration::from_secs(30), rig.stub.rx.recv()).await;
 
-    let trip = trip_naming_the_read(&mut rig.trip_rx).await;
+    let trip = trip_naming_the_read(&mut rig, read_at).await;
     assert_named_read_trip(&trip);
     rig.finish().await;
 }

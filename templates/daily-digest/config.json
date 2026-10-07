@@ -26,6 +26,10 @@
         {
           "route": "answer",
           "because": "the one answer to an `in_read`, with the asker's context, so the edge that asked can take it back; `op` and `op_id` mirrored, every digest with the round it was made for"
+        },
+        {
+          "route": "error",
+          "because": "a failure of `./access`, the broker that hands this template's cells their credentials sealed (GH #801): a refused or failed credential round. Which cell inside produced it is not the caller's business; a parent that drains nothing loses every refusal"
         }
       ]
     },
@@ -129,6 +133,42 @@
               "shelf_origin",
               "digest_origin",
               "digest_round"
+            ]
+          }
+        },
+        {
+          "from": "./notifier",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:daily-digest/notifier'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": "./notifier",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:telegram-bot@template-daily-digest/notifier'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "digest_origin",
+              "digest_round",
+              "shelf_op_id",
+              "shelf_origin"
             ]
           }
         }

@@ -1,4 +1,4 @@
-# `tools@1.4.5`
+# `tools@1.4.6`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -514,21 +514,21 @@ gone ([#553](https://github.com/mmeyerlein/meclaw/issues/553)) -- see
 
 ## The environment surface
 
-`template.json`'s `requires.env` declares the two tokens the `web_search` occupant binds,
-and says which value each one fills:
+`template.json`'s `requires.env` declares the token the `web_search` occupant binds:
 
 | key | binds | required |
 |---|---|---|
 | `SEARCH_ENDPOINT` | `web_search`'s `params.endpoint`, written `${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}` | no |
-| `SEARCH_API_KEY` | `web_search`'s `params.api_key`, written `${SEARCH_API_KEY:-}` | no |
 
-Neither is required, and that is a decision worth stating rather than leaving to be
-inferred. Both tokens carry a `:-` default, so an instantiation without them succeeds --
-and it has to: an assistant that wants the shell and the fetcher must not be refused over a
-search endpoint it will never call. `SEARCH_API_KEY` in particular is optional in the
-occupant's own contract (`contract.settings.api_key`: empty means no `Authorization`
-header, and the cell queries anonymously), so requiring it here would contradict the cell it
-configures.
+It is not required: an assistant that wants the shell and the fetcher must not be refused
+over a search endpoint it will never call.
+
+**The search key is optional, and it is a credential, not a token** (#801). `web_search`
+ships with `credential_grant_id` empty and queries anonymously. For an endpoint that wants a
+bearer token, deposit it (`meclaw --root <root> --vault <access>/vault --vault-add cred:search`,
+on stdin), grant it to `web_search`, set `credential_grant_id` to that grant at instantiation
+and draw the two edges to the access hive (ask on `credential_request`, answer on the
+broker's `ack` for `vault.deliver`). The vault must be able to unlock itself: `access/vault` `key_source` `systemd-cred` for a unit, `plainfile` for a local run.
 
 What the declaration buys instead is that a builder learns this template's environment
 surface by **reading** it. The cost is stated too: unset, `SEARCH_ENDPOINT` points the

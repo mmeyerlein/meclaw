@@ -547,6 +547,9 @@ fn label(event: &VoiceEvent) -> &'static str {
         VoiceEvent::LiveTick { .. } => "LiveTick",
         VoiceEvent::DuplexFailed { .. } => "DuplexFailed",
         VoiceEvent::Renewed { .. } => "Renewed",
+        // GH #1059: the I/O half's credential clock (a vaulted slot only;
+        // nothing in this file vaults one). Exhaustive on purpose.
+        VoiceEvent::CredentialRoundExpired { .. } => "CredentialRoundExpired",
     }
 }
 

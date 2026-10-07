@@ -1,4 +1,4 @@
-# `builder@1.26.21`
+# `builder@1.26.26`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -448,6 +448,7 @@ on a `channel` (§ *A round is provenance*).
 | — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its door. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the mount*) |
 | `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration* |
 | `credential` | optional, `install_app` (the presenter) | the same object for an app whose template has a cell that spends a provider key -- today the presenter's `decide` ([#976](https://github.com/mmeyerlein/meclaw/issues/976)): an EMPTY `api_key` and `credential_grant_id` on that cell (`override_params`), two v-lanes between it and the member's `./access` (requester `app:<app>/<cell>`, handle `grant:<cred tail>@<subject>/<app>-<cell>`) behind the app's own edges, and the grant with its birth event in `seed_rows`. The list is the TEMPLATE's: a `credential` for an app whose template is not on it, or whose name is not its template's (`presenter` grown from another template), is refused as `app_declaration_invalid` on the field `credential` |
+| `credential` | optional, `channel` (`voice`, `telegram-connector`) | the same object for a channel whose cell spends a key ([#1061](https://github.com/mmeyerlein/meclaw/issues/1061)): `stt_cred_ref`, `tts_cred_ref`, `duplex_cred_ref` for `voice`, `bot_cred_ref` (or plain `cred_ref`) for the Telegram connector, beside `subject` and `expires_at`. One ask v-lane from the cell to the member's `./access` (requester `agent:<channel>/channel`), one answer per handle, the grants in `seed_rows`, the declaration at the member; the ingress no longer carries the cell's `credential_request` as a turn. See § *A channel that spends a key asks the same broker* |
 | `door` | optional, `assistant` | grow the generation as its **member's door**: one default edge more, from the container into it, on `in_turn` only, stamping `context.assistant` with its name — so a turn that names no agent reaches it instead of dying at the container as `hive_no_route`. One door per member is a rule of the wish, not checked here. A value that is not a boolean is refused as `door_invalid`; on any other level it is refused as `door_level_invalid`; see § *The member's door is one default edge* |
 
 ### A member grows a screen and an app, and the OS hands out the mount
@@ -465,7 +466,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.5",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.6",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.0"}], "…": "…"}}]}
@@ -646,7 +647,7 @@ provider credential lives in the member's own `access`, and each brain **asks**
 for it over a v-lane
 ([#560](https://github.com/mmeyerlein/meclaw/issues/560)). `credential` renders
 the form `templates/member/README.md` § *The credential v-lanes* publishes and
-`examples/organism/grow-credentials.json` carries — two edges per brain, both
+`examples/organism/grow-assistant.json` carries — two edges per brain, both
 naming the lane they carry, drawn at the member's own scope because that is
 where the lowest common ancestor of a brain and the broker is.
 
@@ -678,9 +679,11 @@ switches at once and it is still **one** declaration: one node named
 `assistants/<generation>`, one scope, and every edge of both roads behind the
 level's own.
 
-`examples/organism/grow-credentials.json` stays what it always was and is still
-the byte truth of these four edges — applied on its own it wires a generation
-that already **stands**, which is a legitimate operation of its own.
+`examples/organism/grow-assistant.json` is that one declaration, rendered for
+the credentialled wish and byte for byte the recipe's output but for the render
+stamps: since [#1061](https://github.com/mmeyerlein/meclaw/issues/1061) the
+shipped generation holds no key of its own, and there is no separate credential
+file to apply after it.
 
 The grant **handle** is built rather than asked for:
 `grant:<cred tail>@<subject>/<consumer>`, one per consumer, because the answer
@@ -696,6 +699,23 @@ And the empty `api_key` on both brains is **the switch, not tidiness**. A brain
 asks for a credential only while it holds none, and the key in its config counts
 as one; both params are immutable, so both are set where the generation is grown
 or the repair is a new generation.
+
+### A channel that spends a key asks the same broker
+
+Since [#1061](https://github.com/mmeyerlein/meclaw/issues/1061) a `voice` cell
+(recogniser, synthesiser or one duplex provider) and a `telegram-connector` (the
+bot token) hold no key either: a channel grown with `credential` gets the grant
+rows, one ask v-lane, one answer per handle and the handles in the same
+declaration, which stands at the member like an assistant's. `slack-agent` is
+not on that list: it brings its own broker, grants and edges inside its tree.
+
+`override_params` replaces a block **whole** (the mutation door merges top-level
+keys and nothing below), so a `voice` wish that names no `stt` block keeps the
+template's shipped handle (`grant:deepgram@template-voice/stt`) and the grant is
+seeded under it; a wish that names the block gets a handle of its own,
+`grant:<cred tail>@<subject>/<channel>-<kind>`, so two voice channels of one
+member never share a sealed box. `duplex` ships null, so a `duplex_cred_ref`
+without the block is refused as `app_declaration_invalid`, naming the field.
 
 ### A round is provenance, and provenance is not derived
 
@@ -1699,7 +1719,7 @@ no.
 |---|---|
 | `MODEL_BUILDER` | the model the composer asks |
 | `LOCAL_LLM_BASE_URL` | the OpenAI-shaped endpoint it asks at |
-| `LOCAL_LLM_API_KEY` | the credential, if the endpoint wants one — empty means absent, and no `Authorization` header is sent (GH #271) |
+| *(none)* | the credential is no environment value (#801). As shipped `compose` holds no grant and sends no `Authorization` header (GH #271), which is right for a keyless local endpoint; an endpoint that wants a key gets it through `credential_grant_id` (`override_params`) and `meclaw --vault-add cred:local-llm` (stdin, unlockable vault) |
 
 The four settings of the `recipes` cell are params, set with `override_params` on the builder:
 `member_screen_template`, `member_app_template`, `screen_mount` (see *A member grows a screen*

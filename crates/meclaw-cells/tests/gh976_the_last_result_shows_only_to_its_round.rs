@@ -189,7 +189,7 @@ fn rendered_diff() -> Value {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "install_app", "request": "…",
                                          "params": {"scope": "/alex", "app": "presenter",
-                                                    "template": "presenter@1.2.6",
+                                                    "template": "presenter@1.2.7",
                                                     "screen": "display-main",
                                                     "generation": GENERATION,
                                                     "declaration": declaration,
@@ -247,6 +247,10 @@ fn templates_dir() -> tempfile::TempDir {
     let td = tempfile::tempdir().expect("a temporary directory");
     let root = td.path();
     copy_tree(&repo("templates/web"), &root.join("web"));
+    // GH #1061 (#801): both apps carry their own broker, a ref to `access@…`,
+    // so the library holds it; nothing here asks it (the cells that would
+    // spend a key are stand-ins), and a broker nobody asks never wakes.
+    copy_tree(&repo("templates/access"), &root.join("access"));
 
     let digest = root.join("daily-digest");
     copy_tree(&repo("templates/daily-digest"), &digest);

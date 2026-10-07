@@ -11,6 +11,13 @@
 //! task → `CellDied{death_kind: Backstop}` → `handle_cell_died` → RespawnFn → a
 //! fresh build → `spawn_count` bumps. Tests poll `wait_for_spawn_count(2)` as a
 //! positive "the cell restarted" receipt.
+//!
+//! `spawn_count` bumps at the START of a respawn: the build runs first, and the
+//! fresh stop wiring travels to the colony afterwards as its own inbox message
+//! (`renotify_stop_wiring`). A test that acts on the colony right after the bump
+//! can therefore overtake that message (GH #1073);
+//! [`set_respawn_rewire_pause_ms_for_test`] widens exactly that gap so a lock can
+//! hold it open on purpose.
 
 use crate::mocks::HangMockCell;
 use meclaw_colony::{
@@ -18,8 +25,27 @@ use meclaw_colony::{
 };
 use meclaw_core::{CellEmission, JsonValue, Message, Path};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+/// Test-only pause (ms) a respawn takes between building the new cell
+/// (`spawn_count` +1) and handing its stop wiring back to the colony. 0 = none,
+/// the shipped behaviour of every caller that never sets it.
+static RESPAWN_REWIRE_PAUSE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Hold the respawn's stop-wiring hand-back back by `ms` milliseconds.
+///
+/// GH #1073: under host load a test saw `spawn_count` reach 2 and sent its
+/// retry disconnect before the colony had queued `StopWiringRestored`; the retry
+/// met the `stop_wiring_unavailable` guard (one red in a full-suite gate, 20/20
+/// green alone). The pause turns that load-only window into a fixed one so a
+/// lock can prove the test waits for the event, not for the counter.
+/// Process-global like `set_term_timeout_ms_for_test`; a test that sets it
+/// serialises itself and sets it back to 0.
+pub fn set_respawn_rewire_pause_ms_for_test(ms: u64) {
+    RESPAWN_REWIRE_PAUSE_MS.store(ms, Ordering::SeqCst);
+}
 
 /// Factory that instantiates `HangMockCell` with an eager-opened cell.db.
 pub struct HangCellFactory {
@@ -114,6 +140,13 @@ impl CellFactory for HangCellFactory {
                     respawn_consumes.clone(),
                     respawn_bounds.clone(),
                 );
+                // The respawn runs inside the colony's await-free corridor, so
+                // the test-only pause blocks this thread, exactly as a slow
+                // build under load would (GH #1073).
+                let pause = RESPAWN_REWIRE_PAUSE_MS.load(Ordering::SeqCst);
+                if pause > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(pause));
+                }
                 meclaw_colony::renotify_stop_wiring(
                     &respawn_inbox_tx,
                     respawn_path.clone(),

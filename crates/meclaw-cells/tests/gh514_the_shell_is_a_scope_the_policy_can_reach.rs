@@ -327,8 +327,9 @@ fn rules_for(db: &std::path::Path, capability: &str) -> Vec<Value> {
 fn seeded_store(dir: &std::path::Path) -> Vec<Value> {
     let rows = seeded_rows().expect("guarded by the caller");
     let decl = resolved(dir, rows.iter().map(as_object).collect());
-    let applied = meclaw_colony::mutation::seed_rows::apply_entries(std::slice::from_ref(&decl))
-        .expect("the shipped seed satisfies the store's own schema");
+    let applied =
+        meclaw_colony::mutation::seed_rows::apply_entries(std::slice::from_ref(&decl), None)
+            .expect("the shipped seed satisfies the store's own schema");
     assert_eq!(applied[0].inserted, rows.len());
     rows
 }
@@ -354,8 +355,9 @@ fn the_switch_lands_through_the_mutation_door_and_re_applying_is_a_no_op() {
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].table, "policy");
     let entry = resolved(td.path(), parsed[0].rows.clone());
-    let applied = meclaw_colony::mutation::seed_rows::apply_entries(std::slice::from_ref(&entry))
-        .expect("the twin satisfies the same schema");
+    let applied =
+        meclaw_colony::mutation::seed_rows::apply_entries(std::slice::from_ref(&entry), None)
+            .expect("the twin satisfies the same schema");
     assert_eq!(applied[0].inserted, 1);
 
     // `seed_rows` INSERTS: the disabled original stays, and what the broker
@@ -378,8 +380,9 @@ fn the_switch_lands_through_the_mutation_door_and_re_applying_is_a_no_op() {
     // Applying the same manifest twice is a no-op — the property that makes a
     // build script re-runnable, and the reason the operation is idempotent by
     // DECLARATION rather than by key.
-    let again = meclaw_colony::mutation::seed_rows::apply_entries(std::slice::from_ref(&entry))
-        .expect("a second apply");
+    let again =
+        meclaw_colony::mutation::seed_rows::apply_entries(std::slice::from_ref(&entry), None)
+            .expect("a second apply");
     assert_eq!(again[0].inserted, 0);
     assert_eq!(again[0].already_present, 1);
 }
@@ -464,10 +467,10 @@ fn the_shell_scope_is_refused_as_shipped_and_permitted_once_the_row_is_on() {
     let decls = json_block_under(&readme(), SECTION);
     let parsed =
         meclaw_colony::mutation::seed_rows::parse_entries(&decls[0]["diff"]).expect("diff");
-    meclaw_colony::mutation::seed_rows::apply_entries(&[resolved(
-        td.path(),
-        parsed[0].rows.clone(),
-    )])
+    meclaw_colony::mutation::seed_rows::apply_entries(
+        &[resolved(td.path(), parsed[0].rows.clone())],
+        None,
+    )
     .expect("the switch");
     let on = rules_for(td.path(), "colony.mutate");
 
@@ -521,10 +524,10 @@ fn a_shell_scoped_registration_still_asks_code_author() {
     let decls = json_block_under(&readme(), SECTION);
     let parsed =
         meclaw_colony::mutation::seed_rows::parse_entries(&decls[0]["diff"]).expect("diff");
-    meclaw_colony::mutation::seed_rows::apply_entries(&[resolved(
-        td.path(),
-        parsed[0].rows.clone(),
-    )])
+    meclaw_colony::mutation::seed_rows::apply_entries(
+        &[resolved(td.path(), parsed[0].rows.clone())],
+        None,
+    )
     .expect("the switch");
 
     // `code.author.default` is scoped `/os/orgs` and ships OFF, so the enabled

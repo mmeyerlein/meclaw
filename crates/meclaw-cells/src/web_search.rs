@@ -28,7 +28,15 @@ pub struct WebSearchCell {
     /// `web_fetch`. It catches what the list cap cannot: a non-conforming
     /// pass-through body, or a conforming list with absurdly large snippets.
     pub max_bytes: usize,
+    /// GH #1060: the credential slot when `params.credential_grant_id` is set.
+    /// `None` = no grant: the cell runs anonymously or on its transition
+    /// literal (`api_key`), exactly as before.
+    pub(crate) grant: Option<crate::grant_slot::GrantSlot>,
 }
+
+/// GH #1060: the receipt code of a call whose credential did not arrive — the
+/// `llm` cell's code for the same situation.
+const ERR_CREDENTIAL_PENDING: &str = "credential_pending";
 
 #[derive(Debug)]
 pub(crate) struct WebSearchArgs {
@@ -71,6 +79,19 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
             let started = std::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
+            // GH #1060: a sealed delivery is the slot's, never a search. Only a
+            // cell on a grant looks: without one the body takes the path it
+            // always took (and fails there as an invalid tool call).
+            if let Some(slot) = &self.grant
+                && let Some(content) = crate::grant_slot::sealed_delivery(&msg)
+            {
+                if let crate::grant_slot::Delivered::Refused(detail) = slot.deliver(content).await {
+                    self.emit_error(sink, reply_target, ERR_INVALID_INPUT, detail, None, started)
+                        .await;
+                }
+                return;
+            }
+
             let (args, id) = match parse_tool_call_args(&msg) {
                 Ok(v) => v,
                 Err(e) => {
@@ -88,13 +109,47 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
                 }
             };
 
+            // GH #1060: on a grant the call waits for its credential (the
+            // first one of a round asks for it), then for one of the cell's
+            // `max_concurrency` run tickets — held until this call is done.
+            let (delivered, _ticket) = match &self.grant {
+                None => (None, None),
+                Some(slot) => match slot.credential(sink, &reply_target).await {
+                    Ok(secret) => {
+                        let ticket = slot.run_ticket().await;
+                        (Some(secret), ticket)
+                    }
+                    Err(detail) => {
+                        self.emit_error(
+                            sink,
+                            reply_target,
+                            ERR_CREDENTIAL_PENDING,
+                            detail,
+                            id,
+                            started,
+                        )
+                        .await;
+                        return;
+                    }
+                },
+            };
+
             let client = self.client.clone();
             let endpoint = self.endpoint.clone();
             let api_key = self.api_key.clone();
+            let grant = self.grant.as_ref().map(|s| s.grant().to_string());
             let query = parsed.query.clone();
             let result = with_external_timeout(self.external_timeout, async move {
                 let mut req = client.get(&endpoint).query(&[("q", &query)]);
-                if let Some(k) = api_key {
+                // OR-VG-4: on a grant only the delivered secret, never the
+                // literal; without one the literal, as before.
+                if let Some(k) = crate::credential::bearer(
+                    grant.as_deref(),
+                    delivered
+                        .as_ref()
+                        .map(crate::grant_slot::CallSecret::expose),
+                    api_key.as_deref(),
+                ) {
                     req = req.bearer_auth(k);
                 }
                 let resp = req.send().await?;
@@ -241,6 +296,9 @@ const DEFAULT_WEB_SEARCH_MAX_BYTES: usize = 256 * 1024;
 struct ParsedWebSearchParams {
     endpoint: String,
     api_key: Option<String>,
+    /// GH #1060: `credential_grant_id` / `credential_wait_max` /
+    /// `credential_wait_ms`, the `llm` cell's names and defaults.
+    credential: crate::credential::CredentialParams,
     external_timeout: Duration,
     max_concurrency: usize,
     max_results: usize,
@@ -312,14 +370,46 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedWebSearchPara
     if mb == 0 {
         return Err("params.max_bytes must be >= 1".into());
     }
+    let credential = crate::grant_slot::parse_credential_params(raw)?;
     Ok(ParsedWebSearchParams {
         endpoint: endpoint.to_string(),
         api_key,
+        credential,
         external_timeout: Duration::from_millis(ms),
         max_concurrency: mc,
         max_results: mr,
         max_bytes: mb,
     })
+}
+
+/// Build the cell from its parsed params. Spawns the credential slot when a
+/// grant is set, so it runs inside the runtime (spawn and respawn both do).
+fn build_cell(parsed: &ParsedWebSearchParams, client: reqwest::Client) -> WebSearchCell {
+    WebSearchCell {
+        client,
+        endpoint: parsed.endpoint.clone(),
+        api_key: parsed.api_key.clone(),
+        external_timeout: parsed.external_timeout,
+        max_concurrency: parsed.max_concurrency,
+        max_results: parsed.max_results,
+        max_bytes: parsed.max_bytes,
+        grant: crate::grant_slot::GrantSlot::spawn(
+            &parsed.credential,
+            parsed.max_concurrency,
+            "web_search",
+        ),
+    }
+}
+
+/// OR-VG-4: a literal `api_key` beside a grant is never used. Said once, at
+/// spawn, by name — never the value.
+fn warn_on_an_ignored_literal(parsed: &ParsedWebSearchParams) {
+    if crate::credential::literal_is_ignored(parsed.credential.grant(), parsed.api_key.as_deref()) {
+        tracing::warn!(
+            param = "api_key",
+            "web_search: credential_grant_id is set, the literal api_key is ignored"
+        );
+    }
 }
 
 impl CellFactory for WebSearchCellFactory {
@@ -344,26 +434,17 @@ impl CellFactory for WebSearchCellFactory {
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
         let parsed = parse_params_pure(&params)?;
-        let endpoint = parsed.endpoint;
-        let api_key = parsed.api_key;
-        let external_timeout = parsed.external_timeout;
-        let max_concurrency = parsed.max_concurrency;
-        let max_results = parsed.max_results;
-        let max_bytes = parsed.max_bytes;
+        warn_on_an_ignored_literal(&parsed);
+        // GH #1060: room for a parked round plus its box when on a grant
+        // (`grant_slot` module note); `max_concurrency` otherwise.
+        let dispatch_bound =
+            crate::grant_slot::dispatcher_bound(parsed.max_concurrency, &parsed.credential);
 
         let client = reqwest::Client::builder()
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
 
-        let cell = Arc::new(WebSearchCell {
-            client: client.clone(),
-            endpoint: endpoint.clone(),
-            api_key: api_key.clone(),
-            external_timeout,
-            max_concurrency,
-            max_results,
-            max_bytes,
-        });
+        let cell = Arc::new(build_cell(&parsed, client.clone()));
         let (tx, rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: initial dispatcher via
         // `build_stateless_task` (owns the peace-keep-alive; stateless → no
@@ -374,7 +455,7 @@ impl CellFactory for WebSearchCellFactory {
             rx,
             outputs_tx.clone(),
             cell,
-            max_concurrency,
+            dispatch_bound,
             message_timeout,
             Some(colony_inbox_tx.clone()),
             blob_store.clone(),
@@ -383,8 +464,6 @@ impl CellFactory for WebSearchCellFactory {
 
         let respawn_path = path.clone();
         let respawn_outputs_tx = outputs_tx.clone();
-        let respawn_endpoint = endpoint.clone();
-        let respawn_api_key = api_key.clone();
         let respawn_client = client.clone(); // Arc clone — no rebuild, no .expect()
         let respawn_blob = blob_store.clone();
         let respawn_inbox = colony_inbox_tx.clone();
@@ -392,15 +471,7 @@ impl CellFactory for WebSearchCellFactory {
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
         let respawn: RespawnFn = Box::new(move || {
-            let cell = Arc::new(WebSearchCell {
-                client: respawn_client.clone(),
-                endpoint: respawn_endpoint.clone(),
-                api_key: respawn_api_key.clone(),
-                external_timeout,
-                max_concurrency,
-                max_results,
-                max_bytes,
-            });
+            let cell = Arc::new(build_cell(&parsed, respawn_client.clone()));
             let (tx, rx) =
                 tokio::sync::mpsc::channel::<meclaw_core::Message>(respawn_mailbox_capacity);
             let p = respawn_path.clone();
@@ -419,7 +490,7 @@ impl CellFactory for WebSearchCellFactory {
                 rx,
                 o,
                 cell,
-                max_concurrency,
+                dispatch_bound,
                 message_timeout,
                 Some(respawn_inbox.clone()),
                 b,
@@ -461,22 +532,15 @@ impl CellFactory for WebSearchCellFactory {
         mailbox_capacity: usize,
     ) -> Option<RespawnFn> {
         let parsed = parse_params_pure(&params).ok()?;
-        let max_concurrency = parsed.max_concurrency;
+        let dispatch_bound =
+            crate::grant_slot::dispatcher_bound(parsed.max_concurrency, &parsed.credential);
         let client = reqwest::Client::builder().build().ok()?;
-        let cell = Arc::new(WebSearchCell {
-            client,
-            endpoint: parsed.endpoint,
-            api_key: parsed.api_key,
-            external_timeout: parsed.external_timeout,
-            max_concurrency,
-            max_results: parsed.max_results,
-            max_bytes: parsed.max_bytes,
-        });
+        let cell = Arc::new(build_cell(&parsed, client));
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
             path,
             outputs_tx,
             cell,
-            max_concurrency,
+            dispatch_bound,
             message_timeout,
             colony_inbox_tx,
             blob_store,
@@ -532,6 +596,7 @@ mod tests {
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
             max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            grant: None,
         };
 
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -580,6 +645,7 @@ mod tests {
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
             max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -631,6 +697,7 @@ mod tests {
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
             max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -786,6 +853,7 @@ mod tests {
             max_concurrency: 4,
             max_results: 2,
             max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -849,6 +917,7 @@ mod tests {
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
             max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -903,6 +972,7 @@ mod tests {
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
             max_bytes: 1000,
+            grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(

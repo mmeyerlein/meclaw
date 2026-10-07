@@ -3,7 +3,10 @@
 //! side polls Telegram in an endless loop. State is single-threaded in the
 //! handler sub-task (no mutex — phase-1 discipline).
 
-use crate::proxy::io::{ProxyEvent, ProxyReconfig, RunIoConfig, run_io};
+use crate::credential::CredentialSlots;
+use crate::proxy::io::{
+    CredentialWait, ProxyEvent, ProxyReconfig, RunIoConfig, run_io, wait_for_bot_token,
+};
 use crate::proxy::telegram::TelegramClient;
 use crate::proxy::typing::{TypingCadence, TypingKeepers};
 use meclaw_colony::{DbConn, LongRunningCell};
@@ -44,6 +47,22 @@ pub struct ProxyCell {
     /// bytes). `None` -- a cell built outside a colony -- turns every document
     /// into the fallback line `no_blob_store`.
     pub(crate) blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
+    /// GH #1059: the bot token comes sealed from the vault (`bot_token_grant_id`).
+    /// `None` = a literal `bot_token` (the one-release transition, OR-VG-4).
+    pub(crate) credential: Option<ProxyCredential>,
+}
+
+/// GH #1059: the grant of a connector whose bot token the vault delivers.
+/// Key pair and token live in RAM only, so every (re)start asks again.
+pub(crate) struct ProxyCredential {
+    /// `params.bot_token_grant_id`.
+    pub(crate) grant: String,
+    /// The slot of that grant. Nothing is ever parked in it: the I/O half
+    /// polls nothing before the box, and an outbound send before it is
+    /// answered `credential_pending` at once.
+    pub(crate) slots: CredentialSlots<()>,
+    /// The I/O half's waiting schedule.
+    pub(crate) wait: CredentialWait,
 }
 
 impl ProxyCell {
@@ -81,6 +100,102 @@ impl ProxyCell {
                 liveness: meclaw_colony::IoLivenessMark::disabled(),
             }),
             blob_store: None,
+            credential: None,
+        }
+    }
+
+    /// GH #1059: the bot token comes from the vault, sealed, under `grant`.
+    /// The cell asks in `on_start`; its I/O half sleeps — no poll, no
+    /// connection — until the box opened, and re-asks after every round that
+    /// ends without one (`wait`, doubling up to its ceiling). The client this
+    /// cell was built with must carry NO token (the factory passes `""`): a
+    /// literal next to a grant is never used, not even while the box is
+    /// missing (OR-VG-4, ruling 22.09.).
+    #[must_use]
+    pub fn with_credential(mut self, grant: &str, wait: CredentialWait) -> Self {
+        let on_expired: crate::credential::ExpiryFn<()> =
+            std::sync::Arc::new(|_, _| Box::pin(async {}));
+        self.credential = Some(ProxyCredential {
+            grant: grant.to_string(),
+            slots: CredentialSlots::new(
+                wait.wait_ms,
+                crate::credential::default_credential_wait_max(),
+                on_expired,
+            ),
+            wait,
+        });
+        self
+    }
+
+    /// The public recipient key of the bot-token question in flight
+    /// (tests/diagnosis; never a secret).
+    pub fn credential_recipient_hex(&self) -> Option<String> {
+        let c = self.credential.as_ref()?;
+        c.slots.recipient_hex(&c.grant)
+    }
+
+    /// GH #1059: ask the access hive for the bot token. Emitted towards
+    /// `emit_to` like every other source emission of this cell; the template's
+    /// edge on `hop.route == "credential_request"` decides where it goes.
+    async fn ask_for_bot_token(&mut self, sink: &OriginSink) {
+        let Some(c) = self.credential.as_mut() else {
+            return;
+        };
+        let content = match c.slots.request(&c.grant) {
+            Ok(content) => content,
+            Err(e) => {
+                tracing::error!(error = %e, "proxy: no random source for a credential request");
+                return;
+            }
+        };
+        tracing::info!(grant = %c.grant, "proxy: asking the vault for the bot token");
+        let _ = sink
+            .emit(meclaw_core::CellOutput {
+                target: self.emit_to.clone(),
+                content,
+            })
+            .await;
+    }
+
+    /// GH #1059: take a sealed delivery. Opened → the handler's client and the
+    /// I/O half get the token (the I/O starts polling). Not opened → the
+    /// connector stays asleep; its next round asks again. Never echoes a value.
+    async fn accept_bot_token(
+        &mut self,
+        content: &meclaw_core::serde_json::Value,
+        reconfig_tx: &mpsc::Sender<ProxyReconfig>,
+    ) {
+        let Some(c) = self.credential.as_mut() else {
+            tracing::warn!(
+                "proxy: a sealed box arrived, but this connector has no bot_token_grant_id — discarded"
+            );
+            return;
+        };
+        match c.slots.accept_sealed(content).await {
+            Ok(accepted) => {
+                let Some(bot_token) = c.slots.secret_handle(&accepted.grant) else {
+                    tracing::warn!(
+                        grant = %accepted.grant,
+                        "proxy: the sealed bot token opened empty — the connector stays asleep"
+                    );
+                    return;
+                };
+                tracing::info!(grant = %accepted.grant, "proxy: bot token received sealed and opened in RAM");
+                self.client = self.client.with_bot_token(bot_token.expose());
+                let _ = reconfig_tx
+                    .send(ProxyReconfig::Credential { bot_token })
+                    .await;
+            }
+            Err(refusal) => match refusal.detail() {
+                None => tracing::warn!(
+                    "proxy: a sealed box of an earlier credential round arrived late and was discarded"
+                ),
+                Some(detail) => tracing::warn!(
+                    %detail,
+                    "proxy: the sealed bot token was refused — the connector stays asleep and asks \
+                     again after the round's wait"
+                ),
+            },
         }
     }
 
@@ -114,6 +229,8 @@ impl ProxyCell {
 /// No mutex, no Arc.
 pub struct ProxyIo {
     pub(crate) cfg: RunIoConfig,
+    /// GH #1059: `Some` = sleep until the bot token arrives (a grant's connector).
+    pub(crate) wait: Option<CredentialWait>,
 }
 
 impl LongRunningCell for ProxyCell {
@@ -124,6 +241,7 @@ impl LongRunningCell for ProxyCell {
     fn split_io(&mut self) -> Self::Io {
         ProxyIo {
             cfg: self.initial_io_cfg.take().expect("split_io called twice"),
+            wait: self.credential.as_ref().map(|c| c.wait),
         }
     }
 
@@ -145,7 +263,28 @@ impl LongRunningCell for ProxyCell {
         events_tx: mpsc::Sender<Self::Event>,
         reconfig_rx: mpsc::Receiver<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send {
-        run_io(io.cfg, events_tx, reconfig_rx)
+        async move {
+            let ProxyIo { mut cfg, wait } = io;
+            let mut reconfig_rx = reconfig_rx;
+            // GH #1059: a grant's connector polls nothing before its token.
+            if let Some(wait) = wait
+                && !wait_for_bot_token(&mut cfg, wait, &events_tx, &mut reconfig_rx).await
+            {
+                return; // handler gone → the cell tears down
+            }
+            run_io(cfg, events_tx, reconfig_rx).await;
+        }
+    }
+
+    /// GH #1059: a grant's connector asks for its bot token before anything
+    /// else; key pair and token are RAM-only, so a respawn asks again.
+    #[allow(clippy::manual_async_fn)]
+    fn on_start<'a>(
+        &'a mut self,
+        sink: &'a OriginSink,
+        _db: &'a mut DbConn,
+    ) -> impl Future<Output = ()> + Send + 'a {
+        async move { self.ask_for_bot_token(sink).await }
     }
 
     /// Inbound sink path (W4-W7, W12). Extracts `chat_id` from the message's
@@ -179,6 +318,13 @@ impl LongRunningCell for ProxyCell {
                     return;
                 }
             };
+
+            // GH #1059: the sealed bot token. Never touches `cell.db`, never
+            // answered with an emission.
+            if body_val.get("sealed").is_some() {
+                self.accept_bot_token(&body_val, reconfig_tx).await;
+                return;
+            }
 
             // β: params-update slot (config.md § Access l.20), handled FIRST.
             // Mutable: send_timeout_ms (path A), long_poll_*/base_url (path B → I/O
@@ -272,6 +418,20 @@ impl LongRunningCell for ProxyCell {
                 // Standalone params-update → done (no inbound send in this message).
                 return;
             }
+            // GH #1059: no token yet → nothing to send with. Answered at once:
+            // a reply that waited for the vault would only be a later failure.
+            if let Some(c) = &self.credential
+                && c.slots.secret(&c.grant).is_none()
+            {
+                crate::proxy::emit::emit_inbound_error(
+                    sink,
+                    &msg,
+                    "credential_pending",
+                    "the bot token has not arrived from the vault yet",
+                )
+                .await;
+                return;
+            }
             // 2. chat_id from the `context` compartment (standard header
             //    convention, overview § Standard header convention — `chat_id`
             //    lives in the persistent `context`; cell-types.md § proxy:
@@ -323,28 +483,32 @@ impl LongRunningCell for ProxyCell {
             //    deliveries, so this exact message may already have been sent.
             //    Book its id BEFORE the send (at-most-once, window in
             //    `proxy::consumed`): a human must never get the same answer
-            //    twice. A replay ends here silently — the original already went
-            //    out (pure sink), and its typing keeper was stopped then. A
-            //    failed booking does not send either: without the record the
-            //    send could be the second one.
+            //    twice. A replay sends nothing and answers as the original did
+            //    (GH #1043 review): silent after a confirmed send, the
+            //    original's `send_failed` after a failed one, `send_failed`
+            //    `unconfirmed` when the crash fell before the answer was
+            //    booked. A failed booking does not send either: without the
+            //    record the send could be the second one.
             let once_key = msg.id.to_string();
-            match db
+            let booked = db
                 .call(move |c| crate::proxy::consumed::book_once(c, &once_key))
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => return,
-                Err(e) => {
-                    self.typing.stop(chat_id);
-                    crate::proxy::emit::emit_inbound_error(
-                        sink,
-                        &msg,
-                        "send_failed",
-                        &format!("cell.db consumed record failed, not sent: {e}"),
-                    )
-                    .await;
-                    return;
+                .await;
+            let replay_detail = match booked {
+                Ok(crate::proxy::consumed::Booking::First) => None,
+                Ok(crate::proxy::consumed::Booking::Replay(prior)) => {
+                    use crate::proxy::consumed::{Prior, UNCONFIRMED_DETAIL};
+                    match prior {
+                        Prior::Sent => return,
+                        Prior::Failed(detail) => Some(detail),
+                        Prior::Unconfirmed => Some(UNCONFIRMED_DETAIL.to_string()),
+                    }
                 }
+                Err(e) => Some(format!("cell.db consumed record failed, not sent: {e}")),
+            };
+            if let Some(detail) = replay_detail {
+                self.typing.stop(chat_id);
+                crate::proxy::emit::emit_inbound_error(sink, &msg, "send_failed", &detail).await;
+                return;
             }
 
             // 5. sendMessage call (W7 A timeout via the client). Errors → T13.
@@ -355,17 +519,26 @@ impl LongRunningCell for ProxyCell {
             // the call, not before, is deliberate: the status should stand for
             // the whole time the send itself takes.
             self.typing.stop(chat_id);
-            match sent {
-                Ok(()) => {} // Pure sink: no emit on success.
-                Err(e) => {
-                    crate::proxy::emit::emit_inbound_error(
-                        sink,
-                        &msg,
-                        "send_failed",
-                        &format!("{e:?}"),
+            let failure = sent.err().map(|e| format!("{e:?}"));
+            // GH #1043 review: book the answer, so a replay answers like this.
+            // A booking that fails leaves the row unconfirmed, and its replay
+            // reports `unconfirmed` -- the honest answer without a record.
+            let once_key = msg.id.to_string();
+            let answer = failure.clone();
+            if let Err(e) = db
+                .call(move |c| {
+                    crate::proxy::consumed::settle(
+                        c,
+                        &once_key,
+                        answer.as_deref().map_or(Ok(()), Err),
                     )
-                    .await;
-                }
+                })
+                .await
+            {
+                tracing::warn!(error = %e, "proxy: booking the send's answer failed");
+            }
+            if let Some(detail) = failure {
+                crate::proxy::emit::emit_inbound_error(sink, &msg, "send_failed", &detail).await;
             }
         }
     }
@@ -389,6 +562,22 @@ impl LongRunningCell for ProxyCell {
             // cursor -- persisted like every other one, so a restart does not
             // fetch it again -- and emits nothing.
             let (update_id, chat_id, content) = match event {
+                // GH #1059: a round ended without a box → ask again, fresh
+                // recipient. A box that opened in between makes it moot.
+                ProxyEvent::CredentialRoundExpired { round, wait_ms } => {
+                    if let Some(c) = &self.credential
+                        && c.slots.secret(&c.grant).is_none()
+                    {
+                        tracing::warn!(
+                            round,
+                            wait_ms,
+                            grant = %c.grant,
+                            "proxy: no sealed bot token arrived in time — asking again"
+                        );
+                        self.ask_for_bot_token(sink).await;
+                    }
+                    return;
+                }
                 ProxyEvent::Skipped { update_id } => {
                     let next_offset = update_id + 1;
                     let _ = db

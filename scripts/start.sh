@@ -16,19 +16,27 @@
 #      the refusal out of the colony's own trace.
 #      meclaw-os (needs a key) -- seventeen cells, the shipped assistant. It
 #      sends one turn with `meclaw ask` and prints the answer.
-#      organism (needs a key) -- the meclaw-os shell, thirty-nine cells, plus a
-#      front door and a terminal. Nothing answers yet: an organisation, a member
-#      and an agent are the three declarations docs/getting-started.md walks
-#      through, and the run prints them.
+#      organism (no key asked) -- the meclaw-os shell, thirty-nine cells, plus
+#      a front door and a terminal. Nothing answers yet: an organisation, a
+#      member and an agent are the three declarations
+#      docs/getting-started.en.md walks through, and the run prints them. The
+#      member's brains take their key as a grant from that member's own vault,
+#      which exists only once the member is grown (#801), so the run writes
+#      <colony>/deposit-key.sh for afterwards: it asks for the key without
+#      echo, stops the daemon by its pid, seals the key into the vault and
+#      starts the daemon again.
 #   5. prints what is running, the API URL, the UI URL, how to stop it, and
 #      where the colony lives
 #
 # The key comes from the environment, or, when it is not there and a terminal
 # is, from a question. The answer is not echoed while it is typed. It is never
-# printed and it is written to exactly one file: the `.env` of the colony this
-# run creates, mode 0600. With no key and no terminal to ask on -- a pipeline,
-# a CI job, a cron line -- the run says how to set it and boots the keyless
-# colony instead.
+# printed and never written to a file: it goes on stdin into
+# `meclaw --vault-add cred:openrouter`, which seals it into the vault of the
+# colony this run creates, before that colony first boots (#801). The vault's
+# passphrase is a random one in a 0600 file NEXT TO the colony
+# (colonies/<name>.vault-key), and the vault opens itself from that file. With
+# no key and no terminal to ask on -- a pipeline, a CI job, a cron line -- the
+# run says how to set it and boots the keyless colony instead.
 #
 # POSIX sh, like install.sh: the one-liner runs under whatever /bin/sh the host
 # has. Needs curl or wget, tar, and sha256sum or shasum; the two example
@@ -40,7 +48,7 @@
 #                        and asks no question
 #   MECLAW_EXAMPLE       which colony to grow: hard-shell, meclaw-os or
 #                        organism (default meclaw-os with a key, hard-shell
-#                        without)
+#                        without; organism asks no key, see above)
 #   MECLAW_MODEL         the model the assistant answers with
 #                        (default openai/gpt-5.6-luna, any OpenRouter slug)
 #   MECLAW_VERSION       install this version instead of the latest (e.g. 0.33.0)
@@ -61,6 +69,10 @@ MECLAW_HOME="${MECLAW_HOME:-$HOME/.local/share/meclaw}"
 PORT_START="${MECLAW_PORT:-7777}"
 MODEL="${MECLAW_MODEL:-openai/gpt-5.6-luna}"
 KEY="${OPENROUTER_API_KEY:-}"
+# The key lives on in KEY, a shell variable nothing inherits; the exported
+# name goes now, before any child runs, so the daemon (and its
+# /proc/<pid>/environ) never carries it, in every flavour (GH #1061).
+unset OPENROUTER_API_KEY
 EXAMPLE="${MECLAW_EXAMPLE:-}"
 
 step=0
@@ -192,7 +204,12 @@ trap 'restore_tty; rm -rf "$tmp"' EXIT INT TERM
 # POSIX shell outright (dash does, and dash is /bin/sh on Debian).
 # ---------------------------------------------------------------------------
 
-if [ -z "$KEY" ] && ( : < /dev/tty ) 2> /dev/null; then
+if [ "$EXAMPLE" = organism ]; then
+    # The organism asks for nothing here: its key goes into a member's vault,
+    # and that vault exists only after the member is grown. deposit-key.sh,
+    # written at the end of this run, asks for it then (#801).
+    KEY=""
+elif [ -z "$KEY" ] && ( : < /dev/tty ) 2> /dev/null; then
     printf '\n' > /dev/tty
     printf 'meclaw grows its assistant with an OpenRouter key (https://openrouter.ai/keys).\n' > /dev/tty
     printf 'Paste one, or press Enter for the keyless colony.\n' > /dev/tty
@@ -344,13 +361,13 @@ case "$flavour" in
     meclaw-os)  seed=seed ;;
     # The organism starts from the seed that declares the shell: its root tree
     # carries a `cell.type: "ref"` marker naming meclaw-os, and the first boot
-    # grows it. The three declarations of docs/getting-started.md are then the
-    # levels below it, which is the order that page teaches.
+    # grows it. The three declarations of docs/getting-started.en.md are then
+    # the levels below it, which is the order that page teaches.
     organism)   seed="seed-ref" ;;
     *) die "MECLAW_EXAMPLE=${flavour} is not one of hard-shell, meclaw-os, organism." ;;
 esac
 
-if [ -z "$KEY" ] && [ "$flavour" != hard-shell ]; then
+if [ -z "$KEY" ] && [ "$flavour" = meclaw-os ]; then
     die "examples/${flavour} runs on a model, so it needs a provider key. Set OPENROUTER_API_KEY, or leave MECLAW_EXAMPLE unset for the keyless colony."
 fi
 
@@ -370,19 +387,32 @@ root="${MECLAW_HOME}/colonies/${flavour}-${stamp}"
 mkdir -p "${MECLAW_HOME}/colonies"
 cp -R "${EXAMPLES}/${flavour}/${seed}" "$root" || die "could not copy the ${flavour} ${seed} to ${root}."
 
-if [ -n "$KEY" ]; then
-    # The one file the key goes into. 0600 before the first byte is written.
-    #
-    # Which model names a declaration reads is the declaration's business, so
-    # the file carries every token the shipped ones ask for and gives them all
-    # the same model. MODEL_BRAIN is what examples/meclaw-os reads; the seven
-    # MODEL_* below are what the four levels of examples/organism read
-    # (assistant@2.6.0 takes the first three as ctx, memory-hive@3.3.0 the
-    # next three, a member's file-space the last), and a token with no value is refused as `env_var_missing`
-    # rather than committing a half-wired cell.
+vault_key=""
+if [ "$flavour" != hard-shell ]; then
+    # The key never touches a file (#801). A vault holds it, sealed under a
+    # passphrase this run makes up, and the passphrase lives in a 0600 file
+    # NEXT TO the colony -- outside the root, so a copy of the root is not a
+    # copy of the way into it. umask 077 before the first byte is written.
+    # Absolute, because the daemon resolves it from the colony's own env file.
+    # meclaw-os seals the key into its vault right here, before the first
+    # boot; the organism's vault belongs to a member grown later, so its
+    # deposit-key.sh does it then, from the same file.
+    vault_key="$(cd "${MECLAW_HOME}/colonies" && pwd)/${flavour}-${stamp}.vault-key"
     (
         umask 077
-        printf 'OPENROUTER_API_KEY=%s\n' "$KEY" > "${root}/.env"
+        dd if=/dev/urandom bs=32 count=1 2> /dev/null | od -An -tx1 | tr -d ' \n' > "$vault_key"
+        [ -s "$vault_key" ]
+    ) || die "could not write the vault passphrase file ${vault_key}"
+
+    # Non-secret tokens only: the key file's path (the checked-in vault, and
+    # the member vault examples/organism/grow-member.json sets up, read
+    # `key_file: ${MECLAW_VAULT_KEY_FILE:-}` and open themselves from it), and
+    # the model every MODEL_* token the shipped declarations ask for resolves
+    # to -- a token with no value is refused as `env_var_missing` rather than
+    # committing a half-wired cell.
+    (
+        umask 077
+        printf 'MECLAW_VAULT_KEY_FILE=%s\n' "$vault_key" > "${root}/.env"
         for token in MODEL_BRAIN MODEL_CORE MODEL_CORE_FAST MODEL_SURFACE \
                      MODEL_CLOSER MODEL_DIALECTIC MODEL_DREAMER MODEL_FILE_SPACE; do
             printf '%s=%s\n' "$token" "$MODEL" >> "${root}/.env"
@@ -390,10 +420,24 @@ if [ -n "$KEY" ]; then
     ) || die "could not write ${root}/.env"
 fi
 
+if [ "$flavour" = meclaw-os ]; then
+    # The cold deposit: the vault was never woken, so `--vault-add` lays its
+    # database down and seals the key into it (GH #1063). The key travels on
+    # stdin, never in argv, and nothing is running on this root yet.
+    printf '%s' "$KEY" | "$MECLAW" --root "$root" --vault /main/access/vault \
+        --vault-key-source plainfile --vault-key-file "$vault_key" \
+        --vault-add cred:openrouter > /dev/null \
+        || die "could not deposit the key into ${root}/main/access/vault (the message is above)."
+    KEY=""
+    say "WARN: the vault passphrase is a plain file (${vault_key}). For long-running use, put it in a systemd credential instead (vault key_source systemd-cred)."
+fi
+
 api="127.0.0.1:${port}"
 "$MECLAW" --root "$root" --templates "$TEMPLATES" --daemon --api "$api" \
     > "${root}/daemon.out" 2>&1 &
 pid=$!
+# deposit-key.sh stops the daemon by exactly this pid and writes the next one
+# here: never a process search by name, which would hit every other colony.
 printf '%s\n' "$pid" > "${root}/daemon.pid"
 
 # The very first start reads a 30 MB binary from cold disk and can stay silent
@@ -416,6 +460,141 @@ say "up after ${waited} s, pid ${pid}"
 # ---------------------------------------------------------------------------
 # 4. Grow, then use it.
 # ---------------------------------------------------------------------------
+
+# shq <string>  -> the string as one single-quoted shell word
+shq() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# The organism's second act, as a script of its own. Its member's vault exists
+# only after step 5 of docs/getting-started.en.md, while `--vault-add` refuses
+# a root a daemon holds -- so the deposit is: ask, stop, seal, start. Every
+# path is written in at generation time; the key is not, and never touches a
+# file, an argument or a child's environment.
+write_deposit_script() {
+    deposit="${root}/deposit-key.sh"
+    (
+        umask 077
+        {
+            printf '#!/bin/sh\n'
+            printf '# Written by meclaw start.sh for the colony below. Hands its member\n'
+            printf "# alex the provider key: asks for it on the terminal without echo,\n"
+            printf '# stops the daemon by the pid in daemon.pid, seals the key into\n'
+            printf "# alex's vault (stdin, never an argument), and starts the daemon again.\n"
+            printf 'set -eu\n\n'
+            printf 'MECLAW=%s\n' "$(shq "$MECLAW")"
+            printf 'ROOT=%s\n' "$(shq "$root")"
+            printf 'TEMPLATES=%s\n' "$(shq "$TEMPLATES")"
+            printf 'API=%s\n' "$(shq "$api")"
+            printf 'VAULT_KEY_FILE=%s\n' "$(shq "$vault_key")"
+            printf '%s\n' "VAULT=/main/os/orgs/acme/members/alex/access/vault"
+            printf '%s\n' "CRED=cred:openrouter"
+            cat <<'DEPOSIT'
+
+# The key is read from the terminal, never from the environment; a provider
+# key the caller's shell exports must not reach the daemon started below.
+unset OPENROUTER_API_KEY
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+if command -v curl > /dev/null 2>&1; then
+    healthy() { curl -fsS "http://${API}/health" > /dev/null 2>&1; }
+elif command -v wget > /dev/null 2>&1; then
+    healthy() { wget -qO /dev/null "http://${API}/health" > /dev/null 2>&1; }
+else
+    die "this script needs 'curl' or 'wget', and found neither."
+fi
+
+# The key is read from the terminal and from nowhere else: not an argument
+# (ps, shell history), not stdin (a pipe would have to come from somewhere).
+# The open is tried in a subshell, because a failed redirection ends a
+# non-interactive POSIX shell outright.
+( : < /dev/tty ) 2> /dev/null || die "no terminal to ask on. Run it from an interactive shell: sh $0"
+command -v stty > /dev/null 2>&1 || die "this script needs 'stty' to read the key without echo."
+
+STTY_SAVED=""
+restore_tty() {
+    if [ -n "$STTY_SAVED" ]; then
+        stty "$STTY_SAVED" < /dev/tty 2> /dev/null || true
+        STTY_SAVED=""
+    fi
+}
+trap 'restore_tty' EXIT
+trap 'restore_tty; exit 130' INT TERM
+
+# The daemon start.sh started, and that one only.
+start_daemon() {
+    "$MECLAW" --root "$ROOT" --templates "$TEMPLATES" --daemon --api "$API" \
+        >> "${ROOT}/daemon.out" 2>&1 &
+    pid=$!
+    printf '%s\n' "$pid" > "${ROOT}/daemon.pid"
+    waited=0
+    until healthy; do
+        kill -0 "$pid" 2> /dev/null || die "the daemon exited before it answered; its log is ${ROOT}/daemon.out"
+        [ "$waited" -lt 120 ] || die "no answer on http://${API}/health after 120 s; the daemon (pid ${pid}) is still running, its log is ${ROOT}/daemon.out"
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+printf "OpenRouter key for alex (https://openrouter.ai/keys): " > /dev/tty
+STTY_SAVED="$(stty -g < /dev/tty 2> /dev/null || true)"
+[ -n "$STTY_SAVED" ] || die "could not read the terminal settings; refusing to read a key that would be echoed."
+stty -echo < /dev/tty 2> /dev/null || die "could not turn the echo off; refusing to read a key that would be echoed."
+KEY=""
+IFS= read -r KEY < /dev/tty || KEY=""
+restore_tty
+printf '\n' > /dev/tty
+[ -n "$KEY" ] || die "no key given; nothing was changed."
+
+# Stop the daemon by the pid start.sh remembered. A pid that now belongs to
+# another program is not killed: on a host with /proc its command line has
+# to name this colony's root.
+pid="$(cat "${ROOT}/daemon.pid" 2> /dev/null || true)"
+case "$pid" in
+    ''|*[!0-9]*) die "${ROOT}/daemon.pid holds no pid." ;;
+esac
+if kill -0 "$pid" 2> /dev/null; then
+    if [ -r "/proc/${pid}/cmdline" ]; then
+        case "$(tr '\000' ' ' < "/proc/${pid}/cmdline")" in
+            *"$ROOT"*) ;;
+            *) die "pid ${pid} is not this colony's daemon any more; stop the daemon by hand and run this again." ;;
+        esac
+    fi
+    say "stopping the daemon (pid ${pid})"
+    kill "$pid"
+    waited=0
+    while kill -0 "$pid" 2> /dev/null; do
+        [ "$waited" -lt 30 ] || die "the daemon (pid ${pid}) did not stop within 30 s."
+        sleep 1
+        waited=$((waited + 1))
+    done
+fi
+
+# The key goes on stdin, out of a shell builtin: no argument, no file, no
+# child's environment carries it.
+if ! printf '%s' "$KEY" | "$MECLAW" --root "$ROOT" --vault "$VAULT" \
+        --vault-key-source plainfile --vault-key-file "$VAULT_KEY_FILE" \
+        --vault-add "$CRED" > /dev/null; then
+    KEY=""
+    say "the deposit failed (the message is above); starting the daemon again unchanged"
+    start_daemon
+    die "the key was not stored."
+fi
+KEY=""
+
+say "sealed into alex's vault as ${CRED}; starting the daemon again"
+start_daemon
+say "up, pid ${pid}"
+say "talk to it: ${MECLAW} ask --api ${API} --target /door \"Say hello in one short sentence.\""
+DEPOSIT
+        } > "$deposit"
+        chmod 700 "$deposit"
+    ) || die "could not write ${deposit}"
+    say ""
+    say "After step 5 of docs/getting-started.en.md, hand it the key:  sh ${deposit}"
+}
 
 grow() {
     # grow <declaration.json>
@@ -480,7 +659,7 @@ elif [ "$flavour" = organism ]; then
     say "grown: /door, /sink (the shell itself came up with the colony)"
     say ""
     say "Nothing answers yet -- an organisation, a member and an agent are three"
-    say "declarations, and docs/getting-started.md walks through them:"
+    say "declarations, and docs/getting-started.en.md walks through them:"
     say ""
     # Not `step`: that name belongs to begin(), which counts with it.
     for decl in org member assistant; do
@@ -488,10 +667,11 @@ elif [ "$flavour" = organism ]; then
         say "       -H 'Content-Type: application/json' \\"
         say "       -d @${EXAMPLES}/organism/grow-${decl}.json"
     done
+    write_deposit_script
 else
     begin grow "Growing examples/meclaw-os and asking it one question"
     grow "${EXAMPLES}/meclaw-os/grow.json"
-    say "grown: /door, /firewall, /talky, /sink (model ${MODEL})"
+    say "grown: /door, /firewall, /talky, /access, /sink (model ${MODEL})"
 
     # The commit spawned every cell; give the registry a moment to list the
     # door awake before the first turn goes in.
@@ -507,7 +687,7 @@ else
     say "> ${question}"
     if ! answer="$("$MECLAW" ask --api "$api" --target /door "$question")"; then
         say ""
-        die "meclaw ask did not get an answer (its message is above). A wrong key ends in code=auth; the daemon is still running on http://${api}, pid ${pid}."
+        die "meclaw ask did not get an answer (its message is above). A wrong key ends in code=auth, an empty vault in credential_pending; the daemon is still running on http://${api}, pid ${pid}."
     fi
     say "${answer}"
 fi
@@ -524,6 +704,8 @@ say "UI:       http://${api}/ui/"
 say "stop it:  kill ${pid}"
 if [ "$flavour" = hard-shell ]; then
     say "with key: OPENROUTER_API_KEY=sk-... sh start.sh   (grows the assistant; keys: https://openrouter.ai/keys)"
+elif [ "$flavour" = organism ]; then
+    say "the key:  sh ${root}/deposit-key.sh   (after step 5 of https://github.com/${REPO}/blob/main/docs/getting-started.en.md)"
 else
     say "talk to it: ${MECLAW} ask --api ${api} --target /door \"...\""
 fi

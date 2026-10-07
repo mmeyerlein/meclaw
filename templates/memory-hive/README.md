@@ -1,4 +1,4 @@
-# `memory-hive@3.11.2`
+# `memory-hive@3.12.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -376,7 +376,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests a second hop key evaluates to `false` under the `required_drains` probe and reads as no drain. Since #555 it carries ONE thing, and since [#261](https://github.com/mmeyerlein/meclaw/issues/261) exactly ONE message of it: the receipt of an applied import, for the whole directory rather than per part (`hop.export_of` counts the tables applied, `hop.rows_written` the rows that were new, `hop.export_final` is always `'1'` because a directory is applied whole or not at all) — the export writes its own files and reports on `export_done`, so the `dump_kind` key that told the two apart is gone with the distinction |
 | `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
 | `tool_schemas` | out → your caller | condition `hop.route == 'tool_schemas'` on an edge FROM `./memory`. One `{name, description, parameters}` for `memory_recall`, provider-neutral, plus in `unknown[]` the asked names this hive does not serve and in `sidecar[]` the section this hive asks for in return: one `{section, required, schema, instruction}` with `section: "memory"` and `required: true` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)). All three slots are `required: true` in the emitted body — `schemas` carries `contract.version` `1.1.0` for the new one — and `sidecar[]` is filled on EVERY answer of the cell, the `tools_missing` one included, because a section is not a response to a name. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
@@ -551,6 +551,15 @@ that actually reaches a model; the file is where the reasoning behind every line
 written down, and a drift lock asserts that the two are one text (`gh299`, `gh525`). That
 division is the point rather than a convenience: a rule whose only home is a prompt is a rule
 nobody can audit, and a rule whose only home is a document is a rule nothing delivers.
+
+**Every fact names the words it rests on** ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)).
+The fact form carries `quote` -- the person's words the fact rests on, copied exactly -- and it
+is `required`, so the rendered example shows it on every fact. This hive does not check those
+words against the turn: the ingress never sees the turn's text in the phase that reads the
+block. The asking side does, where the turn is still in hand. What the ingress can hold is the
+presence, behind `require_quote` (§ *The params of `./extract-glue`*). The quote is evidence for
+the asker and never memory: no table has a column for it, so the sixteen tables and the
+transfer lane are untouched.
 
 ## The close pass: one session, read whole (GH #300)
 
@@ -1045,7 +1054,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.11.2` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.12.1` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1452,7 +1461,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.14",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.17",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1466,10 +1475,12 @@ version beside the old one and move the edges. That is the reason the copy exist
 
 ### What stays in `.env`: the provider lane
 
-Credentials, endpoints and model ids do not move, because a secret in a `config.json` is a secret
-in the repository. Everything below carries a `:-default` **except** `OPENROUTER_API_KEY` and the
-three `MODEL_*` slots the hive buys inference on -- `MODEL_CLOSER`, `MODEL_DREAMER`,
-`MODEL_DIALECTIC`. Those four must come from `.env` (see the negative fixture
+Endpoints and model ids do not move. The provider key is no `.env` line any more (#801): each
+model cell names a grant (`credential_grant_id`, set by whoever grows the hive) and the key lives in
+the vault -- deposit it with `meclaw --vault-add cred:openrouter` (stdin); the vault has to be
+unlockable (`access/vault` `key_source` systemd-cred for a unit, plainfile for a local run).
+Everything below carries a `:-default` **except** the three `MODEL_*` slots the hive buys inference
+on -- `MODEL_CLOSER`, `MODEL_DREAMER`, `MODEL_DIALECTIC`. Those three must come from `.env` (see the negative fixture
 `memory_hive_env_missing`). A model name has no defensible default: picking one silently is how a
 memory lane ends up on a weak model without anybody deciding it (see the recommendation below).
 
@@ -1481,7 +1492,7 @@ rollout, and set it to the strongest model you have (see below).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `OPENROUTER_API_KEY` | — (required) | api_key of `closer`, `dreamer`, `judge` and `dialectic` |
+| *(none)* | — | no key is read from the environment (#801). `closer`, `dreamer`, `judge`, `dialectic` and `embed` ship `credential_grant_id: ""`; the builder recipe names one grant per cell when it grows the member with a `credential` wish (`grant:<cred>@<subject>/memory-hive-<cell>`, edges to the member's `./access`). The llm cells open the sealed key in RAM; `./embed` gets it per run as the environment entry `MECLAW_CREDENTIAL` (`params.credential_env`, GH #1060). Without a grant every cell calls its provider anonymously |
 | `MODEL_CLOSER` | — (required) | close-pass model (GH #300, ruling Q9 of 2026-08-21). **Put the strongest model you have here.** It is the one call that sees a whole session at once and it is the only party that can supply the replacement window, so a quiet fallback to a cheap model would not just measure less, it would revoke the ruling. Deliberately without a default for exactly that reason |
 | `MODEL_DREAMER` | — (required) | consolidation model (change narrative) |
 | `MODEL_DIALECTIC` | — (required) | tier-2 answer model (the dialectic with its mandatory gap statement) |
@@ -1490,7 +1501,6 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_EMBED_ENDPOINT` | `https://openrouter.ai/api/v1/embeddings` | OpenAI-compatible embeddings endpoint |
 | `MEMORY_EMBED_MODEL` | `google/gemini-embedding-2` | the embedding model. Must match the `model_id` in `store/seed/emb_models.jsonl` |
 | `MEMORY_EMBED_DIM` | `1024` | requested `dimensions`; must match `emb_models.dim` (1024 bits → 128 packed bytes) |
-| `MEMORY_EMBED_API_KEY` | *(empty → falls back to `OPENROUTER_API_KEY`)* | bearer for the embedder |
 | `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | OpenRouter app attribution headers |
 
 **Why the three embedding lines stayed together, and why they stayed in `.env`.**
@@ -1502,7 +1512,7 @@ dimension in it are literals by construction, and a `dim` that disagrees with th
 coupling exists to prevent (`gh204_the_shipped_embedding_generation_agrees` pins the three against
 each other). Moving the model onto `params` while its dimension and its seed row stayed behind
 would have split a statement that has to be changed in one move, so the ruling keeps all three on
-the same surface. `MEMORY_EMBED_MODEL`, `MEMORY_EMBED_ENDPOINT` and `MEMORY_EMBED_API_KEY` are
+the same surface. `MEMORY_EMBED_MODEL` and `MEMORY_EMBED_ENDPOINT` are
 provider lane by class anyway; `MEMORY_EMBED_DIM` is the one that was a judgement, and it is named
 one by one in the gate's allowlist (`scripts/check_tree_rules.py` § R6) rather than swept in by a
 category.
@@ -1578,6 +1588,17 @@ there is a value that is not `"1"` and the ask is OFF (the apply half runs eithe
 |---|---|---|
 | `close_turn_rows` | `512` | Cap of the session page the close pass reads (GH #300). Counts episode rows of ONE session, newest first, so a session longer than the page loses its OLDEST turns rather than its last ones: the later a turn is, the more likely it is the one that corrects an earlier, which is the whole reason the pass exists. A param of this cell since GH #138, so two members are tuned apart |
 | `close_fact_rows` | `256` | Cap of the fact page the close pass reads (GH #300). Counts the OPEN facts of ONE session -- the records the per-turn path already wrote and the only records the pass may name when it supersedes one. A separate knob from close_turn_rows because it counts a different thing: a short session can carry a long history if its subject has been talked about before |
+
+### The params of `./extract-glue`
+
+`require_quote` is a switch: `true` (also `"true"`, `1`, `"1"`) turns it on; `false` (the default, also
+`"false"`, `0`, `"0"`, a blanked line) is the lane as it was. Any other value stops the cell with the
+knob's name on stderr -- a typo never reads as "off".
+
+| param | default | effect |
+|---|---|---|
+| `generation_idle_ms` | `7200000` | How far back the inline bind reads the room when the session a block travelled in holds no turn of a person (a duplex call's delegation, GH #1042). It is the session keeper's idle window and moves with it. |
+| `require_quote` | `false` | `true` files a per-turn fact only when it carries a non-empty `quote` (GH #1079). A fact without one is dropped on its own with `reject_reason: quote_missing` on the `reject` lane -- one receipt per block, counting and never echoing -- and the rest of the block is filed; a block with nothing else left is refused write-free. Whether the words are really the person's is checked by the asking side, never here. A close-pass block is exempt: the close pass writes its own fact form and asks for no quote. |
 
 ### The nightly tick: `./clock`
 
@@ -2633,9 +2654,9 @@ target/debug/meclaw --validate --root workshop/fixtures/positive/memory-hive-pro
 # --- Prepare a run colony ------------------------------------------------
 RUN=workshop/workspace/p2-run
 rm -rf $RUN && cp -r workshop/fixtures/positive/memory-hive-probe $RUN
-# FOUR variables have no default and must be present, or the instantiation rejects
+# THREE variables have no default and must be present, or the instantiation rejects
 # env_var_missing (negative fixture memory_hive_env_missing pins exactly that).
-printf 'OPENROUTER_API_KEY=dummy\nMODEL_CLOSER=dummy/close\nMODEL_DREAMER=dummy/dream\nMODEL_DIALECTIC=dummy/dialectic\n' > $RUN/.env
+printf 'MODEL_CLOSER=dummy/close\nMODEL_DREAMER=dummy/dream\nMODEL_DIALECTIC=dummy/dialectic\n' > $RUN/.env
 target/debug/meclaw --root $RUN --env $RUN/.env --templates templates \
   --daemon --api 127.0.0.1:7792 &
 

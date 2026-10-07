@@ -39,6 +39,13 @@ final-status-level = "slow"
 # four minutes is wedged, not busy.
 slow-timeout = { period = "30s", terminate-after = 8 }
 
+# The slow lock reads the times of GREEN tests from here (`scripts/slow_tests.py`,
+# station `slow-tests`): a test above a third of its budget is red with its name
+# (GH #1046 -- the display scenarios grew to 213 s of their 240 s unseen and were
+# killed at 24 threads). Written to `<target>/nextest/default/junit.xml`.
+[profile.default.junit]
+path = "junit.xml"
+
 [profile.ci]
 retries = 0
 fail-fast = false
@@ -146,6 +153,42 @@ success-output = "immediate-final"
 filter = 'binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser)'
 success-output = "immediate-final"
 
+# GH #1043 (review Z-M3, finding 5): the two SIGKILL locks print one line per
+# round -- what arrived, and how many replayed answers the store's book gave
+# after the kills. A green run whose kills replayed nothing proves nothing (the
+# lock asserts `> 0`); the count belongs in the gate log, not only in the
+# assertion.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::gh1043_a_killed_peer_stream_arrives_exactly_once) + binary_id(=meclaw-cells::gh1015_sigkill_chain_into_a_real_store)'
+success-output = "immediate-final"
+
+[[profile.ci.overrides]]
+filter = 'binary_id(=meclaw-cells::gh1043_a_killed_peer_stream_arrives_exactly_once) + binary_id(=meclaw-cells::gh1015_sigkill_chain_into_a_real_store)'
+success-output = "immediate-final"
+
+# GH #1048: WebKit renders in software here (Mesa llvmpipe under
+# `workshop/tools/wkenv.sh`), and llvmpipe spreads one page over every core of
+# the host. Cut into parts (one per proof group), the sheet proof's WebKit parts
+# ran side by side on a 12-thread lane and starved each other: 10 of 10 stress
+# iterations red, 83-104 s each, `page.goto: Timeout 30000ms` and
+# `waitForSelector … Timeout 10000ms` (build01, 2026-10-07). Every test that
+# drives a WebKit page takes the cores it really uses and they take turns: the
+# sheet parts, the phone sheet (gh703) and the colony proof, whose one test runs
+# its WebKit half after the Chromium one. A scheduling fact, not a longer
+# leash: `slow-timeout` and `terminate-after` stay the profile's.
+[test-groups.webkit]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = '(binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser) & test(/^the_sheet_holds_in_webkit_/)) + binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
+test-group = "webkit"
+threads-required = 4
+
+[[profile.ci.overrides]]
+filter = '(binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser) & test(/^the_sheet_holds_in_webkit_/)) + binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
+test-group = "webkit"
+threads-required = 4
+
 # ---------------------------------------------------------------------------
 # SLOW BY DESIGN -- a longer leash, never a retry.
 # ---------------------------------------------------------------------------
@@ -160,16 +203,3 @@ success-output = "immediate-final"
 [[profile.default.overrides]]
 filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
 slow-timeout = { period = "60s", terminate-after = 10 }
-
-# GH #990: the curator's scenario proof is a long serial scenario set, not a
-# wedge. Run alone on lane build01 its binary takes 137 s; inside a strand gate
-# (~9 900 tests) it took 209.8 - 237.5 s across the strands of welle-nachlese
-# and hit the four-minute kill once (240.0 s, strand CI, 3c789894). Six minutes
-# for THIS test alone, in both profiles -- still no retry, no quarantine.
-[[profile.default.overrides]]
-filter = 'binary_id(=meclaw-cells::710_the_scenarios_run_against_the_curator)'
-slow-timeout = { period = "60s", terminate-after = 6 }
-
-[[profile.ci.overrides]]
-filter = 'binary_id(=meclaw-cells::710_the_scenarios_run_against_the_curator)'
-slow-timeout = { period = "60s", terminate-after = 6 }

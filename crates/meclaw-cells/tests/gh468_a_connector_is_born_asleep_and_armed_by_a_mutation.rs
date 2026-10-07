@@ -423,6 +423,15 @@ async fn the_readme_arming_manifest_swings_the_edges_and_the_first_update_lands(
     //    is filled in, because a hermetic test cannot reach api.telegram.org.
     let mut arm = readme_arming_manifest();
     arm["diff"]["swap_nodes"][0]["with"]["params"]["base_url"] = json!(base_url);
+    // GH #1061 (#801): the README arms with a GRANT, and a sealed box needs a
+    // broker this hermetic tree does not grow (the grant road is locked by
+    // `gh1059_telegram_grant`). The swap is what this test measures, so the
+    // key takes the road that still works for one release: the environment
+    // token, with the grant emptied -- otherwise the grant wins and the armed
+    // node asks a broker that is not there.
+    arm["diff"]["swap_nodes"][0]["with"]["params"]["bot_token_grant_id"] = json!("");
+    arm["diff"]["swap_nodes"][0]["with"]["params"]["bot_token"] =
+        json!(concat!("$", "{TELEGRAM_BOT_TOKEN}"));
     committed(&mutate(&h, arm).await, "the README's arming manifest");
 
     // 3. The turn the fake returns has to arrive as a user-origin message —

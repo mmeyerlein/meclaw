@@ -73,6 +73,9 @@ use road::{
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tokio::sync::{mpsc, oneshot};
 
+// GH #1061: the road support already loads it (`duplicate_mod`).
+use road::organism_assistant;
+
 const APP: &str = "probe-app";
 const TWIN: &str = "probe-twin";
 const PERSON: &str = "owner";
@@ -341,7 +344,9 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, setup: &Setup) {
         0,
     );
     copy_resolved(&repo("templates/memory-hive"), &main.join("memory-hive"), 0);
-    let grown = read_json(&repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
     write_json(
         &main.join("assistants/config.json"),
         &json!({"cell": {"type": "hive"},

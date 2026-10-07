@@ -1433,6 +1433,7 @@ fn park_entry_non_running(entry: &mut RegistryEntry, path: &Path) {
 /// flipped it), the new child is not touched, and the mailbox rescued under
 /// the birth path (`MailboxRescued`, held in `rescued`) is dead-lettered as
 /// `cell_inactive` — the new child never inherits the old one's remainder.
+/// The mail held for the birth path (GH #1068) goes with it, behind the rescue.
 /// Every other shape — no entry at the path, no parked twin, a twin whose
 /// mailbox is still open, or both mailboxes closed (the new child died too;
 /// its own `CellDied` is the corridor's, and so is this one) — is the
@@ -1441,6 +1442,7 @@ fn claim_parked_death(
     registry: &mut HashMap<Path, RegistryEntry>,
     rescued: &mut HashMap<Path, Vec<Message>>,
     dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
     path: &Path,
     death_kind: DeathKind,
 ) -> bool {
@@ -1473,7 +1475,16 @@ fn claim_parked_death(
         entry.active = false;
     }
     if let Some(messages) = rescued.remove(path) {
-        dead_letter_rescued(dead_letters, path, messages);
+        dead_letter_rescued(dead_letters, in_flight, path, messages);
+    }
+    // GH #1068 review F1: mail held for this birth path met the DYING cell's
+    // closed mailbox -- it was sent after everything rescued, so it goes to
+    // the dead letters behind the rescue. Left in the ledger it would be
+    // handed to the next successor of the NEW cell at the path (the #688
+    // breach), and it would keep the colony from ever being quiescent.
+    let held = in_flight.take_parked_for_successor(path);
+    if !held.is_empty() {
+        dead_letter_rescued(dead_letters, in_flight, path, held);
     }
     true
 }
@@ -1484,10 +1495,15 @@ fn claim_parked_death(
 /// remainder is kept in the DLQ, in order, rather than dropped silently.
 fn dead_letter_rescued(
     dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
     path: &Path,
     messages: impl IntoIterator<Item = Message>,
 ) {
     for msg in messages {
+        // GH #1068 review F2: the router logged this delivery with its open
+        // row; ending it here is an end like any routing dead letter (see
+        // `route_with_log_as`), so the row is closed with the next flush.
+        in_flight.close_delivery(&msg);
         let sender_path = msg.reply_to.clone().unwrap_or_else(|| Path::new("/"));
         push_dead_letter(
             dead_letters,
@@ -1532,7 +1548,10 @@ fn deliver_rescued_mailbox(
     } else {
         None
     };
-    let messages = rescued.remove(path).unwrap_or_default();
+    let mut messages = rescued.remove(path).unwrap_or_default();
+    // GH #1068: what met the closed mailbox was sent after everything the
+    // mailbox still held, so it queues behind the rescue.
+    messages.extend(in_flight.take_parked_for_successor(path));
     // GH #850 review I-2: the overflow at this path is the dead cell's only
     // while it delivers into the dead cell's mailbox, which is closed by now.
     // An overflow that still delivers into an OPEN mailbox belongs to another
@@ -1549,7 +1568,7 @@ fn deliver_rescued_mailbox(
                 count = messages.len(),
                 "rescued mailbox messages have no successor — dead-lettering"
             );
-            dead_letter_rescued(dead_letters, path, messages);
+            dead_letter_rescued(dead_letters, in_flight, path, messages);
         }
         return;
     };
@@ -1614,7 +1633,7 @@ fn deliver_rescued_mailbox(
             count = queue.len(),
             "rescued mailbox messages have no successor — dead-lettering"
         );
-        dead_letter_rescued(dead_letters, path, queue);
+        dead_letter_rescued(dead_letters, in_flight, path, queue);
     }
 }
 
@@ -2390,8 +2409,14 @@ async fn run_shutdown_teardown(
                 let died = path.clone();
                 // GH #688: a parked entry's death is not the
                 // corridor's (see the main loop's arm).
-                if claim_parked_death(registry, rescued_mailboxes, dead_letters, &died, death_kind)
-                {
+                if claim_parked_death(
+                    registry,
+                    rescued_mailboxes,
+                    dead_letters,
+                    in_flight,
+                    &died,
+                    death_kind,
+                ) {
                     continue;
                 }
                 let outcome = handle_cell_died(registry, inbox_self_tx, path, death_kind).await;
@@ -2426,7 +2451,7 @@ async fn run_shutdown_teardown(
                 // W6d (A6): shutdown-drain has no post-select
                 // flush between buffered messages, so flush any
                 // in-loop pushes to the DB first, THEN drain it.
-                persist_dead_letters(dead_letters, &colony_db.writer_tx).await;
+                persist_dead_letters(dead_letters, in_flight, &colony_db.writer_tx).await;
                 fence(&colony_db.writer_tx).await;
                 let drained = crate::colony_dispatch::handle_drain_dead_letters(&colony_db);
                 let (del_tx, del_rx) = tokio::sync::oneshot::channel();
@@ -2686,7 +2711,7 @@ async fn run_shutdown_teardown(
                 // Shutdown-drain: no successor is coming, so
                 // the rescue goes straight to the DLQ (the
                 // flush below this loop still catches it).
-                dead_letter_rescued(dead_letters, &path, messages);
+                dead_letter_rescued(dead_letters, in_flight, &path, messages);
             }
         }
     }
@@ -2694,14 +2719,18 @@ async fn run_shutdown_teardown(
     // cut in between) has no successor to wait for — preserve it
     // rather than let the map die with the task.
     for (path, messages) in rescued_mailboxes.drain() {
-        dead_letter_rescued(dead_letters, &path, messages);
+        dead_letter_rescued(dead_letters, in_flight, &path, messages);
+    }
+    // GH #1068: likewise what waited for a successor beside such a rescue.
+    for (path, messages) in in_flight.drain_parked_for_successor() {
+        dead_letter_rescued(dead_letters, in_flight, &path, messages);
     }
     // W6d (A6): flush any DLQ pushes from the shutdown-drain
     // loop BEFORE the writer is torn down — the Shutdown arm
     // breaks out of the loop, so the post-select drain never
     // runs for it. FIFO guarantees these land before the
     // writer's own Shutdown op.
-    persist_dead_letters(dead_letters, &colony_db.writer_tx).await;
+    persist_dead_letters(dead_letters, in_flight, &colony_db.writer_tx).await;
     // GH #1015 (review M-2): an ordered stop — the next boot does not count
     // its replays as attempts (a crash never reaches this line).
     let _ = colony_db
@@ -2930,7 +2959,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         // top-of-loop drain is the robust catch-all: nothing pushed survives past
         // the start of the next event unpersisted, so a Read/Drain (always the next
         // event) sees it after its fence. Empty buffer ⇒ no-op (no await).
-        persist_dead_letters(&mut dead_letters, &colony_db.writer_tx).await;
+        persist_dead_letters(&mut dead_letters, &mut in_flight, &colony_db.writer_tx).await;
         // GH #285 (W4 T11): re-read the slot declarations if the previous event
         // could have changed them. Here rather than at each of those events so
         // one topology change costs one filesystem pass whatever it touched —
@@ -3383,7 +3412,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // it aside, its task still reports under the birth path)
                         // is settled before the corridor, which is keyed by path
                         // and would restart against the NEW cell's row.
-                        if !claim_parked_death(&mut registry, &mut rescued_mailboxes, &mut dead_letters, &died, death_kind) {
+                        if !claim_parked_death(&mut registry, &mut rescued_mailboxes, &mut dead_letters, &mut in_flight, &died, death_kind) {
                             let outcome = handle_cell_died(&mut registry, &inbox_self_tx, path, death_kind).await;
                             let restarted = matches!(outcome, CellDiedOutcome::Restarted);
                             if let CellDiedOutcome::Failed { path } = outcome {
@@ -4310,7 +4339,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         // is the sole flush authority, so the DB is the one DLQ truth (Read/Drain
         // query the DB, never the now-transient `VecDeque`). The Shutdown arm
         // breaks before reaching here and drains separately above.
-        persist_dead_letters(&mut dead_letters, &colony_db.writer_tx).await;
+        persist_dead_letters(&mut dead_letters, &mut in_flight, &colony_db.writer_tx).await;
     }
 }
 
@@ -4773,6 +4802,57 @@ async fn route_with_log_inner(
                     reason: crate::dead_letter::DeadLetterReason::MailboxFull { detail: None },
                 },
             ),
+        }
+        return RouteAction::Done;
+    }
+
+    // GH #1068: a cell whose task is dying has closed its mailbox (the
+    // `MailboxGuard` closes it, then drains it into `MailboxRescued`), and its
+    // `CellDied` is still on the way. `route()` would send into the closed
+    // mailbox, fail, and drop the message with one warning line -- measured: a
+    // wake message the colony sent right after waking a cell that died of the
+    // message ahead of it, 2 of 20 runs on a build host under load (the
+    // colony's thread lost the CPU between wake and send). So such a message
+    // is built the way `route()` delivers it, logged once, and parked for the
+    // successor; the `CellDied` arm hands it over behind the rescued mailbox,
+    // or dead-letters it with that mailbox when there is no successor. An
+    // `Awake` entry with a closed mailbox is exactly that state: a peaceful
+    // stop or sleep hands the receiver over instead of closing it, and a
+    // failed or parked entry carries a fresh channel. The corridor stays
+    // byte-frozen; this is the wrapper's pre-check beside the overflow's.
+    if pre_routable
+        && let Some(entry) = registry.get(&resolved_target)
+        && entry.handle.is_closed()
+        && matches!(entry.status, CellStatus::Awake)
+        && !entry.failed
+    {
+        let birth = entry.handle.path.clone();
+        let original_target = msg.target.clone();
+        let routed = routed_like_the_corridor(&sender_path, msg);
+        if let Some(row) = log_row_opt {
+            let _ = log_tx
+                .send(crate::persist::writer::ColonyWriteOp::InsertMessageLogOpen(
+                    row,
+                ))
+                .await;
+        }
+        tracing::warn!(
+            target = %resolved_target.as_str(),
+            message_id = %routed.id,
+            "delivery met the closed mailbox of a dying cell -- held for its successor"
+        );
+        if let Err(message) = in_flight.park_for_successor(&birth, routed) {
+            // Review F4: the overflow's cap holds here too.
+            push_dead_letter(
+                dead_letters,
+                DeadLetter {
+                    sender_path,
+                    original_target,
+                    resolved_target,
+                    message: *message,
+                    reason: crate::dead_letter::DeadLetterReason::MailboxFull { detail: None },
+                },
+            );
         }
         return RouteAction::Done;
     }
@@ -5649,6 +5729,18 @@ pub(crate) async fn handle_mutation(
     // Refused here rather than one line down, so the refusal is spurless like
     // the drain refusal: no id, therefore no mutation-log row.
     if let Err(err) = crate::mutation::validate::refuse_manifest_at_the_single_door(&payload) {
+        return MutationOutcome::Rejected {
+            id: None,
+            error_code: err.error_code().into(),
+            details: err.message(),
+            violations: Vec::new(),
+        };
+    }
+    // GH #1076: the same check for a body whose work is not under `diff` — an
+    // operation one level too high (`{"scope": …, "seed_rows": [ … ]}`, measured:
+    // 11 × `committed`, 0 of 2 500 rows written) or no `diff` at all. The
+    // `unwrap_or` below would read either as the empty diff and commit nothing.
+    if let Err(err) = crate::mutation::validate::refuse_a_body_without_its_diff(&payload) {
         return MutationOutcome::Rejected {
             id: None,
             error_code: err.error_code().into(),
@@ -9982,7 +10074,10 @@ pub(crate) async fn handle_mutation(
     // row already present, column for column, is counted and not written twice,
     // so re-applying the same manifest is a no-op.
     if !resolved_seed_rows.is_empty() {
-        match crate::mutation::seed_rows::apply_entries(&resolved_seed_rows) {
+        // GH #1077: every target is a `store` (resolve refused anything else),
+        // so the connection carries what the store's own connection carries.
+        let connection_setup = factories.get("store").and_then(|f| f.connection_setup());
+        match crate::mutation::seed_rows::apply_entries(&resolved_seed_rows, connection_setup) {
             Ok(applied) => {
                 for a in &applied {
                     tracing::debug!(
@@ -10798,6 +10893,7 @@ pub(crate) fn beat(tx: &Option<mpsc::Sender<crate::watchdog::Beat>>, phase: crat
 /// routing); FIFO `pop_front` preserves insertion order in the table.
 async fn persist_dead_letters(
     dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
     writer_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
 ) {
     while let Some(dl) = dead_letters.pop_front() {
@@ -10812,6 +10908,17 @@ async fn persist_dead_letters(
                 created_at: dl.message.created_at,
                 message_json,
                 detail: dl.detail().map(str::to_owned),
+            })
+            .await;
+    }
+    // GH #1068 review F2: the open deliveries those dead letters ended outside
+    // the router -- closed BEHIND them in the writer's FIFO, so a crash between
+    // the two leaves a replay beside a dead letter, never a message in neither.
+    for (message_id, cell_path) in in_flight.take_deliveries_to_close() {
+        let _ = writer_tx
+            .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
+                message_id: message_id.to_string(),
+                cell_path: cell_path.as_str().to_string(),
             })
             .await;
     }
@@ -15407,6 +15514,7 @@ mod tests {
                 &mut registry,
                 &mut rescued,
                 &mut dead_letters,
+                &mut crate::drain::DrainLedger::default(),
                 &born,
                 DeathKind::Panic,
             ),
@@ -15437,6 +15545,114 @@ mod tests {
             dead_letters[0].reason,
             crate::dead_letter::DeadLetterReason::CellInactive
         ));
+    }
+
+    /// GH #1068 review F1: mail held for the successor of the cell born at
+    /// `/x` is the PARKED entry's when its death is claimed here: a
+    /// replace_nodes moved the dying cell aside after the delivery met its
+    /// closed mailbox. It is dead-lettered behind the rescue, in order, with
+    /// both open deliveries closed (F2) -- never left for the new child, whose
+    /// own successor would inherit the old cell's mail, and never left
+    /// standing in the ledger, where it kept the colony from ever being
+    /// quiescent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cell_died_of_a_parked_twin_dead_letters_the_mail_held_for_it_too() {
+        let born = Path::new("/x");
+        let parked_at = Path::new("/x~1.0.0");
+        let counter = Arc::new(AtomicU32::new(0));
+        let mut registry = HashMap::new();
+        let (new_sender, _new_receiver) = mpsc::channel::<Message>(8);
+        registry.insert(
+            born.clone(),
+            awake_entry(ActorHandle::new(born.clone(), new_sender), counter.clone()),
+        );
+        let (old_sender, old_receiver) = mpsc::channel::<Message>(8);
+        drop(old_receiver);
+        let mut old = awake_entry(ActorHandle::new(born.clone(), old_sender), counter.clone());
+        old.active = false;
+        registry.insert(parked_at.clone(), old);
+        let rescued_msg = MessageBuilder::new(born.clone()).build();
+        let held_msg = MessageBuilder::new(born.clone()).build();
+        let ids = vec![rescued_msg.id, held_msg.id];
+        let mut rescued: HashMap<Path, Vec<Message>> = HashMap::new();
+        rescued.insert(born.clone(), vec![rescued_msg]);
+        let mut in_flight = crate::drain::DrainLedger::default();
+        in_flight
+            .park_for_successor(&born, held_msg)
+            .expect("far below the cap");
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+
+        assert!(claim_parked_death(
+            &mut registry,
+            &mut rescued,
+            &mut dead_letters,
+            &mut in_flight,
+            &born,
+            DeathKind::Panic,
+        ));
+
+        assert!(
+            in_flight.take_parked_for_successor(&born).is_empty(),
+            "nothing is left for the new child's successor"
+        );
+        assert!(
+            crate::drain::is_quiescent(&in_flight, 0, 0, 0),
+            "nothing held keeps the drain from settling"
+        );
+        let dead: Vec<_> = dead_letters.iter().map(|d| d.message.id).collect();
+        assert_eq!(dead, ids, "the rescue, then the held mail");
+        assert!(dead_letters.iter().all(|d| d.resolved_target == born
+            && matches!(d.reason, crate::dead_letter::DeadLetterReason::CellInactive)));
+        let closed: Vec<_> = in_flight.take_deliveries_to_close();
+        assert_eq!(
+            closed,
+            ids.iter().map(|id| (*id, born.clone())).collect::<Vec<_>>(),
+            "a dead letter closes its open delivery (F2)"
+        );
+    }
+
+    /// GH #1068 review F2/F3: a death with no successor (normal end, or the
+    /// restart limit spent) dead-letters the rescued mailbox and the mail held
+    /// behind it, in that order, as `cell_inactive`, and closes every one of
+    /// their open deliveries -- a dead letter is an end, never a replay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_death_without_a_successor_dead_letters_and_closes_rescue_and_held_mail() {
+        let born = Path::new("/x");
+        let registry: HashMap<Path, RegistryEntry> = HashMap::new();
+        let msgs: Vec<Message> = (0..3)
+            .map(|_| MessageBuilder::new(born.clone()).build())
+            .collect();
+        let ids: Vec<_> = msgs.iter().map(|m| m.id).collect();
+        let mut rescued: HashMap<Path, Vec<Message>> = HashMap::new();
+        rescued.insert(born.clone(), msgs[..2].to_vec());
+        let mut in_flight = crate::drain::DrainLedger::default();
+        in_flight
+            .park_for_successor(&born, msgs[2].clone())
+            .expect("far below the cap");
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+
+        deliver_rescued_mailbox(
+            &registry,
+            &mut rescued,
+            &mut dead_letters,
+            &mut in_flight,
+            &born,
+            false,
+        );
+
+        let dead: Vec<_> = dead_letters.iter().map(|d| d.message.id).collect();
+        assert_eq!(dead, ids, "rescue first, held mail behind it");
+        assert!(
+            dead_letters
+                .iter()
+                .all(|d| matches!(d.reason, crate::dead_letter::DeadLetterReason::CellInactive))
+        );
+        assert!(crate::drain::is_quiescent(&in_flight, 0, 0, 0));
+        assert_eq!(
+            in_flight.take_deliveries_to_close(),
+            ids.iter().map(|id| (*id, born.clone())).collect::<Vec<_>>(),
+            "every dead letter closes its open delivery"
+        );
     }
 
     /// GH #688: everything else is the corridor's death as before — no entry
@@ -15504,6 +15720,7 @@ mod tests {
                     &mut registry,
                     &mut rescued,
                     &mut dead_letters,
+                    &mut crate::drain::DrainLedger::default(),
                     &born,
                     DeathKind::Panic,
                 ),

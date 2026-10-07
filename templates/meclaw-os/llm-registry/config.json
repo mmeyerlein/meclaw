@@ -1,6 +1,11 @@
 {
   "cell": {
     "type": "ref",
-    "template": "llm-registry@2.8.0"
+    "template": "llm-registry@2.8.1"
+  },
+  "override_params": {
+    "translate": {
+      "credential_grant_id": "grant:openrouter@colony-os/llm-registry-translate"
+    }
   }
 }

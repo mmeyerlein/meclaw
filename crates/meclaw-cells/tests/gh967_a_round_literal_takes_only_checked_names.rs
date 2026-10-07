@@ -64,7 +64,7 @@ fn payload(out: &Value) -> Value {
 fn channel_wish(assistant: &str, person: &str) -> Value {
     json!({"recipe": "grow_level", "request": "…", "params": {
         "scope": MEMBER_DIR, "level": "channel", "name": "telegram",
-        "template": "telegram-connector@2.1.0", "assistant": assistant,
+        "template": "telegram-connector@2.1.1", "assistant": assistant,
         "bind_chat": "4711", "ctx": {"member_person": person}}})
 }
 
@@ -146,7 +146,7 @@ fn a_round_literal_takes_only_checked_names() {
 #[test]
 fn told_checks_the_person_like_the_main_lane() {
     let sentence =
-        format!("grow a channel named telegram from telegram-connector@2.1.0 under {MEMBER_DIR}");
+        format!("grow a channel named telegram from telegram-connector@2.1.1 under {MEMBER_DIR}");
     for bad in BAD {
         let out = run_classify(json!({"request": sentence, "assistant": "scribe",
                                       "ctx": {"member_person": bad}}));

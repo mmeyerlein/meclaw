@@ -259,6 +259,23 @@ pub(crate) fn duplex_renewal_ms(p: &VoiceParams) -> (u64, u64) {
     }
 }
 
+/// The two edge knobs of GH #1055: how long an early session waits for its
+/// media connection, and the duck. Off for the loopback and a cascade.
+pub(crate) fn duplex_edge(p: &VoiceParams) -> (u64, crate::voice::duck::DuckParams) {
+    match &p.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(g)) => (
+            g.prewarm_ttl_ms,
+            crate::voice::duck::DuckParams {
+                onset_ms: g.barge_duck_ms,
+                release_ms: g.barge_release_ms,
+                level_dbfs: g.barge_level_dbfs,
+                echo_margin_db: g.barge_echo_margin_db,
+            },
+        ),
+        _ => (0, crate::voice::duck::DuckParams::default()),
+    }
+}
+
 /// The one relation between a duplex knob and a cell-level one that nothing
 /// checks at the parse: `keepalive_ms` against `provider_idle_timeout_ms`
 /// (R-L7, GH #798).
@@ -315,6 +332,18 @@ fn make_build(
     surfaces: Arc<SurfaceRegistry>,
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     let birth_parsed = VoiceParams::parse(&params)?;
+    // GH #1059 (OR-VG-4): a grant set → the slot's literal key is never used,
+    // not even while the box is missing. Said once per birth, by param name,
+    // never by value — and blanked before any adapter is built from it.
+    for slot in birth_parsed.ignored_literals() {
+        tracing::warn!(
+            path = path.as_str(),
+            "voice: params.{0}.api_key is ignored because params.{0}.credential_grant_id is \
+             set — the key comes sealed from the vault",
+            slot.as_str()
+        );
+    }
+    let birth_parsed = birth_parsed.without_granted_literals();
     // Built here so an unknown provider is a spawn failure rather than the
     // first caller's problem. Kept as the fallback for the respawn path.
     let birth_timeouts = provider_timeouts(&birth_parsed);
@@ -366,14 +395,18 @@ fn make_build(
                 birth_cap.clone()
             }
         };
-        let parsed = VoiceParams::parse(&effective_raw).unwrap_or_else(|e| {
-            tracing::error!(
-                path = path_cap.as_str(),
-                error = %e,
-                "voice: the replayed params did not parse — birth params it is"
-            );
-            birth_parsed_cap.clone()
-        });
+        // GH #1059: granted literals blanked, exactly as at birth — no adapter
+        // of this life is ever built with a literal next to a grant.
+        let parsed = VoiceParams::parse(&effective_raw)
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    path = path_cap.as_str(),
+                    error = %e,
+                    "voice: the replayed params did not parse — birth params it is"
+                );
+                birth_parsed_cap.clone()
+            })
+            .without_granted_literals();
 
         // 3. Build the adapters for THIS life, from the effective params, so a
         //    moved timeout takes effect on the next respawn. The birth pair is
@@ -437,6 +470,17 @@ fn make_build(
             None => None,
         };
 
+        // GH #1059: every granted slot gets a stand-in that holds a session
+        // until the vault's key is in; the adapters above (built without a
+        // key) only answer its declarations. A fresh channel per life: the
+        // key is RAM-only and the next life asks again.
+        let crate::voice::vaulted::Vaulted {
+            stt,
+            tts,
+            duplex,
+            slots: vaulted_slots,
+        } = crate::voice::vaulted::vault(&parsed, timeouts, stt, tts, duplex);
+
         // 4. Build both halves (sync). The events channel the substrate mints
         //    replaces the placeholder in `VoiceCell::run_io`.
         let (placeholder_tx, _placeholder_rx) = mpsc::channel(1);
@@ -466,6 +510,11 @@ fn make_build(
         let (renew_after_ms, renew_grace_ms) = duplex_renewal_ms(&parsed);
         io.duplex_renew_after_ms = renew_after_ms;
         io.duplex_renew_grace_ms = renew_grace_ms;
+        io.vaulted = vaulted_slots;
+        io.credential_backoff_max_ms = parsed.credential_backoff_max_ms;
+        let (prewarm_ttl_ms, duck) = duplex_edge(&parsed);
+        io.duplex_prewarm_ttl_ms = prewarm_ttl_ms;
+        io.duck = duck;
         // The path the mount registers under. The mount table refuses a name
         // another path holds and lets the holder replace its own entry, which
         // is what a respawn is.

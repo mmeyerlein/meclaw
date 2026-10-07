@@ -80,6 +80,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 // ═══════════════════════════════════════════════════════════════ the rounds
 
 /// The round of every question, as a channel stamps it (unsorted, spaces).
@@ -1214,7 +1217,9 @@ fn install_edges(app: &str) -> Vec<Value> {
 
 /// The container as `examples/organism` grows it, its generation renamed.
 fn container_edges() -> Vec<Value> {
-    let grown = read_json(&repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
     let raw = sj::to_string(&grown["diff"]["add_edges"]).expect("serialise");
     let renamed = raw
         .replace("./scribe", &format!("./{GENERATION}"))

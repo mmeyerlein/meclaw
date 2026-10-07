@@ -147,8 +147,13 @@ fn the_screen_is_sealed_and_states_five_lanes() {
     let (accepts, emits) = lanes(&cfg);
     // `in_notice` joined with 2.2.0 (GH #679); the clock and the judge inside
     // the hive added no lane, and the judge's own lanes never leave it.
-    assert_eq!(accepts, vec!["in_view", "in_withdraw", "in_notice"]);
-    assert_eq!(emits, vec!["event", "receipt"]);
+    // GH #1061 (#801): the judge asks the member's broker for its key and is
+    // answered sealed -- `credential_request` out, `in_sealed` in.
+    assert_eq!(
+        accepts,
+        vec!["in_view", "in_withdraw", "in_notice", "in_sealed"]
+    );
+    assert_eq!(emits, vec!["event", "receipt", "credential_request"]);
 
     // A lane name says what the caller wants, never where it lands inside.
     for cell in ["compose", "views", "web", "clock", "judge"] {

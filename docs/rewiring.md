@@ -412,13 +412,17 @@ Scope is `channels`, the hive that already exists.
   "ctx": {"model": "<the brain's model, as a resolved literal>"},
   "diff": {
     "add_nodes": [
-      {"name": "telegram", "template": "telegram-connector@2.1.0",
-       "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
-      {"name": "talky", "template": "talky@6.6.7"}
+      {"name": "telegram", "template": "telegram-connector@2.1.1",
+       "override_params": {"bot_token_grant_id": "grant:telegram-bot@<subject>/channels-telegram"}},
+      {"name": "talky", "template": "talky@6.7.1"}
     ]
   }
 }
 ```
+
+The token is not in the declaration (#801): it is deposited with
+`meclaw --vault-add cred:telegram-bot`, and the grant row and the two broker
+edges come with the level's credential recipe.
 
 `override_params` is flat here. On the old tree the key was
 `telegram-connector/proxy`, because the template was a subtree; a single-cell

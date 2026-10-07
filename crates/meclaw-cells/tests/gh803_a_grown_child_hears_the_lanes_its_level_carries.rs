@@ -144,7 +144,7 @@ fn a_grown_generation_receives_the_delegation_the_member_stamps() {
     assert_every_stamped_lane_arrives(
         "./assistants",
         json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-               "name": "scribe", "template": "assistant@3.7.7",
+               "name": "scribe", "template": "assistant@3.7.10",
                "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
         "./scribe",
     );
@@ -159,7 +159,7 @@ fn a_grown_generation_receives_the_delegation_the_member_stamps() {
 fn a_grown_generation_has_a_door_for_a_renewed_call() {
     let decl = grow(
         json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-               "name": "scribe", "template": "assistant@3.7.7",
+               "name": "scribe", "template": "assistant@3.7.10",
                "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
     );
     let doors = doors_into(&decl, "./scribe");
@@ -174,7 +174,7 @@ fn a_grown_channel_receives_the_advice_the_member_stamps() {
     assert_every_stamped_lane_arrives(
         "./channels",
         json!({"scope": "/os/orgs/acme/members/alex", "level": "channel",
-               "name": "telegram", "template": "telegram-connector@2.1.0",
+               "name": "telegram", "template": "telegram-connector@2.1.1",
                "assistant": "scribe", "bind_chat": "4711",
                "ctx": {"member_person": "alex"}}),
         "./telegram",
@@ -194,14 +194,14 @@ fn every_door_of_a_grown_child_names_the_child_it_is_for() {
     for (params, child, key) in [
         (
             json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                   "name": "scribe", "template": "assistant@3.7.7",
+                   "name": "scribe", "template": "assistant@3.7.10",
                    "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
             "./scribe",
             "context.assistant",
         ),
         (
             json!({"scope": "/os/orgs/acme/members/alex", "level": "channel",
-                   "name": "telegram", "template": "telegram-connector@2.1.0",
+                   "name": "telegram", "template": "telegram-connector@2.1.1",
                    "assistant": "scribe", "bind_chat": "4711",
                    "ctx": {"member_person": "alex"}}),
             "./telegram",

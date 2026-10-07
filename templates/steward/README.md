@@ -1,6 +1,6 @@
-# `steward@2.1.6`
+# `steward@2.1.7`
 
-> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.3.3` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
+> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.3.4` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.
@@ -306,7 +306,6 @@ to this hive.
 | `STEWARD_JUDGE_MODEL` | `anthropic/claude-opus-5.5` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `STEWARD_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `STEWARD_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `STEWARD_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
-| `OPENROUTER_API_KEY` | — (required) | the judge's key. Bound late, never stored in the tree |
 
 **Retracted:** `STEWARD_COLONY_DB` is gone
 ([#267](https://github.com/mmeyerlein/meclaw/issues/267)). The meter and the
@@ -318,6 +317,20 @@ a version that has passed.
 Prices live in the charter as a `price_per_mtok` rule
 (`model=in/out,model=in/out`), because a colony that has to reach the network to
 know what it spent cannot measure itself while the network is what broke.
+
+## Credentials
+
+No key lives in `.env` or in this tree (#801). The grants are seeded with the template (`access/store/seed/`); deposit each credential once, on stdin:
+
+| credential | cells |
+|---|---|
+| `cred:openrouter` | `judge` |
+
+```sh
+meclaw --root <root> --vault <instance>/access/vault --vault-add <credential>
+```
+
+The vault must be able to unlock itself: `access/vault` `key_source` `systemd-cred` for a unit, `plainfile` for a local run.
 
 ## Honest limits
 

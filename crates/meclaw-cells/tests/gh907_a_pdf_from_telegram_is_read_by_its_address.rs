@@ -854,7 +854,6 @@ fn build_tree(root: &std::path::Path, up: &Upstream) {
             ("endpoint", json!(format!("{}/v1/embeddings", up.base))),
             ("model", json!("stub-embed")),
             ("dim", json!(EMBED_DIM.to_string())),
-            ("api_key", json!("stub-key")),
         ],
     );
     set_params(
@@ -879,6 +878,10 @@ fn build_tree(root: &std::path::Path, up: &Upstream) {
         &conn_rel,
         &[
             ("bot_token", json!(BOT_TOKEN)),
+            // GH #1061: the template names a grant, and a grant wins over the
+            // literal -- this tree grows no broker, so the stub token rides
+            // the one-release literal road with the grant emptied.
+            ("bot_token_grant_id", json!("")),
             ("base_url", json!(up.base)),
             ("long_poll_request_secs", json!(1)),
             ("long_poll_timeout_ms", json!(5000)),

@@ -1,4 +1,4 @@
-# `cogny@5.8.6`
+# `cogny@5.9.1`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.10.1"},
+{"cell": {"type": "ref", "template": "curator@1.11.1"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.8.6` above it in its provenance chain.
+`cogny@5.9.1` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -641,6 +641,17 @@ usable window, empty without a package) into the call's context, and a `memory_r
 model leaves on the tool exit with it on the hop (empty on every other tool); every exit of the
 composite clears the key.
 
+Since `5.8.7` ([#1036](https://github.com/mmeyerlein/meclaw/issues/1036)) the splitter is again the talky
+splitter byte for byte (contract 1.0.4): the sentence the model writes beside a tool call loses its
+block as well, and a readable block rides beside the round as `sidecar_raw`. The calls and the order
+of the turns stay as they came; no lane moved.
+
+Since `5.9.0` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) the splitter is the talky
+splitter byte for byte with the knob `sidecar_verify` (default `{}`, byte-identical output), its
+edges are mirrored from talky's, and the curator pin moves on to the version that checks the quoted
+fields of a section the knob names word for word before the section leaves. A new knob, so it is
+the second digit.
+
 ## Knobs
 
 The collector's knobs are **params of `./collector`** (since `collector@1.2.0`):
@@ -662,13 +673,15 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `defer_turns` | param | `"0"` (#894) | collector -- a turn that lands in another errand's open tool round opens a round of its own instead of waiting for the next one: this core's session is the conversation that consults it, so a second errand or the asker's `reply_to_consult` would otherwise wait for a round nobody opens and come back under the other errand's `consult_id`. The collector's own default, `"1"`, is the telephone model of a channel voice |
 | `role`, `keep_recent`, `compress_at`, `rebuild_to`, `quality_cap`, `horizon`, `tiers`, `summary_budget`, `keep_rounds`, `stub_tools_after`, `context_window`, `sidecar_max_chars` | param | `role` `"consult"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889), by the consult role's presets since GH #892; the full table is in the curator's README |
 | `max_calls` | param | `16` | cogny/dispatcher -- per-answer call budget |
+| `sidecar_verify` | param | `{}` | splitter -- the talky's word-for-word check of quoted fields ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)), and it stays **empty** at this core: the splitter and its edges are the talky's, so a section named here goes to `./curator` and is checked there, but this core has no `./errors` and draws neither the curator's `reject` nor a checked section out of its curator -- both would dead-letter `no_route`, loud and classified, and the answer text never leaves the core |
 | `async_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
 | `handoff_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. Since #894 that is `ask_requester`: the answer to the core's question arrives as its next errand. `escalate_to_deep` is gone since 4.4.0, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
 
 **There is no `env` column above any more.** Since `dispatcher@1.2.0` the last
 three knobs of a cogny tree moved onto `params` with the rest
 ([#138](https://github.com/mmeyerlein/meclaw/issues/138)); what is left in `.env`
-is the provider lane -- the API key, the endpoint, the model id. Each row names
+is the provider lane -- the endpoint and the model id; the API key lives in the
+vault (#801). Each row names
 the CELL its knob belongs to, because that is what an `override_params` entry
 addresses (GH #140).
 
@@ -685,7 +698,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.8.6", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.9.1", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -821,15 +834,14 @@ this level nor the generation above has to declare, forward or guard a lane it
 takes no part in.
 
 The brain accordingly ships `params.credential_grant_id` as the empty
-string, which is no grant at all (GH #271): standalone this composite behaves
-exactly as it did before and spends its `api_key`. Since 5.0.0 that empty string
+string, which is no grant at all (GH #271): standalone this composite
+calls its provider with no key at all, because since #801 `api_key` ships empty too. Since 5.0.0 that empty string
 is a LITERAL and not a `${COGNY_CREDENTIAL_GRANT_ID:-}` token
 ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): a
 grant id is a reference, not material, and two generations in one colony present
 different ones -- which an environment variable, being colony-wide, could not
-say. Switching it over takes **two**
-`override_params` keys and not one, because a cell asks for a credential only
-while it holds none — and `params.api_key` counts as one:
+say. Switching it over is the grant id; the recipe states the empty `api_key` beside it,
+because a cell asks for a credential only while it holds none:
 
 ```json
 "override_params": {
@@ -837,17 +849,17 @@ while it holds none — and `params.api_key` counts as one:
 }
 ```
 
-Set the grant and leave the shipped `api_key: "${OPENROUTER_API_KEY}"` standing
-and the cell never asks: it keeps spending the environment key and the lane
-carries nothing, silently, because a model that answers looks like a model that
-answers. With both keys set the model runs with **no credential in its config** —
+A key put back into `api_key` next to a grant is ignored (#801). With the grant
+set the model runs with **no credential in its config** —
 the value arrives sealed against an ephemeral key it mints per ask, is opened in
 its own task and is written nowhere. Both keys are **immutable** (`docs/cell-types.md`
 § `llm`), so this is a birth act: a generation grown without the empty `api_key`
 is repaired by growing another one, not by a message. The recipe, both edges and
 the two operator gestures that go with them are in `templates/member/README.md`
 § *The credential v-lanes*; `examples/vault-pilot/` is the small runnable version
-of the same round.
+of the same round. The key itself goes into the vault: `meclaw --vault-add cred:openrouter`
+(stdin), and the vault has to be unlockable (`access/vault` `key_source` systemd-cred for a
+unit, plainfile for a local run).
 
 ## Pins
 

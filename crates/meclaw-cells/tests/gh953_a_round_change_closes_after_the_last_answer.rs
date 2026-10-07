@@ -26,7 +26,7 @@
 //! in the colony's own `message_log` of the intake's wall insert of that
 //! answer and of the writer's close read.
 //!
-//! The second lock, `a_round_change_waits_for_a_late_last_answer`, holds the
+//! The second lock, `a_round_change_waits_for_a_late_last_answer_*`, holds the
 //! answer back until the generation is sealed (Review I-3): the order of the
 //! close behind the last answer is an event the keeper waits for, not a lead
 //! the answer usually has.
@@ -42,12 +42,91 @@ use race::{LEDGER, WRITER, answer, close_reports, generations, reply, turn};
 
 const RUNS: usize = 20;
 
+/// The runs of a lock, cut into parts: one `#[tokio::test]` per part, each on a
+/// colony of its own, over the runs `from..to` of that lock.
+///
+/// WHY split (GH #1048): each lock drove all its runs as ONE test on ONE
+/// colony, one run after the other -- `a_round_change_closes_after_the_last_answer`
+/// 100.1-101.0 s, `a_round_change_waits_for_a_late_last_answer` 99.8-101.8 s,
+/// `a_double_message_without_ids_closes_after_the_answer_to_the_last_turn`
+/// 80.4 s of the 240 s budget (mark 80 s), measured without the lane load of a
+/// gate. No sleep of this file drives that time: every wait is on an event
+/// (an answer at the surface, a row, a held request, a close report), so the
+/// time is the runs themselves, about 5 s (20 runs) and 8 s (10 runs) each.
+/// A part keeps the fixtures of its runs unchanged (run `i` keeps its channel
+/// and its tags) and makes EVERY assertion per run, as before; nothing of a
+/// lock judges across runs -- its summaries only count the runs that failed
+/// their own assertion -- so no aggregate is lost by the cut.
+/// `the_parts_cover_every_run_once` holds that the parts are all the runs.
+macro_rules! parts {
+    ($list:ident, $lock:ident: $($name:ident => $from:literal .. $to:literal;)+) => {
+        /// Every part the macro made of this lock, in the order it made them.
+        const $list: &[std::ops::Range<usize>] = &[$($from..$to),+];
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $name() {
+                $lock($from..$to).await;
+            }
+        )+
+    };
+}
+
+parts! {
+    CLOSES_PARTS, a_round_change_closes_after_the_last_answer:
+    a_round_change_closes_after_the_last_answer_runs_0_to_4 => 0..5;
+    a_round_change_closes_after_the_last_answer_runs_5_to_9 => 5..10;
+    a_round_change_closes_after_the_last_answer_runs_10_to_14 => 10..15;
+    a_round_change_closes_after_the_last_answer_runs_15_to_19 => 15..20;
+}
+
+parts! {
+    LATE_PARTS, a_round_change_waits_for_a_late_last_answer:
+    a_round_change_waits_for_a_late_last_answer_runs_0_to_4 => 0..5;
+    a_round_change_waits_for_a_late_last_answer_runs_5_to_9 => 5..10;
+    a_round_change_waits_for_a_late_last_answer_runs_10_to_14 => 10..15;
+    a_round_change_waits_for_a_late_last_answer_runs_15_to_19 => 15..20;
+}
+
+parts! {
+    IDLESS_PARTS, a_double_message_without_ids_closes_after_the_answer_to_the_last_turn:
+    a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_0_to_2 => 0..3;
+    a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_3_to_5 => 3..6;
+    a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_6_to_7 => 6..8;
+    a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_8_to_9 => 8..10;
+}
+
+/// The split loses no run: the parts of each lock follow each other without a
+/// gap or an overlap, none is empty, and together they are the runs `0..RUNS`
+/// (`0..IDLESS_RUNS`) the lock took as one test -- a run count raised without
+/// a part, or a part dropped, is red here, not silently untested.
+#[test]
+fn the_parts_cover_every_run_once() {
+    for (lock, parts, runs) in [
+        ("closes", CLOSES_PARTS, RUNS),
+        ("late", LATE_PARTS, RUNS),
+        ("idless", IDLESS_PARTS, IDLESS_RUNS),
+    ] {
+        let mut next = 0;
+        for part in parts {
+            assert!(!part.is_empty(), "{lock}: the part {part:?} takes no run");
+            assert_eq!(
+                part.start, next,
+                "{lock}: the part {part:?} does not start where the one before it ended ({next})"
+            );
+            next = part.end;
+        }
+        assert_eq!(
+            next, runs,
+            "{lock}: the parts end at run {next}, the lock has {runs} runs"
+        );
+    }
+}
+
 /// The round the generation is opened in, and the round that ends it.
 const ROUND_A: &str = road::AUDIENCE;
 const ROUND_B: &str = r#"["member:owner","agent:scribe","member:guest"]"#;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_round_change_closes_after_the_last_answer() {
+async fn a_round_change_closes_after_the_last_answer(runs: std::ops::Range<usize>) {
     if !road::shipped() {
         eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
         return;
@@ -56,7 +135,7 @@ async fn a_round_change_closes_after_the_last_answer() {
     let root = td.path().to_path_buf();
 
     let mut sealed = Vec::new();
-    for i in 0..RUNS {
+    for i in runs.clone() {
         let channel = format!("talky:953-{i}");
         let a = format!("953-{i}-a");
         let b = format!("953-{i}-b");
@@ -82,8 +161,9 @@ async fn a_round_change_closes_after_the_last_answer() {
         close_reports(&mut ports, &root, std::slice::from_ref(&sid)).await;
         sealed.push((i, sid, a));
     }
-    let all: Vec<_> = (0..RUNS)
-        .map(|i| generations(&root, &format!("talky:953-{i}")))
+    let all: Vec<_> = runs
+        .clone()
+        .map(|i| (i, generations(&root, &format!("talky:953-{i}"))))
         .collect();
     h.shutdown().await;
 
@@ -120,16 +200,19 @@ async fn a_round_change_closes_after_the_last_answer() {
         }
     }
     eprintln!(
-        "gh953 summary: {} of {RUNS} closes miss the last answer before the round change",
-        missing.len()
+        "gh953 summary: {} of {} closes (runs {runs:?}) miss the last answer before the round \
+         change",
+        missing.len(),
+        runs.len()
     );
     assert!(
         missing.is_empty(),
         "the close of a round change read the wall before the last answer stood on it in \
-         {} of {RUNS} runs: {missing:?}",
-        missing.len()
+         {} of {} runs ({runs:?}): {missing:?}",
+        missing.len(),
+        runs.len()
     );
-    for (i, gens) in all.iter().enumerate() {
+    for (i, gens) in &all {
         assert_eq!(
             gens.iter()
                 .map(|g| (g.1.as_str(), g.2.as_str()))
@@ -166,8 +249,7 @@ const STAMP: &str = "/assistants/scribe/talky/session-keeper/stamp";
 /// `write` batch of that generation -- the answer must be in it. Every run
 /// prints `gh953 late run <i>: seal answered @<s>, wall insert @<w>, close read
 /// @<r>, owed while held <o>, answer in the close: <bool>`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_round_change_waits_for_a_late_last_answer() {
+async fn a_round_change_waits_for_a_late_last_answer(runs: std::ops::Range<usize>) {
     if !road::shipped() {
         eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
         return;
@@ -177,7 +259,7 @@ async fn a_round_change_waits_for_a_late_last_answer() {
     let root = td.path().to_path_buf();
 
     let mut sealed = Vec::new();
-    for i in 0..RUNS {
+    for i in runs.clone() {
         let channel = format!("talky:953-late-{i}");
         let a = format!("953-late-{i}-a");
         let b = format!("953-late-{i}-b");
@@ -220,8 +302,9 @@ async fn a_round_change_waits_for_a_late_last_answer() {
         close_reports(&mut ports, &root, std::slice::from_ref(&sid)).await;
         sealed.push((i, sid, a, owed));
     }
-    let all: Vec<_> = (0..RUNS)
-        .map(|i| generations(&root, &format!("talky:953-late-{i}")))
+    let all: Vec<_> = runs
+        .clone()
+        .map(|i| (i, generations(&root, &format!("talky:953-late-{i}"))))
         .collect();
     h.shutdown().await;
 
@@ -278,16 +361,18 @@ async fn a_round_change_waits_for_a_late_last_answer() {
          is about did not happen (run, seal answered @, wall insert @): {no_race:?}"
     );
     eprintln!(
-        "gh953 late summary: {} of {RUNS} closes miss the late last answer",
-        missing.len()
+        "gh953 late summary: {} of {} closes (runs {runs:?}) miss the late last answer",
+        missing.len(),
+        runs.len()
     );
     assert!(
         missing.is_empty(),
         "a sealed generation was handed over before the held last answer of its turn \
-         stood on the wall in {} of {RUNS} runs: {missing:?}",
-        missing.len()
+         stood on the wall in {} of {} runs ({runs:?}): {missing:?}",
+        missing.len(),
+        runs.len()
     );
-    for (i, gens) in all.iter().enumerate() {
+    for (i, gens) in &all {
         assert_eq!(
             gens.iter()
                 .map(|g| (g.1.as_str(), g.2.as_str()))
@@ -341,8 +426,9 @@ async fn until_store_answered(
 /// the second answer is held, and only then does the person speak in round B.
 /// Measured at the receiver -- the curator writer's `write` batch of the
 /// sealed generation -- the answer to the LAST turn must be in it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_double_message_without_ids_closes_after_the_answer_to_the_last_turn() {
+async fn a_double_message_without_ids_closes_after_the_answer_to_the_last_turn(
+    runs: std::ops::Range<usize>,
+) {
     if !road::shipped() {
         eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
         return;
@@ -352,7 +438,7 @@ async fn a_double_message_without_ids_closes_after_the_answer_to_the_last_turn()
     let root = td.path().to_path_buf();
 
     let mut sealed = Vec::new();
-    for i in 0..IDLESS_RUNS {
+    for i in runs.clone() {
         let channel = format!("talky:953-idless-{i}");
         let a1 = format!("953-idless-{i}-a1");
         let a2 = format!("953-idless-{i}-a2");
@@ -424,8 +510,9 @@ async fn a_double_message_without_ids_closes_after_the_answer_to_the_last_turn()
         close_reports(&mut ports, &root, std::slice::from_ref(&sid)).await;
         sealed.push((i, sid, a2, owed, sealed_owes));
     }
-    let all: Vec<_> = (0..IDLESS_RUNS)
-        .map(|i| generations(&root, &format!("talky:953-idless-{i}")))
+    let all: Vec<_> = runs
+        .clone()
+        .map(|i| (i, generations(&root, &format!("talky:953-idless-{i}"))))
         .collect();
     h.shutdown().await;
 
@@ -450,8 +537,9 @@ async fn a_double_message_without_ids_closes_after_the_answer_to_the_last_turn()
         }
     }
     eprintln!(
-        "gh953 idless summary: {} of {IDLESS_RUNS} closes miss the answer to the last turn",
-        missing.len()
+        "gh953 idless summary: {} of {} closes (runs {runs:?}) miss the answer to the last turn",
+        missing.len(),
+        runs.len()
     );
     assert!(
         closed_at_once.is_empty(),
@@ -463,10 +551,11 @@ async fn a_double_message_without_ids_closes_after_the_answer_to_the_last_turn()
         missing.is_empty(),
         "an earlier answer acknowledged the debt of the last id-less turn, and the round \
          change closed the generation before that turn's answer stood on the wall in {} of \
-         {IDLESS_RUNS} runs (run, session, owed after the first answer): {missing:?}",
-        missing.len()
+         {} runs ({runs:?}) (run, session, owed after the first answer): {missing:?}",
+        missing.len(),
+        runs.len()
     );
-    for (i, gens) in all.iter().enumerate() {
+    for (i, gens) in &all {
         assert_eq!(
             gens.iter()
                 .map(|g| (g.1.as_str(), g.2.as_str()))

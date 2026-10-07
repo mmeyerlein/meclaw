@@ -1,0 +1,14 @@
+# Known slow tests: each needs more than a third of its nextest budget.
+#
+# Read by `scripts/slow_tests.py` (gate station `slow-tests`, GH #1046). An entry
+# is a debt, not an exception -- the same discipline as a retry entry of the
+# quarantine in `.config/nextest.toml`: it names the issue that pays it and the
+# measurement behind it, and the station prints it as `SLOW-DEBT` on every run.
+# Once the test comes in under the mark the station says `SLOW-DEBT PAID?`; then
+# the line goes. An entry without an `issue` is red.
+#
+# `test` is `<binary_id> <test name>`, the spelling `cargo nextest list` prints.
+
+# GH #1048 paid the last six entries (gh954, gh933, gh953 x3, the WebKit sheet)
+# by splitting each into tests of one cell or a few runs; the list is empty
+# and the lock `test_the_repo_owes_no_slow_test` keeps it that way.

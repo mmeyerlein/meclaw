@@ -98,7 +98,7 @@ TYPES = ("text", "int", "number", "boolean", "html")
 # GH #963: what the presenter observes, and its own topics
 
 # The tools whose CALLS the app block observes (`observes_tool_calls`), exactly the
-# occupants of a generation's own `./tools` hive (tools@1.4.5): their results are what the
+# occupants of a generation's own `./tools` hive (tools@1.4.6): their results are what the
 # string-form result observer hears from that hive. The file tool is `file` (op read,
 # write, list, stat), not `file_*`; the member's file space answers on its own road, which
 # no observer leg reaches (OR-DP.Q.1). A longer list is a pin change of the presenter.

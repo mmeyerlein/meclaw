@@ -8,7 +8,8 @@
 //! No such fixture existed: the "six mutations, 13 templates, 39 edges" of the
 //! spec is a design sketch, not a file — no test, no script in the tree carried
 //! those numbers. What DOES exist is the five shipped example declarations,
-//! whose `"template":` references sum to exactly eleven (they summed to
+//! whose `"template":` references sum to exactly twelve (`access` joined
+//! with GH #1061; they summed to
 //! thirteen until GH #298, ruling Q11, took the `memory-drain` node out of two
 //! of them):
 //!
@@ -16,7 +17,7 @@
 //! |-----------------------------------|-----------------------|
 //! | `examples/hard-shell/grow.json`   | 2                     |
 //! | `examples/never-forgets/grow.json`| 3                     |
-//! | `examples/meclaw-os/grow.json`    | 4                     |
+//! | `examples/meclaw-os/grow.json`    | 5                     |
 //! | `examples/meclaw-os/grow-cogny.json`   | 1                |
 //! | `examples/meclaw-os/grow-argus.json` | 1                |
 //!
@@ -414,12 +415,15 @@ async fn run_the_five() -> (tempfile::TempDir, Run) {
 
 /// `"template":` references across the five declarations — the only number here
 /// that is a property of the FILES rather than of a run. Asserted against the
-/// files in [`the_five_declarations_name_eleven_templates`].
+/// files in [`the_five_declarations_name_twelve_templates`].
 ///
 /// Moved 13 -> 11 with GH #298 (ruling Q11): `memory-drain` left the live stack
 /// and with it `examples/never-forgets/grow.json` and
 /// `examples/meclaw-os/grow.json`, one node each.
-const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
+///
+/// Moved 11 -> 12 with GH #1061 (#801): `examples/meclaw-os/grow.json` grows
+/// `access`, the broker its two `talky` consumers take their grant from.
+const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 
 /// Registry rows the five declarations add that carry a provenance stamp.
 /// MEASURED, not assumed: read off the first green run (see
@@ -497,7 +501,12 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// Moved 82 -> 85 with GH #949: every `curator` grew a twelfth cell,
 /// `reader`, which answers an app's read of its own round (3 x 1). Measured
 /// red in the strand's single-test run (85 against 82).
-const TEMPLATE_BORN_ROWS: usize = 85;
+///
+/// Moved 85 -> 89 with GH #1061: `examples/meclaw-os/grow.json` grows `access`
+/// around the two cells its seed checks in (`store`, `vault`), so the
+/// instantiation stamps four (`invoke`, `policy`, `sweep`, `clock`).
+/// COMPUTED in the strand (no cargo there); the builder's gate measures it.
+const TEMPLATE_BORN_ROWS: usize = 89;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -515,7 +524,9 @@ const TEMPLATE_BORN_ROWS: usize = 85;
 ///
 /// Moved 9 -> 10 with GH #889: `curator` arrives through the `talky`s' and the
 /// `cogny`'s ref cell.
-const DISTINCT_TEMPLATES: usize = 10;
+///
+/// Moved 10 -> 11 with GH #1061: `access`, grown by `examples/meclaw-os`.
+const DISTINCT_TEMPLATES: usize = 11;
 
 /// The sub-units that appear in the registry although NO declaration names
 /// them: they arrive through `talky`'s and `cogny`'s `cell.type: "ref"` cells.
@@ -818,14 +829,31 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// (`./curator -> ./session-keeper` on `turn_write`, the answer receipt). Two
 /// talkies, one keeper each: 2 x 1 + 2 x 1. Measured red in the strand's
 /// single-test run (434 against 430).
-const EDGES: usize = 434;
+///
+/// Moved 434 -> 455 with GH #1061: `examples/meclaw-os/grow.json` grows
+/// `access` (its fourteen internal edges) and draws seven of its own (ask and
+/// sealed answer for `talky/brain` and `talky/curator/summarizer`, three
+/// drains into the sink). COMPUTED in the strand; the builder's gate measures.
+///
+/// Then 434 -> 439 with GH #1079: every `curator` one edge more
+/// (`./intake -> .` on `reject`, the word-for-word check's refusal), and
+/// `talky@6` one of its own (`./curator -> ./errors` on `reject`); `cogny@5`
+/// only widened two conditions. Two talkies and one cogny: 3 x 1 + 2 x 1.
+/// Measured red in the strand's gate (439 against 434).
+///
+/// Both together after the merge of welle-vg/main with master: 434 + 21 + 5.
+const EDGES: usize = 460;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,
 /// `memory/episodes` and `memory/keep`). They carry NO template and NO chain,
 /// which is what makes the chain assertion below non-vacuous.
 /// MEASURED, not assumed: read off the first green run.
-const SEED_BORN_ROWS: usize = 4;
+///
+/// Moved 4 -> 6 with GH #1061: `examples/meclaw-os/seed` checks in the grant
+/// half of `access` -- `access/store` (its seeded grants) and `access/vault`
+/// (the cold deposit needs its config on disk, GH #1063).
+const SEED_BORN_ROWS: usize = 6;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // the tests
@@ -834,7 +862,7 @@ const SEED_BORN_ROWS: usize = 4;
 /// The template references of the five, measured on the shipped files rather
 /// than quoted from the spec sketch.
 #[test]
-fn the_five_declarations_name_eleven_templates() {
+fn the_five_declarations_name_twelve_templates() {
     let mut total = 0usize;
     for (file, _) in DECLARATIONS {
         let v = read_json(&repo(file));

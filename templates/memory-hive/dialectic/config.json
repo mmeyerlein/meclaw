@@ -7,7 +7,8 @@
     "provider": "openai",
     "model": "${MODEL_DIALECTIC}",
     "requirement": "Answers a question from memory by weighing a handful of recalled candidates with a fixed source priority, and states plainly what memory does not know. It needs faithful reasoning that invents nothing and a short, structured answer. It runs while a conversation waits, so it must answer within seconds at a moderate price.",
-    "api_key": "${OPENROUTER_API_KEY}",
+    "api_key": "",
+    "credential_grant_id": "",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
     "external_timeout_ms": 110000,
@@ -30,6 +31,18 @@
         "secret": false,
         "description": "MODEL_DIALECTIC — REQUIRED, no default: a model default in code is how a run silently measures a different model than the report claims (P5 finding)"
       },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "description": "Provider API key. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #801: the grant this cell presents to get its provider credential SEALED from an access hive instead of carrying a key. It ships EMPTY, which is no grant at all; whoever grows the cell (the builder recipe or the colony's own template) sets it through `override_params`, and the credential then arrives over the credential v-lane and is opened in RAM only. Immutable: a new grant is a new instance."
+      },
       "provider_extra": {
         "type": "object",
         "secret": false,
@@ -49,6 +62,17 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "finish_reason": {
           "type": "string",
           "required": true
@@ -130,6 +154,10 @@
           "required": false
         },
         "params": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
           "type": "object",
           "required": false
         }

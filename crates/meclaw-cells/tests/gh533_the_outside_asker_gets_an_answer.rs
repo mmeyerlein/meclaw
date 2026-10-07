@@ -43,6 +43,9 @@ use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{Headers, Path, Uuid};
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 /// The worked example of `examples/organism`, six levels deep — the shell, the
 /// namespace, the person, their memory, the container and one generation.
 const OS: &str = "/os";
@@ -97,7 +100,8 @@ fn lanes(rel: &str) -> (Vec<String>, Vec<String>) {
 
 /// The `add_edges` of an instantiation recipe, parsed the same strict way.
 fn recipe_edges(rel: &str) -> Vec<EdgeSpec> {
-    let doc = read_json(rel);
+    // GH #1061: the generation is read as its container reads it.
+    let doc = organism_assistant::at_the_container(&read_json(rel));
     let raw = doc["diff"]["add_edges"]
         .as_array()
         .unwrap_or_else(|| panic!("{rel}: no diff.add_edges"))

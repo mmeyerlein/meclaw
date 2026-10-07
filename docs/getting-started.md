@@ -1,12 +1,12 @@
 # Getting started
 
-Five steps put a colony on your machine and grow an organisation into it while it answers.
+Six steps put a colony on your machine and grow an organisation into it while it answers.
 A colony is one tree of cells under one daemon. After the first command, every step is a JSON
 declaration posted to `POST /colony/mutations`, the same endpoint an agent goes through when it
 changes the tree.
 
-Nothing is deployed and nothing restarts between the steps: you watch a running system gain
-three levels it did not have.
+Nothing is deployed between the steps and nothing restarts until the key goes in: you watch a
+running system gain three levels it did not have.
 
 ## 1 and 2: install meclaw, start meclaw-os
 
@@ -15,9 +15,9 @@ curl -fsSL https://github.com/mmeyerlein/meclaw/releases/latest/download/start.s
     | MECLAW_EXAMPLE=organism sh
 ```
 
-On a terminal the run asks for an OpenRouter key before it installs anything, and does not echo
-it while you type. It writes the key and the model tokens the shipped declarations read into one
-file, the colony's `.env`, mode `0600`. `MECLAW_EXAMPLE=organism` picks the seed whose root tree
+This run asks for no key. It writes the model tokens the shipped declarations read into the
+colony's `.env`, mode `0600`, and a random vault passphrase into a `0600` file next to the
+colony; the key itself goes into the member's vault in step 6. `MECLAW_EXAMPLE=organism` picks the seed whose root tree
 declares the `meclaw-os` shell: the first boot grows it, thirty-nine cells, and one more
 declaration adds the colony's front door and the terminal its answers stop in. Leave the variable
 out and you get the flat assistant of the [quick start](../README.md) instead, which answers one
@@ -62,6 +62,15 @@ that thinks, a tool surface. A `${VAR}` in a declaration is read from the colony
 every mutation and never from your shell, so a missing line is refused as `env_var_missing`
 instead of committing a half-wired cell.
 
+## 6: hand it the key
+
+```bash
+sh <colony>/deposit-key.sh
+```
+
+It asks for your OpenRouter key on the terminal without echoing it, seals it into alex's vault and
+restarts the daemon once. The brains take it from there as a sealed grant, never from `.env`.
+
 ## Talk to it
 
 ```bash
@@ -76,7 +85,7 @@ trace shows every hop the turn took through them.
 
 ## Where to read next
 
-- [`examples/organism`](../examples/organism/) for the six declarations this page took three
+- [`examples/organism`](../examples/organism/) for the five declarations this page took three
   from, the Telegram channel, and the count of hand-written edges.
 - [A colony refuses an attack](../examples/hard-shell/WALKTHROUGH.md), where a blocked fetch
   turns into a typed event on a route, out of a seed that configures no security.

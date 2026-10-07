@@ -787,13 +787,20 @@ pub async fn run_watchdog_with_label_slot(
     if armed_rx.await.is_err() {
         return;
     }
-    // Heartbeats buffered during boot prove liveness of a moment that is already
-    // past. Drop them so the first evaluated period is a fresh observation.
-    while heartbeat_rx.try_recv().is_ok() {}
     // GH #968: a label put during boot is as stale as a boot beat.
+    // GH #1022: taken BEFORE the channel is drained, not after. The drain makes
+    // room, and room in the channel is the first sign of an armed supervisor; a
+    // read declared in that instant meets a still-full channel, so its label goes
+    // to the slot -- and the old order then took it away here as stale. Measured
+    // on a 24-thread lane under `stress-ng --cpu 24`: 3 of 100 runs of gh571
+    // `a_trip_inside_a_read_names_the_endpoint`, each with the label in the slot
+    // 1-3 ms after the read, one beat ever heard, 120 trips without a name.
     if let Some(slot) = label_slot.as_mut() {
         let _ = slot.take();
     }
+    // Heartbeats buffered during boot prove liveness of a moment that is already
+    // past. Drop them so the first evaluated period is a fresh observation.
+    while heartbeat_rx.try_recv().is_ok() {}
     let mut wd = Watchdog::new(threshold);
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

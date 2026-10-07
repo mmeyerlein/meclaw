@@ -21,8 +21,10 @@ the agent is there.
 meclaw-os/
 ├── seed/                      the --root of the colony. This is the whole tree.
 │   ├── colony.json            substrate defaults. two lines.
-│   └── main/config.json       type: "hive", and its graph is EMPTY
-├── grow.json                  the declaration. four nodes, four edges.
+│   ├── main/config.json       type: "hive", and its graph is EMPTY
+│   └── main/access/           the grant half of the broker: hive marker (graph EMPTY),
+│                              store + seed/{grants,grant_events}.jsonl, vault config
+├── grow.json                  the declaration. five nodes, eleven edges.
 ├── grow-cogny.json            step two: the thinking core. one node, three edges.
 ├── grow-argus.json            step three: the control loop. one node, no edge.
 ├── grow-canvy.json            step four: the colony's own picture. one node, no edge.
@@ -117,11 +119,19 @@ lane, ending where every undecided lane here ends.
 # from the repo root, on a fresh release build
 cargo build --workspace --release
 
-cat > examples/meclaw-os/seed/.env <<'EOF'
-OPENROUTER_API_KEY=sk-...
+KEYFILE="$HOME/.local/share/meclaw/meclaw-os.vault-key"      # outside the root, 0600
+(umask 077; mkdir -p "$(dirname "$KEYFILE")"; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$KEYFILE")
+
+cat > examples/meclaw-os/seed/.env <<EOF
+MECLAW_VAULT_KEY_FILE=$KEYFILE
 MODEL_BRAIN=openai/gpt-4o-mini
 MODEL_CORE=openai/gpt-4o
 EOF
+
+# the provider key goes into the vault, read from stdin, before the first boot (#801)
+./target/release/meclaw --root ./examples/meclaw-os/seed --vault /main/access/vault \
+                        --vault-key-source plainfile --vault-key-file "$KEYFILE" \
+                        --vault-add cred:openrouter
 
 ./target/release/meclaw --root ./examples/meclaw-os/seed \
                         --templates ./templates \
@@ -136,7 +146,14 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
      -d @examples/meclaw-os/grow.json
 ```
 
-Reload the registry. Seventeen cells.
+Reload the registry. Seventeen cells, plus the six of the access hive.
+
+**The key is a grant, not a line in `.env` (#801).** `talky/brain` and
+`talky/curator/summarizer` hold no bearer: each names a grant
+(`grant:openrouter@colony-example/talky-brain`, `…/talky-curator-summarizer`), seeded in
+`seed/main/access/store/seed/`, and asks `./access` for `cred:openrouter` sealed. The vault opens
+itself from `key_source: plainfile` and the file `MECLAW_VAULT_KEY_FILE` names; for a long-running
+unit use `key_source: systemd-cred` instead. The wiring is [`vault-pilot`](../vault-pilot/)'s.
 
 `MODEL_BRAIN` is read at instantiation and again at every read afterwards, so a different model
 is an `.env` line and a reboot, not a config edit. Any OpenAI-compatible endpoint works --
@@ -183,12 +200,11 @@ trace when it is **addressed**, not because it exists.
 channel identity survives every later hop -- and why the firewall rate-limits per channel and
 the keeper mints one session per channel instead of flattening every chat into one.
 
-Without a key the empty colony still boots — but the grow step needs `OPENROUTER_API_KEY` to
-*exist* in `.env`, because instantiating the `llm` cells substitutes it and a missing variable
-is a hard reject (`env_var_missing`), by design. With a dummy value the colony grows and
-routes; the `llm` cell then returns an auth error as a normal message on the error lane --
-which this declaration deliberately does not wire (GH #284), so what you watch is the
-dead-letter queue naming `/talky` and the trace that got it there.
+Without a deposit the colony still boots and grows; the first turn's credential round is
+refused by the vault (nothing stored under `cred:openrouter`) and the brain answers with
+`credential_pending` -- on the error lane, which this declaration deliberately does not wire
+(GH #284), so what you watch is the dead-letter queue naming `/talky` and the trace that got it
+there.
 
 ## Step two: grow the thinking core
 
@@ -277,8 +293,8 @@ READMEs because it is the one that pays off.
 
 `crates/meclaw-cells/tests/meclaw_os_example.rs` boots this seed and applies **these** two
 declarations -- the files, not copies of them -- against a mock provider, and drives one turn
-from the HTTP surface to the reply port. It measures the seed (two files, zero cells, no edge)
-and both counts (17, then 22). If the example rots, that test goes red first.
+from the HTTP surface to the reply port. It measures the seed (two files plus the
+checked-in grant half of `access/`, no edge), deposits a test key cold, and both counts. If the example rots, that test goes red first.
 
 `crates/meclaw-cells/tests/gh284_no_shipped_topology_silences_a_reject.rs` measures the other
 half: no declaration in `examples/` and no `config.json` in `templates/` routes a `reject` or
@@ -286,7 +302,7 @@ an `error` into a cell that swallows it.
 
 ## Step three: the colony that measures itself
 
-`grow-argus.json` adds the [`argus@1.3.3`](../../templates/argus/) — eight more cells that
+`grow-argus.json` adds the [`argus@1.3.4`](../../templates/argus/) — eight more cells that
 read a charter, measure this colony out of its own ledger, have a model judge and simulate
 against those numbers, send the decided change to the cell it names, verify, and then keep the
 change or revert it against a plan authored beforehand. Every cycle writes a receipt.
@@ -324,7 +340,7 @@ at all — a `code` cell's numeric cap, like the collector's `max_iter`, comes b
 `key_outside_radius_<key>` with a receipt, rather than as a change nobody applied.
 
 Note the shape of the endpoint on the way out: it is the **hive**, not a cell inside it.
-`argus@1.3.3` is sealed (`params.ports: []`), so `./argus/mutator` is not an address at all
+`argus@1.3.4` is sealed (`params.ports: []`), so `./argus/mutator` is not an address at all
 any more — a caller asks for the `mutate` lane and never learns which cell produces it. The
 other lane the hive offers, `error`, would be drawn at the hive for the same reason — but
 this declaration draws it nowhere (GH #284). An argus whose `error` ended in the sink would
@@ -413,7 +429,7 @@ becomes a manifest, reaches the gate, asks, and stops there. The receipt an oper
 the one the front door renders; nothing is applied, and nothing is lost silently. A colony
 that wants the round to finish wires `ask` to a broker, `in_verdict` back, and `mutate` on to
 the mutation door — which is exactly the shape
-[`meclaw-os@2.2.29`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
+[`meclaw-os@2.2.34`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
 grow when you want an OS rather than an agent with a door.
 
 ```bash
@@ -444,7 +460,7 @@ A built colony arrives in two stages instead.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", ONE edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.29"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.34"}}
 ```
 
 ```bash
@@ -458,9 +474,9 @@ cp examples/meclaw-os/seed-ref/.env.example examples/meclaw-os/seed-ref/.env
 
 The third file is a **declaration, not a cell**. The first start resolves it against the
 template library and grows it — the capability broker, the control loop, the baumeister, the
-submitter, the front door, the empty `orgs` container and the sixty-nine edges between them —
+submitter, the front door, the empty `orgs` container and the seventy-three edges between them —
 through the very resolution and staging a mutation takes. Then the marker is **gone**: what stands at its
-address is [`meclaw-os@2.2.29`](../../templates/meclaw-os/). A second boot finds nothing to grow.
+address is [`meclaw-os@2.2.34`](../../templates/meclaw-os/). A second boot finds nothing to grow.
 
 **The one edge is the whole birth topology.** `./os -> /colony/mutations`, on the `mutate` lane
 and nothing else. It cannot be added by a mutation on any scope — an edge *is* a mutation — so it
@@ -499,7 +515,7 @@ change:
 curl -s -X POST http://127.0.0.1:7778/messages -H 'Content-Type: application/json' -d '{
   "target": "/os", "hop": {"route": "in_build"},
   "body": {"messages": [{"origin": "user", "type": "text", "id": "",
-    "text": "{\"request\": \"grow an org named acme from org@2.1.18 under /os\", \"scope\": \"/os\"}"}]}}'
+    "text": "{\"request\": \"grow an org named acme from org@2.1.21 under /os\", \"scope\": \"/os\"}"}]}}'
 
 # -> receipt, hop.draft_state 'draft_ready', hop.manifest_sha256 <digest>,
 #    hop.draft_path /os/operator/drafts, body.manifest the declarations verbatim.

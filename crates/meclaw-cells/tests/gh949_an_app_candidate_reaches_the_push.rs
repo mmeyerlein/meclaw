@@ -103,6 +103,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 /// The failure-marker convention of this repo, not a timing discriminator.
 const DEADLINE: Duration = Duration::from_secs(30);
 
@@ -241,7 +244,9 @@ fn install_edges() -> Vec<Value> {
 /// The container as `examples/organism` grows it, with its generation renamed
 /// to the one the declaration is installed for.
 fn container_edges() -> Vec<Value> {
-    let grown = read_json(&repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
     let raw = meclaw_core::serde_json::to_string(&grown["diff"]["add_edges"]).expect("serialise");
     let renamed = raw
         .replace("./scribe", &format!("./{GENERATION}"))

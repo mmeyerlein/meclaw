@@ -32,7 +32,8 @@
 //! must refuse. Every prompt also carries a correction of `F-EA`, a closure of
 //! the other round's topic, and (policy "source") a closure of its own topic,
 //! (policy "foreign") a closure of its own topic at the other round's turn.
-//! The matrix is 6 episode orders x 4 filing policies x 2 request rounds.
+//! The matrix is 6 episode orders x 4 filing policies x 2 request rounds,
+//! run as one test per round x policy cell (GH #1048, see `cells!`).
 //!
 //! What must hold in every case, measured in the `facts` and `topics` tables,
 //! at the stub and in the colony's own `message_log`:
@@ -1070,15 +1071,103 @@ fn dead_letters(root: &std::path::Path) -> Vec<(String, String, String)> {
 
 // ═══════════════════════════════════════════════════════════════════ lock
 
-/// The issue's trace as a matrix: 6 episode orders x 3 filing policies x 2
-/// request rounds, one session each, one colony for all of them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_close_pass_never_crosses_a_round() {
+/// The matrix, one `#[test]` per request round x filing policy x half of the
+/// episode orders, each cell on a colony of its own.
+///
+/// WHY split (GH #1048): the 48 sessions ran as ONE test on ONE colony, eight
+/// waves of six one after the other -- 168.4-176.1 s of the 240 s budget in
+/// three integration runs (2026-10-05/06) and TIMEOUT 240 s under lane load in
+/// three strand gates in a row (2026-10-07). Cut into round x policy (six
+/// sessions each), the "source" cells still took 62-80 s under load on build01
+/// (ten stress iterations, 2026-10-07) -- that policy writes the most; three
+/// sessions per cell halve it. A cell is one wave plus one boot, the cells run
+/// in parallel, and every assertion of the file is still made per session.
+/// Nothing below judges across cells: (a)-(h) are per session, the ttl-death
+/// scan is per colony.
+macro_rules! cells {
+    ($($name:ident => ($round:expr, $policy:expr, $orders:expr);)+) => {
+        /// Every cell the macro made, in the order it made them.
+        const CELLS: &[(&str, Policy, std::ops::Range<usize>)] = &[$(($round, $policy, $orders)),+];
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $name() {
+                the_close_pass_never_crosses_a_round($round, $policy, $orders).await;
+            }
+        )+
+    };
+}
+
+cells! {
+    round_ea_files_at_the_source_orders_0_to_2 => (ROUND_EA, Policy::Source, 0..3);
+    round_ea_files_at_the_source_orders_3_to_5 => (ROUND_EA, Policy::Source, 3..6);
+    round_ea_files_at_the_newest_orders_0_to_2 => (ROUND_EA, Policy::Newest, 0..3);
+    round_ea_files_at_the_newest_orders_3_to_5 => (ROUND_EA, Policy::Newest, 3..6);
+    round_ea_files_at_the_first_orders_0_to_2 => (ROUND_EA, Policy::First, 0..3);
+    round_ea_files_at_the_first_orders_3_to_5 => (ROUND_EA, Policy::First, 3..6);
+    round_ea_files_at_a_foreign_turn_orders_0_to_2 => (ROUND_EA, Policy::Foreign, 0..3);
+    round_ea_files_at_a_foreign_turn_orders_3_to_5 => (ROUND_EA, Policy::Foreign, 3..6);
+    round_eb_files_at_the_source_orders_0_to_2 => (ROUND_EB, Policy::Source, 0..3);
+    round_eb_files_at_the_source_orders_3_to_5 => (ROUND_EB, Policy::Source, 3..6);
+    round_eb_files_at_the_newest_orders_0_to_2 => (ROUND_EB, Policy::Newest, 0..3);
+    round_eb_files_at_the_newest_orders_3_to_5 => (ROUND_EB, Policy::Newest, 3..6);
+    round_eb_files_at_the_first_orders_0_to_2 => (ROUND_EB, Policy::First, 0..3);
+    round_eb_files_at_the_first_orders_3_to_5 => (ROUND_EB, Policy::First, 3..6);
+    round_eb_files_at_a_foreign_turn_orders_0_to_2 => (ROUND_EB, Policy::Foreign, 0..3);
+    round_eb_files_at_a_foreign_turn_orders_3_to_5 => (ROUND_EB, Policy::Foreign, 3..6);
+}
+
+/// The split loses no case: every request round x filing policy has cells
+/// whose order ranges cover every episode order exactly once, and together the
+/// cells are the whole matrix -- a policy, a round or an order added to the
+/// matrix without a cell is red here, not silently untested.
+#[test]
+fn the_cells_are_the_matrix() {
+    for round in [ROUND_EA, ROUND_EB] {
+        for policy in POLICIES {
+            let mut orders: Vec<usize> = CELLS
+                .iter()
+                .filter(|(r, p, _)| *r == round && *p == policy)
+                .flat_map(|(_, _, o)| o.clone())
+                .collect();
+            orders.sort_unstable();
+            assert_eq!(
+                orders,
+                (0..ORDERS.len()).collect::<Vec<_>>(),
+                "the cells! list of this file does not cover every order of {round} x \
+                 {policy:?} exactly once; add or fix a line there"
+            );
+        }
+    }
+    let covered: usize = CELLS
+        .iter()
+        .map(|(r, p, o)| {
+            matrix()
+                .iter()
+                .filter(|c| c.round == *r && c.policy == *p && o.contains(&c.order))
+                .count()
+        })
+        .sum();
+    assert_eq!(
+        covered,
+        matrix().len(),
+        "a case of the matrix lies in no cell"
+    );
+}
+
+async fn the_close_pass_never_crosses_a_round(
+    round: &'static str,
+    policy: Policy,
+    orders: std::ops::Range<usize>,
+) {
     if !shipped() {
         eprintln!("gh933: the memory hive is not in this tree, skipped (GH #49)");
         return;
     }
-    let cases = matrix();
+    let cases: Vec<Case> = matrix()
+        .into_iter()
+        .filter(|c| c.round == round && c.policy == policy && orders.contains(&c.order))
+        .collect();
+    assert_eq!(cases.len(), orders.len(), "one session per episode order");
     let (stub, prompts) = start_stub(&cases).await;
     let td = tempfile::TempDir::new().expect("tempdir");
     build(&td, &stub, &cases);

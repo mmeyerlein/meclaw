@@ -1,4 +1,4 @@
-//! `voice@2.5.0` — the template, its declared surface, and the binding manifest
+//! `voice@2.6.1` — the template, its declared surface, and the binding manifest
 //! its README hands a reader.
 //!
 //! Three things can drift apart here and each of them costs a reader a wrong
@@ -126,7 +126,7 @@ fn the_template_declares_a_long_running_voice_cell() {
         "a cell holding a socket is not bounded by a message timeout"
     );
     assert_eq!(tpl["name"], json!("voice"));
-    assert_eq!(tpl["version"], json!("2.5.0"));
+    assert_eq!(tpl["version"], json!("2.6.1"));
     // ADR-0031: the shipped instance is reached under a mount name, and the
     // name is a declared setting like every other knob.
     assert_eq!(cfg["params"]["mount"], json!("voice"));
@@ -233,36 +233,32 @@ fn the_duplex_setting_is_declared_and_ships_null() {
     assert!(p.duplex.is_some() && p.tts.is_none());
 }
 
-/// The two credentials are the only environment tokens. Everything else is a
-/// behaviour knob and lives in `params` where `override_params` reaches it
-/// (`docs/development-rules.md` § 8a, R6).
+/// No environment token is left (GH #1061, #801). The two credentials come
+/// sealed from the vault under a grant each, both `api_key` literals are
+/// empty, and every behaviour knob lives in `params` where `override_params`
+/// reaches it (`docs/development-rules.md` § 8a, R6).
 #[test]
-fn the_only_env_tokens_are_the_two_credentials() {
+fn no_env_token_is_left_and_the_credentials_are_grants() {
     let Some((cfg, _, _)) = shipped() else {
         return;
     };
     let mut found = Vec::new();
     env_tokens(&cfg["params"], &mut found);
-    found.sort();
-    found.dedup();
-    assert_eq!(
-        found,
-        vec![
-            "CARTESIA_API_KEY".to_string(),
-            "DEEPGRAM_API_KEY".to_string()
-        ],
-        "only the provider lane stays in .env; a model, a voice, a language or \
-         a threshold read out of the environment is unreachable per instance"
+    assert!(
+        found.is_empty(),
+        "a key or a knob read out of the environment is unreachable per \
+         instance, and a key belongs in the vault (#801): {found:?}"
     );
-    assert_eq!(
-        cfg["params"]["stt"]["api_key"],
-        json!("${DEEPGRAM_API_KEY}")
-    );
-    assert_eq!(
-        cfg["params"]["tts"]["api_key"],
-        json!("${CARTESIA_API_KEY}")
-    );
-    for spec in ["stt", "tts"] {
+    for (spec, handle) in [
+        ("stt", "grant:deepgram@template-voice/stt"),
+        ("tts", "grant:cartesia@template-voice/tts"),
+    ] {
+        assert_eq!(cfg["params"][spec]["api_key"], json!(""), "{spec}.api_key");
+        assert_eq!(
+            cfg["params"][spec]["credential_grant_id"],
+            json!(handle),
+            "{spec} names its grant"
+        );
         assert_eq!(
             cfg["contract"]["settings"][spec]["secret"],
             json!(true),
@@ -271,55 +267,42 @@ fn the_only_env_tokens_are_the_two_credentials() {
     }
 }
 
-/// The environment surface is DECLARED, so a builder reads what a colony owes
-/// before a boot refuses it: neither token carries a default, and a colony
-/// growing the shipped configuration without them stops with `env_var_missing`.
-///
-/// Declared and not `required`: the requirement walk reads the template and
-/// never the `override_params` beside it (`validate::requires_for_reference`),
-/// so requiring the recogniser key would refuse the one configuration meant to
-/// cost nothing — `stt.provider: "echo"`, no `tts` block, no credential at all.
+/// The credential surface is DECLARED, so a builder reads what a colony owes
+/// before the first session waits for a box: two vault entries, one deposit
+/// each, and no `requires.env` any more (#801) -- the `echo` configuration
+/// still costs nothing, because a cell that never asks needs no deposit.
 #[test]
-fn the_two_credentials_are_a_declared_environment_surface() {
+fn the_two_credentials_are_a_declared_vault_surface() {
     let Some((cfg, tpl, _)) = shipped() else {
         return;
     };
-    let declared = tpl["requires"]["env"]
-        .as_object()
-        .expect("template.json declares requires.env");
-    let mut names: Vec<&String> = declared.keys().collect();
-    names.sort();
-    assert_eq!(
-        names,
-        vec!["CARTESIA_API_KEY", "DEEPGRAM_API_KEY"],
-        "requires.env and the ${{VAR}} tokens in params are one surface"
+    assert!(
+        tpl["requires"]["env"]
+            .as_object()
+            .is_none_or(|m| m.is_empty()),
+        "requires.env survived #801: {}",
+        tpl["requires"]["env"]
     );
-
-    let mut in_params = Vec::new();
-    env_tokens(&cfg["params"], &mut in_params);
-    in_params.sort();
-    in_params.dedup();
-    let mut as_declared: Vec<String> = names.iter().map(|s| (*s).clone()).collect();
-    as_declared.sort();
-    assert_eq!(
-        in_params, as_declared,
-        "a token the template substitutes and does not declare is an \
-         environment surface a builder cannot read"
-    );
-
-    for (key, spec) in declared {
-        assert_eq!(
-            spec["required"],
-            json!(false),
-            "requires.env.{key} is required, which refuses the echo \
-             configuration: the walk reads the template, not the override"
-        );
+    let creds = tpl["requires"]["credentials"]
+        .as_array()
+        .expect("template.json declares requires.credentials");
+    let mut refs: Vec<&str> = creds
+        .iter()
+        .filter_map(|c| c["cred_ref"].as_str())
+        .collect();
+    refs.sort();
+    assert_eq!(refs, vec!["cred:cartesia", "cred:deepgram"]);
+    for c in creds {
         assert!(
-            spec["because"].as_str().is_some_and(|s| s.len() > 40),
-            "requires.env.{key} declares no reason, and a declaration without \
-             one teaches a builder nothing"
+            c["because"]
+                .as_str()
+                .is_some_and(|s| s.contains("--vault-add")),
+            "requires.credentials names no deposit: {c}"
         );
     }
+    let mut in_params = Vec::new();
+    env_tokens(&cfg["params"], &mut in_params);
+    assert!(in_params.is_empty(), "{in_params:?}");
 }
 
 /// The answer finds its way back because the cell says it mints the key the
@@ -391,12 +374,14 @@ fn the_call_key_is_declared_and_the_session_key_is_still_read() {
             "speak_end",
             "error",
             "delegation",
-            "renewed"
+            "renewed",
+            "credential_request"
         ]),
-        "the seven lanes this cell names for itself -- `spoken` and `delegation` \
+        "the eight lanes this cell names for itself -- `spoken` and `delegation` \
          are the duplex provider's two, added in 2.1.0, `renewed` its third \
-         (GH #896), and they are on the SAME enum because a lane is a lane \
-         whichever engine produced it"
+         (GH #896), `credential_request` the ask for its sealed keys (GH #1059), \
+         and they are on the SAME enum because a lane is a lane whichever \
+         engine produced it"
     );
 }
 
@@ -424,7 +409,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.5.0"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.6.1"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()
@@ -503,10 +488,14 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
     assert_eq!(promoted["channel_node"], json!("'voice'"));
     assert_eq!(promoted["channel"], json!("'voice'"));
 
-    // And what the cell consumes is what the down edge delivers.
+    // And what the cell consumes is what the down edge delivers -- declared,
+    // but not REQUIRED since GH #1061: the sealed credential box reaches this
+    // cell with `body.sealed` alone, and a required key would refuse it at
+    // delivery (`enforce_consumes_for_delivery`).
+    assert!(cfg["contract"]["consumes"]["body"]["messages"].is_object());
     assert_eq!(
         cfg["contract"]["consumes"]["body"]["messages"]["required"],
-        json!(true)
+        json!(false)
     );
 }
 
@@ -613,8 +602,15 @@ fn an_unresolved_credential_is_refused_by_its_name() {
     let Some((cfg, _, _)) = shipped() else {
         return;
     };
-    let err = VoiceParams::parse(&cfg["params"])
-        .expect_err("an unsubstituted ${…} credential is refused");
+    // GH #1061 (#801): the shipped params name a grant and parse as they are.
+    // The literal is the one-release road, and a literal an instance wrote as
+    // an unresolved `${…}` with no grant beside it is what is refused here.
+    VoiceParams::parse(&cfg["params"]).expect("the shipped params name a grant and parse");
+    let mut literal = cfg["params"].clone();
+    literal["stt"]["credential_grant_id"] = json!("");
+    literal["stt"]["api_key"] = json!(concat!("$", "{DEEPGRAM_API_KEY}"));
+    let err =
+        VoiceParams::parse(&literal).expect_err("an unsubstituted ${…} credential is refused");
     assert!(
         err.contains("stt.api_key"),
         "the refusal must name the setting that is unresolved: {err}"
@@ -686,7 +682,13 @@ fn the_template_literals_are_the_code_defaults() {
         let block = bare[lane]
             .as_object_mut()
             .expect("both provider blocks are objects");
-        block.retain(|k, _| k == "provider" || k == "api_key" || k == "voice" || k == "model");
+        block.retain(|k, _| {
+            k == "provider"
+                || k == "api_key"
+                || k == "credential_grant_id"
+                || k == "voice"
+                || k == "model"
+        });
     }
 
     let full = VoiceParams::parse(&full_params).expect("the shipped params parse");
@@ -790,7 +792,7 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
     ack_rx
         .await
         .expect("rescan acked")
-        .expect("the library must register voice@2.5.0");
+        .expect("the library must register voice@2.6.1");
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx

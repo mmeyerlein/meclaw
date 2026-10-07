@@ -622,7 +622,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.10.1");
+    assert_eq!(t["version"], "1.11.1");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -656,7 +656,10 @@ fn curator_template_shape() {
             "in_renewed",
             "in_stats",
             "in_candidate",
-            "in_read"
+            "in_read",
+            // GH #1061 (#801): the summarizer's sealed key, answered by the
+            // member's broker over a v-lane.
+            "in_sealed"
         ]
     );
     assert_eq!(
@@ -674,7 +677,10 @@ fn curator_template_shape() {
             "stats",
             "candidate_ack",
             "thing_seen",
-            "read"
+            "read",
+            "credential_request",
+            // GH #1079: one per item of a section that failed its word-for-word check.
+            "reject"
         ]
     );
     let types: Vec<(&str, &str)> = vec![
@@ -3042,4 +3048,503 @@ fn gh1018_off_by_default_and_never_on_a_live_channel() {
             "prefix {prefix:?}, channel {channel:?}, time {at:?}: the ingest clock, got {times:?}"
         );
     }
+}
+
+// ================================================ GH #1079: the word-for-word check
+
+/// A section of the model's block the parent's splitter stamped with a
+/// `sidecar_verify` rule (GH #1079), on `in_section` with the answer's context
+/// -- the person's episode of the turn included, as the talky's brain edge
+/// promotes it -- and, when a field names `answer`, the answer text beside the
+/// body as `verify_answer`. Returns what left the hive: the sections on
+/// `sidecar` and the refusals on `reject`.
+fn checked_section(
+    h: &mut Hive,
+    call: &Msg,
+    name: &str,
+    rule: &str,
+    payload: Value,
+    answer: Option<&str>,
+) -> (Vec<Msg>, Vec<Msg>) {
+    let mut ctx = call.context.clone();
+    for k in ["curator_call", "turn_id", "session_id", "iter"] {
+        ctx.insert(k.into(), call.hop[k].clone());
+    }
+    ctx.insert(
+        "episode_turn_id".into(),
+        call.hop
+            .get("episode_turn_id")
+            .cloned()
+            .unwrap_or_else(|| json!("")),
+    );
+    let mut body = json!({"messages": [], "section": name, "payload": payload});
+    if let Some(a) = answer {
+        body["verify_answer"] = json!(a);
+    }
+    h.out.clear();
+    h.lane(
+        "in_section",
+        Value::Object(ctx),
+        json!({"section": name, "turn_id": call.hop["turn_id"], "sidecar_verify": rule}),
+        body,
+    );
+    (h.routed("sidecar"), h.routed("reject"))
+}
+
+/// The one section a checked section leaves as: the splitter's hop without the
+/// rule, the splitter's body without the answer text.
+fn the_checked_section(sides: &[Msg], name: &str) -> Value {
+    assert_eq!(sides.len(), 1, "a checked section leaves once: {sides:?}");
+    let s = &sides[0];
+    assert_eq!(s.hop["route"], "sidecar");
+    assert_eq!(s.hop["section"], name);
+    assert!(
+        !s.hop.contains_key("sidecar_verify"),
+        "the rule stays inside the composite: {:?}",
+        s.hop
+    );
+    assert!(
+        !s.body.contains_key("verify_answer"),
+        "the answer text never leaves on a section: {:?}",
+        s.body
+    );
+    s.body["payload"].clone()
+}
+
+fn reasons(rejects: &[Msg]) -> Vec<(String, String)> {
+    rejects
+        .iter()
+        .map(|m| {
+            (
+                m.hop["field"].as_str().unwrap_or("").to_string(),
+                m.hop["reject_reason"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn sidecar_verify_drops_item_whose_quote_is_not_in_the_turn() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("I miss Werner's patient ways. Yes.")]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "needs",
+        r#"{"quote":"turn"}"#,
+        json!({"needs": [
+            {"need": "connection", "quote": "miss Werner's patient ways"},
+            {"need": "solitude", "quote": "I like being alone"},
+            // A paraphrase is no quote: no fuzzy match counts as a source.
+            {"need": "patience", "quote": "miss Werner's patience"},
+            // Inside a word is no word boundary.
+            {"need": "cut", "quote": "iss Werner's patient"},
+            // Under three words a quote counts only as a whole turn, and this
+            // one is part of one.
+            {"need": "short", "quote": "patient ways"}
+        ]}),
+        None,
+    );
+    let payload = the_checked_section(&sides, "needs");
+    assert_eq!(
+        payload,
+        json!({"needs": [{"need": "connection", "quote": "miss Werner's patient ways",
+                          "verified": ["quote"]}]}),
+        "only the item whose quote the person said stays"
+    );
+    assert_eq!(
+        reasons(&rejects),
+        vec![("quote".to_string(), "quote_not_in_source".to_string()); 4],
+        "one refusal per dropped item: {rejects:?}"
+    );
+}
+
+#[test]
+fn sidecar_verify_keeps_verbatim_quote_after_normal_form() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([
+            user("I told her: \u{201c}Gardening keeps me  SANE\u{201d} \u{2013} every single day."),
+            user("Yes.")
+        ]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "needs",
+        r#"{"quote":"turn"}"#,
+        json!({"needs": [
+            // Case, straight quotes for curly ones, a plain dash, one space.
+            {"need": "a", "quote": "\"gardening keeps me sane\" - every single day"},
+            // Punctuation at the edge of a quote is no part of it.
+            {"need": "b", "quote": "...Gardening keeps me sane!"},
+            // Whitespace of any width is one space.
+            {"need": "c", "quote": "keeps   me\n sane"},
+            // A short quote that IS a whole turn.
+            {"need": "d", "quote": "yes"}
+        ]}),
+        None,
+    );
+    let payload = the_checked_section(&sides, "needs");
+    let kept: Vec<&str> = payload["needs"]
+        .as_array()
+        .expect("the array")
+        .iter()
+        .map(|i| i["need"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(kept, ["a", "b", "c", "d"], "{payload}");
+    assert!(
+        payload["needs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["verified"] == json!(["quote"])),
+        "{payload}"
+    );
+    assert!(rejects.is_empty(), "{rejects:?}");
+}
+
+/// The apostrophes people type beside the straight one fold like the curly
+/// ones: the acute accent (U+00B4) many European keyboards produce for one, the
+/// modifier letter, the backtick and the single guillemets. A copy that
+/// straightens them is still a copy, in either direction.
+#[test]
+fn sidecar_verify_folds_every_apostrophe_form() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([
+            user("How\u{00b4}s it going today?"),
+            user("I can\u{02bc}t sleep without the radio."),
+            user("We called it the \u{2039}quiet room\u{203a} back then."),
+            user("Don`t forget the garden gate."),
+            user("It's my brother's birthday on Sunday.")
+        ]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "notes",
+        r#"{"quote":"turn"}"#,
+        json!({"notes": [
+            {"note": "a", "quote": "how's it going today"},
+            {"note": "b", "quote": "I can't sleep without the radio"},
+            {"note": "c", "quote": "the 'quiet room' back then"},
+            {"note": "d", "quote": "don't forget the garden gate"},
+            {"note": "e", "quote": "it\u{00b4}s my brother\u{02bc}s birthday"}
+        ]}),
+        None,
+    );
+    let payload = the_checked_section(&sides, "notes");
+    let kept: Vec<&str> = payload["notes"]
+        .as_array()
+        .expect("the array")
+        .iter()
+        .map(|i| i["note"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(kept, ["a", "b", "c", "d", "e"], "{payload} {rejects:?}");
+    assert!(rejects.is_empty(), "{rejects:?}");
+}
+
+/// A typo in a rule is said, never swallowed: a `mode` the cell does not know
+/// checks as `drop` and says so, and an `items` that names no array of the
+/// section checks nothing -- the section goes on with no item stamped
+/// `verified`, and stderr names the array it looked for.
+#[test]
+fn sidecar_verify_a_rule_with_a_typo_is_said() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("I miss Werner's patient ways.")]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "notes",
+        r#"{"mode":"flag","quote":"turn"}"#,
+        json!({"notes": [{"note": "a", "quote": "I like being alone"}]}),
+        None,
+    );
+    let payload = the_checked_section(&sides, "notes");
+    assert_eq!(
+        payload,
+        json!({"notes": []}),
+        "an unknown mode checks as drop"
+    );
+    assert_eq!(rejects.len(), 1, "{rejects:?}");
+    assert!(
+        h.stderr
+            .iter()
+            .any(|e| e.contains("mode") && e.contains("flag")),
+        "the unknown mode is said: {:?}",
+        h.stderr
+    );
+
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "notes",
+        r#"{"items":"note","quote":"turn"}"#,
+        json!({"notes": [{"note": "a", "quote": "I like being alone"}]}),
+        None,
+    );
+    let payload = the_checked_section(&sides, "notes");
+    assert!(
+        payload["notes"][0].get("verified").is_none(),
+        "nothing was checked, so nothing is stamped: {payload}"
+    );
+    assert!(rejects.is_empty(), "{rejects:?}");
+    assert!(
+        h.stderr
+            .iter()
+            .any(|e| e.contains("items") && e.contains("note")),
+        "the array it looked for is said: {:?}",
+        h.stderr
+    );
+}
+
+#[test]
+fn sidecar_verify_reason_quote_missing() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("I miss Werner's patient ways.")]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "needs",
+        r#"{"quote":"turn"}"#,
+        json!({"needs": [
+            {"need": "no field"},
+            {"need": "empty", "quote": ""},
+            {"need": "not text", "quote": 42},
+            {"need": "only marks", "quote": " ... "},
+            "not an object"
+        ]}),
+        None,
+    );
+    // Every item fell, and the section still leaves: "annotated, nothing
+    // proven" is not "not annotated".
+    assert_eq!(the_checked_section(&sides, "needs"), json!({"needs": []}));
+    assert_eq!(
+        reasons(&rejects),
+        vec![("quote".to_string(), "quote_missing".to_string()); 5],
+        "{rejects:?}"
+    );
+}
+
+#[test]
+fn sidecar_verify_turn_plus_recall_accepts_memory_text() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([
+            user("What do you remember about my balcony?"),
+            tool_call("r1", "memory_recall"),
+            tool_result(
+                "r1",
+                "The person grows tomatoes on the balcony every summer."
+            )
+        ]),
+        mode("Be brief."),
+    );
+    let claims = json!({"claims": [
+        {"claim": "grows tomatoes", "quote": "grows tomatoes on the balcony"},
+        {"claim": "asked", "quote": "remember about my balcony"}
+    ]});
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "claims",
+        r#"{"quote":"turn+recall"}"#,
+        claims.clone(),
+        None,
+    );
+    let payload = the_checked_section(&sides, "claims");
+    assert_eq!(
+        payload["claims"].as_array().map(Vec::len),
+        Some(2),
+        "the memory's words count beside the person's: {payload} {rejects:?}"
+    );
+    assert!(rejects.is_empty(), "{rejects:?}");
+    // The same quote under `turn`: the memory's words are no turn.
+    let (sides, rejects) =
+        checked_section(&mut h, &call, "claims", r#"{"quote":"turn"}"#, claims, None);
+    let payload = the_checked_section(&sides, "claims");
+    assert_eq!(
+        payload["claims"],
+        json!([{"claim": "asked", "quote": "remember about my balcony", "verified": ["quote"]}])
+    );
+    assert_eq!(
+        reasons(&rejects),
+        vec![("quote".to_string(), "quote_not_in_source".to_string())]
+    );
+}
+
+#[test]
+fn sidecar_verify_answer_source_checks_answer_text() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("Can you book us a table?")]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "claims",
+        r#"{"said":"answer"}"#,
+        json!({"claims": [
+            {"said": "booked the table for seven"},
+            {"said": "cancelled the trip to Rome"},
+            // The person's words are no answer.
+            {"said": "book us a table"}
+        ]}),
+        Some("Done: I booked the table for seven at the corner place."),
+    );
+    let payload = the_checked_section(&sides, "claims");
+    assert_eq!(
+        payload,
+        json!({"claims": [{"said": "booked the table for seven", "verified": ["said"]}]})
+    );
+    assert_eq!(
+        reasons(&rejects),
+        vec![("said".to_string(), "quote_not_in_source".to_string()); 2]
+    );
+}
+
+#[test]
+fn sidecar_verify_mark_mode_keeps_item_with_failed_and_still_rejects() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("I miss Werner's patient ways.")]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "claims",
+        r#"{"items":"claims","mode":"mark","quote":"turn","said":"answer"}"#,
+        json!({"note": ["not the array"], "claims": [
+            {"quote": "miss Werner's patient ways", "said": "Werner was patient",
+             "verified": ["forged by the model"]},
+            {"quote": "Werner hated waiting", "said": "something I never said"}
+        ]}),
+        Some("You miss how patient Werner was. Werner was patient with everyone."),
+    );
+    let payload = the_checked_section(&sides, "claims");
+    assert_eq!(
+        payload["note"],
+        json!(["not the array"]),
+        "`items` names the array"
+    );
+    assert_eq!(
+        payload["claims"],
+        json!([
+            {"quote": "miss Werner's patient ways", "said": "Werner was patient",
+             "verified": ["quote", "said"]},
+            {"quote": "Werner hated waiting", "said": "something I never said",
+             "verified": [],
+             "failed": [{"field": "quote", "reason": "quote_not_in_source"},
+                        {"field": "said", "reason": "quote_not_in_source"}]}
+        ]),
+        "the failed item stays, marked; a model's own `verified` is no proof"
+    );
+    assert_eq!(
+        reasons(&rejects),
+        vec![("quote".to_string(), "quote_not_in_source".to_string())],
+        "the refusal goes out all the same, once per item, its first failed field"
+    );
+}
+
+#[test]
+fn sidecar_verify_peer_turn_counts_as_source() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let peer = json!({"origin": "peer", "type": "text",
+                      "text": "I will bring the cake on Sunday.",
+                      "speaker": "North", "speaker_ref": "dc365e79"});
+    let call = h.curate(
+        "s1",
+        "t1",
+        0,
+        json!([user("Who brings dessert this time?"), peer]),
+        mode("Be brief."),
+    );
+    let (sides, rejects) = checked_section(
+        &mut h,
+        &call,
+        "claims",
+        r#"{"quote":"turn"}"#,
+        json!({"claims": [
+            {"quote": "bring the cake on Sunday"},
+            {"quote": "who brings dessert"},
+            {"quote": "bring the pie on Sunday"}
+        ]}),
+        None,
+    );
+    let payload = the_checked_section(&sides, "claims");
+    assert_eq!(
+        payload["claims"],
+        json!([{"quote": "bring the cake on Sunday", "verified": ["quote"]},
+               {"quote": "who brings dessert", "verified": ["quote"]}]),
+        "the round answers both: the person and the peer"
+    );
+    assert_eq!(
+        reasons(&rejects),
+        vec![("quote".to_string(), "quote_not_in_source".to_string())]
+    );
 }

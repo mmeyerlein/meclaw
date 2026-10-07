@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.61.7, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.62.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,10 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.62.0: every cell that holds a secret takes it as a sealed vault grant, and no template carries a
+  secret placeholder any more (a literal key in an instance still works through 0.62.x); a quote in the sidecar is
+  checked word for word against what was said; a ringing call finds its live model ready; a store write replayed
+  after a crash answers what it answered the first time.
 - v0.61.7: output budgets follow the model (a cut answer is continued, never kept half), every catalogue row
   states its input bounds and prompt prices, and the llm cell refuses past the hard bound; the curator rebuilds by
   those bounds and by what a cached window costs, and the recall is sized by the model that reads it; a peer is

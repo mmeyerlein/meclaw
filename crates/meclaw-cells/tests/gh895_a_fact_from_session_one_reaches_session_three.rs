@@ -57,6 +57,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 /// The failure-marker convention of this repo, not a timing discriminator.
 const DEADLINE: Duration = Duration::from_secs(30);
 
@@ -150,7 +153,8 @@ fn hive_edges(rel: &str) -> Vec<EdgeSpec> {
 }
 
 fn recipe_edges(rel: &str) -> Vec<EdgeSpec> {
-    read_json(&repo(rel))["diff"]["add_edges"]
+    // GH #1061: the generation is read as its container reads it.
+    organism_assistant::at_the_container(&read_json(&repo(rel)))["diff"]["add_edges"]
         .as_array()
         .unwrap_or_else(|| panic!("{rel}: no diff.add_edges"))
         .iter()
@@ -698,7 +702,9 @@ fn build_member(td: &tempfile::TempDir, surface: &str, stubs: &Stubs) -> Vec<Str
         0,
     );
     copy_resolved(&repo("templates/memory-hive"), &main.join("memory-hive"), 0);
-    let grown = read_json(&repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
     write_json(
         &main.join("assistants/config.json"),
         &json!({"cell": {"type": "hive"},

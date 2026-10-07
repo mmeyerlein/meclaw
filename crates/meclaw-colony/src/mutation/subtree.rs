@@ -808,7 +808,11 @@ fn reject_stray_ref_entries(dir: &std::path::Path) -> Result<(), MutationError> 
             MutationError::Schema(format!("read_dir entry in {}: {e}", dir.display()))
         })?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name != "config.json" {
+        // GH #1061: a seed overlay (`<child>/seed/<table>.jsonl`) is data for
+        // the placed tree, not a second source for an address -- see
+        // [`overlay_ref_seeds`]. The T6 lock found `summarizer/access/store`
+        // refused here, before the overlay was ever laid.
+        if name != "config.json" && !is_seed_overlay(&entry.path()) {
             stray.push(format!("{name:?}"));
         }
     }
@@ -821,6 +825,29 @@ fn reject_stray_ref_entries(dir: &std::path::Path) -> Result<(), MutationError> 
         dir.display(),
         stray.join(", ")
     )))
+}
+
+/// GH #1061: `path` is a directory holding nothing but seed overlays -- `seed/`
+/// directories of `*.jsonl` files, at any depth below child directories.
+fn is_seed_overlay(path: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    let is_seed = path.file_name().is_some_and(|n| n == "seed");
+    let mut any = false;
+    for entry in entries.flatten() {
+        any = true;
+        let p = entry.path();
+        let ok = if is_seed {
+            p.is_file() && p.extension().is_some_and(|x| x == "jsonl")
+        } else {
+            p.is_dir() && is_seed_overlay(&p)
+        };
+        if !ok {
+            return false;
+        }
+    }
+    any
 }
 
 /// Re-anchor a rel-path produced inside a referenced template under the ref's
@@ -980,6 +1007,7 @@ fn copy_template_tree(
     chain: &[(String, Option<String>)],
 ) -> Result<(), MutationError> {
     let depth_before = chain.len();
+    let literal = src.to_path_buf();
     let (src, chain) = follow_refs(src.to_path_buf(), templates, chain.to_vec())?;
     // True exactly when this directory WAS a ref marker: `src` is now some other
     // template's root, and that root's descriptor pair is not ours.
@@ -1016,7 +1044,94 @@ fn copy_template_tree(
                 .map_err(|e| MutationError::Schema(format!("copy {fname:?}: {e}")))?;
         }
     }
+    if via_ref {
+        overlay_ref_seeds(&literal, dst)?;
+    }
     Ok(())
+}
+
+/// GH #1061 -- lay the `seed/*.jsonl` files a ref marker's OWN directory carries
+/// over the tree the ref placed at `dst`.
+///
+/// A template that pulls a store by ref could not put rows into it: the copy
+/// follows the ref and never looks at the marker's directory again, and
+/// `seed_rows` is a manifest operation a template does not have. The rows that
+/// need it are grants -- `credential_grant_id` is immutable, so the grant must
+/// exist before the cell that names it boots (#801), and a standalone template
+/// with its own `access` broker has no manifest to carry it. So a marker
+/// directory may hold `<child>/seed/<table>.jsonl`, and those files land in the
+/// placed tree's `<child>/seed/` before the staging seeder reads it. Seed files
+/// only: they are DATA, never cells, so the parse side (which follows the ref)
+/// stays exactly as it was. A file of the same name replaces the referenced
+/// template's own; a path the referenced template does not have is refused by
+/// name rather than creating a directory no parsed cell claims.
+fn overlay_ref_seeds(dir: &std::path::Path, dst: &std::path::Path) -> Result<(), MutationError> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| MutationError::Schema(format!("read entry: {e}")))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let fname = entry.file_name();
+        let target = dst.join(&fname);
+        if fname == "seed" {
+            if !dst.join("config.json").is_file() {
+                return Err(MutationError::Schema(format!(
+                    "seed overlay {} names a cell the referenced template does not have \
+                     (no config.json at its place in the placed tree)",
+                    path.display()
+                )));
+            }
+            std::fs::create_dir_all(&target)
+                .map_err(|e| MutationError::Schema(format!("create seed overlay dir: {e}")))?;
+            for file in std::fs::read_dir(&path)
+                .map_err(|e| MutationError::Schema(format!("read seed overlay: {e}")))?
+            {
+                let file = file.map_err(|e| MutationError::Schema(format!("read entry: {e}")))?;
+                let fp = file.path();
+                if fp.is_file() && fp.extension().is_some_and(|x| x == "jsonl") {
+                    std::fs::copy(&fp, target.join(file.file_name())).map_err(|e| {
+                        MutationError::Schema(format!("copy seed overlay {}: {e}", fp.display()))
+                    })?;
+                }
+            }
+        } else {
+            overlay_ref_seeds(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// GH #1061 -- the ref markers' own directories crossed on the way to `rel_path`,
+/// each joined with the rest of the path: the places a seed overlay for the
+/// directory [`template_dir_for_rel`] resolves can stand. Innermost last, so a
+/// caller that lays them over in REVERSE lets the outermost template win.
+fn overlay_dirs_for_rel(
+    template_root: &std::path::Path,
+    templates: &crate::templates::TemplatesRegistry,
+    rel_path: &str,
+) -> Result<Vec<PathBuf>, MutationError> {
+    let mut overlays: Vec<PathBuf> = Vec::new();
+    let (mut dir, mut chain) = follow_refs(template_root.to_path_buf(), templates, Vec::new())?;
+    if dir.as_path() != template_root {
+        overlays.push(template_root.to_path_buf());
+    }
+    for segment in rel_path.split('/').filter(|s| !s.is_empty()) {
+        for o in overlays.iter_mut() {
+            *o = o.join(segment);
+        }
+        let literal = dir.join(segment);
+        let (next, next_chain) = follow_refs(literal.clone(), templates, chain)?;
+        if next != literal {
+            overlays.push(literal);
+        }
+        dir = next;
+        chain = next_chain;
+    }
+    Ok(overlays)
 }
 
 /// The on-disk source directory for `rel_path` of the **expanded** tree.
@@ -2703,6 +2818,15 @@ pub(crate) fn stage_rename_root(
             .join(format!("{name}/{root_rel}"))
     };
     copy_template_tree(&template_subdir, &root_staging_path, templates, &[])?;
+    // GH #1061: a missing branch reached THROUGH a ref keeps the seed overlay a
+    // marker on the way carries -- `template_dir_for_rel` followed the ref, so
+    // the copy above never saw the marker's directory. Outermost wins.
+    for literal in overlay_dirs_for_rel(template_root, templates, root_rel)?
+        .iter()
+        .rev()
+    {
+        overlay_ref_seeds(literal, &root_staging_path)?;
+    }
 
     let root_final_path = final_path_for(root, scope, name, root_rel);
 
@@ -5010,6 +5134,59 @@ mod tests {
             version: Some("1.0.0".to_string()),
             filesystem_path: inner.to_path_buf(),
         }])
+    }
+
+    /// GH #1061: a ref marker's own `<child>/seed/*.jsonl` lands in the placed
+    /// tree -- the way a standalone template seeds the grants of the `access`
+    /// broker it pulls by ref. A path the referenced template lacks is refused.
+    #[test]
+    fn gh1061_a_ref_markers_seed_overlay_lands_in_the_placed_tree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let templates_dir = tmp.path().join("templates");
+        let inner = write_inner_template(&templates_dir);
+        write_json(
+            &inner.join("a/seed/rules.jsonl"),
+            r#"{"schema":{"k":"text"}}"#,
+        );
+        let outer = templates_dir.join("outer");
+        write_json(
+            &outer.join("template.json"),
+            r#"{"name":"outer","version":"1.0.0"}"#,
+        );
+        write_json(
+            &outer.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+        );
+        write_json(
+            &outer.join("child/config.json"),
+            r#"{"cell":{"type":"ref","template":"inner@1.0.0"}}"#,
+        );
+        write_json(
+            &outer.join("child/a/seed/grants.jsonl"),
+            "{\"schema\":{\"g\":\"text\"}}\n{\"g\":\"x\"}\n",
+        );
+        let registry = inner_registry(&inner);
+
+        // Fresh path: the whole tree.
+        let dst = tmp.path().join("staged");
+        copy_template_tree(&outer, &dst, &registry, &[]).expect("copy");
+        let landed = std::fs::read_to_string(dst.join("child/a/seed/grants.jsonl"))
+            .expect("the overlay must land beside the referenced cell's config");
+        assert!(landed.contains("\"g\":\"x\""), "{landed}");
+        assert!(
+            dst.join("child/a/seed/rules.jsonl").is_file(),
+            "the template's own seed stays"
+        );
+
+        // Merge path: the branch reached through the ref names the marker's dir.
+        let dirs = overlay_dirs_for_rel(&outer, &registry, "child/a").expect("walk");
+        assert_eq!(dirs, vec![outer.join("child/a")]);
+
+        // A path the referenced template does not have is refused by name.
+        write_json(&outer.join("child/nope/seed/t.jsonl"), "{}\n");
+        let err = copy_template_tree(&outer, &tmp.path().join("staged2"), &registry, &[])
+            .expect_err("an overlay for a missing cell must be refused");
+        assert!(format!("{err:?}").contains("seed overlay"), "{err:?}");
     }
 
     /// GH #277 Task 4: a `cell.type: "ref"` directory is not a cell of its own —

@@ -4,7 +4,8 @@
     "timeout": -1
   },
   "params": {
-    "bot_token": "${TELEGRAM_BOT_TOKEN:-REPLACE_WITH_YOUR_BOT_TOKEN}",
+    "bot_token": "",
+    "bot_token_grant_id": "grant:telegram-bot@colony-example/proxy",
     "emit_to": "../prep",
     "long_poll_timeout_ms": 35000,
     "long_poll_request_secs": 30,
@@ -68,6 +69,17 @@
         "msg_type": {
           "type": "string",
           "required": false
+        },
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
         }
       }
     },
@@ -76,12 +88,17 @@
         "messages": {
           "type": "array",
           "required": true
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
         }
       },
       "context": {
         "chat_id": {
           "type": "number",
-          "required": true
+          "required": false,
+          "description": "Not required since GH #1061: the sealed box from ./access carries no chat_id; every outbound send still names one."
         }
       }
     },

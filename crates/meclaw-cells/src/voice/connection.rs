@@ -1179,6 +1179,273 @@ impl DuplexRun {
     }
 }
 
+/// A duplex session opened while its line still rings (GH #1055).
+///
+/// The model is told nothing different: it is the session `run_duplex` would
+/// open, opened earlier. Its two outbound channels do not reach the
+/// connection directly while it is parked: a [`park_pump`] sits between, so
+/// the provider's loop never waits on a queue nobody empties (see there), and
+/// what the model said worth hearing reaches the caller the moment the media
+/// connection adopts the run ([`Self::adopt`]). Dropping it ends the session:
+/// the pump goes with the adoption signal it waits for, and the provider sees
+/// its way in close.
+pub(crate) struct Prewarmed {
+    run: DuplexRun,
+    format: AudioFormat,
+    /// Fired by [`Self::adopt`]; dropped unfired, it stops the pump.
+    adopt: oneshot::Sender<()>,
+}
+
+impl Prewarmed {
+    /// The connection takes the run: the pump sends what it kept, ahead of
+    /// everything the model says from here on.
+    fn adopt(self) -> DuplexRun {
+        let _ = self.adopt.send(());
+        self.run
+    }
+}
+
+/// How much of what a parked model said is kept for the caller, in audio
+/// milliseconds. A ring rarely lasts this long; past it the oldest goes, so a
+/// caller who picks up late hears the end of the greeting rather than a
+/// minute of the model waiting (GH #1055).
+const PARK_KEEP_MS: u64 = 15_000;
+
+/// The length of one frame of the silence a parked session is fed.
+const PARK_FEED_FRAME: Duration = Duration::from_millis(20);
+
+/// Milliseconds of `bytes` of PCM16 mono at `rate`.
+fn pcm_ms(bytes: usize, rate: u32) -> u64 {
+    (bytes as u64 / 2) * 1_000 / u64::from(rate.max(1))
+}
+
+/// The pump between a parked session and the connection that will adopt it
+/// (GH #1055 R1).
+///
+/// A live model streams a continuous channel, silence included, in 100 ms
+/// chunks paced in real time (`meclaw-next/25-gpt-live/messungen`, S0 a1/a2),
+/// and its adapter blocks on a full channel (`providers/gpt_live.rs`,
+/// `audio_out.send(..).await` and `events.send(..).await`). Parked with nobody
+/// reading, the 32-chunk queue was full after 3.2 s of ringing and the
+/// provider loop stood still — keepalive, socket reads and idle deadline with
+/// it — and what was queued by then was the silence BEFORE the greeting, all of
+/// it sent to the caller at the pickup and kept as a lag for the whole call.
+///
+/// So while parked this task reads both channels at once:
+/// - audio: dropped until the first audible 20 ms (the gate's own test,
+///   [`crate::voice::duck::first_audible`] at `barge_level_dbfs`), kept from
+///   there on, at most [`PARK_KEEP_MS`] (oldest first out);
+/// - events: kept whole, nothing dropped (the TTL bounds them);
+/// - the model's way in: fed 20 ms frames of digital silence, the line every
+///   measured session heard from a quiet caller (S0a: continuous silence
+///   frames, 640 B every 20 ms) — a model that paces its output on its
+///   input then still talks into the ring.
+///
+/// At the adoption it stops feeding, sends what it kept at once and goes on
+/// forwarding. What it sent ahead is a lag at the edge's playback buffer, so
+/// that much of the model's following SILENCE is dropped (`catchup`); audible
+/// chunks always pass. After the catch-up the pump is a plain relay with the
+/// backpressure the run always had: it takes from the provider only while
+/// fewer than [`AUDIO_QUEUE`] items wait for the connection.
+#[allow(clippy::too_many_arguments)]
+async fn park_pump(
+    mut audio_from: mpsc::Receiver<Vec<u8>>,
+    mut events_from: mpsc::Receiver<DuplexEvent>,
+    audio_to: mpsc::Sender<Vec<u8>>,
+    events_to: mpsc::Sender<DuplexEvent>,
+    feed: mpsc::Sender<Vec<u8>>,
+    mut adopt: oneshot::Receiver<()>,
+    format: AudioFormat,
+    level: f64,
+    session_id: String,
+) {
+    use std::collections::VecDeque;
+    let rate = format.sample_rate;
+    let silence = vec![0u8; pcm_ms_bytes(PARK_FEED_FRAME, rate)];
+    let mut feed = Some(feed);
+    let mut tick = tokio::time::interval(PARK_FEED_FRAME);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut adopted = false;
+    let mut heard = false;
+    let mut audio: VecDeque<Vec<u8>> = VecDeque::new();
+    let mut kept_ms: u64 = 0;
+    let mut events: VecDeque<DuplexEvent> = VecDeque::new();
+    let mut catchup_ms: u64 = 0;
+    let (mut dropped_ms, mut trimmed_ms) = (0u64, 0u64);
+    let (mut audio_open, mut events_open) = (true, true);
+    loop {
+        if adopted && !audio_open && !events_open && audio.is_empty() && events.is_empty() {
+            return;
+        }
+        tokio::select! {
+            biased;
+
+            signal = &mut adopt, if !adopted => match signal {
+                Ok(()) => {
+                    adopted = true;
+                    // The connection's reader feeds the model from here on.
+                    feed = None;
+                    catchup_ms = audio.iter().map(|c| pcm_ms(c.len(), rate)).sum();
+                    tracing::info!(
+                        %session_id, kept_ms = catchup_ms, dropped_ms, trimmed_ms,
+                        events = events.len(),
+                        "voice: the early session is adopted with what the model said"
+                    );
+                }
+                // Dropped unadopted: the call ended, the deadline struck, or
+                // the connection asked for another format.
+                Err(_) => return,
+            },
+
+            permit = audio_to.reserve(), if adopted && !audio.is_empty() => match permit {
+                Ok(p) => {
+                    if let Some(c) = audio.pop_front() {
+                        p.send(c);
+                    }
+                }
+                Err(_) => return,
+            },
+
+            permit = events_to.reserve(), if adopted && !events.is_empty() => match permit {
+                Ok(p) => {
+                    if let Some(e) = events.pop_front() {
+                        p.send(e);
+                    }
+                }
+                Err(_) => return,
+            },
+
+            c = audio_from.recv(), if audio_open && (!adopted || audio.len() < AUDIO_QUEUE) => match c {
+                None => audio_open = false,
+                Some(c) if !adopted => {
+                    if !heard {
+                        match crate::voice::duck::first_audible(&c, rate, level) {
+                            None => {
+                                dropped_ms += pcm_ms(c.len(), rate);
+                                continue;
+                            }
+                            Some(at) => {
+                                heard = true;
+                                dropped_ms += pcm_ms(at, rate);
+                                let c = c[at..].to_vec();
+                                kept_ms += pcm_ms(c.len(), rate);
+                                audio.push_back(c);
+                            }
+                        }
+                    } else {
+                        kept_ms += pcm_ms(c.len(), rate);
+                        audio.push_back(c);
+                    }
+                    while kept_ms > PARK_KEEP_MS {
+                        let Some(old) = audio.pop_front() else { break };
+                        let ms = pcm_ms(old.len(), rate);
+                        kept_ms -= ms;
+                        trimmed_ms += ms;
+                    }
+                }
+                Some(c) => {
+                    if catchup_ms > 0
+                        && crate::voice::duck::first_audible(&c, rate, level).is_none()
+                    {
+                        catchup_ms = catchup_ms.saturating_sub(pcm_ms(c.len(), rate));
+                        continue;
+                    }
+                    audio.push_back(c);
+                }
+            },
+
+            e = events_from.recv(), if events_open && (!adopted || events.len() < AUDIO_QUEUE) => match e {
+                None => events_open = false,
+                Some(e) => events.push_back(e),
+            },
+
+            _ = tick.tick(), if feed.is_some() => {
+                // Never waits: a model that does not read its input is not
+                // made to, and the pump goes on reading what it says.
+                if let Some(f) = feed.as_ref() {
+                    let _ = f.try_send(silence.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Bytes of `d` of PCM16 mono at `rate`.
+fn pcm_ms_bytes(d: Duration, rate: u32) -> usize {
+    (u64::from(rate) * d.as_millis() as u64 / 1_000) as usize * 2
+}
+
+/// Open the duplex session of a ringing call and park it for its media
+/// connection (GH #1055).
+///
+/// Bounded by `duplex_prewarm_ttl_ms`: a ring nobody answers, and a media
+/// connection that never comes, cost at most that much provider time. The
+/// session is opened at the format the provider declares, which is the format
+/// a telephony edge negotiates; a connection that asks for another one does not
+/// adopt it and opens its own. A call that already has a session — parked by
+/// an earlier ring (`180` then `183`) or held by a connection — opens nothing:
+/// the check and the opening are one step under the registry's lock, so no
+/// provider handshake is paid for a session that is thrown away (R5).
+pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) {
+    let Some(provider) = shared.duplex.clone() else {
+        return;
+    };
+    let ttl = shared.duplex_prewarm_ttl_ms;
+    if ttl == 0 || session_id.is_empty() {
+        return;
+    }
+    let format = provider.format();
+    let level = crate::voice::duck::linear(shared.duck.level_dbfs);
+    let open = || {
+        let mut run = DuplexRun::start(shared, &provider, format);
+        let (audio_to, audio_rx) = mpsc::channel::<Vec<u8>>(AUDIO_QUEUE);
+        let (events_to, events_rx) = mpsc::channel::<DuplexEvent>(AUDIO_QUEUE);
+        let audio_from = std::mem::replace(&mut run.audio_out_rx, audio_rx);
+        let events_from = std::mem::replace(&mut run.events_rx, events_rx);
+        let (adopt, adopted) = oneshot::channel();
+        tokio::spawn(park_pump(
+            audio_from,
+            events_from,
+            audio_to,
+            events_to,
+            run.audio_tx.clone(),
+            adopted,
+            format,
+            level,
+            session_id.to_string(),
+        ));
+        Prewarmed { run, format, adopt }
+    };
+    let Some(token) = shared.park_prewarm(session_id, open).await else {
+        tracing::debug!(%session_id, "voice: the call already has a session, no early one");
+        return;
+    };
+    tracing::info!(%session_id, ttl_ms = ttl, "voice: duplex session opened while the line rings");
+    let shared = Arc::clone(shared);
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(ttl)).await;
+        if shared
+            .take_prewarm(&session_id, Some(token))
+            .await
+            .is_some()
+        {
+            tracing::info!(
+                %session_id, ttl_ms = ttl,
+                "voice: an early duplex session nobody connected to is closed"
+            );
+        }
+    });
+}
+
+/// The call ended before its media connection came: close its early session
+/// (GH #1055). An adopted one is the connection's and is not here any more.
+pub(crate) async fn drop_prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) {
+    if shared.take_prewarm(session_id, None).await.is_some() {
+        tracing::info!(%session_id, "voice: the call ended while ringing, its early session is closed");
+    }
+}
+
 /// Move a duplex session's clock to `offset_ms` on the model's timeline.
 ///
 /// The pair is "where the model said it was" and "when that reached us", and
@@ -1887,8 +2154,26 @@ async fn run_duplex(
 
     // Started with the `hello` and not with the first frame: a live model
     // greets before the caller speaks (`params.duplex.greeting`, OR-L25), and
-    // a session opened on the first buffer would greet nobody.
-    let first = DuplexRun::start(&shared, &provider, input);
+    // a session opened on the first buffer would greet nobody. Unless the
+    // line rang first (GH #1055): then the session was opened while it rang,
+    // and this connection adopts it with whatever it has said so far.
+    let first = match shared.take_prewarm(&session_id, None).await {
+        Some(early) if early.format == input => {
+            tracing::info!(%session_id, "voice: the media connection adopts the early session");
+            early.adopt()
+        }
+        Some(_) => {
+            tracing::warn!(
+                %session_id,
+                "voice: the early session runs at another format, a fresh one is opened"
+            );
+            DuplexRun::start(&shared, &provider, input)
+        }
+        None => DuplexRun::start(&shared, &provider, input),
+    };
+    // Ducking the model while the caller talks over it (GH #1055); off
+    // unless `params.duplex.barge_duck_ms` asks.
+    let mut duck = crate::voice::duck::Duck::new(shared.duck, input.sample_rate);
     // In `hold` the ear stays shut until the key goes down (OR-L24).
     if mode == Mode::Hold {
         let _ = first.control_tx.send(DuplexControl::Mute).await;
@@ -2411,6 +2696,12 @@ async fn run_duplex(
                             }).await;
                             continue;
                         }
+                        if let Some(closed) = duck.caller(&bytes) {
+                            tracing::info!(
+                                %session_id, ducked = closed, n = duck.ducked,
+                                "voice: the caller talks over the model"
+                            );
+                        }
                         // One frame, one `input_audio.append`. Blocking when
                         // the model is behind: that is the backpressure, and it
                         // reaches the client as TCP. Always the session in
@@ -2611,9 +2902,10 @@ async fn run_duplex(
             // one, for the reason audio comes last at all.
             chunk = next_retiring_audio(&mut lineup.retiring_audio) => {
                 match chunk {
-                    Some(bytes) => {
+                    Some(mut bytes) => {
                         shared.liveness.mark_success();
                         lineup.heard();
+                        duck.model(&mut bytes);
                         let frames = match lineup.retiring_audio.as_mut() {
                             Some(a) => a.framer.push(bytes),
                             None => vec![bytes],
@@ -2638,9 +2930,12 @@ async fn run_duplex(
             // must not hold a `cancel` off the socket.
             chunk = lineup.run.audio_out_rx.recv(), if lineup.audio_open => {
                 match chunk {
-                    Some(bytes) => {
+                    Some(mut bytes) => {
                         shared.liveness.mark_success();
                         lineup.heard();
+                        // Read for its level, then silenced while the caller
+                        // talks over it (GH #1055).
+                        duck.model(&mut bytes);
                         // The session in charge speaks: whatever the session a
                         // renewal replaced still had to say is dropped from
                         // here on. Two models' frames interleaved on one sink

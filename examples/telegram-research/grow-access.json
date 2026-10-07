@@ -1,0 +1,63 @@
+{
+  "manifest": [
+    {
+      "scope": "/",
+      "diff": {
+        "add_nodes": [
+          {
+            "name": "access",
+            "template": "access"
+          }
+        ],
+        "add_edges": [
+          {
+            "from": "./planner",
+            "to": "./access",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:planner'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./planner",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/planner'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./proxy",
+            "to": "./access",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:proxy'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./proxy",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:telegram-bot@colony-example/proxy'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

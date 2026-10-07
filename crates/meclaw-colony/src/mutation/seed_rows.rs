@@ -323,7 +323,16 @@ fn sqlite_type(declared: &str) -> &'static str {
 /// matches on every column it names is counted and not written again. That is
 /// what makes `meclaw --apply` of the same manifest twice a no-op, and it is why
 /// the digest is the thing that changes when a row changes.
-pub fn apply_entries(resolved: &[ResolvedSeedRows]) -> Result<Vec<SeedRowsApplied>, MutationError> {
+///
+/// `connection_setup` is the target type's own connection setup
+/// ([`crate::CellFactory::connection_setup`]), run on the fresh connection
+/// before anything is read or written (GH #1077): a store table with a
+/// full-text index fires an insert trigger that needs the store's tokenizer,
+/// and without it the first row was refused `no such tokenizer`.
+pub fn apply_entries(
+    resolved: &[ResolvedSeedRows],
+    connection_setup: Option<crate::db_conn::ReopenSetup>,
+) -> Result<Vec<SeedRowsApplied>, MutationError> {
     let mut out = Vec::with_capacity(resolved.len());
     for r in resolved {
         let cell_db = r.cell_dir.join("cell.db");
@@ -339,6 +348,14 @@ pub fn apply_entries(resolved: &[ResolvedSeedRows]) -> Result<Vec<SeedRowsApplie
                 cell_db.display()
             ))
         })?;
+        if let Some(setup) = connection_setup {
+            setup(&conn).map_err(|e| {
+                MutationError::SeedTargetNotAStore(format!(
+                    "{KEY} could not equip the connection to {}: {e}",
+                    cell_db.display()
+                ))
+            })?;
+        }
         let col_defs = r
             .columns
             .iter()

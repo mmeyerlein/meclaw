@@ -130,11 +130,80 @@ async fn boot(fixture: &str, rewrite: &[(&str, &str)]) -> Colony {
         .await
         .expect("the colony must bind HTTP within 30s")
         .expect("addr hook");
+    wait_for_mounts(&addr, &declared_mounts(td.path())).await;
     Colony {
         addr,
         shutdown,
         join,
         _td: td,
+    }
+}
+
+/// Every `"mount"` a fixture tree declares (the `/peer/` of `peer-south`).
+fn declared_mounts(root: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).expect("read fixture dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.file_name().is_some_and(|n| n == "config.json") {
+                let v: Value =
+                    serde_json::from_slice(&std::fs::read(&p).expect("read config")).expect("json");
+                collect(&v, out);
+            }
+        }
+    }
+    fn collect(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    match (k.as_str(), x) {
+                        ("mount", Value::String(s)) => out.push(s.clone()),
+                        _ => collect(x, out),
+                    }
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| collect(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out
+}
+
+/// GH #1064: the address hook fires when the listener binds, and a cell
+/// registers its mount when it starts -- on a loaded host after the bind. A
+/// request to `/peer/` in between reaches the API router and is a 404, so a
+/// test that posts to a mount right after `boot` waits until the colony's own
+/// mount table (`GET /colony/surfaces`) lists it.
+async fn wait_for_mounts(addr: &SocketAddr, mounts: &[String]) {
+    if mounts.is_empty() {
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + RECV;
+    let mut seen: Vec<String> = Vec::new();
+    loop {
+        if let Ok(r) = reqwest::get(format!("http://{addr}/colony/surfaces")).await
+            && let Ok(table) = r.json::<Value>().await
+        {
+            seen = table["surfaces"]
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|r| r["mount"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if mounts.iter().all(|m| seen.contains(m)) {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the mounts {mounts:?} must stand in the table within 30s -- seen {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -607,12 +676,13 @@ async fn post_frame_from(
         req = req.header(*k, *v);
     }
     let resp = req.send().await.expect("POST /peer/");
+    let status = resp.status().as_u16();
+    let body = resp.text().await.expect("the answer's body");
     assert_eq!(
-        resp.status().as_u16(),
-        200,
-        "a verdict is an answer, refused or not"
+        status, 200,
+        "a verdict is an answer, refused or not -- POST http://{addr}/peer/ answered {body}"
     );
-    resp.json().await.expect("receipt json")
+    serde_json::from_str(&body).expect("receipt json")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

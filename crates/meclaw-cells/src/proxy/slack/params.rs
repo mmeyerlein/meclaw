@@ -20,12 +20,26 @@ use serde_json::Value as JsonValue;
 /// `Debug` is implemented by hand so the two tokens never reach a log line.
 #[derive(Clone)]
 pub struct SlackParams {
-    /// App-level token (`xapp-…`) used for `apps.connections.open`. Required,
-    /// immutable, `${VAR}` only.
+    /// App-level token (`xapp-…`) used for `apps.connections.open`. Immutable,
+    /// `${VAR}` only. GH #1059: empty when `app_token_grant_id` names the grant
+    /// the vault delivers it under (the literal is the one-release transition).
     pub app_token: String,
-    /// Bot token (`xoxb-…`) used for `chat.postMessage`. Required, immutable,
-    /// `${VAR}` only. This token IS the bot's identity in the workspace.
+    /// Bot token (`xoxb-…`) used for `chat.postMessage`. Immutable, `${VAR}`
+    /// only. This token IS the bot's identity in the workspace. GH #1059: empty
+    /// when `bot_token_grant_id` is set.
     pub bot_token: String,
+    /// GH #1059: the grant under which the vault delivers the app token, sealed.
+    /// Set → `app_token` is ignored (WARN at birth, OR-VG-4). Empty is none.
+    pub app_token_grant_id: Option<String>,
+    /// GH #1059: the grant under which the vault delivers the bot token, sealed.
+    /// Set → `bot_token` is ignored (WARN at birth, OR-VG-4). Empty is none.
+    pub bot_token_grant_id: Option<String>,
+    /// GH #1059: wait of the first credential round in ms (default as `llm`,
+    /// `credential::default_credential_wait_ms`).
+    pub credential_wait_ms: u64,
+    /// GH #1059: ceiling of the doubling wait between two rounds in ms
+    /// (default 5 min, `credential_rounds::default_credential_backoff_max_ms`).
+    pub credential_backoff_max_ms: u64,
     /// Routing target for every emitted user-source message. Required.
     pub emit_to: Path,
     /// Slack Web API base URL. Default `https://slack.com/api`. Test override
@@ -83,6 +97,10 @@ impl std::fmt::Debug for SlackParams {
         f.debug_struct("SlackParams")
             .field("app_token", &"<redacted>")
             .field("bot_token", &"<redacted>")
+            .field("app_token_grant_id", &self.app_token_grant_id)
+            .field("bot_token_grant_id", &self.bot_token_grant_id)
+            .field("credential_wait_ms", &self.credential_wait_ms)
+            .field("credential_backoff_max_ms", &self.credential_backoff_max_ms)
             .field("emit_to", &self.emit_to)
             .field("base_url", &self.base_url)
             .field("connect_timeout_ms", &self.connect_timeout_ms)
@@ -96,6 +114,20 @@ impl std::fmt::Debug for SlackParams {
     }
 }
 
+/// GH #1059 (A6): the refusal of a Slack connector with neither a grant nor a
+/// literal app token. Names the param and the way out — the same sentence as
+/// the Telegram variant's `BOT_TOKEN_MISSING`.
+pub const APP_TOKEN_MISSING: &str = "app_token: required — name a credential_grant_id in \
+     params.app_token_grant_id (the vault delivers the token sealed); a literal app_token (an \
+     xapp- token) still works for one release";
+
+/// GH #1059 (A6): the same refusal for the bot token.
+pub const BOT_TOKEN_MISSING: &str = "bot_token: required — name a credential_grant_id in \
+     params.bot_token_grant_id (the vault delivers the token sealed); a literal bot_token (an \
+     xoxb- token) still works for one release";
+
+/// A grant id param: absent, not a string or empty is no grant (GH #271's rule
+/// for credentials, applied to the handle that fetches one).
 impl SlackParams {
     /// Parse + validate. Required fields are rejected with an explicit field
     /// name. No error path interpolates a token value — see the secret-hygiene
@@ -108,18 +140,40 @@ impl SlackParams {
         // sent `Authorization: Bearer ` to slack.com, which answers
         // `invalid_auth` on every call while the cell looks healthy. Same
         // message as the absent case: same mistake, same fix.
+        //
+        // GH #1059: each token comes sealed from the vault under its own grant
+        // (`app_token_grant_id`, `bot_token_grant_id`); a literal is the
+        // one-release transition. Neither → refused by name, before the
+        // connector sends `Bearer ` to slack.com.
+        let app_token_grant_id = crate::credential::grant_param(obj, "app_token_grant_id")?;
+        let bot_token_grant_id = crate::credential::grant_param(obj, "bot_token_grant_id")?;
         let app_token = obj
             .get("app_token")
             .and_then(|x| x.as_str())
-            .filter(|s| !s.is_empty())
-            .ok_or("app_token: required (use ${SLACK_APP_TOKEN}, an xapp- token)")?
+            .unwrap_or("")
             .to_string();
+        if app_token_grant_id.is_none() && app_token.is_empty() {
+            return Err(APP_TOKEN_MISSING.into());
+        }
         let bot_token = obj
             .get("bot_token")
             .and_then(|x| x.as_str())
-            .filter(|s| !s.is_empty())
-            .ok_or("bot_token: required (use ${SLACK_BOT_TOKEN}, an xoxb- token)")?
+            .unwrap_or("")
             .to_string();
+        if bot_token_grant_id.is_none() && bot_token.is_empty() {
+            return Err(BOT_TOKEN_MISSING.into());
+        }
+        // Review V2 M3 (GH #1061): a wrong type is refused by name, not defaulted.
+        let credential_wait_ms = crate::credential::ms_param(
+            obj,
+            "credential_wait_ms",
+            crate::credential::default_credential_wait_ms,
+        )?;
+        let credential_backoff_max_ms = crate::credential::ms_param(
+            obj,
+            "credential_backoff_max_ms",
+            crate::credential_rounds::default_credential_backoff_max_ms,
+        )?;
         let emit_to_s = obj
             .get("emit_to")
             .and_then(|x| x.as_str())
@@ -162,6 +216,10 @@ impl SlackParams {
         Ok(Self {
             app_token,
             bot_token,
+            app_token_grant_id,
+            bot_token_grant_id,
+            credential_wait_ms,
+            credential_backoff_max_ms,
             emit_to: Path::new(emit_to_s),
             base_url,
             connect_timeout_ms,

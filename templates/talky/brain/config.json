@@ -7,7 +7,7 @@
     "provider": "openai",
     "model": "${ctx.model}",
     "requirement": "The voice of a conversation: it answers a person turn by turn, so a reply must start within a few seconds. It reads a context of a few thousand to some tens of thousands of tokens, calls tools reliably and writes natural, warm prose in the language it is addressed in. Everyday reasoning is enough, the deep work is handed to a reasoning core. It runs on every turn, so the price per call should stay low.",
-    "api_key": "${OPENROUTER_API_KEY}",
+    "api_key": "",
     "credential_grant_id": "",
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
@@ -35,8 +35,8 @@
       "api_key": {
         "type": "string",
         "secret": true,
-        "default": "${OPENROUTER_API_KEY}",
-        "description": "Provider API key"
+        "default": "",
+        "description": "Provider API key. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
       },
       "credential_grant_id": {
         "type": "string",

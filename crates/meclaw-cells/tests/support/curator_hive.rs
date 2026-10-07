@@ -49,9 +49,17 @@ pub fn script_of(name: &str) -> String {
         .to_string()
 }
 
-/// Run a program under python3, the program itself on stdin (a single argv
-/// string is capped at 128 KiB).
+#[path = "warm_python.rs"]
+mod warm_python;
+
+/// Run a program under python3: in the substrate's warm harness, one child
+/// per script (GH #1048, `warm_python.rs` says why and what it measured); a
+/// document that is not one line runs cold, the program itself on stdin (a
+/// single argv string is capped at 128 KiB).
 pub fn run_python(script: &str, stdin_doc: &str) -> std::process::Output {
+    if let Some(out) = warm_python::run(script, stdin_doc) {
+        return out;
+    }
     let src = format!(
         concat!(
             "import sys, io\n",
@@ -950,13 +958,59 @@ pub fn secs_to_midnight() -> i64 {
     86_400 - i64::from(chrono::Utc::now().num_seconds_from_midnight())
 }
 
+/// How far the curator tests reach behind the clock: the furthest row any of
+/// them places is `now - 60 s` (`consult_keeps_the_task_raw`,
+/// `three_sessions`, the rebuild wall). Every backdate goes through
+/// [`backdated`], which holds it to this bound, so [`clear_of_midnight`]
+/// always waits for the furthest row (GH #1062).
+pub const LOOKBACK_S: i64 = 60;
+
+/// `now - back_s`: the base a test places its rows from. A test that calls
+/// [`clear_of_midnight`] reaches at most [`LOOKBACK_S`] behind the clock, so
+/// a larger backdate is refused here instead of landing on the day before
+/// after a midnight wait (GH #1062: the wait ended one second past midnight
+/// and a 30 s backdate put the rows at 23:59:31 of the previous day).
+pub fn backdated(back_s: i64) -> chrono::DateTime<chrono::Utc> {
+    assert!(
+        (0..=LOOKBACK_S).contains(&back_s),
+        "a backdate of {back_s} s lies outside the {LOOKBACK_S} s clear_of_midnight waits for"
+    );
+    chrono::Utc::now() - chrono::Duration::seconds(back_s)
+}
+
+/// How long a curator test may run after its wait. Alone they need a few
+/// seconds, at full-suite load about ten (gate of 2026-10-05: 77-91 s each,
+/// an ~80 s wait included); 20 s keeps the longest wait, [`LOOKBACK_S`] +
+/// this, inside a third of the nextest budget of 8 x 30 s (GH #1046).
+pub const RUN_AHEAD_S: i64 = 20;
+
+/// Seconds to wait at `since_midnight` seconds past midnight UTC so that a
+/// test reaching `back_s` behind the clock and running `ahead_s` past it stays
+/// on one calendar day (GH #1033): close before midnight, past it AND past the
+/// lookback; just after it, past the lookback. At most `back_s + ahead_s`.
+pub fn midnight_wait_s(since_midnight: i64, back_s: i64, ahead_s: i64) -> i64 {
+    let to_midnight = 86_400 - since_midnight;
+    if to_midnight <= ahead_s {
+        to_midnight + back_s
+    } else if since_midnight < back_s {
+        back_s - since_midnight
+    } else {
+        0
+    }
+}
+
 /// A test that places rows by calendar day must not straddle midnight UTC:
-/// the plan's day is read when the rebuild runs. Within `margin_s` of
-/// midnight, wait until it has passed -- a wait for the clock, not for a
-/// result, and at most `margin_s` + 1 seconds once a day.
-pub fn clear_of_midnight(margin_s: i64) {
-    let left = secs_to_midnight();
-    if left <= margin_s {
-        std::thread::sleep(std::time::Duration::from_secs((left + 1) as u64));
+/// the plan's day is read when the rebuild runs, and the rows lie up to
+/// [`LOOKBACK_S`] behind the clock. Near midnight, wait until the whole span
+/// fits one day -- a wait for the clock, not for a result, at most
+/// [`LOOKBACK_S`] + [`RUN_AHEAD_S`] seconds once a day. GH #1033: it used to
+/// wait only until one second past midnight, which put the lookback on the
+/// day before.
+pub fn clear_of_midnight() {
+    use chrono::Timelike;
+    let since = i64::from(chrono::Utc::now().num_seconds_from_midnight());
+    let wait = midnight_wait_s(since, LOOKBACK_S, RUN_AHEAD_S);
+    if wait > 0 {
+        std::thread::sleep(std::time::Duration::from_secs(wait as u64));
     }
 }

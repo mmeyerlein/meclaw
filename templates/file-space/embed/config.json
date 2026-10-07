@@ -9,13 +9,13 @@
     "endpoint": "${MEMORY_EMBED_ENDPOINT:-https://openrouter.ai/api/v1/embeddings}",
     "model": "${MEMORY_EMBED_MODEL:-google/gemini-embedding-2}",
     "dim": "${MEMORY_EMBED_DIM:-1024}",
-    "api_key": "${MEMORY_EMBED_API_KEY:-}",
-    "openrouter_api_key": "${OPENROUTER_API_KEY}",
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
     "timeout_ms": 20000,
     "retries": 1,
     "max_concurrency": 2,
+    "credential_grant_id": "",
+    "credential_wait_max": 2,
     "sandbox": {
       "trust": "restricted",
       "network": "allow",
@@ -23,7 +23,7 @@
         "runtime": true
       }
     },
-    "script_inline": "\n# file-space/embed -- vectors for `./derive`, nothing else (GH #903).\n#\n# The form of `memory-hive/embed`, with one difference that matters: this\n# cell never writes. It answers every request with the vectors in input order\n# (route `embedded`), and `./derive` writes the `embeddings` rows itself, with\n# `file` in every row (R-FH-1, second condition). The endpoint, the model, the\n# dimension and the key are the SAME settings the memory hive reads -- one\n# model, one dimension, one binary form in the whole member (OR-FH-E2) -- and\n# `binarize` is the memory hive's, byte for byte: a vector packed differently\n# than the stored ones would make `hamming()` measure noise. The settings\n# arrive as params (the `MEMORY_EMBED_*` placeholders resolved at instantiation, the memory\n# hive's defaults behind them), so a test points `endpoint` at a stub without\n# touching the script; a value still spelled as an unresolved placeholder counts as unset.\nimport sys, json, base64, time, urllib.request, urllib.error\n\nSTARTED = time.monotonic()\n\nBATCH = 64\nDEADLINE_RESERVE_S = 2.0\nMIN_ATTEMPT_S = 1.0\n\n\ndef binarize(vec):\n    \"\"\"float vector -> packed sign bits -> base64 (1024 dims = 128 bytes); the\n    memory hive's function, unchanged.\"\"\"\n    bits = bytearray((len(vec) + 7) // 8)\n    for i, v in enumerate(vec):\n        if v > 0:\n            bits[i // 8] |= 1 << (7 - (i % 8))\n    return base64.b64encode(bytes(bits)).decode(\"ascii\")\n\n\ndef batches(texts, size=BATCH):\n    return [texts[i:i + size] for i in range(0, len(texts), size)]\n\n\ndef emit(msgs):\n    # OR-FJ.L.8: a body with none of `messages`/`system`/`attachments` is no\n    # UBF body, and a debug colony dead-letters it without an answer\n    # (`invalid_ubf_body`) -- measured in the gh908 colony lock on the\n    # `in_check` of `write`. Every emission leaves with its slot.\n    for m in msgs:\n        if isinstance(m, dict) and not any(k in m for k in (\"messages\", \"system\", \"attachments\")):\n            m[\"messages\"] = []\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef _int(P, key, default):\n    v = P.get(key, default)\n    if v is None or (isinstance(v, str) and not v.strip()):\n        return default\n    try:\n        return int(v)\n    except (TypeError, ValueError):\n        return default\n\n\ndef call_endpoint(texts, timeout_s):\n    \"\"\"(vectors, prompt_tokens, error); never raises.\"\"\"\n    body = {\"model\": MODEL, \"input\": texts, \"dimensions\": DIM,\n            \"provider\": {\"ignore\": [\"nebius\"]}}\n    req = urllib.request.Request(\n        ENDPOINT, data=json.dumps(body).encode(\"utf-8\"),\n        headers={\"Content-Type\": \"application/json\",\n                 \"HTTP-Referer\": HTTP_REFERER, \"X-Title\": X_TITLE})\n    if API_KEY:\n        req.add_header(\"Authorization\", \"Bearer \" + API_KEY)\n    try:\n        with urllib.request.urlopen(req, timeout=timeout_s) as resp:\n            payload = json.loads(resp.read().decode(\"utf-8\"))\n    except urllib.error.HTTPError as e:\n        return None, None, \"endpoint returned HTTP %s\" % e.code\n    except Exception as e:\n        return None, None, \"endpoint unreachable (%s)\" % type(e).__name__\n    usage = payload.get(\"usage\") if isinstance(payload, dict) else None\n    tokens = usage.get(\"prompt_tokens\") if isinstance(usage, dict) else None\n    tokens = tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else None\n    data = payload.get(\"data\", []) if isinstance(payload, dict) else []\n    vectors = [r.get(\"embedding\") for r in data if isinstance(r, dict)]\n    vectors = [v for v in vectors if isinstance(v, list) and v]\n    if len(vectors) != len(texts):\n        return None, tokens, \"endpoint returned %d vectors for %d inputs\" % (len(vectors), len(texts))\n    return vectors, tokens, None\n\n\ndef setting(P, key, default):\n    v = P.get(key)\n    v = \"\" if v is None else str(v).strip()\n    return default if not v or v.startswith(\"$\" + \"{\") else v\n\n\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nP = doc.get(\"params\") or {}\nENDPOINT = setting(P, \"endpoint\", \"https://openrouter.ai/api/v1/embeddings\")\nMODEL = setting(P, \"model\", \"google/gemini-embedding-2\")\nDIM = _int({\"dim\": setting(P, \"dim\", \"1024\")}, \"dim\", 1024)\nAPI_KEY = setting(P, \"api_key\", \"\") or setting(P, \"openrouter_api_key\", \"\")\nHTTP_REFERER = setting(P, \"http_referer\", \"\")\nX_TITLE = setting(P, \"x_title\", \"MeClaw\")\nTIMEOUT_S = _int(P, \"timeout_ms\", 20000) / 1000.0\nRETRIES = max(0, _int(P, \"retries\", 1))\nDEADLINE = STARTED + max(MIN_ATTEMPT_S, _int(P, \"external_timeout_ms\", 65000) / 1000.0\n                         - DEADLINE_RESERVE_S)\n\ntexts = None\nfor m in d.get(\"messages\") or []:\n    try:\n        v = json.loads(m.get(\"text\") or \"\")\n    except Exception:\n        continue\n    if isinstance(v, dict) and isinstance(v.get(\"texts\"), list):\n        texts = [str(t) for t in v[\"texts\"]]\n        break\n\n\ndef answer(vectors, tokens, error=None):\n    \"\"\"ALWAYS one answer: `./derive` waits for it, and silence would leave its\n    job parked forever. A failure is `vectors: null` plus the error, said on\n    stderr too; nothing half -- one failed batch fails the whole request.\"\"\"\n    if error:\n        sys.stderr.write(\"file-space/embed: %s\\n\" % error)\n    head = {\"route\": \"embedded\"}\n    if tokens:\n        head[\"tokens_prompt\"] = tokens\n    # `dim` is what came back (the bits a stored blob holds), not what was asked.\n    body = {\"vectors\": vectors, \"model\": MODEL, \"dim\": got_dim[0] or DIM}\n    if error:\n        body[\"error\"] = error\n    emit([{\"header\": head,\n           \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"embedded\",\n                         \"text\": json.dumps(body)}]}])\n\n\ngot_dim = [0]\nif not texts:\n    answer(None, None, \"a request without texts\")\n\nout, billed, got_dim = [], 0, [0]\nfor part in batches(texts):\n    err = \"no attempt\"\n    for attempt in range(RETRIES + 1):\n        left = DEADLINE - time.monotonic()\n        if left < MIN_ATTEMPT_S:\n            answer(None, billed, \"%s; no time left for %d of %d texts\"\n                   % (err, len(texts) - len(out), len(texts)))\n        vecs, tokens, err = call_endpoint(part, min(TIMEOUT_S, left))\n        billed += tokens or 0\n        if not err:\n            out.extend(binarize(v) for v in vecs)\n            got_dim[0] = got_dim[0] or len(vecs[0])\n            break\n        sys.stderr.write(\"file-space/embed: attempt %d/%d failed -- %s\\n\"\n                         % (attempt + 1, RETRIES + 1, err))\n    else:\n        answer(None, billed, err)\nanswer(out, billed)\n"
+    "script_inline": "\n# file-space/embed -- vectors for `./derive`, nothing else (GH #903).\n#\n# The form of `memory-hive/embed`, with one difference that matters: this\n# cell never writes. It answers every request with the vectors in input order\n# (route `embedded`), and `./derive` writes the `embeddings` rows itself, with\n# `file` in every row (R-FH-1, second condition). The endpoint, the model, the\n# dimension are the SAME settings the memory hive reads (and the key reaches\n# both the same way, GH #1060) -- one\n# model, one dimension, one binary form in the whole member (OR-FH-E2) -- and\n# `binarize` is the memory hive's, byte for byte: a vector packed differently\n# than the stored ones would make `hamming()` measure noise. The settings\n# arrive as params (the `MEMORY_EMBED_*` placeholders resolved at instantiation, the memory\n# hive's defaults behind them), so a test points `endpoint` at a stub without\n# touching the script; a value still spelled as an unresolved placeholder counts as unset.\nimport os, sys, json, base64, time, urllib.request, urllib.error\n\nSTARTED = time.monotonic()\n\nBATCH = 64\nDEADLINE_RESERVE_S = 2.0\nMIN_ATTEMPT_S = 1.0\n\n\ndef binarize(vec):\n    \"\"\"float vector -> packed sign bits -> base64 (1024 dims = 128 bytes); the\n    memory hive's function, unchanged.\"\"\"\n    bits = bytearray((len(vec) + 7) // 8)\n    for i, v in enumerate(vec):\n        if v > 0:\n            bits[i // 8] |= 1 << (7 - (i % 8))\n    return base64.b64encode(bytes(bits)).decode(\"ascii\")\n\n\ndef batches(texts, size=BATCH):\n    return [texts[i:i + size] for i in range(0, len(texts), size)]\n\n\ndef emit(msgs):\n    # OR-FJ.L.8: a body with none of `messages`/`system`/`attachments` is no\n    # UBF body, and a debug colony dead-letters it without an answer\n    # (`invalid_ubf_body`) -- measured in the gh908 colony lock on the\n    # `in_check` of `write`. Every emission leaves with its slot.\n    for m in msgs:\n        if isinstance(m, dict) and not any(k in m for k in (\"messages\", \"system\", \"attachments\")):\n            m[\"messages\"] = []\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef _int(P, key, default):\n    v = P.get(key, default)\n    if v is None or (isinstance(v, str) and not v.strip()):\n        return default\n    try:\n        return int(v)\n    except (TypeError, ValueError):\n        return default\n\n\ndef call_endpoint(texts, timeout_s):\n    \"\"\"(vectors, prompt_tokens, error); never raises.\"\"\"\n    body = {\"model\": MODEL, \"input\": texts, \"dimensions\": DIM,\n            \"provider\": {\"ignore\": [\"nebius\"]}}\n    req = urllib.request.Request(\n        ENDPOINT, data=json.dumps(body).encode(\"utf-8\"),\n        headers={\"Content-Type\": \"application/json\",\n                 \"HTTP-Referer\": HTTP_REFERER, \"X-Title\": X_TITLE})\n    if API_KEY:\n        req.add_header(\"Authorization\", \"Bearer \" + API_KEY)\n    try:\n        with urllib.request.urlopen(req, timeout=timeout_s) as resp:\n            payload = json.loads(resp.read().decode(\"utf-8\"))\n    except urllib.error.HTTPError as e:\n        return None, None, \"endpoint returned HTTP %s\" % e.code\n    except Exception as e:\n        return None, None, \"endpoint unreachable (%s)\" % type(e).__name__\n    usage = payload.get(\"usage\") if isinstance(payload, dict) else None\n    tokens = usage.get(\"prompt_tokens\") if isinstance(usage, dict) else None\n    tokens = tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else None\n    data = payload.get(\"data\", []) if isinstance(payload, dict) else []\n    vectors = [r.get(\"embedding\") for r in data if isinstance(r, dict)]\n    vectors = [v for v in vectors if isinstance(v, list) and v]\n    if len(vectors) != len(texts):\n        return None, tokens, \"endpoint returned %d vectors for %d inputs\" % (len(vectors), len(texts))\n    return vectors, tokens, None\n\n\ndef setting(P, key, default):\n    v = P.get(key)\n    v = \"\" if v is None else str(v).strip()\n    return default if not v or v.startswith(\"$\" + \"{\") else v\n\n\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nP = doc.get(\"params\") or {}\nENDPOINT = setting(P, \"endpoint\", \"https://openrouter.ai/api/v1/embeddings\")\nMODEL = setting(P, \"model\", \"google/gemini-embedding-2\")\nDIM = _int({\"dim\": setting(P, \"dim\", \"1024\")}, \"dim\", 1024)\n# GH #1060: the bearer is the environment entry of THIS run, opened from the\n# cell's grant by the substrate -- never in this text, the params or stdin.\nAPI_KEY = os.environ.get(P.get(\"credential_env\") or \"MECLAW_CREDENTIAL\", \"\")\nHTTP_REFERER = setting(P, \"http_referer\", \"\")\nX_TITLE = setting(P, \"x_title\", \"MeClaw\")\nTIMEOUT_S = _int(P, \"timeout_ms\", 20000) / 1000.0\nRETRIES = max(0, _int(P, \"retries\", 1))\nDEADLINE = STARTED + max(MIN_ATTEMPT_S, _int(P, \"external_timeout_ms\", 65000) / 1000.0\n                         - DEADLINE_RESERVE_S)\n\ntexts = None\nfor m in d.get(\"messages\") or []:\n    try:\n        v = json.loads(m.get(\"text\") or \"\")\n    except Exception:\n        continue\n    if isinstance(v, dict) and isinstance(v.get(\"texts\"), list):\n        texts = [str(t) for t in v[\"texts\"]]\n        break\n\n\ndef answer(vectors, tokens, error=None):\n    \"\"\"ALWAYS one answer: `./derive` waits for it, and silence would leave its\n    job parked forever. A failure is `vectors: null` plus the error, said on\n    stderr too; nothing half -- one failed batch fails the whole request.\"\"\"\n    if error:\n        sys.stderr.write(\"file-space/embed: %s\\n\" % error)\n    head = {\"route\": \"embedded\"}\n    if tokens:\n        head[\"tokens_prompt\"] = tokens\n    # `dim` is what came back (the bits a stored blob holds), not what was asked.\n    body = {\"vectors\": vectors, \"model\": MODEL, \"dim\": got_dim[0] or DIM}\n    if error:\n        body[\"error\"] = error\n    emit([{\"header\": head,\n           \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"embedded\",\n                         \"text\": json.dumps(body)}]}])\n\n\ngot_dim = [0]\nif not texts:\n    answer(None, None, \"a request without texts\")\n\nout, billed, got_dim = [], 0, [0]\nfor part in batches(texts):\n    err = \"no attempt\"\n    for attempt in range(RETRIES + 1):\n        left = DEADLINE - time.monotonic()\n        if left < MIN_ATTEMPT_S:\n            answer(None, billed, \"%s; no time left for %d of %d texts\"\n                   % (err, len(texts) - len(out), len(texts)))\n        vecs, tokens, err = call_endpoint(part, min(TIMEOUT_S, left))\n        billed += tokens or 0\n        if not err:\n            out.extend(binarize(v) for v in vecs)\n            got_dim[0] = got_dim[0] or len(vecs[0])\n            break\n        sys.stderr.write(\"file-space/embed: attempt %d/%d failed -- %s\\n\"\n                         % (attempt + 1, RETRIES + 1, err))\n    else:\n        answer(None, billed, err)\nanswer(out, billed)\n"
   },
   "contract": {
     "version": "1.0.0",
@@ -46,18 +46,6 @@
         "default": 1024,
         "description": "Requested embedding dimensions; must match emb_models.dim (MEMORY_EMBED_DIM)"
       },
-      "api_key": {
-        "type": "string",
-        "secret": true,
-        "default": "",
-        "description": "Key of the embeddings endpoint (MEMORY_EMBED_API_KEY); empty falls back to OPENROUTER_API_KEY, as in the memory hive."
-      },
-      "openrouter_api_key": {
-        "type": "string",
-        "secret": true,
-        "default": "",
-        "description": "The fallback key when api_key is empty (OPENROUTER_API_KEY), as in the memory hive."
-      },
       "timeout_ms": {
         "type": "number",
         "secret": false,
@@ -69,6 +57,18 @@
         "secret": false,
         "default": 1,
         "description": "Extra attempts of a failed batch before the whole request answers `vectors: null`; never past the cell's own operation timeout."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #801: the grant this cell presents to get its provider credential SEALED from an access hive instead of carrying a key. It ships EMPTY, which is no grant at all; whoever grows the cell (the builder recipe or the colony's own template) sets it through `override_params`, and the credential then arrives over the credential v-lane and is opened in RAM only. Immutable: a new grant is a new instance."
+      },
+      "credential_wait_max": {
+        "type": "number",
+        "secret": false,
+        "default": 2,
+        "description": "GH #1061: how many calls park while the sealed credential is in flight -- and, once it is open, how many calls besides the 2 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((2 + 1) / 2) = 2 provider calls of timeout_ms (20 s) and then runs its own, 2 x 20 + 20 = 60 s <= message_timeout 90 s. The default 16 would be 9 x 20 + 20 = 200 s, and calls that would only have waited die with message_timeout under sustained load. Raise it only together with message_timeout."
       }
     },
     "multi_send_capable": true,
@@ -83,9 +83,14 @@
         "route": {
           "type": "string",
           "values": [
-            "embedded"
+            "embedded",
+            "credential_request"
           ],
           "required": true
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
         },
         "tokens_prompt": {
           "type": "number",
@@ -97,7 +102,12 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false,
+          "description": "Not required (GH #1061): the sealed credential box the access hive delivers on `in_sealed` carries `sealed` and nothing else, and a required key here would refuse it at delivery."
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
         }
       },
       "context": {

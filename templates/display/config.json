@@ -17,6 +17,13 @@
         {
           "route": "in_notice",
           "because": "put a classified message on the screen without composing a view: `class` names how loud it is (`system_error`, `error`, `warning`, `important_note`, `note`), `text` is the message, and the screen wraps it into a prose view owned by the sender's `reply_to`. A channel's own failure arrives here re-stamped by the member's graph, with the `error_code` translated by this scope's table; an application's notice arrives as it was said"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./judge"
+          ],
+          "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
         }
       ],
       "emits": [
@@ -27,6 +34,13 @@
         {
           "route": "receipt",
           "because": "a write was refused, and the sender has to hear which one and why. The closed code list is in the README; every receipt carries `error_code`, `owner`, `view_id` and a detail string, and nothing at all is written when one goes out"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./judge"
+          ],
+          "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },

@@ -12,7 +12,8 @@
             "set_context": {
               "chat_id": "hop.chat_id"
             }
-          }
+          },
+          "condition": "!has(hop.route) || hop.route != 'credential_request'"
         },
         {
           "from": "./prep",
@@ -96,7 +97,8 @@
             "set_hop": {
               "route": "'c_res'"
             }
-          }
+          },
+          "condition": "!has(hop.route) || hop.route != 'credential_request'"
         },
         {
           "from": "./reader",

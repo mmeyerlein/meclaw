@@ -1,6 +1,6 @@
 # examples/organism
 
-An empty folder, the template library, and **six declarations**. Out of that: a colony
+An empty folder, the template library, and **five declarations**. Out of that: a colony
 shell, an organisation, a person, one generation of that person's agent, and a Telegram
 channel that person is reached on — **126 cells and 762 edges**, of which **76 edges were
 written by hand**.
@@ -48,19 +48,19 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@2.2.29"
+│       └── os/config.json     type: "ref", template: "meclaw-os@2.2.34"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 20 edges
 ├── grow-member.json           3. a person.         1 node, 20 edges
-├── grow-assistant.json        4. one generation.   1 node, 34 edges
+├── grow-assistant.json        4. one generation, keyless. 1 node, 34 edges + 12
+│                              credential v-lanes, 6 grants
 ├── grow-channel.json          5. a Telegram channel. 1 node,  4 edges, born asleep
-├── grow-credentials.json      6. the credential v-lanes. 0 nodes, 4 edges, 2 grants
-├── grow-door.json             beyond the six: the front door. 2 nodes, 4 edges
-├── grow-member-door.json      beyond the six: 4. grown as the member's door.
+├── grow-door.json             beyond the five: the front door. 2 nodes, 4 edges
+├── grow-member-door.json      beyond the five: 4. grown as the member's door.
 │                              1 node, 35 edges
-├── grow-screen.json           beyond the six: a screen and an app. 2 declarations,
+├── grow-screen.json           beyond the five: a screen and an app. 2 declarations,
 │                              2 nodes, 6 edges — one storey each, so one manifest
-└── grow.manifest.json         all six, in one body, in that order
+└── grow.manifest.json         all five, in one body, in that order
 ```
 
 **Zero cells.** Not a door, not a brain, not a store, not a screen — every one of them
@@ -70,25 +70,25 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@2.2.29   the shell
-├── access                            → access@2.5.0        the capability broker
-├── argus                             → argus@1.3.3         the control loop
-├── llm-registry                      → llm-registry@2.8.0  the model registry
+/os                                 meclaw-os@2.2.34   the shell
+├── access                            → access@2.5.1        the capability broker
+├── argus                             → argus@1.3.4         the control loop
+├── llm-registry                      → llm-registry@2.8.1  the model registry
 └── orgs                              (empty container)
-    └── acme                       org@2.1.18        a namespace and a boundary
+    └── acme                       org@2.1.21        a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@2.5.14      one person
+            └── alex               member@2.5.17      one person
                 ├── affinity          → affinity@3.10.1      identity and meaning
                 ├── firewall          → firewall@2.4.0      the screen
-                ├── memory-hive       → memory-hive@3.11.2   what was said to them
+                ├── memory-hive       → memory-hive@3.12.1   what was said to them
                 ├── channels          (empty container)
-                │   └── telegram      telegram-connector@2.1.0   how alex is reached
+                │   └── telegram      telegram-connector@2.1.1   how alex is reached
                 └── assistants        (empty container)
-                    └── scribe    assistant@3.7.7   one generation of an agent
-                        ├── talky       → talky@6.6.7       the conversation surface
-                        ├── talky-chat  → talky@6.6.7       the same, for the channel chat
-                        ├── cogny       → cogny@5.8.6       the reasoning core
-                        └── tools       → tools@1.4.5       the tool surface
+                    └── scribe    assistant@3.7.10   one generation of an agent
+                        ├── talky       → talky@6.7.1       the conversation surface
+                        ├── talky-chat  → talky@6.7.1       the same, for the channel chat
+                        ├── cogny       → cogny@5.9.1       the reasoning core
+                        └── tools       → tools@1.4.6       the tool surface
 ```
 
 Five `add_nodes` entries name five templates, and **eighteen** distinct templates end up stamped
@@ -100,7 +100,7 @@ template last. An update addressing `assistant` finds that cell through the firs
 addressing `collector` through the last. That is the second acceptance bullet of GH #302, and
 it is the question GH #277 could not answer at all.
 
-## The six declarations, and why they are six
+## The five declarations, and why they are five
 
 Each level is instantiated into the **open container** the level above ships for it — `orgs`,
 `members`, `assistants`, `channels`. A container is a real hive with no children, no ports and
@@ -119,13 +119,13 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.29"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.34"}],
           "add_edges": []}}
 ```
 
 One node, **no edges at all**. The shell is the outermost boundary: what reaches it comes from
 outside the colony, and what leaves it leaves the colony. Everything under it — the broker, the
-control loop, the sixty-nine edges between them and the `orgs` container — came with the template.
+control loop, the seventy-three edges between them and the `orgs` container — came with the template.
 
 ### 2. `grow-org.json` — an organisation
 
@@ -147,7 +147,7 @@ names nobody still travels exactly as it did before there were two. The one stri
 `in_stats` (`has(context.org) && context.org == 'acme'`, since GH #926): it asks for one
 person's counts, so a question that names nobody reaches no organisation.
 
-`in_import` is the one lane `org@2.1.18` accepts that gets no edge, and that is the one
+`in_import` is the one lane `org@2.1.21` accepts that gets no edge, and that is the one
 subtraction in this set: a memory part on its way back into a running hive addresses the
 member it belongs to **at its own path**, so an edge from the container could never deliver
 one. Lane count is not edge count, and this is the direction where it costs a lane rather
@@ -167,7 +167,7 @@ of its own.
 
 ```json
 {"scope": "/os/orgs",
- "diff": {"add_nodes": [{"name": "acme", "template": "org@2.1.18"}],
+ "diff": {"add_nodes": [{"name": "acme", "template": "org@2.1.21"}],
           "add_edges": [{"from": ".", "to": "./acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn' && (!has(context.org) || context.org == 'acme')"},
                         {"from": "./acme", "to": ".",
@@ -237,7 +237,7 @@ WITHOUT a connect point below `./assistants`, so it stays a mandatory hop — it
 `audience_now`, `channel` and `recall_as_of`, and an author who tried to draw a v-lane straight
 from a brain to the memory is refused with `v_lane_mandatory_hop` rather than debugging a
 `missing_audience` in the log.
-`assistant@3.7.7` emits `pack_ack` (GH #458), and this walkthrough draws no edge
+`assistant@3.7.10` emits `pack_ack` (GH #458), and this walkthrough draws no edge
 for it: nothing here pushes an identity into the generation, so nothing here produces the
 receipt. A colony that wires the push wires the receipt with it, and the member takes every
 receipt to its own `./affinity` (GH #877). Since GH #561 both halves are **v-lanes** and neither ends at this level: the push
@@ -301,7 +301,7 @@ model of its own with `override_params` on `<assistant>/talky/brain` if the two 
 channel belongs to the person, not to a generation, so this step is declared at the *member's*
 `channels` container and the node is `telegram`. The name is no label: it is the value
 `context.channel_node` carries, and it is what the answer is routed back by. Nothing stands beside it — the
-conversation surface travels inside `assistant@3.7.7` as `talky` -- and, since
+conversation surface travels inside `assistant@3.7.10` as `talky` -- and, since
 2.7.0, a second one called `talky-chat` stands beside it for the channel `chat`, which this
 walkthrough does not grow.
 
@@ -356,7 +356,7 @@ Four edges:
   ([#803](https://github.com/mmeyerlein/meclaw/issues/803)).
 
 **The eleven edges between `channels` and its siblings are not among them** — they belong to
-`member@2.5.14` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@2.5.17` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` — and, since 1.8.0, its `withdraw` —
 the same way, `./channels → .` lets a
@@ -388,58 +388,57 @@ The default is a literal on purpose. A CEL guard is evaluated by the substrate a
 live than the edge that applies it. Change the default and you edit this edge — which is also the
 place a reader looks for it.
 
-### 6. `grow-credentials.json` — the credential v-lanes
+### 4, continued. The credential v-lanes in `grow-assistant.json`
 
-The first declaration in this walkthrough that instantiates **nothing** and the
-first that reaches **into** a template on purpose. Four edges and two grants:
+The generation holds **no key of its own** (GH #1061). The same declaration that
+grows it reaches **into** the templates on purpose: two edges per consumer — the
+three brains and their three curators' summarizers — and one grant each:
 
 ```json
 {"scope": "/os/orgs/acme/members/alex",
  "diff": {
+   "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.10",
+                  "override_params": {"talky/brain": {"api_key": "",
+                     "credential_grant_id": "grant:openrouter@member-alex/talky"}, "…": "…"}}],
    "add_edges": [
+     "… the level's 34 transit edges …",
      {"from": "./assistants/scribe/talky/brain", "to": "./access",
       "lane": "credential_request", "condition": "…", "modifier": {"…": "…"}},
      {"from": "./access", "to": "./assistants/scribe/talky/brain",
       "lane": "in_sealed", "condition": "…", "modifier": {"…": "…"}}
    ],
-   "seed_rows": [{"target": "./access/store", "table": "grants", "rows": ["…"]}]}}
+   "seed_rows": [{"target": "./access/store", "table": "grants", "rows": ["…"]},
+                 {"target": "./access/store", "table": "grant_events", "rows": ["…"]}]}}
 ```
 
-— and the same pair again for `cogny`. Since `member@1.5.0` the person carries an
-`access` of their own (GH #560), and these are the edges over which a brain gets
-its provider credential out of it, **sealed**, on an ordinary broker invocation.
+Since `member@1.5.0` the person carries an `access` of their own (GH #560), and
+these are the edges over which a brain gets its provider credential out of it,
+**sealed**, on an ordinary broker invocation.
 
 They are **v-lanes** (GH #559). Three levels lie between a brain and the broker —
 `./assistants`, the generation, `talky` — and the innermost is sealed, so the edge
-lands on a cell inside a sealed hive and is legal anyway: `talky@6.6.7` and
-`cogny@5.8.6` name `./brain` as this lane's connect point in their own contract
+lands on a cell inside a sealed hive and is legal anyway: `talky@6.7.1` and
+`cogny@5.9.1` name `./brain` as this lane's connect point in their own contract
 (`"at": ["./brain"]`), which is the one opening a template pronounces about
 itself. The two levels in between declare nothing about the lane and are
 therefore transparent. Take the `at` away and the mutation is refused by name,
 `v_lane_no_connect_point`.
 
-The declaration stands at the **member's** scope because that is the lowest common
-ancestor of its two endpoints, and an edge lives in the graph of that level.
+That is why this declaration stands at the **member's** scope and names its node
+`assistants/scribe`: the member is the lowest common ancestor of a brain and the
+broker, and an edge lives in the graph of that level. It is exactly what the
+builder renders for the credentialled wish (`builder@1.6.1`, GH #567) — node,
+edges and grants are judged together and land together or not at all.
 
-The builder draws these in the same declaration that grows the generation since
-`builder@1.6.1` (GH #567); applied on their own, as here, they wire a generation
-that already **stands** — which is a legitimate operation of its own, and the
-reason this file keeps its place among the six.
-
-**What this file does not do**, and deliberately: it does not switch the lane on.
-Two acts stay with the operator and neither is topology — the vault's passphrase
-(`override_params` on `access/vault` at the member's birth, because there is no
-params-update operation) and the credential itself (`--vault-add`, from stdin,
-with no colony running) — plus **two** params on each brain, set where the
-generation is grown: `credential_grant_id`, and `api_key: ""`. The second one is
-not tidiness. A cell asks for a credential only while it holds none, and the key
-in its config is one, so a grant beside the shipped
-`api_key: "${OPENROUTER_API_KEY}"` never triggers a single ask — the brain keeps
-spending the environment key and these four edges carry nothing, silently. Both
-params are immutable, so it is a birth act either way.
-`templates/member/README.md` § *The credential v-lanes* is the recipe,
-`examples/vault-pilot/` is the small runnable version of the round, and until an
-operator has done all of it the brains simply spend their `api_key` as before.
+**Two acts stay with the operator**, and neither is topology. The vault's
+passphrase file: `grow-member.json` sets `key_source: plainfile` and
+`key_file: ${MECLAW_VAULT_KEY_FILE:-}` on `access/vault` at the member's birth,
+because there is no params-update operation. And the credential itself:
+`meclaw --vault-add cred:openrouter`, from stdin, with no colony running on the
+root. Until both are done the brains answer `credential_pending`.
+`scripts/start.sh` with `MECLAW_EXAMPLE=organism` writes the passphrase file and a
+`deposit-key.sh` that does the second act; `examples/vault-pilot/` is the small
+runnable version of the round.
 
 ## A second agent, a second channel
 
@@ -449,7 +448,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 {"scope": "/os/orgs/acme/members/alex/assistants",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
          "model_surface": "${MODEL_SURFACE}"},
- "diff": {"add_nodes": [{"name": "aide", "template": "assistant@3.7.7",
+ "diff": {"add_nodes": [{"name": "aide", "template": "assistant@3.7.10",
                          "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
@@ -494,7 +493,7 @@ that renders this file.
 
 ## A front door, so a person can talk to it
 
-The six declarations grow the stack. They do not grow a way in: the shell accepts `in_turn` and
+The five declarations grow the stack. They do not grow a way in: the shell accepts `in_turn` and
 `meclaw ask` posts a turn with no lane on it, because the HTTP ingress writes `context` and never
 a lane (`meclaw-overview.md` § Standard header convention). `grow-door.json` is the two cells
 that close that gap, and it is what [`docs/getting-started.md`](../../docs/getting-started.md)
@@ -534,7 +533,7 @@ declarations**.
 ```json
 {"manifest": [
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.5",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.6",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.0"}], "…": "…"}}]}
@@ -601,9 +600,9 @@ static-`Edge.to` cost a second assistant has
 | what | how many |
 |---|---:|
 | cells checked in | **0** |
-| cells after the six declarations | **126** |
-| edges after the six declarations | **762** |
-| edges written by hand in the six files | **76** |
+| cells after the five declarations | **126** |
+| edges after the five declarations | **762** |
+| edges written by hand in the five files | **76** |
 | edges that came with a template | **686** |
 | `add_nodes` entries | **5** |
 | distinct templates stamped in the registry | **18** |
@@ -620,9 +619,9 @@ cargo test -p meclaw-cells --test gh302_the_stack_grows_from_templates \
 Every hand-written edge in the five LEVEL declarations lands either on a node the same
 declaration instantiates or on the open container it is instantiated into. **Not one reaches
 into an interior**, and that is the first acceptance bullet of GH #302, asserted in
-`crates/meclaw-cells/tests/gh302_the_stack_grows_from_templates.rs`. The sixth file is the
-sanctioned exception and says so in every edge it draws: a v-lane names its lane, and the
-template it lands in is what permits the address (GH #559).
+`crates/meclaw-cells/tests/gh302_the_stack_grows_from_templates.rs`. The credential v-lanes of
+step 4 are the sanctioned exception and say so in every edge they draw: a v-lane names its
+lane, and the template it lands in is what permits the address (GH #559).
 
 ## Run it
 
@@ -630,8 +629,12 @@ template it lands in is what permits the address (GH #559).
 # from the repo root, on a fresh release build
 cargo build --workspace --release
 
-cat > examples/organism/seed/.env <<'ENV'
-OPENROUTER_API_KEY=sk-...
+KEYFILE="$HOME/.config/meclaw/organism.vault-key"
+mkdir -p "$(dirname "$KEYFILE")"
+( umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$KEYFILE" )
+
+cat > examples/organism/seed/.env <<ENV
+MECLAW_VAULT_KEY_FILE=$KEYFILE
 MODEL_CORE=openai/gpt-4o
 MODEL_CORE_FAST=openai/gpt-4o-mini
 MODEL_SURFACE=openai/gpt-4o-mini
@@ -657,8 +660,18 @@ for step in os org member assistant channel; do
 done
 ```
 
-Reload the registry. One hundred and sixty cells. To talk to the generation, add the front
-door and ask it something:
+Reload the registry. One hundred and sixty cells. The brains hold no key: stop the daemon,
+seal one into alex's vault from stdin, then start it again with the same command:
+
+```bash
+kill <daemon pid>
+printf '%s' "$OPENROUTER_API_KEY" | ./target/release/meclaw --root ./examples/organism/seed \
+    --vault /main/os/orgs/acme/members/alex/access/vault \
+    --vault-key-source plainfile --vault-key-file "$KEYFILE" \
+    --vault-add cred:openrouter
+```
+
+To talk to the generation, add the front door and ask it something:
 
 ```bash
 curl -s -X POST http://127.0.0.1:7777/colony/mutations \
@@ -686,7 +699,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@2.2.29"}}
+{"cell": {"type": "ref", "template": "meclaw-os@2.2.34"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`
@@ -697,10 +710,10 @@ stands in its place is the shell it named. Two consequences follow from that rat
 bookkept — a second boot finds nothing to grow, and a node you later remove with `remove_nodes`
 cannot be re-declared into existence by a restart.
 
-**What it is not.** `seed-ref/` does not replace the six declarations, and it cannot. A `ref`
+**What it is not.** `seed-ref/` does not replace the five declarations, and it cannot. A `ref`
 marker declares a **node** and never an **edge** — and 76 of this example's 762 edges are
 hand-written: 72 transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives
-the templates themselves materialise, plus the four credential v-lanes of step 6. Until the growth has happened those addresses do not exist, so
+the templates themselves materialise, plus the credential v-lanes of step 4. Until the growth has happened those addresses do not exist, so
 there is nowhere to write them down. `seed-ref/` therefore grows exactly the first level, and it
 is the honest form of "a tree that boots itself".
 
@@ -708,11 +721,11 @@ The whole stack from one file is the other half, and it is a manifest:
 
 ## One file, one command
 
-`grow.manifest.json` is the six declarations verbatim, in the same order, in one body:
+`grow.manifest.json` is the five declarations verbatim, in the same order, in one body:
 
 ```json
 {"manifest": [ …grow-os.json…, …grow-org.json…, …grow-member.json…,
-               …grow-assistant.json…, …grow-channel.json…, …grow-credentials.json… ]}
+               …grow-assistant.json…, …grow-channel.json… ]}
 ```
 
 The colony rolls it off itself — entry by entry, each through the very validation a single
@@ -755,6 +768,6 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
 - **No slot.** The substrate's slot governs an address that does **not** exist, and every
   container in this tree does exist — so the declaration would be silent, and the
   `params.ports` it needs would have *sealed* the level that declared it.
-- **No second vault.** `access@2.5.0` carries its own interior one (ruling Q20).
+- **No second vault.** `access@2.5.1` carries its own interior one (ruling Q20).
 - **No live migration.** This folder is a walkthrough for a colony that is grown from nothing.
   Running any of it against a deployed tree is a separate, operator-owned act.

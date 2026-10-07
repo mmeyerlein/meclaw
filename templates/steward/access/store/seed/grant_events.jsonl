@@ -1,0 +1,2 @@
+{"schema": {"actor": "text", "at": "text", "detail": "json", "event": "text", "grant_id": "text", "id": "text", "reason_code": "text"}}
+{"actor": "operator", "at": "2026-10-07T00:00:00.000000Z", "detail": {"why": "seeded with the template: credential_grant_id is immutable, so the grant has to exist before the cell that names it asks (#801)"}, "event": "granted", "grant_id": "grant:openrouter@template-steward/judge", "id": "ev-steward-judge", "reason_code": ""}

@@ -32,7 +32,7 @@
         },
         {
           "route": "in_section",
-          "because": "one section of the sidecar block of an answer of the model this hive serves, cut by the parent's splitter (OR-KY-G2): `hop.section` names it, the body is the splitter's `{messages: [], section, payload}`, the context the one the answer came with (`session_id`, `turn_id`). `window` (`release`/`pin`, block ids) leaves `marks` rows, `gap` goes to `./push` (through `./policy`), which marks it once and looks it up; `memory` leaves a `topic` mark and, when `./intake` `pass_sections` names it, leaves again unchanged on `sidecar`; `things` leaves as one `thing_seen` when `./intake` `things_section` is \"1\" and the turn has a round (GH #949), and is dropped otherwise; any other section is dropped and said"
+          "because": "one section of the sidecar block of an answer of the model this hive serves, cut by the parent's splitter (OR-KY-G2): `hop.section` names it, the body is the splitter's `{messages: [], section, payload}`, the context the one the answer came with (`session_id`, `turn_id`). `window` (`release`/`pin`, block ids) leaves `marks` rows, `gap` goes to `./push` (through `./policy`), which marks it once and looks it up; `memory` leaves a `topic` mark and, when `./intake` `pass_sections` names it, leaves again unchanged on `sidecar`; `things` leaves as one `thing_seen` when `./intake` `things_section` is \"1\" and the turn has a round (GH #949), and is dropped otherwise; any other section is dropped and said. Since GH #1079 a section whose hop carries `sidecar_verify` (the parent splitter's rule for it, canonical JSON) and is none of `window`, `gap`, `things` is checked first: each item of its array, its quoted fields word for word against the round's `user`/`peer` turns (`turn`), those and the memory bundle (`turn+recall`) or the body's `verify_answer` (`answer`), and leaves on `sidecar` whatever its name"
         },
         {
           "route": "in_pin",
@@ -69,6 +69,13 @@
         {
           "route": "in_read",
           "because": "an app's read of its own round off this hive's wall (GH #949), answered by `./reader`: `hop.read_tag` (1 to 64 characters, echoed), the body `{what, session_id?, since?, limit?}` -- `turns`, the wall rows of the round oldest first after the cursor `since` (a `seq`), optionally of one session, with the text of their blocks, at most `limit` (default 20, at most 100) a page; or `sessions`, the round's sessions with their first and last row. Fail-closed on the round, `context.audience_set`: without one, or with the declared empty one, nothing is read and the answer is `missing_audience`; with one, the store selects through `covers`, so only rows whose own audience holds the round (or names `*`) are read at all and a row without an audience never is. Answered exactly once on `read`"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./summarizer"
+          ],
+          "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
         }
       ],
       "emits": [
@@ -94,7 +101,7 @@
         },
         {
           "route": "sidecar",
-          "because": "a section of the model's block the intake passes on unchanged (`pass_sections`, a talky's `memory`): the splitter's body and hop, `hop.section` naming it, for the door that section always had; and a gap's find in a duplex call (`context.engine` \"duplex\"), as the section `fact` the voice model paraphrases: `hop.section` \"fact\", the body `{messages: [], section, payload: {payload}}` the splitter writes for a section; and the handover block for a renewed live session (GH #896): `hop.section` `context`, `hop.call_id`, `hop.renewal_n`, the words under `payload` -- the splitter's section shape, so the member's advise edge turns it into the call's `in_advise` like any `context` section. `context.call_id` is set from `hop.call_id` on the way out"
+          "because": "a section of the model's block the intake passes on unchanged (`pass_sections`, a talky's `memory`): the splitter's body and hop, `hop.section` naming it, for the door that section always had; and a gap's find in a duplex call (`context.engine` \"duplex\"), as the section `fact` the voice model paraphrases: `hop.section` \"fact\", the body `{messages: [], section, payload: {payload}}` the splitter writes for a section; and the handover block for a renewed live session (GH #896): `hop.section` `context`, `hop.call_id`, `hop.renewal_n`, the words under `payload` -- the splitter's section shape, so the member's advise edge turns it into the call's `in_advise` like any `context` section. `context.call_id` is set from `hop.call_id` on the way out. Since GH #1079 also a checked section: the splitter's hop without `sidecar_verify`, its body without `verify_answer`, each item that passed with `verified`, each that failed dropped -- or kept with `failed` under the rule's `mode` mark"
         },
         {
           "route": "tool_schemas",
@@ -123,6 +130,17 @@
         {
           "route": "read",
           "because": "the answer to one `in_read`: `{messages: [], rows, next, truncated}` -- `rows` the turns (`seq`, `session_id`, `turn_id`, `kind`, `origin`, `final`, `at`, `text`; a first row larger than `./reader` `read_budget` is cut and marked `cut`) or the sessions (`session_id`, `first_seq`, `last_seq`, `first_at`, `last_at`, `turns`), `next` the cursor of the rest or '' at the end. `hop.read_tag` and `hop.read_what` echoed, `hop.error_code` always present -- empty, `missing_audience`, `invalid_input` or `store_error` -- and `hop.detail` the key a refused question failed on, or the store's code; a refused or failed read carries no rows and is never an empty page of an answer. The context of the question rides on"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./summarizer"
+          ],
+          "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
+        },
+        {
+          "route": "reject",
+          "because": "one item of a checked section that failed (GH #1079): `hop.reject_reason` `quote_missing` (the field is absent or holds no words) or `quote_not_in_source`, `hop.section`, `hop.field` (the first that failed), `hop.session_id`, `hop.turn_id`, `hop.episode_turn_id`, `messages: []` -- never the item's words, so a drain counts refusals by class and files no claim. A talky hands it to its `error` drain"
         }
       ]
     },
@@ -266,7 +284,7 @@
         {
           "from": "./summarizer",
           "to": "./policy",
-          "condition": "!has(hop.refused_subscriber) && !(has(context.cur_origin) && context.cur_origin == 'curator-handover')",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !(has(context.cur_origin) && context.cur_origin == 'curator-handover')",
           "modifier": {
             "set_hop": {
               "route": "'in_summary'"
@@ -457,7 +475,7 @@
         {
           "from": "./summarizer",
           "to": "./handover",
-          "condition": "!has(hop.refused_subscriber) && has(context.cur_origin) && context.cur_origin == 'curator-handover'",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && has(context.cur_origin) && context.cur_origin == 'curator-handover'",
           "modifier": {
             "set_hop": {
               "route": "'in_summary'"
@@ -556,6 +574,19 @@
           "from": "./reader",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'read'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
             "delete_context": [
               "cur_origin",

@@ -59,6 +59,23 @@ pub(crate) struct DrainLedger {
     /// its deadline. A dead-lettered overflow message gives its ticket back
     /// with [`Self::leave`], which is forgiving.
     pub(crate) overflow: crate::overflow::Overflow,
+    /// GH #1068: messages routed to a cell whose mailbox its dying task had
+    /// already closed. `route()` (byte-frozen) would send into the closed
+    /// mailbox, fail, and drop the message with one warning line; the wrapper
+    /// parks it here instead, keyed by the dead cell's birth path, and the
+    /// `CellDied` that is on its way hands it to the successor right behind the
+    /// rescued mailbox (or dead-letters it with that mailbox). It rides in the
+    /// ledger for the reason the overflow does: the ledger reaches every call
+    /// site of the router.
+    parked_for_successor: HashMap<Path, Vec<meclaw_core::Message>>,
+    /// GH #1068 review F2: open deliveries a dead letter ended outside the
+    /// router -- a rescued mailbox or held mail with no successor. Each was
+    /// logged with its `delivery_open` row when it was routed; a dead letter
+    /// is an end, never a replay, so the row is closed. The colony's next
+    /// dead-letter flush sends the closes right behind the dead letters
+    /// ([`Self::take_deliveries_to_close`]); the functions that dead-letter
+    /// here are synchronous and cannot send themselves.
+    deliveries_to_close: Vec<(meclaw_core::Uuid, Path)>,
 }
 
 impl DrainLedger {
@@ -69,6 +86,51 @@ impl DrainLedger {
             let owed = self.owed.entry(path).or_insert(0);
             *owed = owed.saturating_add(u32::try_from(n).unwrap_or(u32::MAX));
         }
+    }
+
+    /// GH #1068: hold `msg` for the successor of the cell born at `path`,
+    /// whose dying task closed its mailbox before the message could enter it.
+    ///
+    /// Review F4: under the overflow's per-cell cap (`colony.json
+    /// mailbox_overflow_cap_messages` / `_cap_bytes`) -- above it the message
+    /// comes back and the caller dead-letters it as `mailbox_full`, as the
+    /// overflow does.
+    pub(crate) fn park_for_successor(
+        &mut self,
+        path: &Path,
+        msg: meclaw_core::Message,
+    ) -> Result<(), Box<meclaw_core::Message>> {
+        let caps = self.overflow.caps();
+        park_within(
+            self.parked_for_successor.entry(path.clone()).or_default(),
+            msg,
+            caps,
+        )
+    }
+
+    /// GH #1068: what [`Self::park_for_successor`] holds for `path`, oldest
+    /// first, and nothing afterwards.
+    pub(crate) fn take_parked_for_successor(&mut self, path: &Path) -> Vec<meclaw_core::Message> {
+        self.parked_for_successor.remove(path).unwrap_or_default()
+    }
+
+    /// GH #1068: everything still parked (the shutdown flush dead-letters it).
+    pub(crate) fn drain_parked_for_successor(&mut self) -> Vec<(Path, Vec<meclaw_core::Message>)> {
+        self.parked_for_successor.drain().collect()
+    }
+
+    /// GH #1068 review F2: `msg` was routed (its `delivery_open` row is open)
+    /// and ends as a dead letter here -- close the row with the next flush.
+    /// The row is keyed by the path the router resolved, which a routed
+    /// message carries as its `target`.
+    pub(crate) fn close_delivery(&mut self, msg: &meclaw_core::Message) {
+        self.deliveries_to_close.push((msg.id, msg.target.clone()));
+    }
+
+    /// GH #1068 review F2: the rows to close, oldest first, and nothing
+    /// afterwards.
+    pub(crate) fn take_deliveries_to_close(&mut self) -> Vec<(meclaw_core::Uuid, Path)> {
+        std::mem::take(&mut self.deliveries_to_close)
     }
 
     /// The colony is about to put a message into this cell's mailbox.
@@ -109,6 +171,23 @@ impl DrainLedger {
     }
 }
 
+/// GH #1068 review F4: append `msg` to `held` unless that passes `caps`
+/// (`(messages, bytes)`, the overflow's per-cell cap); then hand it back.
+fn park_within(
+    held: &mut Vec<meclaw_core::Message>,
+    msg: meclaw_core::Message,
+    (cap_messages, cap_bytes): (u64, u64),
+) -> Result<(), Box<meclaw_core::Message>> {
+    let bytes: u64 = held.iter().map(crate::overflow::body_bytes).sum();
+    if (held.len() as u64).saturating_add(1) > cap_messages
+        || bytes.saturating_add(crate::overflow::body_bytes(&msg)) > cap_bytes
+    {
+        return Err(Box::new(msg));
+    }
+    held.push(msg);
+    Ok(())
+}
+
 /// GH #47: the four observations that together mean "nothing is in flight".
 ///
 /// * `inbox_len` — events the colony has not looked at yet
@@ -130,6 +209,7 @@ pub(crate) fn is_quiescent(
 ) -> bool {
     ledger.total() == 0
         && ledger.overflow.is_empty()
+        && ledger.parked_for_successor.is_empty()
         && mailbox_backlog == 0
         && inbox_len == 0
         && outputs_len == 0
@@ -167,6 +247,53 @@ mod quiescence_tests {
     #[test]
     fn an_unseen_colony_event_is_not_quiescent() {
         assert!(!is_quiescent(&DrainLedger::default(), 0, 1, 0));
+    }
+
+    /// GH #1068: a message held for a dying cell's successor is owed work.
+    #[test]
+    fn mail_held_for_a_successor_is_not_quiescent() {
+        let mut l = DrainLedger::default();
+        let path = Path::new("/dying");
+        l.park_for_successor(
+            &path,
+            meclaw_core::MessageBuilder::new(path.clone()).build(),
+        )
+        .expect("far below the cap");
+        assert!(!is_quiescent(&l, 0, 0, 0));
+        assert_eq!(l.take_parked_for_successor(&path).len(), 1);
+        assert!(is_quiescent(&l, 0, 0, 0), "taken over, nothing is held");
+        assert!(l.take_parked_for_successor(&path).is_empty());
+    }
+
+    /// GH #1068 review F4: held mail has the overflow's cap -- by count and by
+    /// bytes; what passes it comes back to be dead-lettered (`mailbox_full`),
+    /// and what is already held stays, in order.
+    #[test]
+    fn held_mail_stops_at_the_overflow_cap() {
+        let path = Path::new("/dying");
+        let msg = |i: u64| {
+            meclaw_core::MessageBuilder::new(path.clone())
+                .body(meclaw_core::Body::Inline(
+                    meclaw_core::serde_json::json!({ "i": i }),
+                ))
+                .build()
+        };
+        let one = crate::overflow::body_bytes(&msg(0));
+        let mut held = Vec::new();
+        assert!(park_within(&mut held, msg(0), (2, u64::MAX)).is_ok());
+        assert!(park_within(&mut held, msg(1), (2, u64::MAX)).is_ok());
+        let third = msg(2);
+        let third_id = third.id;
+        let back = park_within(&mut held, third, (2, u64::MAX)).expect_err("count cap");
+        assert_eq!(back.id, third_id, "the refused message comes back");
+        assert_eq!(held.len(), 2);
+        let mut held = Vec::new();
+        assert!(park_within(&mut held, msg(0), (u64::MAX, one)).is_ok());
+        assert!(
+            park_within(&mut held, msg(1), (u64::MAX, one)).is_err(),
+            "byte cap"
+        );
+        assert_eq!(held.len(), 1);
     }
 }
 

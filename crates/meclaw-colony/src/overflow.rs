@@ -484,6 +484,12 @@ impl Overflow {
             .collect()
     }
 
+    /// GH #1068 review F4: the per-cell cap `(messages, bytes)` -- mail held
+    /// for a dying cell's successor stops at the same one.
+    pub(crate) fn caps(&self) -> (u64, u64) {
+        (self.cfg.cap_messages, self.cfg.cap_bytes)
+    }
+
     /// Append a routed message to the overflow of `path`.
     ///
     /// `routed` is the message exactly as `route()` would have delivered it

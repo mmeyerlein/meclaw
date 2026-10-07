@@ -45,7 +45,9 @@ use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::bootstrap_apply::bootstrap_from_filesystem;
-use meclaw_testing::factories::{EchoCellFactory, HangCellFactory};
+use meclaw_testing::factories::{
+    EchoCellFactory, HangCellFactory, set_respawn_rewire_pause_ms_for_test,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -125,6 +127,13 @@ fn db_edge_count(db_dir: &std::path::Path, from: &str, to: &str) -> i64 {
     .unwrap_or(0)
 }
 
+/// Wait until the colony finished the turn it is in: a registry read is
+/// answered strictly after every inbox message ahead of it, and a respawn's
+/// `CellDied` turn queues its `StopWiringRestored` before it returns (GH #1073).
+async fn restart_turn_done(h: &ColonyHandle) {
+    let _ = ram_entry(h, "/hang").await;
+}
+
 /// Poll `spawn_count` until it reaches `target` (or time out). Generous 30 s
 /// failure marker (robust against cargo-parallel load). Returns the last value.
 async fn wait_for_spawn_count(counter: &Arc<AtomicU32>, target: u32) -> u32 {
@@ -142,7 +151,20 @@ async fn wait_for_spawn_count(counter: &Arc<AtomicU32>, target: u32) -> u32 {
 /// P6 `cell.message_timeout` backstop, and a RETRY disconnect then COMMITS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stateful_survivor_heals_via_backstop_then_retry_disconnect_commits() {
+    survivor_heals_then_retry_commits(0).await;
+}
+
+/// GH #1073: the same chain with the respawn's stop-wiring hand-back held back
+/// by 300 ms, the window host load opened once in a full-suite gate. The retry
+/// must still commit: the test waits for the restart turn, not for the counter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retry_right_after_the_restart_waits_for_the_restored_stop_wiring() {
+    survivor_heals_then_retry_commits(300).await;
+}
+
+async fn survivor_heals_then_retry_commits(rewire_pause_ms: u64) {
     let _guard = TERM_TIMEOUT_TEST_LOCK.lock().await;
+    set_respawn_rewire_pause_ms_for_test(rewire_pause_ms);
     // Tight + SMALLER than the backstop: the wedged cell's death-ack never fires,
     // so the FIRST disconnect rejects via `term_timeout` (→ survivor) at 400 ms,
     // BEFORE the 800 ms backstop fires (→ heal).
@@ -282,6 +304,15 @@ async fn stateful_survivor_heals_via_backstop_then_retry_disconnect_commits() {
         "B-backstop must RESTART the wedged survivor (spawn_count >= 2, was {after_restart}) — \
          this is the self-heal; without it the survivor stays un-stoppable"
     );
+    // GH #1073: `spawn_count` bumps when the respawn BUILDS the cell, inside
+    // the colony's `CellDied` turn; the fresh stop wiring reaches the colony
+    // only afterwards, as `StopWiringRestored` on the same inbox (the race
+    // window (c) of the guard's doc in colony.rs). A retry sent on the bare
+    // counter could overtake it and meet `stop_wiring_unavailable` — one red
+    // in a full-suite gate under load. One registry read is the event: the
+    // colony answers it only after the `CellDied` turn returned, so the
+    // `StopWiringRestored` that turn queued stands ahead of the retry.
+    restart_turn_done(&h).await;
 
     // ── RETRY disconnect → MUST COMMIT (restored stop_tx → peace-stoppable, NO
     // stop_wiring_unavailable reject). ─────────────────────────────────────────
@@ -304,6 +335,7 @@ async fn stateful_survivor_heals_via_backstop_then_retry_disconnect_commits() {
     );
 
     h.shutdown().await;
+    set_respawn_rewire_pause_ms_for_test(0);
     assert_eq!(
         db_edge_count(&db_dir, "/anchor", "/hang"),
         0,

@@ -15,7 +15,19 @@
       },
       {
         "name": "talky",
-        "template": "talky"
+        "template": "talky",
+        "override_params": {
+          "brain": {
+            "credential_grant_id": "grant:openrouter@colony-example/talky-brain"
+          },
+          "curator/summarizer": {
+            "credential_grant_id": "grant:openrouter@colony-example/talky-curator-summarizer"
+          }
+        }
+      },
+      {
+        "name": "access",
+        "template": "access"
       },
       {
         "name": "sink",
@@ -62,6 +74,71 @@
         "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'turn_write'"
+      },
+      {
+        "from": "./talky/brain",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:talky/brain'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./talky/brain",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/talky-brain'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./talky/curator/summarizer",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:talky/curator/summarizer'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./talky/curator/summarizer",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/talky-curator-summarizer'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'ack' && (!has(hop.operation) || hop.operation != 'vault.deliver')"
+      },
+      {
+        "from": "./access",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'grant'"
+      },
+      {
+        "from": "./access",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'connect'"
       }
     ]
   }

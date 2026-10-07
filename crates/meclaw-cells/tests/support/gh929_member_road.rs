@@ -36,6 +36,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+#[path = "organism_assistant.rs"]
+pub mod organism_assistant;
+
 /// The failure-marker convention of this repo, not a timing discriminator.
 pub const DEADLINE: Duration = Duration::from_secs(30);
 
@@ -314,7 +317,9 @@ pub fn build_member(td: &tempfile::TempDir, stubs: &Stubs) -> Vec<String> {
         0,
     );
     copy_resolved(&repo("templates/memory-hive"), &main.join("memory-hive"), 0);
-    let grown = read_json(&repo("examples/organism/grow-assistant.json"));
+    let grown = organism_assistant::at_the_container(&read_json(&repo(
+        "examples/organism/grow-assistant.json",
+    )));
     write_json(
         &main.join("assistants/config.json"),
         &json!({"cell": {"type": "hive"},

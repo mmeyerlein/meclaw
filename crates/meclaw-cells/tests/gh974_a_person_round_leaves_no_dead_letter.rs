@@ -597,7 +597,13 @@ impl Lab {
         let mark = self.mark();
         let out = self
             .apply(json!({"manifest": [{"scope": "/", "diff": {
-                "add_nodes": [{"name": "os", "template": pin("meclaw-os")}],
+                "add_nodes": [{"name": "os", "template": pin("meclaw-os"),
+                    // GH #1061 (#801): the translator asks the shell's broker
+                    // for its key, and this lab deposits none -- the refusal
+                    // would dead-letter at `./hand` on every subscription.
+                    // Anonymous, it speaks to the lab's stub as it did when
+                    // the key came out of `.env`.
+                    "override_params": {"llm-registry/translate": {"credential_grant_id": ""}}}],
                 "add_edges": []}}]}))
             .await;
         assert!(out.is_committed(), "the shell must commit; got {out:?}");

@@ -562,6 +562,57 @@ class TestCorpusCommitted(GateShTestCase):
             self.assertEqual(1, res.returncode, mode)
 
 
+class TestSlowTests(GateShTestCase):
+    """GH #1046 -- the slow lock grades a time, and a time moves with the load.
+
+    A strand on a busy lane would go red over a test it never touched (the
+    border cases sat at 88-98 % of the mark at 12 threads). So a strand NOTEs
+    an over-the-mark finding -- the name stays in the log -- and the one
+    integration pass grades it RED. A broken lock (exit 2: no JUnit file, a
+    filter it cannot read, a debt without an issue) is not about load: RED in
+    every mode. The station's own verdict line (`SLOW-VERDICT`) becomes the
+    reason of the GATE line, so the debt is in the summary, not only the log.
+    """
+
+    @staticmethod
+    def plan(rc, verdict="2 over 1/3, 4 owed (GH #1048)"):
+        return ("slow-tests\t1/3 of terminate-after\t0\t"
+                "bash -c 'echo \"SLOW-VERDICT %s\"; exit %d'\t\n" % (verdict, rc))
+
+    def row(self, mode, rc, **kw):
+        args = [mode] if mode == "strand" else [mode, "--base", "HEAD~1"]
+        res = run_gate(self.repo, *args, plan=self.plan_file(self.plan(rc, **kw)),
+                       dry=False)
+        return res, {r["name"]: r for r in gate_lines(res.stdout)}["slow-tests"]
+
+    def test_over_the_mark_is_a_note_in_a_strand(self):
+        res, row = self.row("strand", 1)
+        self.assertEqual("NOTE", row["verdict"], res.stdout)
+        self.assertEqual("2 over 1/3, 4 owed (GH #1048); named in the log, "
+                         "integration grades it RED", row["reason"])
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    def test_a_broken_lock_is_red_in_a_strand(self):
+        res, row = self.row("strand", 2, verdict="broken: no JUnit file")
+        self.assertEqual("RED", row["verdict"], res.stdout)
+        self.assertEqual("broken: no JUnit file", row["reason"])
+        self.assertEqual(1, res.returncode)
+
+    def test_over_the_mark_is_red_in_the_passes(self):
+        for mode in ("integration", "release"):
+            res, row = self.row(mode, 1)
+            self.assertEqual("RED", row["verdict"], "%s: %s" % (mode, res.stdout))
+            self.assertEqual("2 over 1/3, 4 owed (GH #1048)", row["reason"])
+            self.assertEqual(1, res.returncode, mode)
+
+    def test_the_debt_is_in_the_green_line(self):
+        for mode in ("strand", "integration"):
+            res, row = self.row(mode, 0, verdict="0 over 1/3, 4 owed (GH #1048)")
+            self.assertEqual("GREEN", row["verdict"], "%s: %s" % (mode, res.stdout))
+            self.assertEqual("0 over 1/3, 4 owed (GH #1048)", row["reason"])
+            self.assertEqual(0, res.returncode, mode)
+
+
 class TestPersonaReceipt(GateShTestCase):
     """GH #882, R-GT-3 -- a stale persona measurement is a QUESTION, not red.
 

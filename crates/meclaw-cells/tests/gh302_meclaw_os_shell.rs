@@ -173,6 +173,12 @@ const NOT_RE_EMITTED: &str = "connect";
 /// `./submit` to `./operator`, and a caller subscribes to the lane rather than
 /// to whoever raised it.
 const CONSUMED_INSIDE: &[&str] = &[
+    // GH #1061 (#801): the credential road. `./llm-registry/translate` (and
+    // `./argus/judge`) ask the shell's own broker on `credential_request` and
+    // are answered `in_sealed` -- both ends siblings at THIS level, so a sealed
+    // box never crosses the rim.
+    "credential_request",
+    "in_sealed",
     "build",
     "in_build_result",
     "manifest",
@@ -473,10 +479,18 @@ fn the_shell_holds_four_refs_and_one_empty_container() {
             ref_target(&d).is_some(),
             "templates/{SHELL}/{name} is not a `ref` marker"
         );
-        assert!(
-            children(&d).is_empty(),
-            "templates/{SHELL}/{name} holds directories beside its ref marker"
-        );
+        // GH #1061 (OR-VG.V4.1): the one exception the substrate takes is a
+        // SEED overlay, `<child>/seed/*.jsonl`, which lands in the placed tree
+        // (`mutation/subtree.rs` `is_seed_overlay`) -- the broker's grants.
+        for c in children(&d) {
+            let seed = d.join(&c).join("seed");
+            assert!(
+                seed.is_dir()
+                    && children(&d.join(&c)) == vec!["seed".to_string()]
+                    && children(&seed).is_empty(),
+                "templates/{SHELL}/{name}/{c} is not a seed overlay beside the ref marker"
+            );
+        }
     }
 
     // The container is a real hive and it is EMPTY: an org is instantiated into
@@ -1557,44 +1571,30 @@ fn the_shells_requires_env_is_the_rollup_of_what_its_refs_substitute() {
         );
     }
 
-    // The one required key is a fact of the tree, not of this list — but the
-    // COUNT is asserted, because a walk that silently stopped finding plain
-    // tokens would satisfy every assertion above.
+    // GH #1061 (#801): no key under this shell is required any more -- the one
+    // that was (`OPENROUTER_API_KEY`) lives in the vault. The COUNT is still
+    // asserted, because a plain token creeping back would make the shell
+    // refuse to grow over an environment value again.
     let required: Vec<&String> = used
         .iter()
         .filter(|(_, has_default)| !*has_default)
         .map(|(n, _)| n)
         .collect();
-    assert_eq!(
-        required.len(),
-        1,
-        "exactly one value under this shell is written with no default, and it is the reason \
-         `requirement_missing` can be pre-destructive at all; found {required:?}"
+    assert!(
+        required.is_empty(),
+        "a value under this shell is written with no default again -- a key belongs in the \
+         vault (#801), not in `.env`; found {required:?}"
     );
 
-    // The prose half of the same promise (`docs/development-rules.md` § 2d): the
-    // README tells a reader what the shell needs, and the key it names is READ
-    // OFF the tree here rather than typed in.
+    // The prose half of the same promise (`docs/development-rules.md` § 2d).
     let text = readme();
     assert!(
-        text.contains(required[0].as_str()),
-        "the README does not name `{}`, the one key without which this shell refuses to grow",
-        required[0]
-    );
-    assert!(
-        text.contains("requirement_missing"),
-        "the README does not name the code the refusal carries, so a reader who meets it cannot \
-         look it up"
+        text.contains("a key lives in the vault"),
+        "the README does not say where the provider key went"
     );
     assert!(
         text.contains(".env.example"),
         "the README does not point at the copy-ready file that lists the surface"
-    );
-    // The countable half (§ 2d): the sentence stands only while the tree makes
-    // it true, and the condition is the derived set two assertions up.
-    assert!(
-        text.contains("Exactly **one** of those keys is required"),
-        "the tree has exactly one required key and the README does not say so"
     );
 }
 

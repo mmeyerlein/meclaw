@@ -7,7 +7,8 @@
       "edges": [
         {
           "from": "./responder",
-          "to": "./sink"
+          "to": "./sink",
+          "condition": "!has(hop.route) || hop.route != 'credential_request'"
         }
       ]
     }

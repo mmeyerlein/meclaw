@@ -16,7 +16,8 @@
     "release_grace_ms": 2500,
     "stt": {
       "provider": "deepgram",
-      "api_key": "${DEEPGRAM_API_KEY}",
+      "api_key": "",
+      "credential_grant_id": "grant:deepgram@template-voice/stt",
       "model": "flux-general-multi",
       "language": "de",
       "eot_threshold": 0.7,
@@ -26,7 +27,8 @@
     },
     "tts": {
       "provider": "cartesia",
-      "api_key": "${CARTESIA_API_KEY}",
+      "api_key": "",
+      "credential_grant_id": "grant:cartesia@template-voice/tts",
       "voice": "a0e99841-438c-4a64-b679-ae501e7d6091",
       "model": "sonic-3.6",
       "language": "de",
@@ -102,7 +104,8 @@
         "secret": true,
         "default": {
           "provider": "deepgram",
-          "api_key": "${DEEPGRAM_API_KEY}",
+          "api_key": "",
+          "credential_grant_id": "grant:deepgram@template-voice/stt",
           "model": "flux-general-multi",
           "language": "de",
           "eot_threshold": 0.7,
@@ -110,20 +113,21 @@
           "eot_timeout_ms": 5000,
           "sample_rate": 16000
         },
-        "description": "The speech-to-text lane: 'provider' picks the adapter and the remaining keys belong to it. Carries the credential, so the whole block is immutable on the runtime params surface -- rotation means .env plus a restart. 'echo' is the provider that needs no credential and no tts block at all. The deepgram block also takes 'keyterms', a list of words the recogniser should expect (for example ['Sam', 'meclaw']): names and product terms a general model has no reason to know, each one boosted on its own, and a multi-word entry stays one term. Empty by default, and an empty list changes nothing about the request."
+        "description": "The speech-to-text lane: 'provider' picks the adapter and the remaining keys belong to it. Carries the credential, so the whole block is immutable on the runtime params surface. The key comes sealed from the vault under 'stt.credential_grant_id' (GH #1059, #801); 'stt.api_key' is deprecated, removed in 0.63.0: name a grant in stt.credential_grant_id instead (#801). 'echo' is the provider that needs no credential and no tts block at all. The deepgram block also takes 'keyterms', a list of words the recogniser should expect (for example ['Sam', 'meclaw']): names and product terms a general model has no reason to know, each one boosted on its own, and a multi-word entry stays one term. Empty by default, and an empty list changes nothing about the request."
       },
       "duplex": {
         "type": "object",
         "secret": true,
         "default": null,
-        "description": "The duplex lane: ONE provider that hears and speaks on one socket, instead of the stt/tts pair. Exclusive with them -- a document that names this block and either of the other two is refused, and an instantiation that switches an instance over sets \"stt\": null and \"tts\": null beside it, because override_params merges and cannot remove a key. 'provider' picks the adapter: 'gpt_live' (a hosted live model) or 'echo' (the loopback, which needs no credential and knows only 'sample_rate'). The gpt_live block takes 'api_key' (bound to OPENAI_API_KEY in the environment), 'base_url', 'model', 'voice', 'sample_rate' (16000 or 24000 -- 8000 is refused by the vendor and the cell never resamples), 'instructions' (required and not empty: it is who the model is for this session, and it cannot be changed while the session runs), 'greeting' (said once after the session opens, so the model speaks first; empty means it waits for the caller), 'turn_gap_ms' and 'backchannel_max_ms' (how turns are cut on the MODEL's timeline, and how long an interjection may be before it stops being a backchannel), 'spoken_quiet_ms' and 'spoken_cap_ms' (how long the model may be silent before a spoken section counts as over -- a live model announces no end of speech, and whoever waits for the sentence to finish before hanging up needs one), 'close_grace_ms', 'tick_ms' (how often the cell's own clock feeds the turn machine -- a duplex turn is cut on the MODEL's timeline, so on a line where nobody speaks nothing arrives to say that time passed, and `session.usage.updated` does not fill that gap: measured, it never arrived inside 45 s on a session that heard only silence; the promise that a turn closes between one and two gaps after the caller fell quiet holds while this is at most 'turn_gap_ms', and a zero is refused), 'keepalive_ms' (how often the session asks its own socket whether it is still there: the adapter sends a WebSocket ping and only the pong carrying ITS payload resets 'provider_idle_timeout_ms', so the idle deadline means a dead socket and not a caller who paused -- a ping somebody else sends still counts for nothing, because a proxy pinging a dead upstream would otherwise hold a call open for as long as it likes; keep it a FRACTION of 'provider_idle_timeout_ms' -- the shipped 8000 puts the third ping at 24 s inside the shipped 30 000 ms deadline, so two pongs may go missing before a call is given up, while a keepalive as long as the deadline never resets it at all and the spawn says so in a warning; a zero is refused), the two that sit on that same tick, 'delegation_grace_ms' and 'delegation_fallback' (a delegation this colony has not answered within the grace is closed by the cell with ONE commentary append on its own delegation_id carrying the fallback sentence -- measured, an unanswered delegation leaves the caller with one holding sentence and then 55 to 58 s of silence, and no timeout arrives from the provider inside a minute; the sentence is an instruction and not a script, because a live model paraphrases what it is given), and the renewal pair, 'renew_after_ms' and 'renew_grace_ms' (a live model ends a session at a limit of its own, so the cell opens the call's NEXT session this many milliseconds after a session took charge -- 0, the default, never renews, and a host sets it below the provider's limit -- announces it on the `renewed` lane and hands the new session the handover block the colony answers with -- an `in_advise` `context` carrying `hop.renewal_n` -- at once, before it hears the caller; the call itself goes over at the next quiet moment of the line (no spoken section open, 'spoken_quiet_ms' without the model's audio or a transcript), at the latest 'spoken_cap_ms' after the block, and without a block 'renew_grace_ms' (5000) after the start; a zero grace is refused. 'renew_after_ms' counts from a takeover and the provider's limit from a session's start, which lies up to the connect time plus 'renew_grace_ms' and 'spoken_cap_ms' before it: a host leaves room for both. A renewal is not a reconnect: a session that drops its socket still ends the call). Carries the credential, so the whole block is immutable on the runtime params surface, exactly like stt and tts: rotation means .env plus a restart, and tuning means a respawn. NULL here -- the shipped instance is a cascade."
+        "description": "The duplex lane: ONE provider that hears and speaks on one socket, instead of the stt/tts pair. Exclusive with them -- a document that names this block and either of the other two is refused, and an instantiation that switches an instance over sets \"stt\": null and \"tts\": null beside it, because override_params merges and cannot remove a key. 'provider' picks the adapter: 'gpt_live' (a hosted live model) or 'echo' (the loopback, which needs no credential and knows only 'sample_rate'). The gpt_live block takes 'credential_grant_id' (the grant the vault delivers its key under, GH #1059; 'api_key' is deprecated, removed in 0.63.0: name a grant in duplex.credential_grant_id instead (#801)), 'base_url', 'model', 'voice', 'sample_rate' (16000 or 24000 -- 8000 is refused by the vendor and the cell never resamples), 'instructions' (required and not empty: it is who the model is for this session, and it cannot be changed while the session runs), 'greeting' (said once after the session opens, so the model speaks first; empty means it waits for the caller), 'turn_gap_ms' and 'backchannel_max_ms' (how turns are cut on the MODEL's timeline, and how long an interjection may be before it stops being a backchannel), 'spoken_quiet_ms' and 'spoken_cap_ms' (how long the model may be silent before a spoken section counts as over -- a live model announces no end of speech, and whoever waits for the sentence to finish before hanging up needs one), 'close_grace_ms', 'tick_ms' (how often the cell's own clock feeds the turn machine -- a duplex turn is cut on the MODEL's timeline, so on a line where nobody speaks nothing arrives to say that time passed, and `session.usage.updated` does not fill that gap: measured, it never arrived inside 45 s on a session that heard only silence; the promise that a turn closes between one and two gaps after the caller fell quiet holds while this is at most 'turn_gap_ms', and a zero is refused), 'keepalive_ms' (how often the session asks its own socket whether it is still there: the adapter sends a WebSocket ping and only the pong carrying ITS payload resets 'provider_idle_timeout_ms', so the idle deadline means a dead socket and not a caller who paused -- a ping somebody else sends still counts for nothing, because a proxy pinging a dead upstream would otherwise hold a call open for as long as it likes; keep it a FRACTION of 'provider_idle_timeout_ms' -- the shipped 8000 puts the third ping at 24 s inside the shipped 30 000 ms deadline, so two pongs may go missing before a call is given up, while a keepalive as long as the deadline never resets it at all and the spawn says so in a warning; a zero is refused), the two that sit on that same tick, 'delegation_grace_ms' and 'delegation_fallback' (a delegation this colony has not answered within the grace is closed by the cell with ONE commentary append on its own delegation_id carrying the fallback sentence -- measured, an unanswered delegation leaves the caller with one holding sentence and then 55 to 58 s of silence, and no timeout arrives from the provider inside a minute; the sentence is an instruction and not a script, because a live model paraphrases what it is given), and the renewal pair, 'renew_after_ms' and 'renew_grace_ms' (a live model ends a session at a limit of its own, so the cell opens the call's NEXT session this many milliseconds after a session took charge -- 0, the default, never renews, and a host sets it below the provider's limit -- announces it on the `renewed` lane and hands the new session the handover block the colony answers with -- an `in_advise` `context` carrying `hop.renewal_n` -- at once, before it hears the caller; the call itself goes over at the next quiet moment of the line (no spoken section open, 'spoken_quiet_ms' without the model's audio or a transcript), at the latest 'spoken_cap_ms' after the block, and without a block 'renew_grace_ms' (5000) after the start; a zero grace is refused. 'renew_after_ms' counts from a takeover and the provider's limit from a session's start, which lies up to the connect time plus 'renew_grace_ms' and 'spoken_cap_ms' before it: a host leaves room for both. A renewal is not a reconnect: a session that drops its socket still ends the call). Carries the credential, so the whole block is immutable on the runtime params surface, exactly like stt and tts: rotation means .env plus a restart, and tuning means a respawn. NULL here -- the shipped instance is a cascade."
       },
       "tts": {
         "type": "object",
         "secret": true,
         "default": {
           "provider": "cartesia",
-          "api_key": "${CARTESIA_API_KEY}",
+          "api_key": "",
+          "credential_grant_id": "grant:cartesia@template-voice/tts",
           "voice": "a0e99841-438c-4a64-b679-ae501e7d6091",
           "model": "sonic-3.6",
           "language": "de",
@@ -154,8 +158,13 @@
             "speak_end",
             "error",
             "delegation",
-            "renewed"
+            "renewed",
+            "credential_request"
           ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
           "required": false
         },
         "session_id": {
@@ -275,7 +284,12 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false,
+          "description": "messages is not required at the substrate (GH #1061): the sealed credential box reaches this cell with body.sealed alone, and a required key here would refuse it at delivery as consumes_violation; the cell itself still refuses a send without it."
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
         }
       },
       "hop": {
@@ -293,6 +307,16 @@
           "type": "string",
           "required": false,
           "description": "The verified sender of one session, on the `in_session` lane (GH #979): the signalling half of a telephone knows the caller the switch put through, this cell knows only the call's UUID. The session is named on the same message's `hop.call_id` (or `hop.session_id`), never on context. An empty value withdraws the name; the name is dropped with the connection either way. Nothing is answered: it is a fact handed over."
+        },
+        "route": {
+          "type": "string",
+          "required": false,
+          "description": "`call_ringing` and `call_ended`, the two facts of the line a telephony hive hands here as well as to its signalling half (GH #1055): a ring opens the call's duplex session early where `duplex.prewarm_ttl_ms` asks, an end closes one nobody connected to. Neither is answered -- no lane, no refusal, no dead letter -- and a cell without the knob ignores both."
+        },
+        "call_uuid": {
+          "type": "string",
+          "required": false,
+          "description": "The call a `call_ringing` or `call_ended` names (GH #1055): the same UUID the media connection carries as `?session=`, which is how that connection finds the session opened while it rang. `hop.call_id` and `hop.session_id` are read as well, in that order after it."
         }
       },
       "context": {

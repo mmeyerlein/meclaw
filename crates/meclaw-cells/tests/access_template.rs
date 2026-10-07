@@ -586,24 +586,6 @@ fn vault_audit(td: &tempfile::TempDir) -> Vec<(String, String, Option<String>, S
         .collect()
 }
 
-/// `key_source: "plainfile"` — the passphrase comes off disk, so the unlock
-/// message carries none. That matters: a passphrase in the message log would be
-/// a second finding these tests are not about, and the honest way to avoid it
-/// is the deployment form that exists for exactly this.
-fn arm_plainfile_key(td: &tempfile::TempDir, passphrase: &str) {
-    let keyfile = td.path().join("vault.key");
-    std::fs::write(&keyfile, passphrase).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&keyfile, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-    patch(td.path(), "main/access/vault/config.json", |v| {
-        v["params"]["key_source"] = json!("plainfile");
-        v["params"]["key_file"] = json!(keyfile.to_string_lossy());
-    });
-}
-
 /// Ask once and return the granted handle, failing loudly on any other verdict.
 async fn grant_for(
     h: &ColonyHandle,
@@ -1104,12 +1086,15 @@ async fn a_credential_spend_reaches_the_vault_with_the_name_from_the_grant() {
 /// `./invoke` and leaves the hive on the ack lane -- the outcome of a spend,
 /// which is what that lane means. No new hive lane is invented for it.
 ///
-/// A vault inside a sealed hive can never be unlocked (GH #427: the user
-/// channel is a source message, a source message cannot reach a cell inside a
-/// sealed hive, and everything that can reach one is an edge, which is never
-/// the user channel). So what this test drives is the REFUSAL path, and that is
-/// worth pinning on its own: a vault that says no is a denied spend, booked and
-/// answered like every other denial, with the vault's own code carried through.
+/// A vault inside a sealed hive cannot be unlocked over the user channel
+/// (GH #427: the user channel is a source message, a source message cannot
+/// reach a cell inside a sealed hive, and everything that can reach one is an
+/// edge, which is never the user channel). It opens only from a source it may
+/// read on its own — `unlock_env`, or since GH #1058 an explicit
+/// `key_source: "systemd-cred"`/`"plainfile"`. This vault names `prompt`, so it
+/// stays locked, and what this test drives is the REFUSAL path, worth pinning
+/// on its own: a vault that says no is a denied spend, booked and answered like
+/// every other denial, with the vault's own code carried through.
 /// The happy path -- a sealed box that opens to the seeded secret -- is pinned
 /// in `gh421_no_plaintext_on_the_wire.rs`, on a topology whose vault can be
 /// unlocked.
@@ -1126,7 +1111,11 @@ async fn a_vault_refusal_comes_back_on_the_ack_lane_and_is_booked_as_a_denial() 
         "SUPER-SECRET-TOKEN",
         VAULT_PASSPHRASE,
     );
-    arm_plainfile_key(&td, VAULT_PASSPHRASE);
+    // A source that needs a user: the woken vault stays locked (GH #1058 —
+    // an explicit `plainfile` would open it on the way to the delivery).
+    patch(td.path(), "main/access/vault/config.json", |v| {
+        v["params"]["key_source"] = json!("prompt");
+    });
     let (h, mut rx) = boot(&td).await;
 
     probe(

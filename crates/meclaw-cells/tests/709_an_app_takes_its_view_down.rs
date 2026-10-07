@@ -110,7 +110,7 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
 
     let meta = read_json(&root.join("template.json"));
     assert_eq!(
-        meta["version"], "2.5.14",
+        meta["version"], "2.5.17",
         "a lane an app can use and could not before is the second digit \
          (docs/development-rules.md § 4). The number is the LEVEL's, not this \
          lane's: it moved on again with member@1.9.0, which wired the channel \
@@ -159,7 +159,11 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          (GH #1040); 2.5.12 only pins `memory-hive@3.11.0` (GH #1039); 2.5.13 promotes \
          `recall_input_soft` on the `tool_call` door, pins `memory-hive@3.11.1` and \
          derives `./assistants` from `assistant@3.7.7` (GH #1044); 2.5.14 only pins \
-         `memory-hive@3.11.2` (GH #1042). None of it \
+         `memory-hive@3.11.2` (GH #1042); 2.5.15 only derives `./assistants` \
+         from `assistant@3.7.8` (GH #1036); 2.5.16 only pins `memory-hive@3.12.0` \
+         and derives `./assistants` from `assistant@3.7.9` (GH #1079); 2.5.17 only pins \
+         `access@2.5.1`, `file-space@1.4.5` and `memory-hive@3.12.1` and derives \
+         `./assistants` from `assistant@3.7.10` (GH #801). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"
     );

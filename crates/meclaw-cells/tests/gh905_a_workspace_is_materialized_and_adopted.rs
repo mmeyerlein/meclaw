@@ -163,9 +163,6 @@ async fn boot(base: &std::path::Path) -> Colony {
         v["params"]["api_key"] = json!("fake-key");
         v["params"]["base_url"] = json!("http://127.0.0.1:9");
     });
-    patch_json(&tpl.join("file-space/embed/config.json"), |v| {
-        v["params"]["openrouter_api_key"] = json!("fake-key");
-    });
     // A template that holds a file space at `./files`, as a member will.
     write_json(
         &tpl.join("fs-host/template.json"),

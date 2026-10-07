@@ -993,7 +993,7 @@ SELFTEST_TREE = {
     },
     "templates/knob/laned/config.json": {
         "cell": {"type": "llm"},
-        "params": {"api_key": "${OPENROUTER_API_KEY}"},
+        "params": {"base_url": "${OPENROUTER_BASE_URL}"},
     },
     # The R6 silence: every shape the rule lets through, in one template --
     # the lane by suffix, by prefix and by exact name, the two instance-class
@@ -1006,7 +1006,7 @@ SELFTEST_TREE = {
     "templates/lane/wire/config.json": {
         "cell": {"type": "llm"},
         "params": {
-            "api_key": "${OPENROUTER_API_KEY}",
+            "provider": "${EXAMPLE_PROVIDER}",
             "base_url": "${LOCAL_LLM_BASE_URL}",
             "model": "${MODEL_BUILDER}",
             "dim": "${MEMORY_EMBED_DIM:-1024}",

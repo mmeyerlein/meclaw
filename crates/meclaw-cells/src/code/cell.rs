@@ -44,6 +44,14 @@ pub struct CodeCell {
     /// GH #907: operation timeout of each attachment read
     /// (`params.attachment_timeout_ms`).
     pub(crate) attachment_timeout_ms: u64,
+    /// GH #1060: the credential slot when `params.credential_grant_id` is set.
+    /// `None` leaves every run exactly as before: no request, no environment
+    /// entry, no job frame.
+    pub(crate) grant: Option<crate::grant_slot::GrantSlot>,
+    /// GH #1060: the environment entry the opened credential reaches the script
+    /// in (`params.credential_env`, default `MECLAW_CREDENTIAL`). Set per call —
+    /// never in argv, the stdin document, a file, the config or a log line.
+    pub(crate) credential_env: String,
 }
 
 /// How a `CodeCell` actually runs its script.
@@ -78,7 +86,24 @@ impl CodeCell {
             runner: RunnerHandle::Cold,
             attachments: None,
             attachment_timeout_ms: crate::code::params::DEFAULT_ATTACHMENT_TIMEOUT_MS,
+            grant: None,
+            credential_env: crate::code::params::DEFAULT_CREDENTIAL_ENV.to_string(),
         }
+    }
+
+    /// GH #1060: attach the credential slot the params ask for. Without a grant
+    /// the cell is returned unchanged. Spawns the slot task, so it must run
+    /// inside a tokio runtime (the factory's spawn paths do).
+    #[must_use]
+    pub(crate) fn with_grant(
+        mut self,
+        grant: &crate::credential::CredentialParams,
+        credential_env: String,
+        max_concurrency: usize,
+    ) -> Self {
+        self.grant = crate::grant_slot::GrantSlot::spawn(grant, max_concurrency, "code");
+        self.credential_env = credential_env;
+        self
     }
 
     /// GH #907: attach the `attachments[]` reader and its per-read timeout.
@@ -211,6 +236,11 @@ impl CodeCell {
     /// `cell_path` is `msg.target`: the orphan journal labels the child with the
     /// cell's own address, and that label is part of the pre-lane behaviour, so
     /// it travels as a parameter rather than being reinvented here.
+    ///
+    /// `env` is the one environment entry of THIS run (GH #1060: the granted
+    /// credential), set on the command before the spawn — the child is the only
+    /// process that ever holds it.
+    #[allow(clippy::too_many_arguments)]
     async fn run_cold(
         &self,
         stdin_json: String,
@@ -219,6 +249,7 @@ impl CodeCell {
         reply_target: &Path,
         cell_path: &Path,
         started: std::time::Instant,
+        env: Option<(&str, &str)>,
     ) -> Option<KillingTimeoutOutput> {
         // GH #349: an inline script above the platform's per-argv-string cap
         // (Linux: MAX_ARG_STRLEN = 32 * PAGE_SIZE) cannot be handed to the
@@ -255,6 +286,9 @@ impl CodeCell {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        if let Some((name, value)) = env {
+            command.env(name, value);
+        }
         // GH #349: when the script was materialised, the profile gets one
         // extra read grant — the script file itself. `cell-types.md` §
         // `code` promises a `script_inline` needs no declaration of its own,
@@ -442,6 +476,21 @@ async fn emit_invalid_input(sink: &OutputSink, target: &Path, msg: String) {
         .await;
 }
 
+/// GH #1060: the receipt of a call whose credential did not arrive — the
+/// `llm` cell's `credential_pending` code, the module's wording.
+async fn emit_credential_pending(sink: &OutputSink, target: &Path, msg: String) {
+    let body = json!({
+        "header":{"finish_reason":"error","error_code":"credential_pending"},
+        "messages":[{"origin":"tool","type":"tool_result","text":msg,"id":""}]
+    });
+    let _ = sink
+        .push(CellOutput {
+            target: target.clone(),
+            content: body,
+        })
+        .await;
+}
+
 /// Emit a spawn / I/O error body to `target`.
 async fn emit_spawn_error(sink: &OutputSink, target: &Path, msg: String) {
     let body = json!({
@@ -581,6 +630,37 @@ impl StatelessCell for CodeCell {
             // in the DLQ instead of being silently parked at the read endpoint.
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
+            // GH #1060: on a grant, a sealed delivery is the slot's and never
+            // reaches the script. Without a grant the body goes where it always
+            // went — the script decides what it is.
+            if let Some(slot) = &self.grant
+                && let Some(content) = crate::grant_slot::sealed_delivery(&msg)
+            {
+                if let crate::grant_slot::Delivered::Refused(detail) = slot.deliver(content).await {
+                    emit_invalid_input(sink, &reply_target, detail).await;
+                }
+                return;
+            }
+            // GH #1060: the call waits for its credential (the first one of a
+            // round asks for it), then for one of the cell's `max_concurrency`
+            // run tickets, held until the script has answered.
+            let (credential, _ticket) = match &self.grant {
+                None => (None, None),
+                Some(slot) => match slot.credential(sink, &reply_target).await {
+                    Ok(secret) => {
+                        let ticket = slot.run_ticket().await;
+                        (Some(secret), ticket)
+                    }
+                    Err(detail) => {
+                        emit_credential_pending(sink, &reply_target, detail).await;
+                        return;
+                    }
+                },
+            };
+            let env = credential
+                .as_ref()
+                .map(|s| (self.credential_env.as_str(), s.expose()));
+
             // GH #907: the attachment bytes go onto a COPY of the message used
             // for stdin and nothing else -- `msg` itself, which the error
             // paths and the emission path below read, never holds them.
@@ -617,13 +697,23 @@ impl StatelessCell for CodeCell {
                         &reply_target,
                         &msg.target,
                         started,
+                        env,
                     )
                     .await
                 }
                 RunnerHandle::Pooled(pool) => {
+                    // GH #1060: a credential rides in a job frame the harness
+                    // unpacks into the environment of this one job; without one
+                    // the line is the plain document, as before.
+                    let job = match env {
+                        Some((name, value)) => {
+                            crate::code::harness::job_frame(&stdin_json, name, value)
+                        }
+                        None => stdin_json,
+                    };
                     // Every branch below lands on an error path the cold runner
                     // already owns; the warm runner adds no `error_code`.
-                    match pool.run(stdin_json, timeout).await {
+                    match pool.run(job, timeout).await {
                         crate::code::pool::JobOutcome::Ran(out) => Some(out),
                         crate::code::pool::JobOutcome::Timeout => {
                             emit_script_timeout(sink, &reply_target, started).await;

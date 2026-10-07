@@ -81,6 +81,11 @@ struct Rig {
 }
 
 async fn boot(rig: &Rig) -> (ColonyHandle, mpsc::Receiver<Message>) {
+    boot_with(rig, store_config()).await
+}
+
+/// [`boot`] with a store config of the test's choosing.
+async fn boot_with(rig: &Rig, config: Value) -> (ColonyHandle, mpsc::Receiver<Message>) {
     // The production filesystem layout: ONE top-level cell directory under
     // `{root}`, whose name is stripped from every logical path. Without it the
     // logical→fs resolver has no anchor to strip, and `/keeper` would mean two
@@ -105,7 +110,7 @@ async fn boot(rig: &Rig) -> (ColonyHandle, mpsc::Receiver<Message>) {
     std::fs::write(tpl.join("template.json"), format!(r#"{{"name":"{NODE}"}}"#)).expect("write");
     std::fs::write(
         tpl.join("config.json"),
-        meclaw_core::serde_json::to_string(&store_config()).expect("config json"),
+        meclaw_core::serde_json::to_string(&config).expect("config json"),
     )
     .expect("write");
     let (ack_tx, ack_rx) = oneshot::channel();
@@ -270,6 +275,39 @@ async fn a_store_that_never_woke_wakes_up_holding_its_rows() {
         rule_ids(&h, &mut sink_rx).await,
         vec!["r1".to_string()],
         "the first wake must find the rows already there"
+    );
+    h.shutdown().await;
+}
+
+/// GH #1077 — a store with a full-text index takes rows through the door.
+///
+/// Measured: the first `seed_rows` into a woken store whose table carries an
+/// FTS index was refused 422 `no such tokenizer: meclaw_stem_v1`. The store
+/// declares the index with its stemming tokenizer and registers that tokenizer
+/// on ITS connection only; the door wrote through a connection of its own that
+/// never had it, and the index's insert trigger cannot run without it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_enters_a_store_with_a_full_text_index() {
+    let rig = Rig {
+        td: tempfile::TempDir::new().expect("tempdir"),
+    };
+    let mut config = store_config();
+    config["params"]["fts"] = json!({"policy": ["subject"]});
+    let (h, mut sink_rx) = boot_with(&rig, config).await;
+
+    // Wake the store first: its own DDL stands the index and its triggers.
+    assert!(
+        rule_ids(&h, &mut sink_rx).await.is_empty(),
+        "the store starts empty"
+    );
+
+    let out = mutate(&h, seed_rows("policy", json!([policy_row("r1")]))).await;
+    committed_id(&out);
+
+    assert_eq!(
+        rule_ids(&h, &mut sink_rx).await,
+        vec!["r1".to_string()],
+        "the row must reach a store whose table carries a full-text index"
     );
     h.shutdown().await;
 }

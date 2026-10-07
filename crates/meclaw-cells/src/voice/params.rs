@@ -8,10 +8,15 @@
 //! provider are that provider's own knowledge, so this file asks it rather
 //! than keeping a second copy that drifts.
 //!
-//! Credentials arrive as `${VAR}` and are substituted before a cell is spawned.
-//! An unresolved one is refused here, by NAME — the value never appears in a
-//! message, a log, or a `Debug` rendering (see [`Secret`]).
+//! Credentials come sealed from the vault (GH #1059): each provider slot
+//! (`stt`, `tts`, `duplex`) names its `credential_grant_id`, the cell asks for
+//! the key on start, and nothing of it is ever in a params document. A literal
+//! `api_key` (substituted from `${VAR}` before a spawn) still works for one
+//! release where no grant is named; a slot that needs a key and has neither is
+//! refused here, by NAME — the value never appears in a message, a log, or a
+//! `Debug` rendering (see [`Secret`]).
 
+use crate::credential::CredentialParams;
 use crate::params_overlay::OverlayParams;
 use crate::voice::wire::Mode;
 use meclaw_core::JsonValue;
@@ -248,6 +253,7 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "stt",
     "tts",
     "duplex",
+    "credential_backoff_max_ms",
 ];
 
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
@@ -333,6 +339,88 @@ pub struct VoiceParams {
     /// [`Self::tts`] is `None` — an inert placeholder rather than a second
     /// recogniser (OR-L23). Every reader of the pair asks `duplex` first.
     pub duplex: Option<DuplexParams>,
+    /// GH #1059: the grant of the `stt` slot (`stt.credential_grant_id`) and
+    /// how long a session waits for its key (`stt.credential_wait_ms`).
+    ///
+    /// Read out of the `stt` block before the provider's own strict parse, so
+    /// the three provider structs keep `deny_unknown_fields` (serde cannot
+    /// combine it with `flatten`). Settled at birth: the block is not an
+    /// updatable key ([`VoiceOverlay`]).
+    pub stt_credential: CredentialParams,
+    /// GH #1059: the grant of the `tts` slot, as [`Self::stt_credential`].
+    pub tts_credential: CredentialParams,
+    /// GH #1059: the grant of the `duplex` slot, as [`Self::stt_credential`].
+    pub duplex_credential: CredentialParams,
+    /// GH #1059: the ceiling of the doubling wait between two credential
+    /// rounds of one slot, in ms (`credential_backoff_max_ms`, default
+    /// [`crate::credential_rounds::default_credential_backoff_max_ms`]).
+    /// Immutable: the I/O half's clocks read it once per life.
+    pub credential_backoff_max_ms: u64,
+}
+
+/// GH #1059: the three provider slots of a voice cell that can spend a
+/// credential. Each one asks the vault on its own, so a delivered `stt` key
+/// starts recognition while `tts` still waits for its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialSlot {
+    /// The recogniser of a cascade.
+    Stt,
+    /// The synthesiser of a cascade.
+    Tts,
+    /// The live model of a duplex cell.
+    Duplex,
+}
+
+impl CredentialSlot {
+    /// Every slot, in the order the cell asks.
+    pub const ALL: [CredentialSlot; 3] = [Self::Stt, Self::Tts, Self::Duplex];
+
+    /// The params block name, which is also the name in log lines.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stt => "stt",
+            Self::Tts => "tts",
+            Self::Duplex => "duplex",
+        }
+    }
+}
+
+/// GH #1059 (A6): the refusal of a slot whose provider needs a key and that has
+/// neither a grant nor a usable literal, with `{slot}` filled in. Names the
+/// param and the way out; a constant so the sentence an operator reads is the
+/// sentence the tests assert.
+const CREDENTIAL_MISSING: &str = "{slot}.api_key: required — name a credential_grant_id in \
+                                  params.{slot}.credential_grant_id (the vault delivers the \
+                                  key sealed); a literal api_key still works for one release";
+
+/// GH #1059: the grant keys a provider block may carry beside the provider's
+/// own. `credential_wait_max` is deliberately not one: a voice cell parks
+/// nothing, a session waits for its own key (see [`VoiceParams::stt_credential`]).
+const CREDENTIAL_KEYS: [&str; 2] = ["credential_grant_id", "credential_wait_ms"];
+
+/// GH #1059: split the grant keys off a provider block, so the rest goes
+/// through the provider's strict (`deny_unknown_fields`) parse untouched.
+fn split_credential(raw: &JsonValue, block: &str) -> Result<(JsonValue, CredentialParams), String> {
+    let mut rest = raw.clone();
+    let mut cred = CredentialParams::default();
+    let Some(obj) = rest.as_object_mut() else {
+        // Not an object: the provider parse below says so in its own words.
+        return Ok((rest, cred));
+    };
+    if let Some(v) = obj.remove(CREDENTIAL_KEYS[0]) {
+        cred.credential_grant_id = match v {
+            JsonValue::Null => None,
+            JsonValue::String(g) => Some(g),
+            _ => return Err(format!("{block}.credential_grant_id: must be a string")),
+        };
+    }
+    if let Some(v) = obj.remove(CREDENTIAL_KEYS[1]) {
+        cred.credential_wait_ms = v.as_u64().ok_or_else(|| {
+            format!("{block}.credential_wait_ms: must be a non-negative integer (ms)")
+        })?;
+    }
+    Ok((rest, cred))
 }
 
 /// Which speech-to-text provider, and what it needs.
@@ -390,6 +478,12 @@ pub enum DuplexParams {
 #[serde(deny_unknown_fields)]
 pub struct GptLiveParams {
     /// API credential, `${OPENAI_API_KEY}` in a config. Bearer header only.
+    ///
+    /// Optional since GH #1059: with `credential_grant_id` in the same block the
+    /// key comes sealed from the vault and a literal here is never used;
+    /// without a grant the literal is the one-release transition
+    /// ([`VoiceParams::parse`] refuses a block with neither).
+    #[serde(default)]
     pub api_key: Secret,
     /// Host of the session socket; default
     /// [`crate::voice::providers::gpt_live::DEFAULT_BASE_URL`]. Written
@@ -464,6 +558,30 @@ pub struct GptLiveParams {
     /// default [`DEFAULT_RENEW_GRACE_MS`] (GH #896).
     #[serde(default = "GptLiveParams::default_renew_grace_ms")]
     pub renew_grace_ms: u64,
+    /// How long a session opened while the line rings waits for its media
+    /// connection, in milliseconds; `0` (the default) never opens one early
+    /// (GH #1055). A `call_ringing` lane with `hop.call_uuid` opens it, the
+    /// media connection with `?session=<uuid>` adopts it, `call_ended` or this
+    /// deadline closes it. Provider time is spent from the ring on.
+    #[serde(default)]
+    pub prewarm_ttl_ms: u64,
+    /// How long the caller must talk over the voiced model before the model's
+    /// audio is replaced by silence, in milliseconds; `0` (the default) never
+    /// ducks (GH #1055).
+    #[serde(default = "GptLiveParams::default_barge_duck_ms")]
+    pub barge_duck_ms: u64,
+    /// How long the caller must be quiet before the model is heard again, in
+    /// milliseconds (GH #1055).
+    #[serde(default = "GptLiveParams::default_barge_release_ms")]
+    pub barge_release_ms: u64,
+    /// The level that counts as voice on either side, in dBFS (GH #1055).
+    #[serde(default = "GptLiveParams::default_barge_level_dbfs")]
+    pub barge_level_dbfs: f64,
+    /// How far below the model's own level (RMS over the last 300 ms) the
+    /// caller may be and still duck it, in dB (GH #1055): the guard against
+    /// the line handing the model's voice back.
+    #[serde(default = "GptLiveParams::default_barge_echo_margin_db")]
+    pub barge_echo_margin_db: f64,
 }
 
 impl GptLiveParams {
@@ -512,6 +630,18 @@ impl GptLiveParams {
     fn default_renew_grace_ms() -> u64 {
         DEFAULT_RENEW_GRACE_MS
     }
+    fn default_barge_duck_ms() -> u64 {
+        crate::voice::duck::DEFAULT_BARGE_DUCK_MS
+    }
+    fn default_barge_release_ms() -> u64 {
+        crate::voice::duck::DEFAULT_BARGE_RELEASE_MS
+    }
+    fn default_barge_level_dbfs() -> f64 {
+        crate::voice::duck::DEFAULT_BARGE_LEVEL_DBFS
+    }
+    fn default_barge_echo_margin_db() -> f64 {
+        crate::voice::duck::DEFAULT_BARGE_ECHO_MARGIN_DB
+    }
 }
 
 /// Settings of the `echo` duplex adapter: the rate, and deliberately nothing
@@ -529,6 +659,12 @@ pub struct EchoDuplexParams {
 #[serde(deny_unknown_fields)]
 pub struct DeepgramParams {
     /// API credential, `${DEEPGRAM_API_KEY}` in a config.
+    ///
+    /// Optional since GH #1059: with `credential_grant_id` in the same block the
+    /// key comes sealed from the vault and a literal here is never used;
+    /// without a grant the literal is the one-release transition
+    /// ([`VoiceParams::parse`] refuses a block with neither).
+    #[serde(default)]
     pub api_key: Secret,
     /// Streaming model; default [`crate::voice::providers::deepgram::DEFAULT_MODEL`].
     #[serde(default = "DeepgramParams::default_model")]
@@ -592,6 +728,12 @@ impl DeepgramParams {
 #[serde(deny_unknown_fields)]
 pub struct OpenAiSttParams {
     /// API credential, `${OPENAI_API_KEY}` in a config.
+    ///
+    /// Optional since GH #1059: with `credential_grant_id` in the same block the
+    /// key comes sealed from the vault and a literal here is never used;
+    /// without a grant the literal is the one-release transition
+    /// ([`VoiceParams::parse`] refuses a block with neither).
+    #[serde(default)]
     pub api_key: Secret,
     /// Transcription model; default [`crate::voice::providers::openai_stt::DEFAULT_MODEL`].
     #[serde(default = "OpenAiSttParams::default_model")]
@@ -633,6 +775,12 @@ impl OpenAiSttParams {
 #[serde(deny_unknown_fields)]
 pub struct CartesiaParams {
     /// API credential, `${CARTESIA_API_KEY}` in a config.
+    ///
+    /// Optional since GH #1059: with `credential_grant_id` in the same block the
+    /// key comes sealed from the vault and a literal here is never used;
+    /// without a grant the literal is the one-release transition
+    /// ([`VoiceParams::parse`] refuses a block with neither).
+    #[serde(default)]
     pub api_key: Secret,
     /// Voice id (R-V5: a param, never wired into the code). Arrives as
     /// `${CARTESIA_VOICE}` in a config and is refused if that stayed standing.
@@ -677,6 +825,12 @@ impl CartesiaParams {
 #[serde(deny_unknown_fields)]
 pub struct OpenAiTtsParams {
     /// API credential, `${OPENAI_API_KEY}` in a config.
+    ///
+    /// Optional since GH #1059: with `credential_grant_id` in the same block the
+    /// key comes sealed from the vault and a literal here is never used;
+    /// without a grant the literal is the one-release transition
+    /// ([`VoiceParams::parse`] refuses a block with neither).
+    #[serde(default)]
     pub api_key: Secret,
     /// Speech model; default [`crate::voice::providers::openai_tts::DEFAULT_MODEL`].
     #[serde(default = "OpenAiTtsParams::default_model")]
@@ -709,6 +863,12 @@ impl OpenAiTtsParams {
 #[serde(deny_unknown_fields)]
 pub struct ElevenLabsParams {
     /// API credential, `${ELEVENLABS_API_KEY}` in a config.
+    ///
+    /// Optional since GH #1059: with `credential_grant_id` in the same block the
+    /// key comes sealed from the vault and a literal here is never used;
+    /// without a grant the literal is the one-release transition
+    /// ([`VoiceParams::parse`] refuses a block with neither).
+    #[serde(default)]
     pub api_key: Secret,
     /// Voice id (R-V5: a param, never wired into the code). Arrives as
     /// `${ELEVENLABS_VOICE}` in a config and is refused if that stayed
@@ -748,7 +908,12 @@ impl ElevenLabsParams {
 
 /// A credential. `Debug` prints `<redacted>`, and there is deliberately no
 /// `Display`: the only way out is [`Secret::expose`], which is greppable.
-#[derive(Clone, serde::Deserialize)]
+///
+/// `Default` is the empty string, which is no credential (GH #271): the value a
+/// block with a `credential_grant_id` and no literal `api_key` parses to, and
+/// the value a granted slot's literal is blanked to before any adapter is built
+/// from it (GH #1059).
+#[derive(Clone, Default, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
 
@@ -756,6 +921,19 @@ impl Secret {
     /// The credential itself. Call this where it goes on the wire, nowhere else.
     pub fn expose(&self) -> &str {
         &self.0
+    }
+
+    /// GH #1059: a key the vault delivered, opened in RAM by the handler. The
+    /// only way a value enters a params block after the parse, and it is only
+    /// ever handed to an adapter build — never serialised, never logged.
+    pub(crate) fn delivered(value: &str) -> Self {
+        Self(value.to_string())
+    }
+
+    /// Whether a usable literal stands here: neither empty nor a `${…}` the
+    /// substitution pass left standing (GH #1059 counts that as no literal).
+    fn is_usable(&self) -> bool {
+        !self.0.is_empty() && !self.is_unresolved()
     }
 
     /// Whether the substitution pass left a `${…}` standing.
@@ -793,8 +971,9 @@ impl VoiceParams {
     /// `[a-z0-9-]{1,64}` or naming a segment the API owns, a missing `stt`, a
     /// missing `tts` unless `stt.provider == "echo"`, an unknown provider name,
     /// an unknown key anywhere, a `turn_detection` outside the three the
-    /// provider knows, and an unresolved `${…}` in any secret — that last
-    /// message names the KEY, never the value.
+    /// provider knows, and a provider slot that needs a key with neither a
+    /// `credential_grant_id` nor a usable literal `api_key` (GH #1059) — that
+    /// last message names the KEY, never the value.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
         let obj = v.as_object().ok_or("params: must be object")?;
 
@@ -853,6 +1032,16 @@ impl VoiceParams {
         let audio_out_frame_ms = read_frame_ms(obj, "audio_out_frame_ms")?;
         let speak_plain = read_bool(obj, "speak_plain", DEFAULT_SPEAK_PLAIN)?;
         let release_grace_ms = read_release_grace_ms(obj, "release_grace_ms")?;
+        let credential_backoff_max_ms = read_positive_u64(
+            obj,
+            "credential_backoff_max_ms",
+            crate::credential_rounds::default_credential_backoff_max_ms(),
+        )?;
+        // GH #1059: each provider block may name its grant; filled below as
+        // the blocks are read, defaults for a block that is absent.
+        let mut stt_credential = CredentialParams::default();
+        let mut tts_credential = CredentialParams::default();
+        let mut duplex_credential = CredentialParams::default();
 
         // The duplex block first, because it decides what the two cascade keys
         // mean. Exclusive rather than merged: two models on one microphone is
@@ -870,7 +1059,9 @@ impl VoiceParams {
                             .to_string(),
                     );
                 }
-                let parsed = meclaw_core::serde_json::from_value::<DuplexParams>(raw.clone())
+                let (raw, cred) = split_credential(raw, "duplex")?;
+                duplex_credential = cred;
+                let parsed = meclaw_core::serde_json::from_value::<DuplexParams>(raw)
                     .map_err(|e| format!("duplex: {e}"))?;
                 // Two periods, and serde takes a `0` for both of them. Neither
                 // is a value: a clock with no period is a busy loop -- the
@@ -905,6 +1096,38 @@ impl VoiceParams {
                     // that block, "before the caller", broken by a typo. The
                     // renewal itself is switched off with `renew_after_ms: 0`,
                     // not here (GH #896).
+                    // GH #1055: a level at or above full scale is never
+                    // reached and one below the noise floor is always reached;
+                    // both would make the knob a typo that ducks nothing or
+                    // everything. A release of nothing would open the gate on
+                    // the caller's first stop consonant.
+                    if g.barge_duck_ms > 0 {
+                        if !(g.barge_level_dbfs < 0.0 && g.barge_level_dbfs > -90.0) {
+                            return Err(
+                                "duplex.barge_level_dbfs: must lie between -90 and 0 (exclusive); \
+                                 telephone speech sits around -20 to -30 dBFS"
+                                    .to_string(),
+                            );
+                        }
+                        // A negative margin asks the caller to be LOUDER than
+                        // the model, which a telephone caller never is; past
+                        // 60 dB it no longer tells an echo from anything.
+                        if !(0.0..=60.0).contains(&g.barge_echo_margin_db) {
+                            return Err(
+                                "duplex.barge_echo_margin_db: must lie between 0 and 60 dB \
+                                 (how far below the model the caller may be and still duck it)"
+                                    .to_string(),
+                            );
+                        }
+                        if g.barge_release_ms == 0 {
+                            return Err(
+                                "duplex.barge_release_ms: must be a positive integer (how long \
+                                 the caller is quiet before the model is heard again); switch \
+                                 ducking off with `barge_duck_ms: 0` instead"
+                                    .to_string(),
+                            );
+                        }
+                    }
                     if g.renew_grace_ms == 0 {
                         return Err(
                             "duplex.renew_grace_ms: must be a positive integer (how long a \
@@ -928,7 +1151,9 @@ impl VoiceParams {
             // is echo-and-nothing, and every reader asks `duplex` first.
             (Some(_), _) => SttParams::Echo,
             (None, Some(raw)) => {
-                meclaw_core::serde_json::from_value(raw.clone()).map_err(|e| format!("stt: {e}"))?
+                let (raw, cred) = split_credential(raw, "stt")?;
+                stt_credential = cred;
+                meclaw_core::serde_json::from_value(raw).map_err(|e| format!("stt: {e}"))?
             }
             // A `null` counts as absent here as it does everywhere else in this
             // parser, and absent WITHOUT a duplex block is a cell with no ear.
@@ -947,10 +1172,14 @@ impl VoiceParams {
             .filter(|v| !v.is_null())
             .filter(|_| duplex.is_none())
         {
-            Some(raw) => Some(
-                meclaw_core::serde_json::from_value::<TtsParams>(raw.clone())
-                    .map_err(|e| format!("tts: {e}"))?,
-            ),
+            Some(raw) => {
+                let (raw, cred) = split_credential(raw, "tts")?;
+                tts_credential = cred;
+                Some(
+                    meclaw_core::serde_json::from_value::<TtsParams>(raw)
+                        .map_err(|e| format!("tts: {e}"))?,
+                )
+            }
             None => {
                 if duplex.is_none() && !matches!(stt, SttParams::Echo) {
                     return Err(
@@ -983,6 +1212,10 @@ impl VoiceParams {
             stt,
             tts,
             duplex,
+            stt_credential,
+            tts_credential,
+            duplex_credential,
+            credential_backoff_max_ms,
         };
         parsed.check_secrets()?;
         parsed.check_provider_values()?;
@@ -1083,42 +1316,127 @@ impl VoiceParams {
         Ok(())
     }
 
-    /// Refuse any credential the substitution pass left as a `${…}`. The
-    /// message names the params key, so an operator knows what to fix, and
-    /// never the value, so a half-substituted config cannot leak through a
-    /// spawn error into a log.
+    /// GH #1059 (A6): every slot whose provider needs a key has a grant OR a
+    /// usable literal. Neither is refused with [`CREDENTIAL_MISSING`], which
+    /// names the param and the grant to set — never a value. A `${…}` the
+    /// substitution pass left standing counts as no literal; its variable NAME
+    /// (not a value: the substitution never happened) is added as a hint, so
+    /// an operator still on the transition path sees what is unset.
+    ///
+    /// A grant wins over a literal and is checked here only for presence: the
+    /// key itself arrives after the spawn, sealed.
     fn check_secrets(&self) -> Result<(), String> {
-        let stt_secret = match &self.stt {
-            SttParams::Echo => None,
-            SttParams::Deepgram(p) => Some(("stt.api_key", &p.api_key)),
-            SttParams::Openai(p) => Some(("stt.api_key", &p.api_key)),
-        };
-        let tts_secret = match &self.tts {
-            None => None,
-            Some(TtsParams::Cartesia(p)) => Some(("tts.api_key", &p.api_key)),
-            Some(TtsParams::Openai(p)) => Some(("tts.api_key", &p.api_key)),
-            Some(TtsParams::Elevenlabs(p)) => Some(("tts.api_key", &p.api_key)),
-        };
-        let duplex_secret = match &self.duplex {
-            Some(DuplexParams::GptLive(p)) => Some(("duplex.api_key", &p.api_key)),
-            // The loopback needs no credential -- that is what it is for.
-            Some(DuplexParams::Echo(_)) | None => None,
-        };
-        for (key, secret) in [stt_secret, tts_secret, duplex_secret]
-            .into_iter()
-            .flatten()
-        {
-            if secret.expose().is_empty() {
-                return Err(format!("{key}: must not be empty"));
+        for slot in CredentialSlot::ALL {
+            let Some(literal) = self.literal_key(slot) else {
+                continue; // echo, or no such block: nothing to spend
+            };
+            if self.credential(slot).grant().is_some() || literal.is_usable() {
+                continue;
             }
-            if secret.is_unresolved() {
-                let name = secret.placeholder_name();
-                return Err(format!(
-                    "{key}: unresolved placeholder — set {name} in this colony's environment"
+            let mut err = CREDENTIAL_MISSING.replace("{slot}", slot.as_str());
+            if literal.is_unresolved() {
+                err.push_str(&format!(
+                    " (the literal is the unresolved ${{{}}})",
+                    literal.placeholder_name()
                 ));
             }
+            return Err(err);
         }
         Ok(())
+    }
+
+    /// GH #1059: the literal `api_key` of `slot`, where its provider needs one;
+    /// `None` for the loopbacks and for a slot this cell does not run.
+    fn literal_key(&self, slot: CredentialSlot) -> Option<&Secret> {
+        match slot {
+            CredentialSlot::Stt => match &self.stt {
+                SttParams::Echo => None,
+                SttParams::Deepgram(p) => Some(&p.api_key),
+                SttParams::Openai(p) => Some(&p.api_key),
+            },
+            CredentialSlot::Tts => match &self.tts {
+                None => None,
+                Some(TtsParams::Cartesia(p)) => Some(&p.api_key),
+                Some(TtsParams::Openai(p)) => Some(&p.api_key),
+                Some(TtsParams::Elevenlabs(p)) => Some(&p.api_key),
+            },
+            CredentialSlot::Duplex => match &self.duplex {
+                Some(DuplexParams::GptLive(p)) => Some(&p.api_key),
+                // The loopback needs no credential -- that is what it is for.
+                Some(DuplexParams::Echo(_)) | None => None,
+            },
+        }
+    }
+
+    /// GH #1059: the grant block of `slot`.
+    #[must_use]
+    pub fn credential(&self, slot: CredentialSlot) -> &CredentialParams {
+        match slot {
+            CredentialSlot::Stt => &self.stt_credential,
+            CredentialSlot::Tts => &self.tts_credential,
+            CredentialSlot::Duplex => &self.duplex_credential,
+        }
+    }
+
+    /// GH #1059: the grant `slot` spends — only where its provider needs a
+    /// key. A grant beside a loopback asks for nothing: there is no adapter
+    /// that could use what the vault would deliver.
+    #[must_use]
+    pub fn slot_grant(&self, slot: CredentialSlot) -> Option<&str> {
+        self.literal_key(slot)?;
+        self.credential(slot).grant()
+    }
+
+    /// GH #1059 (OR-VG-4): the slots whose literal `api_key` is ignored because
+    /// a grant is named beside it. The factory says so once per birth, by
+    /// param name and never by value.
+    #[must_use]
+    pub fn ignored_literals(&self) -> Vec<CredentialSlot> {
+        CredentialSlot::ALL
+            .into_iter()
+            .filter(|s| {
+                crate::credential::literal_is_ignored(
+                    self.slot_grant(*s),
+                    self.literal_key(*s).map(Secret::expose),
+                )
+            })
+            .collect()
+    }
+
+    /// GH #1059 (OR-VG-4): a copy with the literal key of every granted slot
+    /// blanked. The factory builds every adapter from this, so a literal next
+    /// to a grant cannot reach a wire — not even while the box is missing.
+    #[must_use]
+    pub fn without_granted_literals(&self) -> Self {
+        let mut out = self.clone();
+        for slot in CredentialSlot::ALL {
+            if self.slot_grant(slot).is_some() {
+                out.set_key(slot, Secret::default());
+            }
+        }
+        out
+    }
+
+    /// GH #1059: the provider block of `slot` with `key` in place of its
+    /// literal — what a delivered key is built into.
+    pub(crate) fn set_key(&mut self, slot: CredentialSlot, key: Secret) {
+        match slot {
+            CredentialSlot::Stt => match &mut self.stt {
+                SttParams::Echo => {}
+                SttParams::Deepgram(p) => p.api_key = key,
+                SttParams::Openai(p) => p.api_key = key,
+            },
+            CredentialSlot::Tts => match &mut self.tts {
+                None => {}
+                Some(TtsParams::Cartesia(p)) => p.api_key = key,
+                Some(TtsParams::Openai(p)) => p.api_key = key,
+                Some(TtsParams::Elevenlabs(p)) => p.api_key = key,
+            },
+            CredentialSlot::Duplex => match &mut self.duplex {
+                Some(DuplexParams::GptLive(p)) => p.api_key = key,
+                Some(DuplexParams::Echo(_)) | None => {}
+            },
+        }
     }
 }
 
@@ -1304,6 +1622,12 @@ pub struct VoiceOverlay {
     /// are settled at birth. Tuning a live model means a respawn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duplex: Option<JsonValue>,
+    /// GH #1059: the ceiling of the credential rounds' doubling wait. Carried
+    /// so a replay keeps it; refused by an update ([`OverlayParams::IMMUTABLE_KEYS`])
+    /// because the I/O half's clocks read it once per life. The grants
+    /// themselves sit inside `stt`/`tts`/`duplex` and are settled at birth with
+    /// those blocks.
+    pub credential_backoff_max_ms: u64,
 }
 
 impl OverlayParams for VoiceOverlay {
@@ -1320,14 +1644,16 @@ impl OverlayParams for VoiceOverlay {
         "audio_out_frame_ms",
         "speak_plain",
         "release_grace_ms",
+        "credential_backoff_max_ms",
     ];
 
-    /// **Empty**, like the `web` cell's. Nothing is refused here for being the
-    /// key it is; the provider blocks are out of reach because they are not
-    /// *known* keys, which is a different sentence and a better one — an update
-    /// naming `stt` gets `unknown param 'stt'` rather than an invitation to
-    /// wonder which half of it might have been accepted.
-    const IMMUTABLE_KEYS: &'static [&'static str] = &[];
+    /// Only the credential rounds' ceiling (GH #1059), which the I/O half reads
+    /// once per life. Nothing else is refused here for being the key it is;
+    /// the provider blocks — grants included — are out of reach because they
+    /// are not *known* keys, which is a different sentence and a better one —
+    /// an update naming `stt` gets `unknown param 'stt'` rather than an
+    /// invitation to wonder which half of it might have been accepted.
+    const IMMUTABLE_KEYS: &'static [&'static str] = &["credential_backoff_max_ms"];
 
     fn parse(raw: &JsonValue) -> Result<Self, String> {
         // Through the same parser as everything else (parser invariant).
@@ -1347,6 +1673,7 @@ impl OverlayParams for VoiceOverlay {
             stt: obj.get("stt").cloned().unwrap_or(JsonValue::Null),
             tts: obj.get("tts").cloned(),
             duplex: obj.get("duplex").filter(|v| !v.is_null()).cloned(),
+            credential_backoff_max_ms: p.credential_backoff_max_ms,
         })
     }
 }
@@ -1619,6 +1946,35 @@ mod tests {
             VoiceParams::parse(&echo).is_err(),
             "the loopback has no renewal to set"
         );
+    }
+
+    /// GH #1055 R4: the echo margin reads from the block with its default and
+    /// a margin outside 0-60 dB is refused where ducking is on.
+    #[test]
+    fn gh1055_the_echo_margin_is_read_and_bounded() {
+        let raw = json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "x"}
+        });
+        let p = VoiceParams::parse(&raw).expect("parses");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("a gpt_live block")
+        };
+        assert_eq!(
+            g.barge_echo_margin_db,
+            crate::voice::duck::DEFAULT_BARGE_ECHO_MARGIN_DB
+        );
+        for bad in [-1.0, 61.0] {
+            let raw = json!({
+                "mount": "voice",
+                "duplex": {
+                    "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                    "barge_duck_ms": 200, "barge_echo_margin_db": bad
+                }
+            });
+            let err = VoiceParams::parse(&raw).expect_err("refused");
+            assert!(err.starts_with("duplex.barge_echo_margin_db:"), "{err}");
+        }
     }
 
     /// A grace of zero would take every renewal over without its handover; the

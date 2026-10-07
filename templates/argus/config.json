@@ -29,6 +29,13 @@
         {
           "route": "in_hint",
           "because": "a hypothesis from another part of the colony, in the body slot `hint: {origin, confidence, line}` -- a slot, never a turn: `origin` `[a-z0-9-]{1,64}`, `confidence` a JSON integer 0..100, `line` one line of 1..500 characters after trimming. `./door` stores it in the receipts' `hints` table and does nothing else: no edge leads from the door into the loop, so a hint triggers no cycle; the loop shows it to its judge at the earliest in its next cycle, marked as a hypothesis, and a hint never counts as a measurement -- a change resting on hints alone still needs its evidence. Without an edge onto it nobody is heard"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./judge"
+          ],
+          "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
         }
       ],
       "emits": [
@@ -67,6 +74,13 @@
         {
           "route": "hint_ack",
           "because": "the answer to `in_hint`: `hop.hint_id` of the stored hint and an empty `hop.error_code`, or `invalid_hint` with `hop.detail` naming the field and nothing stored, or `store_error`. An acknowledgement says the hint is kept, not that anything will be done about it"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./judge"
+          ],
+          "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },
@@ -173,7 +187,7 @@
         {
           "from": "./judge",
           "to": "./mutator",
-          "condition": "!has(hop.refused_subscriber)"
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)"
         },
         {
           "from": "./judge",

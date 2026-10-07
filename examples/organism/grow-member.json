@@ -4,7 +4,13 @@
     "add_nodes": [
       {
         "name": "alex",
-        "template": "member@2.5.14"
+        "template": "member@2.5.17",
+        "override_params": {
+          "access/vault": {
+            "key_source": "plainfile",
+            "key_file": "${MECLAW_VAULT_KEY_FILE:-}"
+          }
+        }
       }
     ],
     "add_edges": [

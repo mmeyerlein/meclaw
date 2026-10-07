@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.5.14",
+            v, "2.5.17",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -447,12 +447,17 @@ fn the_versions_moved_with_the_declarations() {
              2.5.12 only pins `memory-hive@3.11.0` (GH #1039), the third digit; 2.5.13 \
              promotes `recall_input_soft` on the `tool_call` door, pins `memory-hive@3.11.1` \
              and derives `./assistants` from `assistant@3.7.7` (GH #1044), the third digit; \
-             2.5.14 only pins `memory-hive@3.11.2` (GH #1042), the third digit"
+             2.5.14 only pins `memory-hive@3.11.2` (GH #1042), the third digit; \
+             2.5.15 only derives `./assistants` from `assistant@3.7.8` (GH #1036), the third digit; \
+             2.5.16 only pins `memory-hive@3.12.0` and derives `./assistants` from \
+             `assistant@3.7.9` (GH #1079), the third digit; 2.5.17 only pins `access@2.5.1`, \
+             `file-space@1.4.5` and `memory-hive@3.12.1` and derives `./assistants` from \
+             `assistant@3.7.10` (GH #801), the third digit"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.7.7",
+            v, "3.7.10",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -505,7 +510,10 @@ fn the_versions_moved_with_the_declarations() {
              `cogny@5.8.3` (GH #1037), the third digit; 3.7.5 only pins `talky@6.6.5` \
              and `cogny@5.8.4` (GH #1038), the third digit; 3.7.6 only pins \
              `talky@6.6.6` and `cogny@5.8.5` (GH #1040), the third digit; 3.7.7 only pins \
-             `talky@6.6.7` and `cogny@5.8.6` (GH #1044), the third digit"
+             `talky@6.6.7` and `cogny@5.8.6` (GH #1044), the third digit; 3.7.8 only pins \
+             `talky@6.6.8` and `cogny@5.8.7` (GH #1036), the third digit; 3.7.9 only pins \
+             `talky@6.7.0` and `cogny@5.9.0` (GH #1079), the third digit; 3.7.10 only pins \
+             `talky@6.7.1` and `cogny@5.9.1` (GH #801), the third digit"
         );
     }
 }

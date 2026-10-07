@@ -48,6 +48,9 @@ use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{Headers, Path, Uuid};
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 /// The member of the worked example, and the generation inside it. Any paths
 /// do; these are the ones `examples/organism` uses, one segment shorter.
 const MEMBER: &str = "/m";
@@ -87,7 +90,8 @@ fn hive_edges(rel: &str) -> Vec<EdgeSpec> {
 /// ships empty and open, and the mutation that instantiates a generation is what
 /// draws them (`templates/member/assistants/config.json`).
 fn recipe_edges(rel: &str) -> Vec<EdgeSpec> {
-    let doc = read_json(rel);
+    // GH #1061: the generation is read as its container reads it.
+    let doc = organism_assistant::at_the_container(&read_json(rel));
     let raw = doc["diff"]["add_edges"]
         .as_array()
         .unwrap_or_else(|| panic!("{rel}: no diff.add_edges"))

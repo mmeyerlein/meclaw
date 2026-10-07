@@ -20,6 +20,13 @@
           "route": "in_schemas",
           "context": [],
           "because": "a cell of this assistant asking which tools it may offer its model, by NAME -- `{\"tools\": [\"web_search\", \"web_fetch\"]}`, or `[\"*\"]` for everything the hive has. It is not a tool round and carries no `tool_name`: what travels is the list the ASKING template declared, because whoever designed that template decided what it uses, and that decision belongs where the rest of its contract is. The hive keeps no record of who asked -- a subscriber table here would be a second copy of a decision already visible one level up"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./web_search"
+          ],
+          "because": "the answer half of the same lane (GH #1061): the broker's `vault.deliver` ack carrying the sealed box, renamed to `in_sealed` by the edge. It lands on `./web_search` only -- the box is sealed to the ephemeral key of the cell that asked. Address the edge with `hop.grant_id`"
         }
       ],
       "emits": [
@@ -34,6 +41,13 @@
         {
           "route": "tool_schemas",
           "because": "the declarations, one `{name, description, parameters}` per tool the hive has under a name that was asked for, plus the names it does not have in `unknown` -- named rather than dropped, because a menu that is silently one tool short is a model that never calls it and a builder who never learns why. It is a lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question, and folding the two would make every collector guess which of them it was handed"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./web_search"
+          ],
+          "because": "the ask half of the credential lane (GH #1061): `./web_search` ships anonymous, and an assistant grown with a search credential (`search_cred_ref` in the builder's credential wish) names a grant on it -- then it asks the member's broker for the key, sealed. A V-LANE (GH #559): `params.ports` stays `[]` and `./web_search` is the one address this rim opens for this one lane. The requester is stamped by the edge, never by the body (R-AC-1)"
         }
       ]
     },

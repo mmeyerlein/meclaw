@@ -238,6 +238,19 @@ run_nextest() {
         meclaw_write_stamp "$root" "$target_dir" "$rev" "$dirty"
     fi
 
+    # The slow lock (`scripts/slow_tests.py`, station `slow-tests`) reads the JUnit
+    # file of THIS run; one left over from an earlier run would let it judge times
+    # nobody measured now (GH #1046).
+    # Where the file lands is asked of the lock itself (`junit_path`: nextest's
+    # store, not cargo's target dir), so a moved store cannot leave it an old
+    # file. Should the call fail, the station fails the same way -- red, not
+    # silent.
+    if [ -z "${MECLAW_TIER_DRY:-}" ]; then
+        local junit
+        junit=$(python3 "$root/scripts/slow_tests.py" --print-junit-path \
+                    --profile "$profile") && [ -n "$junit" ] && rm -f "$junit"
+    fi
+
     local rc=0 seen=""
     if [ -n "${MECLAW_TIER_DRY:-}" ]; then
         echo "=== tier-dry: cargo nextest run --workspace --profile $profile" \

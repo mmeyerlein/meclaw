@@ -24,6 +24,13 @@
         {
           "route": "in_model",
           "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./compose`, the one llm cell of this hive, past every other cell, because a params body is not a request. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./compose"
+          ],
+          "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
         }
       ],
       "emits": [
@@ -42,6 +49,13 @@
         {
           "route": "catalogue",
           "because": "the reconciliation's own report, on its way back out: how many templates the registry holds, how many the corpus already carried, how many rows were written and which names. It leaves because a report nobody can subscribe to is a dead letter -- measured as one, twice, in a built colony -- and because a caller that drives `in_ingest` and is told nothing cannot tell a corpus that was already current from a nudge that never ran"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./compose"
+          ],
+          "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },

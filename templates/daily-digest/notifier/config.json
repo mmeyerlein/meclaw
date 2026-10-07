@@ -4,7 +4,8 @@
     "timeout": -1
   },
   "params": {
-    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "bot_token": "",
+    "bot_token_grant_id": "grant:telegram-bot@template-daily-digest/notifier",
     "emit_to": "../void",
     "long_poll_timeout_ms": 35000,
     "long_poll_request_secs": 30,
@@ -18,8 +19,14 @@
       "bot_token": {
         "type": "string",
         "secret": true,
-        "default": "${TELEGRAM_BOT_TOKEN}",
-        "description": "Telegram bot token (BotFather)"
+        "default": "",
+        "description": "Telegram bot token (BotFather). Deprecated, removed in 0.63.0: name a grant in bot_token_grant_id instead (#801)."
+      },
+      "bot_token_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "grant:telegram-bot@template-daily-digest/notifier",
+        "description": "The grant under which the vault delivers the bot token sealed (GH #1059, #801). Set, `bot_token` is ignored and the cell polls only once the box is opened. Never empty here: an empty grant beside an empty `bot_token` is refused at parse. Immutable."
       },
       "long_poll_request_secs": {
         "type": "number",
@@ -36,19 +43,37 @@
     },
     "emits": {
       "body": {},
-      "hop": {}
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        }
+      }
     },
     "consumes": {
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false,
+          "description": "messages is not required at the substrate (GH #1061): the sealed credential box reaches this cell with body.sealed alone, and a required key here would refuse it at delivery as consumes_violation; the cell itself still refuses a send without it."
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
         }
       },
       "context": {
         "chat_id": {
           "type": "number",
-          "required": true
+          "required": false,
+          "description": "chat_id is not required at the substrate (GH #1061): the sealed credential box reaches this cell with body.sealed alone, and a required key here would refuse it at delivery as consumes_violation; the cell itself still refuses a send without it."
         }
       }
     },

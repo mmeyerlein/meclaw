@@ -2,8 +2,9 @@
 //! agrees.
 //!
 //! `gh466_grow_level_renders_the_level.rs` pins what the recipe RENDERS: one
-//! declaration whose last four edges are the ones
-//! `examples/organism/grow-credentials.json` carries. That is a statement about
+//! declaration, byte for byte the one `examples/organism/grow-assistant.json`
+//! carries since GH #1061 (the level and its credential road in one act). That
+//! is a statement about
 //! a string. This file is the second opinion the string needs — the same
 //! rendered declaration, handed to a real mutation door on a real colony grown
 //! from the shipped templates, has to come back `Committed`, and the four

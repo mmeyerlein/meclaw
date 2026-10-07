@@ -1,4 +1,4 @@
-//! `freeswitch@2.3.1` — a telephone as a CHANNEL of a person: it turns the facts
+//! `freeswitch@2.4.1` — a telephone as a CHANNEL of a person: it turns the facts
 //! about the line a person could ANSWER into TURNS, books the rest, and offers
 //! the assistant five tools of its own.
 //!
@@ -463,6 +463,17 @@ fn build_tree(
         root,
         &format!("main/person/channels/{CHANNEL}/voice/config.json"),
         &double(MEDIA, "Test double for the media half of this channel."),
+    );
+    // GH #1061: the channel's own broker is a ref to `access@…`, which no
+    // library of this tree resolves -- and the doubled media half never asks
+    // it for a key. Inert, like the member's own `access` above.
+    write(
+        root,
+        &format!("main/person/channels/{CHANNEL}/access/config.json"),
+        &double(
+            INERT,
+            "Inert double for the channel's broker; the doubled media half never asks it.",
+        ),
     );
     // The one thing an instance always says about itself: who may ring it.
     let signal_path = chan.join("signal/config.json");

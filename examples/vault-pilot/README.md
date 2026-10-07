@@ -3,9 +3,8 @@
 A model that holds no key.
 
 `main/brain/config.json` names a provider, a model and a grant. It does **not**
-name a credential: `api_key` is `${EXAMPLE_PROVIDER_KEY:-}` and that variable is
-meant to stay unset, so the string resolves to empty and an empty string is not a
-bearer. The value it authenticates with arrives from the vault, **sealed**, on an
+name a credential: `api_key` is the empty string, and an empty string is not a
+bearer (#801). The value it authenticates with arrives from the vault, **sealed**, on an
 ordinary broker invocation, and it is opened in the cell's own task and lives
 nowhere else.
 

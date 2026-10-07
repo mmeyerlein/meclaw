@@ -55,9 +55,10 @@
         {
           "route": "in_sealed",
           "at": [
-            "./brain"
+            "./brain",
+            "./curator/summarizer"
           ],
-          "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on `./brain` and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds"
+          "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on the cell that asked (`./brain` or `./curator/summarizer`) and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds. A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
         {
           "route": "mutation_committed",
@@ -112,9 +113,10 @@
         {
           "route": "credential_request",
           "at": [
-            "./brain"
+            "./brain",
+            "./curator/summarizer"
           ],
-          "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
+          "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1). A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
         {
           "route": "stats",
@@ -263,7 +265,7 @@
         {
           "from": "./splitter",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && ((has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) || (has(hop.sidecar_verify) && hop.sidecar_verify != ''))",
           "modifier": {
             "set_hop": {
               "route": "'in_section'"
@@ -273,7 +275,7 @@
         {
           "from": "./splitter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things'))",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) && !(has(hop.sidecar_verify) && hop.sidecar_verify != '')",
           "modifier": {
             "delete_context": [
               "col_phase",

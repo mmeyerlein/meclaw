@@ -80,7 +80,11 @@
 # TTL and no live process holds it -- a running gate keeps its token as long
 # as it runs. A waiter in its own worktree keeps its place as long as the
 # tree stands (`who` marks it once it waits beyond the TTL); one queued from
-# outside leaves after the TTL. `init` and `off` refuse while anybody holds
+# outside leaves after the TTL. A token or lane free for a waiter is OFFERED
+# to it (`who`: `offered <lane> at <time>`); a waiter beyond the TTL that
+# leaves an offer untaken for one poll period (10 min) drops out at the next
+# `take` of another strand, and the offer moves on (GH #1053). `init` and
+# `off` refuse while anybody holds
 # a token or waits for one, unless `--force`. A strand is
 # `<wave>/<name>`, its branch: `--strand <name>` takes the wave from the
 # branch or `--wave`, `--strand <wave>/<name>` is taken as it stands.
@@ -147,9 +151,10 @@
 # locally is the orchestrator's call, never a silent fallback.
 #
 # The lanes are named in a PRIVATE host file, `${MECLAW_LANES_FILE:-
-# ~/.config/meclaw/lanes}`: `<name> <ssh-target> [<bmc>]` per line, `#` a
-# comment. It is never in the repository -- it names machines -- and it holds
-# no password. Build hosts are normally switched off; switching one on or off
+# ~/.config/meclaw/lanes}`: `<name> <ssh-target> [<bmc>] [threads=<n>]` per
+# line, `#` a comment. `threads=<n>` caps the test threads and the build jobs
+# of that lane (default: every core); old readers skip the word. It is never
+# in the repository -- it names machines -- and it holds no password. Build hosts are normally switched off; switching one on or off
 # is a step of the orchestrator's, outside this kit, and `lanes status` is
 # the one lane verb that reads: per lane reachable or not, the file system
 # type and free space of its `/srv/target`, strand refs in its bare
@@ -471,6 +476,20 @@ lane_target() {
     awk -v n="$1" '{ sub(/#.*/, "") } $1 == n && NF >= 2 { print $2; exit }' "$file"
 }
 
+# The width cap of a lane in the host file, or nothing: a `threads=<n>` word
+# after the ssh target (`<name> <ssh-target> [<bmc>] [threads=<n>]`). A lane
+# whose scenario tests time out at full width (a 24-thread build host, measured
+# 2026-10-06) runs with n test threads and n build jobs instead of `nproc`.
+# Anything but digits is ignored, so a typo costs the cap and not the gate.
+lane_threads() {
+    local file
+    file=$(lanes_file)
+    [ -f "$file" ] || return 0
+    awk -v n="$1" '{ sub(/#.*/, "") } $1 == n && NF >= 2 {
+        for (i = 3; i <= NF; i++) if ($i ~ /^threads=[1-9][0-9]*$/) { sub(/^threads=/, "", $i); print $i; exit }
+        exit }' "$file"
+}
+
 # The lane's word on the browser drivers of the tree (`lane_sync.sh push`, third
 # word): a tree with drivers but no playwright on the host runs its browser
 # proofs as SKIPs (OR-DP-83), and that is said before the run, not found after.
@@ -534,7 +553,8 @@ gate_on_host() {
     # sides, or the push above had refused.
     printf 'strand: lane %s (%s) rev %s overlay %s\n' "$lane" "${target#*@}" "${sha:0:8}" "${digest:-?}"
 
-    "$sync" run "$target" "$name" "$mode" "$base" ${pass[@]+"${pass[@]}"} >"$runlog" 2>&1
+    MECLAW_LANE_THREADS=$(lane_threads "$lane") \
+        "$sync" run "$target" "$name" "$mode" "$base" ${pass[@]+"${pass[@]}"} >"$runlog" 2>&1
     rc=$?
     if [ "$rc" = 255 ] && ! grep -q '^GATE-SUMMARY ' "$runlog"; then
         restore_latest "$archive_root"
@@ -814,7 +834,8 @@ cmd_test() {
     printf 'strand: lane %s (%s) rev %s overlay %s\n' "$host" "${target#*@}" "${sha:0:8}" "${digest:-?}"
 
     t0=$(date +%s)
-    "$sync" test "$target" "$name" "$expr" ${extra[@]+"${extra[@]}"} >"$log" 2>&1
+    MECLAW_LANE_THREADS=$(lane_threads "$host") \
+        "$sync" test "$target" "$name" "$expr" ${extra[@]+"${extra[@]}"} >"$log" 2>&1
     rc=$?
     secs=$(( $(date +%s) - t0 ))
     cmd_token check --pid 0 >/dev/null 2>&1 || true
@@ -1124,7 +1145,7 @@ token_file() {
     printf '%s\n' "${MECLAW_STRAND_TOKENS:-${lock%.lock}.tokens}"
 }
 
-# The private host file of the build lanes: `<name> <ssh-target> [<bmc>]` per
+# The private host file of the build lanes: `<name> <ssh-target> [<bmc>] [threads=<n>]` per
 # line, `#` a comment. Never in the repository -- it names machines.
 lanes_file() {
     printf '%s\n' "${MECLAW_LANES_FILE:-$HOME/.config/meclaw/lanes}"
@@ -1250,6 +1271,16 @@ REFUSED = ("no cargo token for %s -- run 'scripts/strand.sh token take' first. "
            "your turn and wait to be woken (plans/PREAMBLE.md section 5).")
 
 
+# One poll period: how long a waiter beyond the TTL may leave a token offered
+# to it untaken before it drops out of the queue (GH #1053). A standing tree
+# proves nothing about its builder: on 2026-10-07 00:12 two waiters in standing
+# trees, 96-115 min beyond the TTL, never took the free build04; the `take` of
+# the strand behind them left them where they were, and the lane stood empty
+# for about 30 min until the orchestrator dropped both by hand. A woken builder
+# takes within a minute or two -- ten is room for a slow wake-up.
+OFFER_MIN = 10
+
+
 def say(msg):
     print("strand: " + msg, file=sys.stderr)
 
@@ -1306,6 +1337,9 @@ def load():
 
 
 def write(st):
+    # Every write states which waiter a free token is offered to -- the time
+    # of the offer is what `take` drops a silent waiter by (GH #1053).
+    mark_offers(st)
     tmp = "%s.tmp.%d" % (path, os.getpid())
     with open(tmp, "w") as fh:
         json.dump(st, fh, indent=2)
@@ -1390,6 +1424,51 @@ def refuse_over_a_queue(st, way_out):
         who = ["%s holds a cargo token" % h["strand"] for h in st["holders"]]
         who += ["%s waits in the queue" % w["strand"] for w in st["waiting"]]
         fail("token %s: %s -- %s" % (verb, ", ".join(who), way_out))
+
+
+def offer_of(st, i):
+    """What the waiter at place `i` would get from a `take` right now: a
+    lane name, "" for a plain token, None for nothing -- read the way `take`
+    reads it (FIFO, a named lane is only ever that lane)."""
+    w = st["waiting"][i]
+    if st.get("lanes"):
+        left = lanes_left(st, st["waiting"][:i])
+        if w.get("lane"):
+            return w["lane"] if w["lane"] in left else None
+        return left[0] if left else None
+    return "" if i < st["max"] - len(st["holders"]) else None
+
+
+def offer_name(w):
+    return w["offered"]["lane"] if w["offered"].get("lane") else "a token"
+
+
+def mark_offers(st):
+    """Stamp each waiter with the token offered to it. An offer keeps its
+    first time as long as the waiter would get SOME token -- a drop ahead of
+    it may turn north into south, and that is no fresh poll period -- and
+    goes when it would get nothing any more."""
+    for i, w in enumerate(st["waiting"]):
+        got = offer_of(st, i)
+        if got is None:
+            w.pop("offered", None)
+            continue
+        old = w.get("offered")
+        if old and old.get("lane", "") == got:
+            continue
+        w["offered"] = {"at": old["at"] if old else now}
+        if got:
+            w["offered"]["lane"] = got
+        log("offer", w["strand"], ("lane " + got) if got else "token")
+
+
+def offer_not_taken(w, st):
+    """A waiter beyond the TTL that left its offer untaken for one poll
+    period. Only then: within the TTL an untaken offer is the normal case --
+    the orchestrator wakes the builder, and that may take a while."""
+    o = w.get("offered")
+    return bool(o) and now - o["at"] >= OFFER_MIN * 60 \
+        and now - w["since"] > st["ttl_min"] * 60
 
 
 mine_tree = tree if branch == key else ""
@@ -1487,6 +1566,10 @@ with open(path + ".lock", "a") as guard:
                     note = "  waiting beyond the ttl"
                 else:
                     note = ""
+                if w.get("offered"):
+                    # GH #1053: who gets the free token, and since when --
+                    # beyond the TTL the waiter drops out one poll period later.
+                    note += "  offered %s at %s" % (offer_name(w), iso(w["offered"]["at"]))
                 print("  #%d %s%s  waiting %d min%s"
                       % (n, w["strand"], ("  for lane " + w["lane"]) if w.get("lane") else "",
                          mins(w["since"]), note))
@@ -1616,6 +1699,25 @@ with open(path + ".lock", "a") as guard:
             log("stale-wait", w["strand"], why)
             say("dropped %s from the queue -- %s (ttl %d min)"
                 % (w["strand"], why, st["ttl_min"]))
+    # A waiter in a standing tree beyond the TTL that leaves its offer untaken
+    # is gone in all but name (GH #1053, OFFER_MIN): it drops out, and the
+    # offer moves on -- one at a time, so the next waiter gets its own poll
+    # period. The caller is exempt: its `take` is the sign of life.
+    mark_offers(st)
+    while True:
+        late = next((w for w in st["waiting"]
+                     if w["strand"] != key and offer_not_taken(w, st)), None)
+        if late is None:
+            break
+        st["waiting"].remove(late)
+        what = offer_name(late)
+        if late["offered"].get("lane"):
+            what = "lane " + what
+        log("dropped", late["strand"], "waiter past ttl, did not take %s offered at %s, waiting %d min"
+            % (what, iso(late["offered"]["at"]), mins(late["since"])))
+        say("dropped %s from the queue -- waiter past ttl, did not take %s offered %d min ago "
+            "(ttl %d min)" % (late["strand"], what, mins(late["offered"]["at"]), st["ttl_min"]))
+        mark_offers(st)
     want = os.environ["MECLAW_T_LANE"]
     if want and not st.get("lanes"):
         fail("token take: --lane %s, but this host is not armed with lanes" % want)

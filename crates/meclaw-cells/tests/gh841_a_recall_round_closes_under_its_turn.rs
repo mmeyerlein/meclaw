@@ -44,6 +44,9 @@ use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Headers, Path, Uuid};
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 const MEMBER: &str = "/m";
 const BOX: &str = "/m/assistants";
 const GEN: &str = "/m/assistants/scribe";
@@ -89,7 +92,8 @@ fn hive_edges(rel: &str) -> Vec<EdgeSpec> {
 }
 
 fn recipe_edges(rel: &str) -> Vec<EdgeSpec> {
-    read_json(rel)["diff"]["add_edges"]
+    // GH #1061: the generation is read as its container reads it.
+    organism_assistant::at_the_container(&read_json(rel))["diff"]["add_edges"]
         .as_array()
         .unwrap_or_else(|| panic!("{rel}: no diff.add_edges"))
         .iter()

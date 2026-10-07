@@ -379,7 +379,28 @@ async fn the_colony_holds_in_both_engines() {
     let mut findings: Vec<String> = Vec::new();
     let mut measured = 0usize;
     let mut round = 0u64;
-    for line in &LINES {
+    // `MECLAW_710_LINES=L4,L5` drives only the named lines, in their own order. For the
+    // targeted re-run of one flaky proof (GH #1031: B-23 on L5, ten runs and more), where
+    // the full six lines cost six minutes a run. Keep the line BEFORE the one you are
+    // after: from the second line on the stage already holds the windows B-03 wrote on
+    // the line before, and that is the state the release gate measures in. Unset, all six.
+    // A name that is no line, or an empty value, is a typo and panics: filtered down to
+    // nothing the test would report a green SKIP that measured no line at all.
+    let only: Option<Vec<String>> = std::env::var("MECLAW_710_LINES").ok().map(|v| {
+        let names: Vec<String> = v.split(',').map(|s| s.trim().to_string()).collect();
+        for n in &names {
+            assert!(
+                LINES.iter().any(|l| l.run == n.as_str()),
+                "MECLAW_710_LINES={v:?}: {n:?} is not one of the lines {:?}",
+                LINES.iter().map(|l| l.run).collect::<Vec<_>>()
+            );
+        }
+        names
+    });
+    for line in LINES
+        .iter()
+        .filter(|l| only.as_ref().is_none_or(|o| o.iter().any(|n| n == l.run)))
+    {
         // The stage is built again for EVERY line. A tap is a real dismissal and the
         // state it changes is the colony's: the gesture proofs of the line before leave
         // windows put away, and the line after them would then measure a screen nobody

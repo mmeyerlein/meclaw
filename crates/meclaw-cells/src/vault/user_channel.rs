@@ -37,8 +37,9 @@ fn open(root: &Path, cell_path: &str) -> Result<rusqlite::Connection, String> {
     let db_file = cell_dir(root, cell_path)?.join("cell.db");
     if !db_file.is_file() {
         return Err(format!(
-            "no vault at {cell_path} — {} does not exist. Check the cell path and that the \
-             colony has booted once.",
+            "no vault at {cell_path} — {} does not exist. Check the cell path: a vault cell \
+             directory (its config.json says type vault) takes its first secret even before \
+             the colony has booted.",
             db_file.display()
         ));
     }
@@ -46,6 +47,40 @@ fn open(root: &Path, cell_path: &str) -> Result<rusqlite::Connection, String> {
         .map_err(|e| format!("opening {}: {e}", db_file.display()))?;
     store::apply_ddl(&conn)?;
     Ok(conn)
+}
+
+/// GH #1063: `open`, or — for a vault that was GROWN but never woken — create
+/// its database first. Only `add` uses this: a fresh vault takes its first
+/// secret before the colony ever boots (the cold deposit), and before this the
+/// operator had to boot once just to get a `cell.db`, or create an empty file
+/// by hand, which the boot then refused (`CorruptCellDb … no such table:
+/// meta`).
+///
+/// Created only where the directory is unmistakably a vault cell — its
+/// `config.json` says `cell.type == "vault"` — so a typo in the path still
+/// creates nothing. The schema is the one the cell itself lays down at its
+/// first wake (`VaultCellFactory`): the substrate's cell schema
+/// (`open_or_create_cell_db`) plus the vault tables (`store::apply_ddl`) — no
+/// second schema. Whether a colony holds the root is the CLI's check, made
+/// before this is reached (`meclaw-cli/src/vault_cli.rs`).
+fn open_or_init(root: &Path, cell_path: &str) -> Result<rusqlite::Connection, String> {
+    let dir = cell_dir(root, cell_path)?;
+    let db_file = dir.join("cell.db");
+    if db_file.is_file() || !is_vault_cell_dir(&dir) {
+        return open(root, cell_path);
+    }
+    let conn = meclaw_colony::persist::open_or_create_cell_db(&db_file)
+        .map_err(|e| format!("creating {}: {e}", db_file.display()))?;
+    store::apply_ddl(&conn)?;
+    Ok(conn)
+}
+
+/// Whether `dir` holds a vault cell's `config.json`.
+fn is_vault_cell_dir(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("config.json"))
+        .ok()
+        .and_then(|t| meclaw_core::serde_json::from_str::<meclaw_core::serde_json::Value>(&t).ok())
+        .is_some_and(|v| v["cell"]["type"] == "vault")
 }
 
 /// What the vault holds: names and their active version. Never content.
@@ -88,7 +123,7 @@ pub fn add(
     if secret.is_empty() {
         return Err("the secret is empty — nothing was stored".into());
     }
-    let conn = open(root, cell_path)?;
+    let conn = open_or_init(root, cell_path)?;
     let salt = store::salt_or_create(&conn)?;
     let key = MasterKey::derive(passphrase, &salt).map_err(|e| e.to_string())?;
 

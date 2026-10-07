@@ -685,7 +685,7 @@ fn gh943_a_rebuild_never_cuts_another_rounds_window() {
     if !shipped() {
         return;
     }
-    clear_of_midnight(120);
+    clear_of_midnight();
     let mut a = rebuild_track(false);
     let mut b = rebuild_track(true);
     assert_eq!(
@@ -1180,7 +1180,7 @@ fn gh943_round_plans_are_bounded() {
     if !shipped() {
         return;
     }
-    clear_of_midnight(120);
+    clear_of_midnight();
     let mut h = bounded();
     for (i, round) in ROUNDS.iter().enumerate() {
         let (turn, says, reply) = round_turn(i);

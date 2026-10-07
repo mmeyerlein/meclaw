@@ -36,6 +36,16 @@ pub struct ProxyParams {
     /// document reaches the turn as a sentence, a smaller one as a blob
     /// reference in `attachments[]`. Set at birth (immutable at runtime).
     pub max_document_bytes: u64,
+    /// GH #1059: the grant under which the vault delivers the bot token,
+    /// sealed. Set → `bot_token` is ignored (WARN at birth, OR-VG-4); unset →
+    /// the literal `bot_token` (the one-release transition). Immutable.
+    pub bot_token_grant_id: Option<String>,
+    /// GH #1059: wait of the first credential round in ms (default as `llm`,
+    /// `credential::default_credential_wait_ms`). Immutable.
+    pub credential_wait_ms: u64,
+    /// GH #1059: ceiling of the doubling wait between two rounds in ms
+    /// (default 5 min). Immutable.
+    pub credential_backoff_max_ms: u64,
 }
 
 /// β: the `proxy` runtime-overlay projection — the mutable, runtime-tunable
@@ -71,11 +81,23 @@ impl crate::params_overlay::OverlayParams for ProxyOverlay {
         "send_timeout_ms",
         "query_timeout_ms",
         "max_document_bytes",
+        "bot_token_grant_id",
+        "credential_wait_ms",
+        "credential_backoff_max_ms",
     ];
     // GH #907: `max_document_bytes` is read at birth into the one client the
     // handler and the I/O task share; a runtime change would have to rebuild
     // both, and a ceiling that moves under a running download is no ceiling.
-    const IMMUTABLE_KEYS: &'static [&'static str] = &["bot_token", "emit_to", "max_document_bytes"];
+    // GH #1059: the grant and its waiting schedule are read once at birth (the
+    // question goes out in `on_start`, the I/O half owns the clock).
+    const IMMUTABLE_KEYS: &'static [&'static str] = &[
+        "bot_token",
+        "emit_to",
+        "max_document_bytes",
+        "bot_token_grant_id",
+        "credential_wait_ms",
+        "credential_backoff_max_ms",
+    ];
     fn parse(raw: &JsonValue) -> Result<Self, String> {
         let obj = raw.as_object().ok_or("params: must be object")?;
         let base_url = obj
@@ -118,7 +140,19 @@ impl crate::params_overlay::OverlayParams for ProxyOverlay {
     }
 }
 
+/// GH #1059 (A6): the refusal of a Telegram connector with neither a grant nor
+/// a literal token. Names the param and the way out.
+pub const BOT_TOKEN_MISSING: &str = "bot_token: required — name a credential_grant_id in \
+     params.bot_token_grant_id (the vault delivers the token sealed); a literal bot_token still \
+     works for one release";
+
 impl ProxyParams {
+    /// GH #1059: the grant of the bot token, if any (empty is none).
+    #[must_use]
+    pub fn grant(&self) -> Option<&str> {
+        self.bot_token_grant_id.as_deref()
+    }
+
     /// Parse + validate. Required fields rejected with explicit field name;
     /// W7-tripwire rejected with both field names + comparison values.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
@@ -128,12 +162,30 @@ impl ProxyParams {
         // `TELEGRAM_BOT_TOKEN=` in an .env slipped through and left the poller
         // asking `.../bot/getUpdates` — a 404 loop against a bot that has no
         // name. Same message as the absent case: same mistake, same fix.
+        //
+        // GH #1059: the token comes sealed from the vault under
+        // `bot_token_grant_id`; a literal is the one-release transition.
+        // Neither → refused by name, before the connector polls `/bot/…`.
+        let bot_token_grant_id = crate::credential::grant_param(obj, "bot_token_grant_id")?;
         let bot_token = obj
             .get("bot_token")
             .and_then(|x| x.as_str())
-            .filter(|s| !s.is_empty())
-            .ok_or("bot_token: required (use ${TELEGRAM_BOT_TOKEN})")?
+            .unwrap_or("")
             .to_string();
+        if bot_token_grant_id.is_none() && bot_token.is_empty() {
+            return Err(BOT_TOKEN_MISSING.into());
+        }
+        // Review V2 M3 (GH #1061): a wrong type is refused by name, not defaulted.
+        let credential_wait_ms = crate::credential::ms_param(
+            obj,
+            "credential_wait_ms",
+            crate::credential::default_credential_wait_ms,
+        )?;
+        let credential_backoff_max_ms = crate::credential::ms_param(
+            obj,
+            "credential_backoff_max_ms",
+            crate::credential_rounds::default_credential_backoff_max_ms,
+        )?;
         let emit_to_s = obj
             .get("emit_to")
             .and_then(|x| x.as_str())
@@ -187,6 +239,9 @@ impl ProxyParams {
             query_timeout_ms,
             base_url,
             max_document_bytes,
+            bot_token_grant_id,
+            credential_wait_ms,
+            credential_backoff_max_ms,
         })
     }
 }

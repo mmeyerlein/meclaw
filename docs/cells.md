@@ -1,4 +1,4 @@
-# Cell types
+# Cells
 
 Every cell declares a `cell.type` in its `config.json`, and that one word decides what runs behind its mailbox: a model call, a table, a script, a port, a scope marker. Sixteen types have a factory in the binary, and `hive` is the seventeenth entry, a scope marker with none. `ref` is the one further value the key takes, and it never runs: at instantiation it places another template at its position and is gone. The primitives around all of them, colony, edge, hop and mutation, are on [`meclaw.md`](meclaw.md).
 

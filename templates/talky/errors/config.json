@@ -4,11 +4,11 @@
   },
   "params": {
     "runner": "python3",
-    "script_inline": "\nimport sys, json\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\") or {}\nhop = h.get(\"hop\") or {}\nctx = h.get(\"context\") or {}\nroute = str(hop.get(\"route\") or \"\")\nfinish = str(hop.get(\"finish_reason\") or \"\")\nif route == \"reject\":\n    # The session-keeper's store refusal (GH #343). It is not a failed\n    # inference, so it carries no finish_reason -- and its code sits in\n    # hop.store_error, because the cell that reports it did not itself fail:\n    # the store it spoke to did.\n    source = \"session-keeper\"\nelif finish:\n    source = \"brain\"\nelse:\n    source = \"unknown\"\ncode = str(hop.get(\"error_code\") or hop.get(\"store_error\") or finish or \"error\")\nsession = str(hop.get(\"session_id\") or ctx.get(\"session_id\") or \"\")\nturn = str(hop.get(\"turn_id\") or ctx.get(\"turn_id\") or \"\")\ntext = \"talky error: source=%s code=%s session=%s turn=%s\" % (source, code, session, turn)\nsys.stdout.write(json.dumps([{\n    \"header\": {\"route\": \"error\", \"error_code\": code, \"error_source\": source,\n               \"session_id\": session, \"turn_id\": turn},\n    \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": text}]}]))\n",
+    "script_inline": "\nimport sys, json\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\") or {}\nhop = h.get(\"hop\") or {}\nctx = h.get(\"context\") or {}\nroute = str(hop.get(\"route\") or \"\")\nfinish = str(hop.get(\"finish_reason\") or \"\")\nreason = str(hop.get(\"reject_reason\") or \"\")\nif route == \"reject\" and reason in (\"quote_missing\", \"quote_not_in_source\"):\n    # A quote of a sidecar section that did not stand where the composite's\n    # knob `sidecar_verify` says it must (GH #1079): `./curator` refuses the\n    # item and says which section, which field and why -- never the item's\n    # words, because a drain is no place to file what the model claimed the\n    # person said, and a class is all a count needs. Told apart by the check's\n    # own two codes: the keeper's refusal below carries a `reject_reason` too\n    # (`store_refused`, gh343) and is untouched.\n    session = str(hop.get(\"session_id\") or ctx.get(\"session_id\") or \"\")\n    turn = str(hop.get(\"turn_id\") or ctx.get(\"turn_id\") or \"\")\n    section = str(hop.get(\"section\") or \"\")\n    field = str(hop.get(\"field\") or \"\")\n    text = (\"talky reject: source=sidecar_verify reason=%s section=%s field=%s session=%s turn=%s\"\n            % (reason, section, field, session, turn))\n    sys.stdout.write(json.dumps([{\n        \"header\": {\"route\": \"error\", \"error_code\": reason, \"error_source\": \"sidecar_verify\",\n                   \"session_id\": session, \"turn_id\": turn, \"reject_reason\": reason,\n                   \"section\": section, \"field\": field,\n                   \"episode_turn_id\": str(hop.get(\"episode_turn_id\")\n                                          or ctx.get(\"episode_turn_id\") or \"\")},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": text}]}]))\n    sys.exit(0)\nif route == \"reject\":\n    # The session-keeper's store refusal (GH #343). It is not a failed\n    # inference, so it carries no finish_reason -- and its code sits in\n    # hop.store_error, because the cell that reports it did not itself fail:\n    # the store it spoke to did.\n    source = \"session-keeper\"\nelif finish:\n    source = \"brain\"\nelse:\n    source = \"unknown\"\ncode = str(hop.get(\"error_code\") or hop.get(\"store_error\") or finish or \"error\")\nsession = str(hop.get(\"session_id\") or ctx.get(\"session_id\") or \"\")\nturn = str(hop.get(\"turn_id\") or ctx.get(\"turn_id\") or \"\")\ntext = \"talky error: source=%s code=%s session=%s turn=%s\" % (source, code, session, turn)\nsys.stdout.write(json.dumps([{\n    \"header\": {\"route\": \"error\", \"error_code\": code, \"error_source\": source,\n               \"session_id\": session, \"turn_id\": turn},\n    \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": text}]}]))\n",
     "external_timeout_ms": 10000
   },
   "contract": {
-    "version": "1.0.0",
+    "version": "1.1.0",
     "settings": {},
     "multi_send_capable": true,
     "emits": {
@@ -41,6 +41,26 @@
         "turn_id": {
           "type": "string",
           "required": false
+        },
+        "reject_reason": {
+          "type": "string",
+          "required": false,
+          "description": "GH #1079: on a refused quote, why -- `quote_missing` or `quote_not_in_source`; also the `error_code`"
+        },
+        "section": {
+          "type": "string",
+          "required": false,
+          "description": "GH #1079: on a refused quote, the sidecar section it was in"
+        },
+        "field": {
+          "type": "string",
+          "required": false,
+          "description": "GH #1079: on a refused quote, the first field of the item that failed"
+        },
+        "episode_turn_id": {
+          "type": "string",
+          "required": false,
+          "description": "GH #1079: on a refused quote, the person's episode of the turn the section annotated"
         }
       }
     },
@@ -57,14 +77,15 @@
     ]
   },
   "description": {
-    "purpose": "The composite's ONE error drain port: three failure lanes from two cells -- the brain's error and its content filter, the session-keeper's store refusal -- fan in here and leave as one normalised report on route error, so a parent tree drains a single edge instead of three lanes. Since talky@4.3.0 (GH #447) the summarizer's failed summary is not one of them any more: the composite carries no summarizer.",
+    "purpose": "The composite's ONE error drain port: three failure lanes from two cells -- the brain's error and its content filter, the session-keeper's store refusal -- fan in here and leave as one normalised report on route error, so a parent tree drains a single edge instead of three lanes. Since talky@4.3.0 (GH #447) the summarizer's failed summary is not one of them any more: the composite carries no summarizer. Since GH #1079 a fourth lane fans in: `./curator`'s refusal of a quoted field that did not stand in its source (the splitter's knob `sidecar_verify`), source `sidecar_verify`.",
     "use_when": "Inside the talky composite. The parent MUST wire the exit somewhere - a log sink, an alarm, an operator surface; an unwired error lane dead-letters, which is loud but not actionable.",
     "not_in_scope": "No retry, no judgement, no swallowing: what a failure means is the parent's decision. Deliberately NOT a drain cell - a drain that ends inside the unit would make the failure invisible to the tree that owns the agent.",
-    "emits_meaning": "route error: one report per failure, naming source (brain or session-keeper), error code, session and turn. For a keeper refusal the code is the STORE's error_code, read off hop.store_error -- the keeper itself did not fail, the store it spoke to did (GH #343). The report carries NO conversation content on purpose - the llm error lane echoes the PROMPT back, and a drain is not the place to file it.",
-    "consumes_meaning": "the brain's error / content_filter emission (finish_reason on the hop) and the session-keeper's reject emission (route on the hop, hop.store_error / hop.store_operation beside it). Anything else is reported as source unknown rather than swallowed.",
+    "emits_meaning": "route error: one report per failure, naming source (brain or session-keeper), error code, session and turn. For a keeper refusal the code is the STORE's error_code, read off hop.store_error -- the keeper itself did not fail, the store it spoke to did (GH #343). The report carries NO conversation content on purpose - the llm error lane echoes the PROMPT back, and a drain is not the place to file it. For a refused quote (GH #1079) the source is `sidecar_verify`, the code the `reject_reason` (`quote_missing`, `quote_not_in_source`), and the report names section, field and the person's episode beside session and turn -- never the item's words.",
+    "consumes_meaning": "the brain's error / content_filter emission (finish_reason on the hop) and the session-keeper's reject emission (route on the hop, hop.store_error / hop.store_operation beside it). Anything else is reported as source unknown rather than swallowed. And `./curator`'s reject emission with `hop.reject_reason` beside `section`, `field`, `session_id`, `turn_id`, `episode_turn_id` (GH #1079); any other reject is the keeper's, `reject_reason` `store_refused` included.",
     "examples": [
       "provider 500 at the brain -> one report, source brain, code error",
-      "the session store refuses the nightly sweep -> one report, source session-keeper, code query_timeout"
+      "the session store refuses the nightly sweep -> one report, source session-keeper, code query_timeout",
+      "a quote of a sidecar section the person never said -> one report, source sidecar_verify, code quote_not_in_source, no words"
     ]
   }
 }

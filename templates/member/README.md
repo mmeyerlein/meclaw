@@ -1,4 +1,4 @@
-# `member@2.5.14`
+# `member@2.5.17`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and three edges.
@@ -835,7 +835,7 @@ steal each other's updates.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.1.0"}],
+  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.1.1"}],
   "add_edges": [
     {"from": "./channels/telegram", "to": "./channels",
      "condition": "!has(hop.error_code)",
@@ -879,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.14` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.17` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.14"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.17"}]
 }}
 ```
 
@@ -1124,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.7"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.10"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1265,8 +1265,9 @@ endpoints, and that is this level:
 ```
 
 and the same pair again with `cogny` in place of `talky`. The runnable version of
-this declaration is `examples/organism/grow-credentials.json`, which is the sixth
-entry of `examples/organism/grow.manifest.json`; the whole round is measured in
+these edges rides behind the level's own in `examples/organism/grow-assistant.json`
+(the fourth entry of `examples/organism/grow.manifest.json`, one declaration with the
+generation and its grants since #1061); the whole round is measured in
 `crates/meclaw-cells/tests/gh560_a_members_brain_gets_its_sealed_key.rs`.
 
 Four things about that shape are load-bearing.

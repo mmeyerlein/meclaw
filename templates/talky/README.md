@@ -1,4 +1,4 @@
-# `talky@6.6.7`
+# `talky@6.7.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- fifty-seven edges,
+dispatcher for the fan-out, the close batch out to the write port -- fifty-eight edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.6.7` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.7.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -143,7 +143,7 @@ spawns.
 | `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel`, and the round to `context.audience_set` if closed sessions are to reach a memory. Since 5.4.0 the rim carries two more things through to the collector untouched: the channel's tool scope (`context.tools_allow` / `context.tools_deny`, stamped by the channel edge, constant per session -- the collector sends it with every brain call of the session as `tool_scope`, through `./curator` since 6.0.0, [#845](https://github.com/mmeyerlein/meclaw/issues/845)) and turns of `origin: "peer"` with their `speaker` / `speaker_ref`, which the collector keeps as role `peer` and never as this agent's own answer ([#847](https://github.com/mmeyerlein/meclaw/issues/847)). See the collector's README, "The channel's tool scope" and "The other side's words" |
 | `answer` | out | the finished turn. **Three** sorts since `collector@2.1.1`: a real answer, a round that hit `max_iter` (`hop.round_capped`, and since `collector@3.5.0` `hop.partial == "1"` with a named partial answer as its last turn, #570), and a turn the store refused to let be assembled (`hop.degraded`, which carries no `round_capped`) |
 | `write` | out | the closed session as one batch |
-| `error` | out | a normalised failure report. **MUST** be wired |
+| `error` | out | a normalised failure report. **MUST** be wired. It also carries the refusals of the word-for-word check (`hop.error_source` `sidecar_verify`, GH #1079): one per item whose quote did not stand in its source, never the item's words -- see "Quotes are checked word for word" |
 
 The rest, each optional and each still at the same address:
 
@@ -454,7 +454,7 @@ and the `turn_id` is deterministic, so a repeat is recognisable downstream as we
 
 ## The internal wiring, edge by edge
 
-Twenty-two edges of round in this hive's `params.graph` -- plus the thirty-five that ARE the
+Twenty-three edges of round in this hive's `params.graph` -- plus the thirty-five that ARE the
 boundary (sixteen door edges from `.`, nineteen leaving towards it, and those are the lanes
 above; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
 push, GH #863, and ten of them leave `./curator` -- `write`, `turn_write`, `pack_ack` and
@@ -471,7 +471,7 @@ eleventh a gap's bundle into `./curator`, GH #895, the twelfth the renewed duple
 `in_pin` into `./curator`, GH #916, the fourteenth door an observer's stats question,
 `in_stats` into `./curator`, GH #926, the fifteenth a push candidate, `in_candidate` into
 `./curator`, GH #949, and the sixteenth an app's ledger read, `in_read` into `./curator`, GH #949).
-The two halves are the whole of this file, counted from it. Every one of the twenty-two names a
+The two halves are the whole of this file, counted from it. Every one of the twenty-three names a
 sub-unit **by its path**: three of the eight nodes below are sealed hives, so the address is
 the hive and the lane in the third column is what the door behind it reads; what those three
 draw INSIDE themselves is theirs and is not counted here. Read it as the round it is:
@@ -497,11 +497,12 @@ schemas --(operation == schemas)-> collector  in_menu   <- this agent's own side
 brain --(stop | tool_calls | length)--> splitter  <- the sidecar cut, GH #379; length since 5.4.0, GH #843
 splitter --(stop | tool_calls)---> dispatcher
 splitter --(length)--------------> collector    in_answer   <- a cut answer, its sidecar cut too
-splitter --(sidecar: window | gap | memory)--> curator  in_section  <- the curator's sections, GH #892
+splitter --(sidecar: window | gap | memory | things, or sidecar_verify)--> curator  in_section  <- the curator's sections, GH #892; a section to check, GH #1079
 splitter --(sidecar, any other)-->  .        <- one per section, out of the sidecar port
 brain --(error | content_filter, !refused_subscriber)-> errors
 brain --(has(refused_subscriber))--> .   route := 'model_refused'  <- a refused push, GH #863
 session-keeper --(reject)--------> errors    <- the session store refused a step
+curator --(reject, !refused_subscriber)--> errors  <- a quote that is not in its source, GH #1079
 curator --(turn_write, !refused_subscriber)--> session-keeper  in_answered  <- the answer receipt: a sealed generation closes after its last answer stands on the wall, GH #953
 
 dispatcher --(calls)---> collector   in_calls    dispatcher ==(tool, DEFAULT)==> [your tools]
@@ -514,7 +515,7 @@ curator --(write)------------>  .            <- the close batch, out of the writ
 curator --(pack_ack)--------->  .            <- the pack receipt, GH #458
 curator --(model_refused)---->  .            <- the summarizer's refused push, GH #889
 curator --(stats)------------>  .            <- the answer to it, GH #926
-curator --(sidecar)---------->  .            <- the memory section, unchanged, GH #892; a gap's find as `fact` in a duplex call, GH #895
+curator --(sidecar)---------->  .            <- the memory section, unchanged, GH #892; a gap's find as `fact` in a duplex call, GH #895; a checked section, GH #1079
 curator --(recall)----------->  .            <- the memory ask; a gap's own lifts gap_ask into context, GH #895
 collector --(schemas)--------->  .            <- what tools this agent declares, GH #464
 collector --(brief)----------->  .            <- the counterpart's brief, GH #834
@@ -691,7 +692,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.6.7",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.7.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1022,6 +1023,44 @@ JSON object -- fenced as ```` ```sidecar ```` on `sidecar_raw`: 14 of 20 in the 
 replay. It is shown to the model only; no section lane and no channel receives it, because
 nobody annotated that turn. A block the model did write beside the call stays in the text
 where it wrote it, and none is laid over it. Empty, the knob shows nothing, as before.
+Since `6.6.8` ([#1036](https://github.com/mmeyerlein/meclaw/issues/1036)) the splitter (its contract 1.0.4) also cuts the block out
+of the sentence beside a tool call, which leaves as an interim answer for every channel and app
+of the turn, and hands a readable block on beside the round as `sidecar_raw`; the round's calls
+and the order of its turns stay as they came. No lane moved, so it is the third digit.
+Since `6.7.0` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) the splitter takes the knob
+`sidecar_verify` (default `{}`, byte-identical output): a section it names leaves through
+`./curator`, which checks its quoted fields word for word against the turns of
+the round, plus their recall or the answer, and an item that fails leaves on `error` with
+`error_source: sidecar_verify` and its `reject_reason`, never with the quoted text. A new knob, so
+it is the second digit.
+
+**Quotes are checked word for word** (`sidecar_verify`,
+[#1079](https://github.com/mmeyerlein/meclaw/issues/1079)). A section leaves this composite as
+`{route, section, turn_id}` with an empty `messages`, so the words of the turn it annotates
+never leave it -- and a receiver that wants to know whether a quoted field is what the person
+said cannot look them up. The check therefore runs here, where the words are. The splitter's
+knob `sidecar_verify` names, per section, the fields to check and their source:
+`{"<section>": {"<field>": "turn" | "turn+recall" | "answer", "mode": "drop" | "mark",
+"items": "<array field>"}}`. `turn` is the turns this round answers -- the person's and a
+peer's, each on its own; `turn+recall` adds the memory bundle of the round; `answer` is the
+answer as its reader gets it. The splitter stamps the section's rule on `hop.sidecar_verify`
+(and, for an `answer` field, hands the answer text along as `verify_answer`), the
+`./splitter -> ./curator` edge takes every stamped section, and `./curator` checks each item of
+the section's array (`items`, else its first list): both sides casefolded, NFC, curly quotes and
+dashes folded, whitespace collapsed, punctuation at the edges stripped, then the quote has to
+stand in one source at word boundaries -- under three words only as a whole source, and no fuzzy
+match counts. A passing item gains `"verified": [<fields>]`; a failing one is dropped, or with
+`"mode": "mark"` kept with `"failed": [{"field", "reason"}]`. The section leaves on `sidecar`
+as before, without the rule and the answer text, even when no item survived -- "annotated,
+nothing proven" is not "not annotated". Every failed item leaves as one report on `error`
+(`hop.error_source` `sidecar_verify`, `hop.reject_reason` `quote_missing` or
+`quote_not_in_source`, `hop.section`, `hop.field`, `hop.session_id`, `hop.turn_id`,
+`hop.episode_turn_id`) and never with the item's words: a class is all a count needs. The
+answer path does not wait for any of it -- the check runs on the section, beside the answer.
+`verified` and `failed` are the check's stamp and nobody else's: once the knob is set, the
+splitter takes a model's own `verified`/`failed` off every section payload and off the objects of
+its arrays, named by the knob or not, so a reader that trusts the stamp never trusts the model.
+Empty, the knob stamps nothing, strips nothing, and every section goes the way it went before.
 
 **One fence, sections, and a cell that knows none of them**
 ([#604](https://github.com/mmeyerlein/meclaw/issues/604), built in
@@ -1272,7 +1311,7 @@ being unwireable from outside.
 the keeper's since `session-keeper@2.2.0`,
 the dispatcher's since `dispatcher@1.2.0`
 ([#138](https://github.com/mmeyerlein/meclaw/issues/138)).
-What stays in `.env` is the provider lane: the API key and the model id. Each row
+What stays in `.env` is the model id; the API key lives in the vault (#801). Each row
 below names the CELL the knob belongs to, because that is what an
 `override_params` entry addresses (GH #140).
 
@@ -1288,6 +1327,7 @@ below names the CELL the knob belongs to, because that is what an
 | `turn_write` | param | `"1"` | curator/writer (the collector's until `6.0.0`, GH #889) -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
 | `role`, `keep_recent`, `compress_at`, `rebuild_to`, `quality_cap`, `horizon`, `tiers`, `summary_budget`, `keep_rounds`, `stub_tools_after`, `short_ids`, `context_window`, `sidecar_max_chars` | param | `role` `"talky"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889), by the talky role's presets since GH #892; the full table is in the curator's README |
 | `tools` | param | `["web_search", "web_fetch", "history_search", "history_read", "history_outline"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two search tools and not `["*"]`, plus the model's own wall, which `./curator` answers inside (since `6.1.0`, GH #893). The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
+| `sidecar_verify` | param | `{}` | splitter -- the word-for-word check of quoted fields, per section (GH #1079): `{"<section>": {"<field>": "turn" | "turn+recall" | "answer", "mode"?, "items"?}}`; a section named here goes through `./curator`, which drops (or marks) every item whose quote does not stand in its source and reports each on `error`. Empty checks nothing. See [Quotes are checked word for word](#the-sidecar-inline-extraction) |
 | `max_calls` | param | `16` | dispatcher -- per-answer call budget |
 | `async_tools` | param | `""` | dispatcher -- tools that answer on their own lane instead of inside the round, as a JSON array or one comma-separated string. Since `dispatcher@1.2.0` it is a param of THIS composite's own dispatcher (GH #138), so the surface's list and a sibling core's list are two statements and not one. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |
 | `handoff_tools` | param | `""` | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny` -- and since GH #530 that is the whole list: `ask_memory` was retired, not replaced). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` did not belong here while it existed (GH #372) |
@@ -1391,15 +1431,14 @@ this level nor the generation above has to declare, forward or guard a lane it
 takes no part in.
 
 The brain accordingly ships `params.credential_grant_id` as the empty
-string, which is no grant at all (GH #271): standalone this composite behaves
-exactly as it did before and spends its `api_key`. Since 5.0.0 that empty string
+string, which is no grant at all (GH #271): standalone this composite
+calls its provider with no key at all, because since #801 `api_key` ships empty too. Since 5.0.0 that empty string
 is a LITERAL and not a `${TALKY_CREDENTIAL_GRANT_ID:-}` token
 ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): a
 grant id is a reference, not material, and two generations in one colony present
 different ones -- which an environment variable, being colony-wide, could not
-say. Switching it over takes **two**
-`override_params` keys and not one, because a cell asks for a credential only
-while it holds none — and `params.api_key` counts as one:
+say. Switching it over is the grant id; the recipe states the empty `api_key` beside it,
+because a cell asks for a credential only while it holds none:
 
 ```json
 "override_params": {
@@ -1407,17 +1446,17 @@ while it holds none — and `params.api_key` counts as one:
 }
 ```
 
-Set the grant and leave the shipped `api_key: "${OPENROUTER_API_KEY}"` standing
-and the cell never asks: it keeps spending the environment key and the lane
-carries nothing, silently, because a model that answers looks like a model that
-answers. With both keys set the model runs with **no credential in its config** —
+A key put back into `api_key` next to a grant is ignored (#801). With the grant
+set the model runs with **no credential in its config** —
 the value arrives sealed against an ephemeral key it mints per ask, is opened in
 its own task and is written nowhere. Both keys are **immutable** (`docs/cell-types.md`
 § `llm`), so this is a birth act: a generation grown without the empty `api_key`
 is repaired by growing another one, not by a message. The recipe, both edges and
 the two operator gestures that go with them are in `templates/member/README.md`
 § *The credential v-lanes*; `examples/vault-pilot/` is the small runnable version
-of the same round.
+of the same round. The key itself goes into the vault: `meclaw --vault-add cred:openrouter`
+(stdin), and the vault has to be unlockable (`access/vault` `key_source` systemd-cred for a
+unit, plainfile for a local run).
 
 ## Pins
 

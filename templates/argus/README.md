@@ -1,4 +1,4 @@
-# `argus@1.3.3`
+# `argus@1.3.4`
 
 The colony's watcher and its control loop, as a hive of eight cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -364,7 +364,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.3.3",
+ "nodes": [{"name": "argus", "template": "argus@1.3.4",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},
@@ -407,7 +407,12 @@ The provider lane, in `.env`, and all of it:
 | `ARGUS_JUDGE_MODEL` | `anthropic/claude-opus-5.5` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `ARGUS_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `ARGUS_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `ARGUS_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
-| `OPENROUTER_API_KEY` | — (required) | the judge's key. Bound late, never stored in the tree |
+
+The judge's key is no environment value (#801): `./judge` names a grant
+(`credential_grant_id`, set by whoever grows the loop -- `meclaw-os` seeds
+`grant:openrouter@colony-os/argus-judge`) and the key lives in the vault. Deposit it with
+`meclaw --vault-add cred:openrouter` (stdin); the vault has to be unlockable (`access/vault`
+`key_source` systemd-cred for a unit, plainfile for a local run).
 
 **A standing instance keeps what it was grown with.** Instantiation is a COPY --
 the mutation stages a fresh directory and renames it into place -- so an argus

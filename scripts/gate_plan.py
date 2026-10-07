@@ -71,7 +71,7 @@ CLASSES (a path can carry several)
     gate_infra    scripts/gate.sh, scripts/gate_plan.py, scripts/precheck.py,
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
-                  scripts/wave_receipt.py (the strand kit and the receipt
+                  scripts/wave_receipt.py, scripts/slow_tests.py (the strand kit and the receipt
                   builder carry their tests in `gate-selftest`), .config/nextest.toml
                   (the profile that decides what may be retried is gate
                   infrastructure too)
@@ -125,6 +125,11 @@ STATIONS (S strand, I integration, R release, C ci)
     tests           see `test_filter`; planned but not run in C (shards run it).
                     An empty diff plans the t0 TIER, not the equivalent filter
                     expression -- see `T0_FLOOR`
+    slow-tests      right after `tests`, wherever `tests` is planned; not run
+                    in C (tests do not run there). A test over 1/3 of its
+                    nextest budget is a NOTE in S (a time moves with the
+                    host's load), RED in I/R; exit 2 (no JUnit, a filter it
+                    cannot read, a debt without an issue) is RED in every mode
     doctests        I/R with rust_src/workspace
     deny            workspace; R always. NOT in I for every diff (R-P2,
                     2026-09-19): the `workspace` class is what moves the
@@ -499,7 +504,7 @@ STATION_ORDER = (
     "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
     "display-lab", "llm-conformance", "guide-selftest",
     "fmt", "clippy", "unwrap-budget", "corridor",
-    "tests", "doctests", "deny",
+    "tests", "slow-tests", "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "scenarios:display",
     "browser:display", "recall-harness",
     "deny-advisories", "persona-cases", "persona-receipt", "export-selftest", "export-audit",
@@ -778,7 +783,8 @@ def _classes_of_path(path):
     if (path in ("scripts/gate.sh", "scripts/gate_plan.py", "scripts/precheck.py",
                  "scripts/test-tier.sh", "scripts/wave_retro.py",
                  "scripts/display_sync.py", "scripts/strand.sh",
-                 "scripts/wave_receipt.py", ".config/nextest.toml")
+                 "scripts/wave_receipt.py", "scripts/slow_tests.py",
+                 ".config/nextest.toml", ".config/slow-debt.toml")
             or path.startswith("scripts/tests/")
             or path.startswith("scripts/retro/")):
         cls.add("gate_infra")
@@ -939,9 +945,14 @@ _TEST_ATTR_RE = re.compile(
 _IGNORE_ATTR_RE = re.compile(r'ignore\b')
 # Shapes that may carry tests the attribute count cannot see: a local macro,
 # an include, a column-0 item macro (`gen!();`), and a brace-bodied macro
-# invocation at ANY indentation (`quickcheck! { .. }` inside a `mod`).
+# invocation at ANY indentation (`quickcheck! { .. }` inside a `mod`) --
+# except the expression macros `select!`/`join!`/`try_join!`, which never make
+# an item: `gh1004_viewport_event_measure` (one `#[ignore]` test, a `select!`
+# in its body) stayed a target of every `scripts/strand.sh` diff and the
+# `tests` station ended RED on "no tests to run" (GH #1053 gate, 2026-10-07).
 _HIDDEN_TESTS_RE = re.compile(
-    r'macro_rules!|\binclude!|^[A-Za-z_][\w:]*!|\b\w+!\s*\{',
+    r'macro_rules!|\binclude!|^[A-Za-z_][\w:]*!'
+    r'|\b(?!(?:select|join|try_join)!)\w+!\s*\{',
     re.M)
 # An out-of-line module, `[#[path = ".."]] [pub] mod x;`, with the attributes
 # before it (one level of nested brackets, enough for `#[cfg(any(..))]`).
@@ -1693,6 +1704,7 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_precheck",
               "scripts.tests.test_display_sync",
               "scripts.tests.test_nextest_quarantine",
+              "scripts.tests.test_slow_tests",
               "scripts.tests.test_roadmap_anchors"]])
 
     # `ir` as well as the class: the library is what every display measurement
@@ -1761,6 +1773,17 @@ def plan(paths, mode, repo=None):
         out["tests"] = station(
             "tests", expr, True,
             [["scripts/test-tier.sh", "filter", expr]], run=not ci)
+
+    if "tests" in out:
+        # The slow lock (GH #1046): the times of the run above against a third of
+        # each test's nextest budget, from the JUnit file `test-tier.sh` leaves.
+        # The display scenarios grew to 213 s of their 240 s unseen and were
+        # killed at 24 threads; nothing read the times of green tests. cargo:1
+        # for the order only -- it runs where the tests ran (a lane included)
+        # and is skipped with them when the form station is red.
+        out["slow-tests"] = station(
+            "slow-tests", "1/3 of terminate-after", True,
+            [["python3", "scripts/slow_tests.py"]], run=not ci)
 
     if ir and classes & {"rust_src", "workspace"}:
         out["doctests"] = station("doctests", "workspace", True,

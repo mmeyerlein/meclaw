@@ -31,6 +31,9 @@
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::{emit_all, emit_one, shipped_script};
 
+#[path = "support/organism_assistant.rs"]
+mod organism_assistant;
+
 const BRIEF: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/builder/brief/config.json"
@@ -497,9 +500,14 @@ fn the_briefing_carries_the_address_rule_and_an_example_two_segments_deep() {
     }
     // The mechanism: the shipped example really is the narrow form, and really
     // does guard the way the briefing says.
-    let Some(grown) = shipped_json("examples/organism/grow-assistant.json") else {
+    let Some(shipped) = shipped_json("examples/organism/grow-assistant.json") else {
         return;
     };
+    // GH #1061: the shipped generation is the credentialled one and stands at
+    // the member, one storey higher, because its v-lanes reach the member's
+    // broker. The LEVEL inside it is still the narrow form, and that is what
+    // the briefing teaches: read it as the container reads it.
+    let grown = organism_assistant::at_the_container(&shipped);
     assert_eq!(
         grown["scope"],
         json!("/os/orgs/acme/members/alex/assistants"),
@@ -1134,8 +1142,14 @@ fn the_briefing_says_a_lane_is_a_field() {
     }
     // The mechanism, on the tree: the shipped v-lane example carries both
     // halves, so the briefing describes a form somebody can copy.
-    if let Some(v) = shipped_json("examples/organism/grow-credentials.json") {
-        let edge = &v["diff"]["add_edges"][0];
+    // GH #1061: the credential road rides in the generation's own declaration.
+    if let Some(v) = shipped_json("examples/organism/grow-assistant.json") {
+        let road = organism_assistant::credential_edges(&v);
+        assert!(
+            !road.is_empty(),
+            "the shipped generation carries its credential road"
+        );
+        let edge = &road[0];
         assert_eq!(
             edge["lane"], "credential_request",
             "the example declares its lane in the field"
@@ -1161,7 +1175,7 @@ fn the_briefing_says_a_lane_is_a_field() {
         // way back is guarded on what the ANSWERER stamped, and the lane the
         // caller listens on is written in the modifier. A return edge guarded
         // on `in_sealed` would never fire.
-        let back = &v["diff"]["add_edges"][1];
+        let back = &road[1];
         assert_eq!(back["lane"], "in_sealed", "the way back is a v-lane too");
         let guard = back["condition"].as_str().unwrap_or_default();
         assert!(

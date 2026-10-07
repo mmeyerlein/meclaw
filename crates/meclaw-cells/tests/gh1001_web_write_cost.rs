@@ -23,8 +23,9 @@ fn quantile(xs: &mut [i64], q: f64) -> i64 {
     xs[rank - 1]
 }
 
-/// p50 of `runs` one-op writes on a page of `figures` figures.
-async fn one_op_p50(figures: usize, runs: usize) -> i64 {
+/// p50 of `runs` one-op writes on a page of `figures` figures, and the samples
+/// it was taken from (sorted).
+async fn one_op_p50(figures: usize, runs: usize) -> (i64, Vec<i64>) {
     let mut lab = Lab::start(Shape::with_figures(figures)).await;
     // One warm-up write: the first write pays for the statement cache.
     lab.call(vec![update("fig-0", json!({"x": 1}))]).await;
@@ -34,26 +35,50 @@ async fn one_op_p50(figures: usize, runs: usize) -> i64 {
         let answer = lab.call(vec![update(&id, json!({"x": i as i64}))]).await;
         ds.push(duration_ms(&answer));
     }
-    quantile(&mut ds, 0.5)
+    let p50 = quantile(&mut ds, 0.5);
+    (p50, ds)
 }
+
+/// The host's 1/5/15-minute load, for the red message only (GH #1056); empty
+/// where `/proc/loadavg` does not exist.
+fn host_load() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
+}
+
+/// The one-op write lock of T2 in whole milliseconds (target 10).
+const LOCK_MS: i64 = 20;
 
 /// T2. This lab on the gate host, p50 of a one-op write: 578 ms (1 000) and
 /// 979 ms (4 000) before, 1 ms and 2 ms after. The deployed page measured
 /// 51–66 ms (1 000) and 129–150 ms (4 000) before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gh1001_write_cost_does_not_grow_with_untouched_objects() {
-    let small = one_op_p50(1_000, 20).await;
-    let large = one_op_p50(4_000, 20).await;
+    let (small, small_ds) = one_op_p50(1_000, 20).await;
+    let (large, large_ds) = one_op_p50(4_000, 20).await;
     println!("LAB one-op write p50: pool 1000 = {small} ms, pool 4000 = {large} ms");
     assert!(
-        large <= 20,
-        "a one-op write on a pool of 4 000 costs {large} ms p50 (target 10, lock 20)"
+        large <= LOCK_MS,
+        "a one-op write on a pool of 4 000 costs {large} ms p50 (target 10, lock {LOCK_MS})"
     );
     // `duration_ms` is whole milliseconds, so at a few ms a ratio alone reads
-    // 1 ms of jitter as 100 %; 3 ms of absolute slack covers that.
+    // 1 ms of jitter as 100 %. The slack is a share of the lock (a quarter of
+    // its 20 ms), not a fixed 3 ms: under full-suite load a strand gate read
+    // 2 ms (1 000) vs 6 ms (4 000) and failed on 3 ms slack while the cell was
+    // fine (isolated 5/5 green). The regression this guards grew with the
+    // pool by hundreds of ms (578 -> 979 ms), far above the slack.
+    let slack = LOCK_MS as f64 / 4.0;
+    // GH #1056: a red run prints every sample of both pools and the host load.
+    // Measured on a 12-core build host: 20 of 20 green at load1 about 40, 13 of
+    // 20 red at load1 about 90 (1-3 ms vs 7-12 ms p50). The next red says
+    // whether the large pool grew as a whole or a few writes sat behind the
+    // scheduler, and at what load.
     assert!(
-        (large as f64) <= (small as f64 * 1.5).max(small as f64 + 3.0),
-        "the write cost grows with untouched objects: {small} ms (1 000) vs {large} ms (4 000)"
+        (large as f64) <= (small as f64 * 1.5).max(small as f64 + slack),
+        "the write cost grows with untouched objects: {small} ms (1 000) vs {large} ms (4 000); \
+         samples 1 000 {small_ds:?}, 4 000 {large_ds:?}; load {}",
+        host_load()
     );
 }
 

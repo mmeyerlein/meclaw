@@ -27,6 +27,7 @@ pub mod b64;
 pub mod cell;
 pub mod connection;
 pub mod contract;
+pub mod duck;
 pub mod factory;
 pub mod io;
 pub mod link;
@@ -37,6 +38,7 @@ pub mod service;
 pub mod speech_text;
 pub mod testpage;
 pub mod turns;
+pub mod vaulted;
 pub mod wire;
 
 pub use cell::{LiveSessionState, VoiceEvent, VoiceReconfig};

@@ -27,7 +27,8 @@ use meclaw_core::serde_json::json;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use web_fixture::backlog_lab::{
-    App, MOUNT, SLOW, Until, drive, drive_until, join, lab, num, opted_in, row_of, start,
+    App, Lab, MOUNT, PASS, SLOW, Until, drive, drive_until, drive_until_paced, join, lab,
+    lab_paced, num, opted_in, row_of, start,
 };
 
 /// T1, function: one slow viewer among three is reported `high`, and the two
@@ -48,7 +49,7 @@ async fn gh1006_a_slow_viewer_raises_backlog_high() {
     // viewers had time to show up if they were ever reported.
     let _ = drive_until(
         &mut live,
-        &slow.session,
+        &slow,
         true,
         Duration::from_millis(1200),
         &mut round,
@@ -92,7 +93,7 @@ async fn gh1006_a_caught_up_viewer_is_reported_clear() {
     let mut live = start(opted_in()).await;
     let slow = join(live.port, SLOW).await;
     let mut round = 0;
-    let _ = drive_until(&mut live, &slow.session, true, Duration::ZERO, &mut round).await;
+    let _ = drive_until(&mut live, &slow, true, Duration::ZERO, &mut round).await;
     slow.rate.store(0, Ordering::Relaxed);
     let _ = drive(&mut live, Duration::from_secs(1), &mut round).await;
     // The app stops: the reader drains the queue and the write after the last
@@ -162,12 +163,13 @@ async fn gh1006_the_viewers_op_reports_the_backlog() {
     // diffs (GH #1001) a full tranche is small enough that a 50 KB/s reader
     // keeps up for a few seconds on a loaded host (measured: 12 samples over
     // 3 s, every oldest_ms 0). The lock is about the row, not the timing.
-    let samples = drive_until(
+    let (samples, drove) = drive_until_paced(
         &mut live,
-        &slow.session,
+        &slow,
         true,
         Duration::from_millis(1500),
         &mut round,
+        PASS,
     )
     .await;
     let (_, last) = samples.last().expect("samples");
@@ -190,7 +192,11 @@ async fn gh1006_the_viewers_op_reports_the_backlog() {
         );
     }
     let s = row_of(last, &slow.session).expect("the slow row");
-    assert!(num(s, "bytes") > 0, "slow bytes: {s}");
+    assert!(
+        num(s, "bytes") > 0,
+        "slow bytes: {s}: {}",
+        no_backlog_why(&slow, &drove)
+    );
     assert_eq!(s["route"], json!("/"));
     let ages: Vec<u64> = samples
         .iter()
@@ -261,4 +267,104 @@ async fn gh1006_an_app_that_throttles_on_backlog_keeps_the_slow_viewer_live() {
         deaf.highs >= 1,
         "the signal fires for the deaf app: {deaf:?}"
     );
+}
+
+/// GH #1067: a starved app still puts the slow viewer behind.
+///
+/// T7 failed in a strand gate with "no high in 30 s" after 72 passes in 30 s:
+/// under full-suite load the app's pass took 415 ms instead of 125, so it
+/// wrote ~55 KB/s to a 50 KB/s reader and the viewer was never behind. Here
+/// the app is held to one pass every 500 ms, the gate's starvation made
+/// deterministic: "slow" has to mean slower than the app writes, not a fixed
+/// rate the app may fall to under load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1067_a_starved_app_still_puts_the_slow_viewer_behind() {
+    let deaf = lab_paced(true, App::Deaf, Until::High, Duration::from_millis(500)).await;
+    eprintln!("gh1067: starved deaf app {deaf:?}");
+    assert!(deaf.highs >= 1, "{}: {deaf:?}", deaf.why_no_high());
+    // Three nominal passes, not 450: the interval ticks at once, so a run
+    // of n passes measures ~(n-1)/n x 500 ms plus the rest of the last pass,
+    // and an early `high` after few passes lowers it (series: 467-473 ms).
+    // 375 ms still says "starved": three times the nominal cadence.
+    assert!(
+        deaf.pass_ms >= 3 * PASS.as_millis() as u64,
+        "the lab really ran starved (one pass per 500 ms): {deaf:?}"
+    );
+}
+
+/// GH #1067 (review I1): a starved app still puts the slow viewer behind
+/// when the test drives the passes itself.
+///
+/// T1, T2 and T5 drive full tranches through `drive_until` at the app's
+/// cadence against a 50 KB/s reader: the same arithmetic as T7, so a gate
+/// that starves the app to ~415 ms per pass leaves them without a `high` in
+/// 30 s. Held to one pass every 500 ms, the drive must still get there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1067_a_starved_drive_still_raises_backlog_high() {
+    let mut live = start(opted_in()).await;
+    let slow = join(live.port, SLOW).await;
+    let mut round = 0;
+    let (_, drove) = drive_until_paced(
+        &mut live,
+        &slow,
+        true,
+        Duration::ZERO,
+        &mut round,
+        Duration::from_millis(500),
+    )
+    .await;
+    eprintln!("gh1067: starved drive {drove:?}");
+    assert!(
+        drove.pass_ms >= 3 * PASS.as_millis() as u64,
+        "the drive really ran starved (one pass per 500 ms): {drove:?}"
+    );
+    live.join.abort();
+}
+
+/// GH #1080: why the slow viewer's last row shows no backlog.
+fn no_backlog_why(slow: &web_fixture::backlog_lab::Reader, drove: &Lab) -> String {
+    if slow.frames.load(Ordering::Relaxed) == 0 {
+        "no frame reached the slow viewer".to_string()
+    } else {
+        format!(
+            "the slow viewer caught up: reader at {} B/s, app at {} ms per pass \
+             (nominal {} ms) and {} B/s up to the high",
+            slow.rate.load(Ordering::Relaxed),
+            drove.pass_ms,
+            PASS.as_millis(),
+            drove.wrote_bps
+        )
+    }
+}
+
+/// GH #1080: a starved drive still leaves the slow viewer behind past the
+/// `high`.
+///
+/// T5 failed in a strand gate with `bytes: 0` for the throttled viewer in
+/// its last sample: under load the app slowed while the reader kept the rate
+/// it had at the `high`, and the 1.5 s past it drained the queue. Held to
+/// one pass every 500 ms for the whole run, the slow row still holds bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1080_a_starved_drive_keeps_the_slow_viewer_behind() {
+    let mut live = start(opted_in()).await;
+    let slow = join(live.port, SLOW).await;
+    let mut round = 0;
+    let (samples, drove) = drive_until_paced(
+        &mut live,
+        &slow,
+        true,
+        Duration::from_millis(1500),
+        &mut round,
+        Duration::from_millis(500),
+    )
+    .await;
+    eprintln!("gh1080: starved drive {drove:?}");
+    let (_, last) = samples.last().expect("samples");
+    let s = row_of(last, &slow.session).expect("the slow row");
+    assert!(
+        num(s, "bytes") > 0,
+        "slow bytes: {s}: {}",
+        no_backlog_why(&slow, &drove)
+    );
+    live.join.abort();
 }

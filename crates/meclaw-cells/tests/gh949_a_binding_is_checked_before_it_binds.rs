@@ -47,7 +47,7 @@ const RECIPES: &str = concat!(
 );
 
 const MEMBER: &str = "/os/orgs/acme/members/alex";
-const TELEGRAM: &str = "telegram-connector@2.1.0";
+const TELEGRAM: &str = "telegram-connector@2.1.1";
 const SPEAKER: &str = "member:alex";
 
 /// Every class of literal the recipe refuses, by name. The value is interior:

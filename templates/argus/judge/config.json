@@ -8,7 +8,8 @@
     "base_url": "${ARGUS_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}",
     "model": "${ARGUS_JUDGE_MODEL:-anthropic/claude-opus-5.5}",
     "requirement": "Decides whether the colony should change itself: it weighs measurements against a charter, reasons through what would happen otherwise and states a decision with its way back. It needs the strongest reasoning available and careful, structured output of a few thousand tokens. It runs on a slow cycle and nobody waits on it, so up to two minutes and a high price per call are acceptable, and a weaker model here is a false economy.",
-    "api_key": "${OPENROUTER_API_KEY}",
+    "api_key": "",
+    "credential_grant_id": "",
     "external_timeout_ms": 120000,
     "system_order": [
       "role",
@@ -45,7 +46,14 @@
       "api_key": {
         "type": "string",
         "secret": true,
-        "description": "OPENROUTER_API_KEY -- bound late, never stored in the tree."
+        "description": "Provider API key; ships empty and is never stored in the tree. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801).",
+        "default": ""
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #801: the grant this cell presents to get its provider credential SEALED from an access hive instead of carrying a key. It ships EMPTY, which is no grant at all; whoever grows the cell (the builder recipe or the colony's own template) sets it through `override_params`, and the credential then arrives over the credential v-lane and is opened in RAM only. Immutable: a new grant is a new instance."
       }
     },
     "consumes": {
@@ -61,6 +69,10 @@
         "params": {
           "type": "object",
           "required": false
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
         }
       }
     },
@@ -72,6 +84,17 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "model": {
           "type": "string",
           "required": false

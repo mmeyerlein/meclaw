@@ -406,12 +406,22 @@ fn rendered_levels() -> Vec<Value> {
     );
     let mut wishes = vec![
         json!({"scope": "/os", "level": "org", "name": "acme"}),
-        json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex"}),
+        // GH #1061 -- the member's vault opens itself from the colony's
+        // passphrase file, and the generation is the credentialled one: its
+        // brains spend grants from that member's broker, not a key of their own.
+        json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
+               "override_params": {"access/vault": {
+                   "key_source": "plainfile",
+                   "key_file": "${MECLAW_VAULT_KEY_FILE:-}"}}}),
         json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
                "name": "scribe",
                "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                        "model_surface": "${MODEL_SURFACE}"},
-               "override_params": {"cogny/brain": {"temperature": 0.2}}}),
+               "override_params": {"cogny/brain": {"temperature": 0.2}},
+               "credential": {"cred_ref": "cred:openrouter",
+                              "subject": "member:alex",
+                              "expires_at": "2099-01-01T00:00:00.000000Z",
+                              "rule_id": "alex-credential-read"}}),
         // GH #517 -- and, for a channel, the PERSON its turns are spoken
         // with: the round is provenance and is never derived from the path.
         // GH #940 -- and the one chat it is bound to, the example's literal.

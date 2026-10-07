@@ -1,0 +1,40 @@
+{
+  "manifest": [
+    {
+      "scope": "/",
+      "diff": {
+        "add_nodes": [
+          {
+            "name": "access",
+            "template": "access"
+          }
+        ],
+        "add_edges": [
+          {
+            "from": "./responder",
+            "to": "./access",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:responder'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./responder",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/responder'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

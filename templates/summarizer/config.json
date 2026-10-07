@@ -27,6 +27,10 @@
         {
           "route": "model_refused",
           "because": "a model package pushed through `in_model` that `./writer` refused (GH #863): its error, with the cell's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of reaching `./prep` as `in_error` -- a refused push is no session's failed summary, and `summary_error` never names it -- a refused push is nobody's request failing. Whoever draws this hive's push road draws one edge from here back to the registry's `in_refused` lane beside it; without one the refusal dead-letters `no_route`, loudly"
+        },
+        {
+          "route": "error",
+          "because": "a failure of `./access`, the broker that hands this template's cells their credentials sealed (GH #801): a refused or failed credential round. Which cell inside produced it is not the caller's business; a parent that drains nothing loses every refusal"
         }
       ]
     },
@@ -86,6 +90,34 @@
           "from": "./prep",
           "to": ".",
           "condition": "has(hop.route) && !hop.route.startsWith('in_') && hop.route != 'llm'"
+        },
+        {
+          "from": "./writer",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:summarizer/writer'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-summarizer/writer'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
         }
       ]
     }

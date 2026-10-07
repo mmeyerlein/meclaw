@@ -68,6 +68,7 @@ use crate::mount_guard::MountGuard;
 use crate::voice::cell::{VoiceEvent, VoiceReconfig};
 use crate::voice::contract::{AppendKind, DuplexProvider, SttProvider, TtsProvider};
 use crate::voice::service::{VoiceLinkOpener, mounted_router};
+use crate::voice::vaulted::VaultedSlot;
 use crate::voice::wire::{CLOSE_SESSION_REPLACED, Mode, ServerFrame, SpeakEndReason};
 
 /// What one connection task can be told to do.
@@ -200,6 +201,13 @@ pub struct VoiceIoShared {
     /// block before it takes over without one, in milliseconds
     /// (`params.duplex.renew_grace_ms`, GH #896).
     pub duplex_renew_grace_ms: u64,
+    /// How long a duplex session opened while the line rings waits for its
+    /// media connection, in milliseconds (`params.duplex.prewarm_ttl_ms`,
+    /// GH #1055); `0` never opens one early.
+    pub duplex_prewarm_ttl_ms: u64,
+    /// Ducking the model while the caller talks over it
+    /// (`params.duplex.barge_*`, GH #1055); off unless the params ask.
+    pub duck: crate::voice::duck::DuckParams,
     /// The mode a connection gets when its query string does not say.
     pub default_mode: Mode,
     /// A-timeout (hard rule 12) around a provider's first answer.
@@ -268,9 +276,61 @@ pub struct VoiceIoShared {
 struct Registry {
     /// Who is connected, under which session identity.
     live: HashMap<String, SessionHandle>,
+    /// Duplex sessions opened while their line still rings, waiting for the
+    /// media connection that names them (GH #1055).
+    /// Each under the token its park was given.
+    prewarm: HashMap<String, (u64, crate::voice::connection::Prewarmed)>,
+    /// The last token handed to a parked early session.
+    prewarm_token: u64,
 }
 
 impl VoiceIoShared {
+    /// Open and park a session for `session_id`, which rings (GH #1055).
+    ///
+    /// `open` runs under the registry's lock, and only when no connection
+    /// holds the session and no early session waits for it: one call, one
+    /// model, and no provider handshake paid for a session that would be
+    /// thrown away (a second ring, `180` then `183`, or a ring after the
+    /// stream connected). Returns the park's token, `None` when nothing was
+    /// opened.
+    pub(crate) async fn park_prewarm(
+        &self,
+        session_id: &str,
+        open: impl FnOnce() -> crate::voice::connection::Prewarmed,
+    ) -> Option<u64> {
+        let mut registry = self.sessions.lock().await;
+        if registry.live.contains_key(session_id) || registry.prewarm.contains_key(session_id) {
+            return None;
+        }
+        registry.prewarm_token = registry.prewarm_token.wrapping_add(1);
+        let token = registry.prewarm_token;
+        registry
+            .prewarm
+            .insert(session_id.to_string(), (token, open()));
+        Some(token)
+    }
+
+    /// Take the early session parked for `session_id`, where there is one —
+    /// and, with `token`, only the one that token parked (the expiry of an
+    /// early session must not take a later one of the same call).
+    pub(crate) async fn take_prewarm(
+        &self,
+        session_id: &str,
+        token: Option<u64>,
+    ) -> Option<crate::voice::connection::Prewarmed> {
+        let mut registry = self.sessions.lock().await;
+        let ours = match (registry.prewarm.get(session_id), token) {
+            (None, _) => false,
+            (Some((t, _)), Some(want)) => *t == want,
+            (Some(_), None) => true,
+        };
+        if ours {
+            registry.prewarm.remove(session_id).map(|(_, p)| p)
+        } else {
+            None
+        }
+    }
+
     /// Take over `session_id` for `conn_id`.
     ///
     /// Returns the displaced connection's sender when this session was already
@@ -431,6 +491,8 @@ impl VoiceIoShared {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_prewarm_ttl_ms: 0,
+            duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
             external_timeout,
             idle_timeout: external_timeout,
@@ -514,6 +576,10 @@ pub struct VoiceIo {
     /// How long a renewed session waits for its handover block, in
     /// milliseconds. See [`VoiceIoShared::duplex_renew_grace_ms`].
     pub duplex_renew_grace_ms: u64,
+    /// See [`VoiceIoShared::duplex_prewarm_ttl_ms`] (GH #1055).
+    pub duplex_prewarm_ttl_ms: u64,
+    /// See [`VoiceIoShared::duck`] (GH #1055).
+    pub duck: crate::voice::duck::DuckParams,
     /// The mode a connection starts in without a `?mode=`.
     pub default_mode: Mode,
     /// Operation-timeout around every provider I/O (hard rule 12, A).
@@ -579,6 +645,14 @@ pub struct VoiceIo {
     /// the substrate's `reconfig_rx` for its closing, which is how the I/O half
     /// learns the handler is gone.
     pub from_handler: Option<mpsc::Receiver<VoiceReconfig>>,
+    /// GH #1059: the slots whose key the vault delivers — one entry per
+    /// granted provider slot, set by the factory together with the stand-in
+    /// adapters in `stt`/`tts`/`duplex` ([`crate::voice::vaulted::vault`]).
+    /// Empty for a half built by hand or a cell on literal keys.
+    pub vaulted: Vec<VaultedSlot>,
+    /// GH #1059: ceiling of the doubling wait between two credential rounds of
+    /// one slot (`params.credential_backoff_max_ms`), read once per life.
+    pub credential_backoff_max_ms: u64,
 }
 
 impl VoiceIo {
@@ -611,6 +685,8 @@ impl VoiceIo {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_prewarm_ttl_ms: 0,
+            duck: crate::voice::duck::DuckParams::default(),
             audio_out_frame_ms: crate::voice::params::DEFAULT_AUDIO_OUT_FRAME_MS,
             speak_plain: crate::voice::params::DEFAULT_SPEAK_PLAIN,
             release_grace_ms: crate::voice::params::DEFAULT_RELEASE_GRACE_MS,
@@ -621,6 +697,10 @@ impl VoiceIo {
             cell_path: Path::new(""),
             surfaces: Arc::new(meclaw_colony::SurfaceRegistry::new()),
             from_handler: None,
+            // A half built by hand spends no grant; the factory sets both.
+            vaulted: Vec::new(),
+            credential_backoff_max_ms: crate::credential_rounds::default_credential_backoff_max_ms(
+            ),
         }
     }
 }
@@ -659,6 +739,8 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         duplex_tick_ms: io.duplex_tick_ms,
         duplex_renew_after_ms: io.duplex_renew_after_ms,
         duplex_renew_grace_ms: io.duplex_renew_grace_ms,
+        duplex_prewarm_ttl_ms: io.duplex_prewarm_ttl_ms,
+        duck: io.duck,
         default_mode: io.default_mode,
         external_timeout: io.external_timeout,
         idle_timeout: io.idle_timeout,
@@ -673,6 +755,14 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     let mount = io.mount;
     let cell_path = io.cell_path;
     let surfaces = io.surfaces;
+    // GH #1059: round 1 of every vaulted slot starts with this life — the
+    // handler's `on_start` question is out by now (it runs before the first
+    // event). Sessions are taken from the first second all the same; a slot's
+    // stand-in holds each one until the key is in.
+    let mut vaulted = io.vaulted;
+    for slot in &mut vaulted {
+        slot.start_clock(io.credential_backoff_max_ms);
+    }
 
     // The mount goes on the table once per life, at the top of it (ADR-0031):
     // whoever has a connection to hand over must find this cell as soon as it
@@ -746,6 +836,7 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         &mut handoff,
         &mount,
         &mut connections,
+        &mut vaulted,
     )
     .await;
     drop(shutdown_tx);
@@ -766,6 +857,7 @@ async fn serve_until_the_handler_goes(
     handoff: &mut Option<mpsc::Receiver<HandedConnection>>,
     mount: &str,
     connections: &mut tokio::task::JoinSet<()>,
+    vaulted: &mut [VaultedSlot],
 ) {
     loop {
         let command = tokio::select! {
@@ -792,6 +884,16 @@ async fn serve_until_the_handler_goes(
             // ever answered. Guarded, because `join_next` on an empty set is
             // `None` at once and would spin this loop.
             Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+
+            // GH #1059: a vaulted slot's round ended without its key. The
+            // handler asks again; this half only keeps the clock, because it
+            // is the half that is awake while nothing arrives.
+            (slot, round, wait_ms) = next_credential_round(vaulted) => {
+                shared
+                    .emit(VoiceEvent::CredentialRoundExpired { slot, round, wait_ms })
+                    .await;
+                continue;
+            }
         };
         match command {
             // A closed channel is the handler going away, on either seam.
@@ -842,6 +944,34 @@ async fn serve_until_the_handler_goes(
             Some(VoiceReconfig::Close { session_id, code }) => {
                 shared.send_to(&session_id, ToConnection::Close(code)).await;
             }
+            Some(VoiceReconfig::Credential { slot, secret }) => {
+                // GH #1059: build the slot's adapter with the delivered key.
+                // Sessions waiting on the slot start; its clock stops. A key
+                // for a slot this life does not vault is dropped: the handler
+                // only sends what a grant of this cell asked for.
+                let Some(target) = vaulted.iter_mut().find(|v| v.slot == slot) else {
+                    continue;
+                };
+                if let Err(error) = target.install(&secret) {
+                    tracing::error!(
+                        slot = slot.as_str(),
+                        grant = %target.grant,
+                        %error,
+                        "voice: the delivered key did not build the provider — the slot stays \
+                         without a key for this life; its sessions are refused and the next \
+                         start asks again"
+                    );
+                }
+            }
+            // GH #1055: the line rings, or ended before anybody answered.
+            // Neither waits on anything: opening spawns the provider task, and
+            // dropping a parked session is what closes it.
+            Some(VoiceReconfig::Prewarm { session_id }) => {
+                crate::voice::connection::prewarm(shared, &session_id).await;
+            }
+            Some(VoiceReconfig::DropPrewarm { session_id }) => {
+                crate::voice::connection::drop_prewarm(shared, &session_id).await;
+            }
             Some(VoiceReconfig::ArmReleaseGrace {
                 session_id,
                 ms,
@@ -865,6 +995,37 @@ async fn serve_until_the_handler_goes(
             }
         }
     }
+}
+
+/// GH #1059: sleep until the earliest round deadline of the slots still
+/// waiting for their key, then move that slot to its next round and return
+/// it with the new round's number and wait. Waits forever when no slot waits.
+///
+/// Cancel-safe for the `select!` above: the clock moves only after the sleep
+/// completed, so a command that wins the race leaves every deadline alone.
+async fn next_credential_round(
+    vaulted: &mut [VaultedSlot],
+) -> (crate::voice::params::CredentialSlot, u32, u64) {
+    let earliest = vaulted
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| v.clock.as_ref().map(|c| (i, c.deadline())))
+        .min_by_key(|(_, deadline)| *deadline);
+    let Some((i, deadline)) = earliest else {
+        return std::future::pending().await;
+    };
+    tokio::time::sleep_until(deadline).await;
+    let Some(v) = vaulted.get_mut(i) else {
+        return std::future::pending().await;
+    };
+    let (round, wait_ms) = match v.clock.as_mut() {
+        Some(clock) => clock.next_round(),
+        // Unreachable: the slot was picked for its clock and nothing ran in
+        // between. Re-reporting round 1 is harmless — the handler only asks
+        // while the slot has no key.
+        None => (1, v.wait_ms),
+    };
+    (v.slot, round, wait_ms)
 }
 
 /// Receive from the cell's own command channel, or wait forever when the cell
@@ -1542,6 +1703,8 @@ mod tests {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_prewarm_ttl_ms: 0,
+            duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
             external_timeout: MARKER,
             idle_timeout: MARKER,
@@ -1641,6 +1804,8 @@ mod tests {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_prewarm_ttl_ms: 0,
+            duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
             external_timeout: MARKER,
             idle_timeout: MARKER,
@@ -1677,6 +1842,8 @@ mod tests {
         let mut from_handler = None;
         let mut handoff = None;
         let mut connections = tokio::task::JoinSet::new();
+        // GH #1059: no vaulted slot — this test is about the command seam.
+        let mut vaulted: Vec<VaultedSlot> = Vec::new();
         let serve = serve_until_the_handler_goes(
             &shared,
             &mut reconfig_rx,
@@ -1684,6 +1851,7 @@ mod tests {
             &mut handoff,
             "voice",
             &mut connections,
+            &mut vaulted,
         );
         tokio::pin!(serve);
         let got = tokio::select! {

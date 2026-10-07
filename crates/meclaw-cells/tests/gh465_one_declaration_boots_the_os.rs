@@ -253,10 +253,9 @@ fn complete_env() -> String {
             out.push_str(&format!("{key}=placeholder-for-a-test\n"));
         }
     }
-    assert!(
-        !out.is_empty(),
-        "the shell declares no required key at all — then test 4 measures nothing"
-    );
+    // GH #1061 (#801): the shell requires no key any more -- the provider key
+    // lives in the vault -- so an empty `.env` is complete, and test 4 says so
+    // instead of measuring a refusal there is nothing to refuse for.
     out
 }
 
@@ -558,10 +557,19 @@ async fn a_missing_requirement_refuses_the_boot_before_a_byte_is_written() {
     let env = declared["requires"]["env"]
         .as_object()
         .expect("the shell declares `requires.env`");
-    let (missing, decl) = env
+    let Some((missing, decl)) = env
         .iter()
         .find(|(_, d)| d["required"].as_bool().unwrap_or(true))
-        .expect("the shell declares at least one required key");
+    else {
+        // GH #1061 (#801): no required key is left under the shell, so no
+        // boot can be refused for one. The refusal itself stays locked where
+        // a requirement exists (`requires::` unit tests, gh302 counts zero).
+        assert!(
+            env.values().all(|d| d["required"].as_bool() == Some(false)),
+            "every declared key is optional"
+        );
+        return;
+    };
 
     // Everything the shell asks for EXCEPT the one key under test.
     let mut incomplete = String::new();

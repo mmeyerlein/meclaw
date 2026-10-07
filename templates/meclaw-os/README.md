@@ -1,4 +1,4 @@
-# `meclaw-os@2.2.29`
+# `meclaw-os@2.2.34`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -135,14 +135,16 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The sixty-nine edges
+## The seventy-three edges
 
 Forty-nine of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Twenty wire two occupants to each other, and that is what owning a baumeister, a
-front door and a model registry looks like.**
+**Twenty-four wire two occupants to each other, and that is what owning a baumeister, a
+front door and a model registry looks like.** Four of them are the credential road since
+#801: the judge of `./argus` and the translator of `./llm-registry` ask the shell's own
+`./access` for their key and are answered sealed.
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
 `member` wires `./assistants -> ./firewall`, because a level owns what its siblings must
@@ -590,7 +592,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.29"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.34"}}
 ```
 
 ```bash
@@ -639,14 +641,13 @@ for either in the environment would go nowhere. What tunes them now is an
 `{"builder/dispatcher": {"max_calls": 8}}` -- and what stays here is the
 provider lane and nothing else.
 
-Exactly **one** of those keys is required, and it is the only key the shell writes somewhere
-with no default: `OPENROUTER_API_KEY`, the credential of the control loop's judge (the model
-registry's translator reads the same key with an empty default). A colony that
-grows this shell without it is refused with `requirement_missing` **before a single byte is
-staged** — the marker is still a marker afterwards, there is nothing to clean up, and the
-refusal quotes the declaration's own sentence so a reader learns what the key is for. The
-alternative, and the state before GH #465, was a shell that boots, looks healthy, and fails at
-the first cycle the loop runs.
+**The provider key is no environment value any more** (#801). The control loop's `judge` and the
+model registry's `translate` hold grants the shell seeds into its own `access`
+(`access/store/seed/`), and the key itself lives in the vault: deposit it with
+`meclaw --vault-add cred:openrouter` (the value is read from stdin). The vault has to be
+unlockable — `access/vault` `key_source` systemd-cred for a unit, plainfile for a local run.
+`template.json` § `requires.credentials` names the credential and its consumers. The composer
+(`builder/compose`) holds no grant: its local endpoint is keyless by default (GH #271).
 
 Everything else has a default in the template it configures and is declared anyway, so that a
 builder learns this shell's environment surface by reading it rather than by watching a cell
@@ -660,6 +661,7 @@ leaflet, and the roll-up is derived by test rather than transcribed, so it went 
 with them. Since `meclaw-os@1.10.0` it is nine: the model registry's translator adds
 `LLM_REGISTRY_TRANSLATOR_MODEL` and `LLM_REGISTRY_TRANSLATOR_BASE_URL`, its start value, both
 with defaults.
+Since #801 it is seven: `OPENROUTER_API_KEY` and `LOCAL_LLM_API_KEY` are gone, a key lives in the vault.
 Two of the remaining keys are worth knowing before you start:
 [`MODEL_BUILDER`](../builder/) and `LOCAL_LLM_BASE_URL` are what the composer asks its model
 through, they default to empty, and unset they leave the authoring path inert — the shell boots,
@@ -674,7 +676,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.29"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.34"}],
           "add_edges": []}}
 ```
 
@@ -696,7 +698,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.18"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.21"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

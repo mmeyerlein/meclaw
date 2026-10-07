@@ -292,6 +292,7 @@ fn build_tree(td: &tempfile::TempDir) {
     });
     stand_in(root, "main/digest/notifier/config.json");
     stand_in(root, "main/digest/fetcher/config.json");
+    no_broker(root, "main/digest/access");
 
     copy_cells(
         &repo("templates/research-assistant"),
@@ -300,6 +301,23 @@ fn build_tree(td: &tempfile::TempDir) {
     for cell in ["planner", "proxy", "reader", "searcher"] {
         stand_in(root, &format!("main/research/{cell}/config.json"));
     }
+    no_broker(root, "main/research/access");
+}
+
+/// GH #1061 (#801): the template's own broker is a ref to `access@…`, which
+/// this tree has no library for, and every cell that would ask it is a
+/// stand-in above. A silent code cell takes its place, seed overlay and all.
+fn no_broker(root: &std::path::Path, rel: &str) {
+    let _ = std::fs::remove_dir_all(root.join(rel));
+    write(
+        root,
+        &format!("{rel}/config.json"),
+        &code_cell(
+            "import sys\nsys.stdout.write('[]')\n",
+            json!({}),
+            "Test stand-in for the template's broker; no cell here asks it.",
+        ),
+    );
 }
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {

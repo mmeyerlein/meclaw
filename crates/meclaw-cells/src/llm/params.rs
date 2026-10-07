@@ -50,7 +50,8 @@ fn default_attachment_timeout_ms() -> u64 {
 /// it covers is one in-colony hop pair, so anything beyond this is a vault that
 /// is not answering, and that is what the receipt is for.
 fn default_credential_wait_max() -> usize {
-    16
+    // GH #1058: one default for every cell type that spends a grant.
+    crate::credential::default_credential_wait_max()
 }
 
 /// GH #457: default A-timeout for the sealed-credential round, in ms. An
@@ -58,7 +59,8 @@ fn default_credential_wait_max() -> usize {
 /// than with the provider budget — generous enough for a loaded host, far below
 /// anything a chat user would call "silence".
 fn default_credential_wait_ms() -> u64 {
-    10_000
+    // GH #1058: one default for every cell type that spends a grant.
+    crate::credential::default_credential_wait_ms()
 }
 
 /// How the cell authenticates against the provider (P10).

@@ -16,9 +16,24 @@
 //! `100dvh` against a moving address bar, `env(safe-area-inset-*)` behind
 //! `viewport-fit=cover`, a `backdrop-filter` layer WebKit painted through an ancestor's
 //! opacity, `:has()` for the plane blur. A proof measured in Chromium alone says nothing
-//! about the device this screen is carried on. One `#[test]` per engine rather than one
-//! test with two runs: a red run then names the engine in the test name, and nextest runs
-//! the two side by side instead of one after the other.
+//! about the device this screen is carried on. One `#[test]` per engine and part rather
+//! than one test with all the runs: a red run then names the engine and the part in the
+//! test name, and nextest runs them side by side instead of one after the other.
+//!
+//! **Why parts (GH #1048).** The sheet line ran as ONE driver run per engine, fifteen
+//! proofs on one page: WebKit took 24.9 s alone in the station `browser:display`
+//! (2026-10-02), 70-78 s in integration runs and 92.8 s in one strand gate (2026-10-06),
+//! of a 240 s budget with the mark at 80 s. Two kinds of time make that up. About 19 s
+//! is B-33's own clock and does not shrink under load: a 300 ms tap, two 4.5 s holds
+//! against the 3 s threshold, a 3.5 s stall twice and the settles between them
+//! (`display-layout-browser.mjs`, `B33`). The rest is WebKit painting a 393x852 page at
+//! dpr 3 with Mesa in software (`wkenv.sh`), and THAT grows with the load -- the same
+//! line went from 25 s to 93 s. A part is one driver run over a contiguous slice of the
+//! line (`--checks`), with its own engine start and its own page, so the longest part is
+//! B-33's clock plus one start, and the CPU half is spread over four processes instead
+//! of one. The WebKit parts take turns (`.config/nextest.toml`, test group
+//! `webkit`): side by side they starved each other. Every assertion is still made
+//! per proof; nothing below judges across parts.
 //!
 //! **Why SKIP and not RED.** Nothing here is installed by the test. `playwright` is the
 //! one npm dependency of `workshop/tools/`, pinned at 1.63.0 and put in place by
@@ -85,14 +100,14 @@ fn page_parts(dir: &Path) -> Option<()> {
     Some(())
 }
 
-/// Drive one engine through the sheet line of befund 04 § E.3, or `None` when this host
-/// cannot measure.
+/// Drive one engine through `checks`, a part of the sheet line of befund 04 § E.3, or
+/// `None` when this host cannot measure.
 ///
 /// The driver is run through `sh` so that `wkenv.sh` is sourced first: Playwright's own
 /// wrapper sets `LD_LIBRARY_PATH`, so the laboratory has to be in the environment of the
 /// `node` process itself and cannot be handed over afterwards. Where there is no
 /// laboratory, `wkenv.sh` writes its own `SKIP ` line and the guard below reads it.
-fn drive(engine: &str, parts: &Path, out_dir: &Path) -> Option<Value> {
+fn drive(engine: &str, checks: &[&str], parts: &Path, out_dir: &Path) -> Option<Value> {
     if !repo(DRIVER).is_file() || !repo(WKENV).is_file() {
         println!("SKIP the browser driver does not ship in this tree");
         return None;
@@ -109,6 +124,11 @@ fn drive(engine: &str, parts: &Path, out_dir: &Path) -> Option<Value> {
         .arg(engine)
         .arg("--run")
         .arg("sheet")
+        // The part: the driver runs exactly these proofs, in this order, on a page of
+        // their own. The line itself stays the driver's (`RUNS.sheet`), and the lock at
+        // the foot of this file holds the parts to it.
+        .arg("--checks")
+        .arg(checks.join(","))
         // The phone: B-17 is a phone sentence, and the exit with the fewest pixels and
         // the most engine behind it is the one the other nine are hardest on.
         .arg("--profile")
@@ -189,8 +209,10 @@ fn assert_every_check_holds(engine: &str, report: &Value) {
     );
 }
 
-/// One engine, end to end: parts out of `compose.py`, the sheet line, every check.
-fn the_sheet_holds_in(engine: &str) {
+/// One engine and one part, end to end: parts out of `compose.py`, the proofs of the
+/// part, every check -- and exactly the checks that were asked for, so a driver that
+/// ignored `--checks` and ran the whole line (or nothing) is red here.
+fn the_sheet_holds_in(engine: &str, checks: &[&str]) {
     if !library_ships() {
         println!("SKIP the template library does not ship in this tree");
         return;
@@ -200,7 +222,7 @@ fn the_sheet_holds_in(engine: &str) {
         println!("SKIP no python3 on this host");
         return;
     }
-    let Some(report) = drive(engine, td.path(), &td.path().join("shots")) else {
+    let Some(report) = drive(engine, checks, td.path(), &td.path().join("shots")) else {
         return;
     };
     assert_eq!(
@@ -211,15 +233,101 @@ fn the_sheet_holds_in(engine: &str) {
         report["engine"], engine,
         "the run is the engine that was asked for"
     );
+    let mut ran: Vec<&str> = report["checks"]
+        .as_object()
+        .map(|c| c.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    ran.sort_unstable();
+    let mut asked = checks.to_vec();
+    asked.sort_unstable();
+    assert_eq!(
+        ran, asked,
+        "{engine}: the driver ran other proofs than the part"
+    );
     assert_every_check_holds(engine, &report);
 }
 
-#[test]
-fn the_sheet_holds_in_chromium() {
-    the_sheet_holds_in("chromium");
+// ─────────────────────────────────────────────────────────────── the parts
+
+/// The sheet line of the driver (`RUNS.sheet`), cut into contiguous slices: the order
+/// inside a part is the order of the line, and every part starts on a fresh page -- the
+/// page the first proof of the whole line used to get.
+///
+/// The page, the dock, the blur and the tiles stay ONE part: cut after B-18, B-21 ("the
+/// seconds run down", a four-tick deadline) met a fresh WebKit page still busy with its
+/// first software-rendered paint and failed 5 of 10 stress iterations on build01 under
+/// load (2026-10-07, `the seconds do not run down in the browser (D-27)`); on the page
+/// B-02..B-18 already settled -- the page it always had -- it holds.
+const PAGE_AND_TILES: &[&str] = &[
+    "B-02", "B-08", "B-09", "B-13", "B-16", "B-17", "B-18", "B-20", "B-21", "B-22", "B-27",
+];
+/// B-33 alone: about 19 s of fixed press and stall time, the longest part on its own.
+const HOLD: &[&str] = &["B-33"];
+/// B-34 alone: it builds a page for each of the three exits.
+const CAPTION: &[&str] = &["B-34"];
+const WINDOWS_AND_FADE: &[&str] = &["B-35", "B-36"];
+
+/// One `#[test]` per engine and part (GH #1048, the WHY is at the head of this file).
+macro_rules! cells {
+    ($($name:ident => ($engine:expr, $checks:expr);)+) => {
+        /// Every cell the macro made, in the order it made them.
+        const CELLS: &[(&str, &[&str])] = &[$(($engine, $checks)),+];
+        $(
+            #[test]
+            fn $name() {
+                the_sheet_holds_in($engine, $checks);
+            }
+        )+
+    };
 }
 
+cells! {
+    the_sheet_holds_in_chromium_page_and_tiles => ("chromium", PAGE_AND_TILES);
+    the_sheet_holds_in_chromium_hold => ("chromium", HOLD);
+    the_sheet_holds_in_chromium_caption => ("chromium", CAPTION);
+    the_sheet_holds_in_chromium_windows_and_fade => ("chromium", WINDOWS_AND_FADE);
+    the_sheet_holds_in_webkit_page_and_tiles => ("webkit", PAGE_AND_TILES);
+    the_sheet_holds_in_webkit_hold => ("webkit", HOLD);
+    the_sheet_holds_in_webkit_caption => ("webkit", CAPTION);
+    the_sheet_holds_in_webkit_windows_and_fade => ("webkit", WINDOWS_AND_FADE);
+}
+
+/// The proofs of the driver's sheet line, in its order, read off `RUNS.sheet` in the
+/// driver's source -- the line is the driver's, and this file only cuts it.
+fn the_sheet_line() -> Vec<String> {
+    let src = std::fs::read_to_string(repo(DRIVER)).expect("the driver reads");
+    let at = src
+        .find("\n  sheet: [")
+        .expect("the driver carries a sheet line (`RUNS.sheet`)");
+    let rest = &src[at..];
+    let body = &rest[rest.find('[').expect("[") + 1..rest.find(']').expect("]")];
+    body.split('"')
+        .filter(|t| t.starts_with("B-"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The split loses no proof: for each engine the parts, one after the other, are the
+/// driver's sheet line exactly -- same proofs, same order, none twice. A proof added to
+/// `RUNS.sheet` without a part is red here, not silently unmeasured.
 #[test]
-fn the_sheet_holds_in_webkit() {
-    the_sheet_holds_in("webkit");
+fn the_parts_are_the_sheet_line() {
+    if !repo(DRIVER).is_file() {
+        println!("SKIP the browser driver does not ship in this tree");
+        return;
+    }
+    let line = the_sheet_line();
+    assert!(!line.is_empty(), "the sheet line read empty off the driver");
+    for engine in ["chromium", "webkit"] {
+        let have: Vec<String> = CELLS
+            .iter()
+            .filter(|(e, _)| *e == engine)
+            .flat_map(|(_, checks)| checks.iter().map(|c| c.to_string()))
+            .collect();
+        assert_eq!(
+            have, line,
+            "{engine}: the parts of this file are not the driver's sheet line; \
+             add the proof to a part (or a part to the cells! list)"
+        );
+    }
 }

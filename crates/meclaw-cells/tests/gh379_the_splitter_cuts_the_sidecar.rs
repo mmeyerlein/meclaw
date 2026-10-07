@@ -377,21 +377,32 @@ fn a_block_whose_top_level_is_not_an_object_is_a_miss_and_not_a_section() {
 fn a_round_with_tool_calls_belongs_to_the_dispatcher_whole() {
     // (e) The mixed form -- text beside an async call in ONE message -- is the
     // shape that strands a round (GH #378). The splitter never builds it and
-    // never takes one apart: a completion carrying calls passes untouched.
+    // never takes one apart: a completion carrying calls leaves as ONE message,
+    // its call byte for byte, its turns in order, no section on a lane. Since
+    // contract 1.0.4 (GH #1036) the block leaves the sentence beside the call:
+    // that sentence is the interim answer every channel and app of the turn
+    // receives, and a running colony delivered the fence to all of them.
+    let block = format!("```sidecar\n{{\"memory\": {GOOD_BLOCK}}}\n```");
     let input = completion(
         "tool_calls",
         serde_json::json!([
             {"origin": "assistant", "type": "tool_call", "id": "c1",
              "text": "{\"name\":\"weather\",\"arguments\":\"{}\"}"},
-            text_turn(&format!("Moment.\n\n```sidecar\n{{\"memory\": {GOOD_BLOCK}}}\n```"))
+            text_turn(&format!("Moment.\n\n{block}"))
         ]),
     );
     let out = split(input.clone());
-    assert!(out.is_object(), "no cut on a tool round: {out}");
+    assert!(out.is_object(), "a tool round leaves as one message: {out}");
+    assert_eq!(out["messages"].as_array().map(Vec::len), Some(2), "{out}");
     assert_eq!(
-        out["messages"], input["messages"],
-        "byte-identical, fence included: {out}"
+        out["messages"][0], input["messages"][0],
+        "the call is byte-identical: {out}"
     );
+    assert_eq!(
+        out["messages"][1]["text"], "Moment.",
+        "the fence leaves: {out}"
+    );
+    assert_eq!(out["sidecar_raw"], block.as_str(), "{out}");
     assert!(out["header"].get("route").is_none(), "{out}");
     assert!(out["header"].get("sidecar").is_none(), "{out}");
 }

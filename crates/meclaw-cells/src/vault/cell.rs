@@ -29,7 +29,7 @@
 use super::attest::{self, Attestation};
 use super::crypto::{self, MasterKey};
 use super::keysource::{self, KeyMaterial};
-use super::params::VaultParams;
+use super::params::{KeySource, VaultParams};
 use super::store;
 use meclaw_colony::DbConn;
 use meclaw_colony::stateful_cell::StatefulCell;
@@ -342,7 +342,11 @@ impl StatefulCell for VaultCell {
             // and an operator diagnosing a misconfigured `unlock_env` needs at
             // least one operation that still answers. `unlock` is exempt
             // because it is the thing itself.
-            if self.params.unlock_env.is_some()
+            //
+            // GH #1058 (OR-VG-6): an EXPLICIT key source that needs no user
+            // (`systemd-cred`, `plainfile`) opts in the same way. `auto` does
+            // not — "a woken vault is locked" stays the default.
+            if self.self_unlocks()
                 && !self.unlocked()
                 && !matches!(op.as_str(), "status" | "lock" | "unlock")
                 && let Err(detail) = self.auto_unlock(db, &vault_path).await
@@ -623,6 +627,17 @@ impl VaultCell {
         }))
     }
 
+    /// Whether this vault opens itself on the way to an operation: a named
+    /// environment variable (`unlock_env`, GH #427), or an explicitly chosen
+    /// key source that needs no user (GH #1058).
+    fn self_unlocks(&self) -> bool {
+        self.params.unlock_env.is_some()
+            || matches!(
+                self.params.key_source,
+                KeySource::SystemdCred | KeySource::PlainFile
+            )
+    }
+
     /// Unlock from the environment, once, on the way to serving an operation.
     ///
     /// This is the same `op_unlock` the user channel drives — the attestation
@@ -633,8 +648,10 @@ impl VaultCell {
     /// who set `unlock_env` and got nothing wants to be told which variable is
     /// empty, not handed a generic "locked".
     async fn auto_unlock(&mut self, db: &mut DbConn, vault_path: &Path) -> Result<(), String> {
+        // `unlock_env` wins when both are set: tests and the lab drive it, and
+        // their behaviour must not change because a key source is configured.
         let Some(name) = self.params.unlock_env.clone() else {
-            return Ok(());
+            return self.unlock_from_key_source(db, vault_path).await;
         };
         let passphrase = std::env::var(&name).unwrap_or_default();
         if passphrase.is_empty() {
@@ -654,6 +671,53 @@ impl VaultCell {
         tracing::info!(
             variable = name.as_str(),
             "vault: unlocked itself from the environment at first use (params.unlock_env)"
+        );
+        Ok(())
+    }
+
+    /// GH #1058 (OR-VG-6): unlock from the explicitly configured key source —
+    /// the systemd credential (`$CREDENTIALS_DIRECTORY/<credential_name>`,
+    /// `LoadCredential[Encrypted]=`) or a 0600 key file (the `start.sh` path).
+    ///
+    /// The source is read once up front so a missing credential is refused BY
+    /// NAME (`vault: missing passphrase — …`, `invalid_input`) rather than as a
+    /// generic `vault_error`: an operator who chose this source wants to be
+    /// told it is empty. `op_unlock` then reads it again on its own path (one
+    /// small file, once per lock period), so the attestation and the
+    /// passphrase proof run exactly as for every other unlock. The material
+    /// itself is never logged and never put into an error string.
+    async fn unlock_from_key_source(
+        &mut self,
+        db: &mut DbConn,
+        vault_path: &Path,
+    ) -> Result<(), String> {
+        let source = self.params.key_source.as_str();
+        match keysource::load(&self.params).await {
+            Ok(KeyMaterial::Passphrase(_)) => {}
+            Ok(KeyMaterial::AwaitUserChannel) => {
+                return Err(format!(
+                    "vault: missing passphrase — key_source {source:?} cannot open this vault \
+                     without a user"
+                ));
+            }
+            Err(e) => {
+                tracing::error!(
+                    key_source = source,
+                    credential_name = self.params.credential_name.as_str(),
+                    "vault: the configured key source holds no passphrase — this vault cannot \
+                     open itself and will refuse every operation that needs a key"
+                );
+                return Err(format!(
+                    "vault: missing passphrase — key_source {source:?} (credential_name {:?}) \
+                     could not be read: {e}",
+                    self.params.credential_name
+                ));
+            }
+        }
+        self.op_unlock(db, &json!({}), vault_path).await?;
+        tracing::info!(
+            key_source = source,
+            "vault: unlocked itself from its key source at first use"
         );
         Ok(())
     }

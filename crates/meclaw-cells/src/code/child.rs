@@ -8,8 +8,9 @@
 //! journal entry, the reap -- comes from `crate::stdio_child` unchanged.
 
 use crate::code::harness;
-use crate::code::params::{CodeParams, RunnerMode};
+use crate::code::params::{CodeParams, RunnerMode, Script};
 use crate::code::pool::{Job, JobOutcome};
+use crate::code::script_file;
 use crate::process::KillingTimeoutOutput;
 use crate::stdio_child::{ChildExit, ChildSpec, Frame, StdioChild, StdioChildError};
 use meclaw_core::serde_json::Value as JsonValue;
@@ -40,10 +41,23 @@ pub(crate) fn config_for(p: &CodeParams) -> Option<ChildConfig> {
         RunnerMode::Warm => false,
         RunnerMode::Resident => true,
     };
+    // GH #1026: the harness starts the way the script's cold run would. An
+    // inline script above the `argv` cap runs cold as `<runner> -I <file>`
+    // (GH #844, `cell.rs` `build_command`): no '' on `sys.path`, no `PYTHON*`,
+    // no user site. Its warm child gets the same `-I`, so a script that is safe
+    // from a stray `json.py` cold is not exposed to one warm. Every other script
+    // runs cold as `-c` and keeps it; the harness restores the cold search path
+    // itself (`harness.py` `_cold_start`).
+    let mut args: Vec<String> = Vec::with_capacity(3);
+    if matches!(&p.script, Script::Inline(code) if script_file::is_oversized(code)) {
+        args.push("-I".into());
+    }
+    args.push("-c".into());
+    args.push(harness::HARNESS.to_string());
     Some(ChildConfig {
         spec: ChildSpec {
             program: p.runner.clone(),
-            args: vec!["-c".into(), harness::HARNESS.to_string()],
+            args,
             env: Vec::new(),
             cwd: None,
             kill_grace_ms: KILL_GRACE_MS,
@@ -360,5 +374,29 @@ mod tests {
             "cold spawns no process group either"
         );
         assert_eq!(cfg.boot["persistent"], json!(false));
+    }
+
+    /// GH #1026: an inline script above the `argv` cap runs cold as
+    /// `-I <file>` (GH #844), so its warm and resident children start the
+    /// harness isolated too. One byte below the cap nothing changes.
+    #[tokio::test]
+    async fn an_oversized_inline_script_boots_its_harness_isolated_like_cold() {
+        let big = format!("#{}\npass", "x".repeat(script_file::MAX_INLINE_ARGV_BYTES));
+        assert!(script_file::is_oversized(&big));
+        for mode in [RunnerMode::Warm, RunnerMode::Resident] {
+            let cfg = config_for(&params(&big, mode)).unwrap();
+            assert_eq!(
+                cfg.spec.args,
+                vec![
+                    "-I".to_string(),
+                    "-c".into(),
+                    crate::code::harness::HARNESS.into()
+                ],
+                "{mode:?}: the cold run of this script is `-I <file>`"
+            );
+        }
+        let small = "x".repeat(script_file::MAX_INLINE_ARGV_BYTES);
+        let cfg = config_for(&params(&small, RunnerMode::Warm)).unwrap();
+        assert_eq!(cfg.spec.args[0], "-c", "below the cap the cold run is `-c`");
     }
 }

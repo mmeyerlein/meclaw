@@ -61,6 +61,11 @@ impl CellFactory for CodeCellFactory {
         // The SAME number bounds the dispatcher and sizes the pool, so a warm
         // cell can never have more workers than children or the other way round.
         let max_concurrency = params.effective_max_concurrency();
+        // GH #1060: the grant block. On a grant the dispatcher makes room for a
+        // parked round plus its box, and the slot's run tickets keep the bound
+        // (`grant_slot` module note); without one, `max_concurrency` as before.
+        let (grant, credential_env) = crate::code::params::parse_credential(&raw_params)?;
+        let dispatch_bound = crate::grant_slot::dispatcher_bound(max_concurrency, &grant);
         // Reads contract.multi_send_capable from the CellFactory trait param (Phase 11).
         let multi_send_capable = contract.multi_send_capable;
         // Paket 7 (P13/D-017): carry compiled emits + effective validate flag.
@@ -84,7 +89,8 @@ impl CellFactory for CodeCellFactory {
                 // resident start their pool HERE, once per cell value, so a
                 // crash-respawn keeps the warm children (it is the dispatcher
                 // that died, not the script).
-                .with_runner_pool(&params, max_concurrency),
+                .with_runner_pool(&params, max_concurrency)
+                .with_grant(&grant, credential_env, max_concurrency),
         );
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: initial dispatcher via
@@ -96,7 +102,7 @@ impl CellFactory for CodeCellFactory {
             rx,
             outputs_tx.clone(),
             cell.clone(),
-            max_concurrency,
+            dispatch_bound,
             message_timeout,
             Some(colony_inbox_tx.clone()),
             blob_store.clone(),
@@ -142,7 +148,7 @@ impl CellFactory for CodeCellFactory {
                         r,
                         o,
                         c,
-                        max_concurrency,
+                        dispatch_bound,
                         message_timeout,
                         Some(r_inbox.clone()),
                         b,
@@ -187,6 +193,8 @@ impl CellFactory for CodeCellFactory {
         let attachment_timeout_ms =
             crate::code::params::parse_attachment_timeout_ms(&raw_params).ok()?;
         let max_concurrency = params.effective_max_concurrency();
+        let (grant, credential_env) = crate::code::params::parse_credential(&raw_params).ok()?;
+        let dispatch_bound = crate::grant_slot::dispatcher_bound(max_concurrency, &grant);
         let cell = Arc::new(
             CodeCell::new(
                 params.clone(),
@@ -206,13 +214,14 @@ impl CellFactory for CodeCellFactory {
             )
             // A boot-inactive warm cell costs nothing: the child task spawns its
             // process on the FIRST job, so only the broker exists here.
-            .with_runner_pool(&params, max_concurrency),
+            .with_runner_pool(&params, max_concurrency)
+            .with_grant(&grant, credential_env, max_concurrency),
         );
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
             path,
             outputs_tx,
             cell,
-            max_concurrency,
+            dispatch_bound,
             message_timeout,
             colony_inbox_tx,
             blob_store,

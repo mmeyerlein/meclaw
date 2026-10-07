@@ -1,4 +1,4 @@
-# `file-space@1.4.4`
+# `file-space@1.4.5`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 

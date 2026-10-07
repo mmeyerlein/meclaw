@@ -137,6 +137,16 @@ DIGEST='{ git rev-parse HEAD; while IFS= read -r -d "" f; do
     else printf "absent  %s\n" "$f"; fi
 done; } | sha256sum | cut -c1-16'
 
+# The content of the overlay files as a tree holds them, run HERE and THERE
+# over the overlay list on stdin, by `bash -c`: one NUL-terminated record
+# `<sha256> <path>` per regular file, nothing for a link or an absent file.
+# shellcheck disable=SC2016
+HASHES='while IFS= read -r -d "" f; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+        printf "%s %s\0" "$(sha256sum <"$f" | cut -c1-64)" "$f"
+    fi
+done'
+
 digest_list() {   # the list both sides hash
     { overlay_files; deleted_files; } | sort -z -u
 }
@@ -166,6 +176,16 @@ if [ -d "$cache/playwright" ]; then
 else
     echo none
 fi'
+
+# `MECLAW_LANE_THREADS=<n>` (strand.sh: `threads=<n>` of the lane in the host
+# file) caps the test threads and the build jobs on the host; unset or not a
+# positive number, the host runs at full width. Prints the environment words.
+lane_width() {
+    case "${MECLAW_LANE_THREADS:-}" in
+        ''|*[!0-9]*|0) return 0 ;;
+        *) printf 'NEXTEST_TEST_THREADS=%s CARGO_BUILD_JOBS=%s ' "$MECLAW_LANE_THREADS" "$MECLAW_LANE_THREADS" ;;
+    esac
+}
 
 remote() {   # target, command string
     local target="$1"; shift
@@ -215,6 +235,20 @@ cmd_push() {
             || die "the host $target did not answer"
     fi
 
+    # GH #1071: what the lane last built from, before the checkout rewrites
+    # it -- the content of every overlay path in the host's tree as it stands.
+    # rsync `-a` carries the local mtime; a file edited HERE while the lane
+    # still compiled the previous sync arrived with a time from BEFORE that
+    # build, and cargo kept the stale artefact (measured 07.10.: three edited
+    # test files, a lane verdict on code that was no longer under test).
+    local list pre post
+    list=$(mktemp) || die "no temp file"
+    pre=$(mktemp) || die "no temp file"
+    post=$(mktemp) || die "no temp file"
+    overlay_files >"$list"
+    remote "$target" "cd $(q "$wt") 2>/dev/null && bash -c $(q "$HASHES") || true" <"$list" >"$pre" \
+        || { rm -f "$list" "$pre" "$post"; die "the host $target did not answer"; }
+
     # The worktree: checked out at the commit, cleaned of the last overlay.
     # `git clean` without -x keeps the ignored files a run left behind; the
     # target directory lives outside the worktree anyway.
@@ -229,17 +263,24 @@ cmd_push() {
         fi" >/dev/null || die "the checkout on $target failed"
 
     # The overlay: what is not committed yet.
-    local list
-    list=$(mktemp) || die "no temp file"
-    overlay_files >"$list"
     if [ -s "$list" ]; then
         # `--checksum`: rsync's quick check (size + mtime) skipped a change
         # of equal size when the host's checkout fell into the same second
         # as the local write -- measured on the first build host, the
         # overlay hash below refused it. The overlay is small; compare content.
         rsync -a --checksum --from0 --files-from="$list" -e "ssh ${SSH_OPTS[*]}" ./ "$target:$wt/" \
-            || { rm -f "$list"; die "the overlay to $target failed"; }
+            || { rm -f "$list" "$pre" "$post"; die "the overlay to $target failed"; }
+        # GH #1071: a file whose content the host did not have before this
+        # sync gets the host's time, so it is never older than the host's last
+        # build; a file the host already had keeps the carried time, so an
+        # unchanged tree rebuilds nothing. The overlay hash below compares
+        # content only, the stamp does not touch it.
+        bash -c "$HASHES" <"$list" >"$post"
+        LC_ALL=C comm -z -23 <(LC_ALL=C sort -z "$post") <(LC_ALL=C sort -z "$pre") | LC_ALL=C cut -z -c66- \
+            | remote "$target" "cd $(q "$wt") && xargs -0 -r touch -c --" \
+            || { rm -f "$list" "$pre" "$post"; die "the stamp on $target failed"; }
     fi
+    rm -f "$pre" "$post"
     deleted_files >"$list"
     if [ -s "$list" ]; then
         remote "$target" "cd $(q "$wt") && xargs -0 rm -f --" <"$list" \
@@ -270,7 +311,8 @@ cmd_push() {
 
 cmd_run() {
     local target="$1" strand="$2" mode="$3" base="$4"; shift 4
-    local wt="$ROOT/wt/$strand" runs="$ROOT/runs/$strand" args="" a
+    local wt="$ROOT/wt/$strand" runs="$ROOT/runs/$strand" args="" a width
+    width=$(lane_width)
     for a in "$@"; do args+=" $(q "$a")"; done
     # BLOCKING: the caller waits for the verdict like for a local run. A
     # non-interactive ssh shell does not read the profile that puts rustup's
@@ -278,7 +320,7 @@ cmd_run() {
     # the first build host: `cargo: command not found`).
     # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" -o ServerAliveInterval=60 "$target" \
-        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && rm -rf $(q "$runs") && mkdir -p $(q "$runs") && CARGO_TARGET_DIR=$(q "$ROOT/target") scripts/gate.sh $(q "$mode") --lane --base $(q "$base") --log-dir $(q "$runs")$args"
+        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && rm -rf $(q "$runs") && mkdir -p $(q "$runs") && CARGO_TARGET_DIR=$(q "$ROOT/target") ${width}scripts/gate.sh $(q "$mode") --lane --base $(q "$base") --log-dir $(q "$runs")$args"
 }
 
 # `test`: one nextest filterset in the strand's tree on the host, through the
@@ -315,7 +357,12 @@ GOLDEN_HASH='spec=(":(glob)**/fixtures/**" ":(glob)**/golden/**")
 
 cmd_test() {
     local target="$1" strand="$2"; shift 2
-    local wt="$ROOT/wt/$strand" args="" a envs="" name keep=1 first=1 tail=0 binargs=""
+    local wt="$ROOT/wt/$strand" args="" a envs="" name keep=1 first=1 tail=0 binargs="" width
+    width=$(lane_width)
+    width=${width% }
+    # SC2016: the HOST expands `$(nproc)`, on purpose.
+    # shellcheck disable=SC2016
+    [ -n "$width" ] || width='NEXTEST_TEST_THREADS=$(nproc)'
     for a in "$@"; do
         # the first word is the filterset, never an option
         if [ "$first" = 1 ]; then first=0; args+=" $(q "$a")"; continue; fi
@@ -339,7 +386,7 @@ cmd_test() {
     fi
     # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" -o ServerAliveInterval=60 "$target" \
-        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && CARGO_TARGET_DIR=$(q "$ROOT/target") MECLAW_TIER_LANE=1 NEXTEST_TEST_THREADS=\$(nproc)$envs scripts/test-tier.sh filter$args"
+        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && CARGO_TARGET_DIR=$(q "$ROOT/target") MECLAW_TIER_LANE=1 ${width}$envs scripts/test-tier.sh filter$args"
     rc=$?
     [ -n "$envs" ] || return "$rc"
     if [ "$rc" = 255 ]; then rm -f "$before"; return "$rc"; fi

@@ -326,6 +326,12 @@ fn boundary_admits_a_connect_point(
         return false;
     };
     let want = format!("./{child}");
+    // GH #1061: a connect point deeper than the first storey (`talky` docks
+    // the credential road at `./curator/summarizer`) is judged storey by
+    // storey, as the mutation door does when it stages the subtree (GH #567).
+    if child.contains('/') {
+        return deep_connect_point_admitted(dir, &contract, child);
+    }
     let lanes: Vec<String> = contract
         .accepts
         .iter()
@@ -346,6 +352,79 @@ fn boundary_admits_a_connect_point(
         );
         rej.is_empty()
     })
+}
+
+/// One storey below `dir`: the child's own directory, or, for a `ref` cell,
+/// the shipped template it names (`curator@1.10.1` -> `templates/curator`).
+/// `None` when the cell is not there: an address into nothing opens nothing.
+fn storey_dir(dir: &std::path::Path, seg: &str) -> Option<std::path::PathBuf> {
+    let d = dir.join(seg);
+    let raw = std::fs::read_to_string(d.join("config.json")).ok()?;
+    let v: Value = meclaw_core::serde_json::from_str(&raw).ok()?;
+    if v.pointer("/cell/type").and_then(Value::as_str) != Some("ref") {
+        return Some(d);
+    }
+    let name = v.pointer("/cell/template")?.as_str()?.split('@').next()?;
+    let t = core_root().join("templates").join(name);
+    t.join("config.json").is_file().then_some(t)
+}
+
+/// GH #1061 review — a deep connect point, judged by the substrate over the
+/// whole staircase rather than on the outer template's word.
+///
+/// Every storey of `child` must resolve to a cell that exists; the chain is
+/// planted as a throwaway colony under `/h` (each storey's real `config.json`
+/// at its logical path), and `collect_hive_port_boundary` runs with EVERY
+/// crossed hive's seal and contract — so a sealed inner storey that does not
+/// declare the lane at its own next step refuses the edge, exactly as the
+/// GH #559 rule table refuses it at the mutation door.
+fn deep_connect_point_admitted(
+    dir: &std::path::Path,
+    top: &meclaw_colony::mutation::hive_contract::HiveContract,
+    child: &str,
+) -> bool {
+    let segs: Vec<&str> = child.split('/').collect();
+    let mut dirs = vec![dir.to_path_buf()];
+    for seg in &segs {
+        match storey_dir(dirs.last().unwrap(), seg) {
+            Some(d) => dirs.push(d),
+            None => return false,
+        }
+    }
+    let td = tempfile::TempDir::new().unwrap();
+    let root = td.path();
+    std::fs::create_dir_all(root.join("main")).unwrap();
+    std::fs::write(root.join("main/config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
+    let mut logical = HIVE.to_string();
+    let mut hives = Vec::new();
+    let mut contracts = Vec::new();
+    for (i, d) in dirs.iter().enumerate() {
+        if i > 0 {
+            logical = format!("{logical}/{}", segs[i - 1]);
+        }
+        let at = root.join("main").join(logical.trim_start_matches('/'));
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::copy(d.join("config.json"), at.join("config.json")).unwrap();
+        if i + 1 < dirs.len() {
+            hives.push(meclaw_core::Path::new(&logical));
+            if let Some(c) = contract_from_cell_dir(&at, &logical) {
+                contracts.push(c);
+            }
+        }
+    }
+    let seals = collect_sealed_hives(root, hives.iter());
+    let want = format!("./{child}");
+    top.accepts
+        .iter()
+        .chain(top.emits.iter())
+        .filter(|l| l.at.iter().any(|a| a == &want))
+        .any(|l| {
+            let diff = json!({"add_edges": [
+                {"from": CALLER, "to": format!("{HIVE}/{child}"), "lane": l.route}]});
+            let mut rej = MutationRejection::new();
+            collect_hive_port_boundary(&diff, "/", &seals, &contracts, &mut rej);
+            rej.is_empty()
+        })
 }
 
 // ─────────────────────────────────────── what the shipped docs write down
@@ -590,8 +669,12 @@ fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
             // Every adjacent pair: a hive name followed by what the document
             // asks to reach inside it. Deeper endpoints are pairs too, which is
             // why `./talky-<key>/session-keeper/stamp` is caught on its second.
-            for pair in segs.windows(2) {
+            for (i, pair) in segs.windows(2).enumerate() {
                 let (name, child) = (pair[0], pair[1]);
+                // GH #1061: a connect point may name a cell deeper than the
+                // first storey (`talky` docks `credential_request` at
+                // `./curator/summarizer`), so it is asked with the whole rest.
+                let rest = segs[i + 1..].join("/");
                 let Some((t, naming)) = sealed.resolve(name, file) else {
                     continue;
                 };
@@ -600,6 +683,7 @@ fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
                     .or_insert_with(|| seal_the_substrate_reads(&t.config));
                 if boundary_admits(seal, child)
                     || boundary_admits_a_connect_point(&t.config, seal, child)
+                    || boundary_admits_a_connect_point(&t.config, seal, &rest)
                 {
                     continue;
                 }
@@ -963,5 +1047,54 @@ fn the_instance_name_convention_only_reads_inside_its_own_template() {
     assert!(
         found[0].contains("session-keeper/stamp"),
         "the one finding is the real one — the crossing into session-keeper: {found:#?}"
+    );
+}
+
+/// GH #1061 review — a connect point deeper than the first storey is judged
+/// storey by storey, never on the outer template's word alone.
+///
+/// A throwaway template `top` (sealed) declares `in_x` at `./mid/leaf`. The
+/// address only opens when every sealed storey it crosses declares the lane at
+/// its own next step AND the cell at the end exists. Each broken variant must
+/// stay shut; the whole one must open. The weakened gate admitted all three.
+#[test]
+fn a_deep_connect_point_is_judged_storey_by_storey() {
+    fn hive(path: &std::path::Path, at: Option<&str>) {
+        std::fs::create_dir_all(path).unwrap();
+        let lanes = match at {
+            Some(a) => json!([{"route": "in_x", "at": [a], "because": "test"}]),
+            None => json!([{"route": "in_x", "because": "test"}]),
+        };
+        let cfg = json!({"cell": {"type": "hive"},
+            "params": {"ports": [], "contract": {"accepts": lanes, "emits": []}}});
+        std::fs::write(path.join("config.json"), cfg.to_string()).unwrap();
+    }
+    fn leaf(path: &std::path::Path) {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("config.json"), r#"{"cell":{"type":"store"}}"#).unwrap();
+    }
+    let admits = |mid_at: Option<&str>, with_leaf: bool| {
+        let td = tempfile::TempDir::new().unwrap();
+        let top = td.path().join("top");
+        hive(&top, Some("./mid/leaf"));
+        hive(&top.join("mid"), mid_at);
+        if with_leaf {
+            leaf(&top.join("mid/leaf"));
+        }
+        let config = top.join("config.json");
+        let seal = seal_the_substrate_reads(&config);
+        boundary_admits_a_connect_point(&config, &seal, "mid/leaf")
+    };
+    assert!(
+        !admits(None, true),
+        "the inner storey never opened for the lane, yet the outer word let it through"
+    );
+    assert!(
+        !admits(Some("./leaf"), false),
+        "the address names a cell that does not exist, yet it was admitted"
+    );
+    assert!(
+        admits(Some("./leaf"), true),
+        "every storey declares the lane and the cell exists — the substrate must admit it"
     );
 }

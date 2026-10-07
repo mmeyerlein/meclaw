@@ -141,6 +141,27 @@ impl SlackClient {
         }
     }
 
+    /// GH #1059: the same client with the app token the vault delivered. A
+    /// connector of `app_token_grant_id` is born without one and gets it here,
+    /// once its sealed box opened; everything else is kept.
+    #[must_use]
+    pub fn with_app_token(&self, app_token: &str) -> Self {
+        Self {
+            app_token: app_token.to_string(),
+            ..self.clone()
+        }
+    }
+
+    /// GH #1059: the same client with the bot token the vault delivered (see
+    /// [`Self::with_app_token`]).
+    #[must_use]
+    pub fn with_bot_token(&self, bot_token: &str) -> Self {
+        Self {
+            bot_token: bot_token.to_string(),
+            ..self.clone()
+        }
+    }
+
     /// Opens a Socket Mode connection and returns the WebSocket URL.
     ///
     /// The app-level token goes in the header — passing it as a POST parameter
@@ -156,13 +177,16 @@ impl SlackClient {
                 .body("{}")
                 .send()
                 .await
-                .map_err(|e| SlackError::Transient(format!("apps.connections.open: {e}")))?;
+                .map_err(|e| {
+                    // GH #1059: `without_url` — an error text never carries
+                    // more of the request than the operation's name.
+                    SlackError::Transient(format!("apps.connections.open: {}", e.without_url()))
+                })?;
 
             let status = resp.status();
-            let body: JsonValue = resp
-                .json()
-                .await
-                .map_err(|e| SlackError::Transient(format!("apps.connections.open: body: {e}")))?;
+            let body: JsonValue = resp.json().await.map_err(|e| {
+                SlackError::Transient(format!("apps.connections.open: body: {}", e.without_url()))
+            })?;
             if status.as_u16() == 429 {
                 return Err(SlackError::Transient(
                     "apps.connections.open: ratelimited".into(),
@@ -212,7 +236,9 @@ impl SlackClient {
                 .json(&payload)
                 .send()
                 .await
-                .map_err(|e| SlackError::Transient(format!("chat.postMessage: {e}")))?;
+                .map_err(|e| {
+                    SlackError::Transient(format!("chat.postMessage: {}", e.without_url()))
+                })?;
 
             let status = resp.status();
             if status.as_u16() == 429 {
@@ -220,10 +246,9 @@ impl SlackClient {
                     "chat.postMessage: ratelimited".into(),
                 ));
             }
-            let body: JsonValue = resp
-                .json()
-                .await
-                .map_err(|e| SlackError::Transient(format!("chat.postMessage: body: {e}")))?;
+            let body: JsonValue = resp.json().await.map_err(|e| {
+                SlackError::Transient(format!("chat.postMessage: body: {}", e.without_url()))
+            })?;
             if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 return Ok(());
             }

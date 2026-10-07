@@ -1,4 +1,4 @@
-# `freeswitch@2.3.1`
+# `freeswitch@2.4.1`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -42,6 +42,22 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 | `signal` | `code` | the book: every lane becomes a store bundle, and the store's answer becomes a turn, a command at the switch, or a tool result |
 | `gateway` | `web_fetch` | the one command channel to `mod_xml_rpc` |
 | `calls` | `store` | the calls this channel has going |
+| `access` | `ref` | the `access` template — the broker the media half's two provider keys come from (#801) |
+
+### The provider keys
+
+The media half refs `voice`, so it inherits its two grant handles:
+`params.stt.credential_grant_id` is `grant:deepgram@template-voice/stt` and
+`params.tts.credential_grant_id` is `grant:cartesia@template-voice/tts`. A
+`voice` cell with a grant waits for a sealed box that only a broker sends, and
+refuses a session without its key. So this hive carries its own broker:
+`./access` ships both grants in its seed (requester `agent:freeswitch/voice`,
+credentials `cred:deepgram` and `cred:cartesia`), and the graph draws the
+`credential_request` edge from `./voice` to `./access` and one `in_sealed`
+edge back per handle. Deposit the two keys once into this broker's vault
+(`meclaw --root <root> --vault <instance>/access/vault --vault-add <credential>`,
+once per credential) and the next start of the hive asks for them.
+No key travels through `.env`.
 
 ## What travels
 
@@ -235,7 +251,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.3.1",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.4.1",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -500,9 +516,22 @@ POST /messages
 | `hop.route` | when the dialplan sends it | what the channel does |
 |---|---|---|
 | `call_incoming` | an inbound leg arrives, and the dialplan has already answered it | one turn *“The caller is on the line. Greet them.”* — the caller and the member ride on `hop.number`/`hop.user_id` and are named nowhere in the text — with `call_state: live` — **if the line is free, or the policy takes it** (§ *What a second call gets*); a queued or refused call raises no turn and leaves a receipt instead. `hop.user_id` is the member the switch put the caller through as and is trusted where it is there. For a call with neither that nor a `callers` entry: one `unknown_caller` error **and** a `uuid_kill` on that leg, before the policy is ever asked |
-| `call_ringing` | an outbound leg starts ringing | moves the row, raises nothing |
+| `call_ringing` | an outbound leg starts ringing — or an inbound leg, BEFORE the dialplan rings and answers it (GH #1055) | moves the row, raises nothing; with `voice` param `duplex.prewarm_ttl_ms` set, the media half also opens the call's live session now, so the greeting is ready when the stream connects |
 | `call_answered` | either leg is answered — the same place the audio stream is started | for a call this channel PLACED: one turn *“… answered. Purpose of this call: …”*. For an INBOUND one: moves the row, raises nothing — `call_incoming` was the turn |
-| `call_ended` | the leg hangs up | moves the row, `state` and `cause`, and raises nothing |
+| `call_ended` | the leg hangs up | moves the row, `state` and `cause`, and raises nothing; an early live session nobody connected to is closed |
+
+**Opening the live session while the line rings (GH #1055).** Measured on a lab line
+(five calls, quiet window): pickup to the first syllable was 1.84 s p50 / 2.14 s p95,
+because the media half opened its live session only when the stream connected after
+the pickup — the provider handshake (median 505 ms) and the greeting's time to first
+audio (median 938 ms) were spent with the caller already on the line. An inbound
+dialplan that posts `call_ringing` with the leg's `call_uuid` before `ring_ready`/
+`pre_answer` lets the media half open that session during the ring; the stream that
+connects with `?session=<uuid>` adopts it, greeting included. The hive hands
+`call_ringing` and `call_ended` to `voice` as well as to `signal`; nothing changes
+unless `duplex.prewarm_ttl_ms` is set, and a ring nobody answers costs at most that
+long of provider time. Set the hang-up hook before the ring, so a caller who gives up
+while it rings closes the early session at once rather than at the deadline.
 
 `call_uuid` is the **same** UUID that hangs on the stream URL as `?session=`. For an
 outbound call the channel mints it and hands it to the switch as
@@ -1123,7 +1152,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.3.1`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.4.1`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1136,7 +1165,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.3.1"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.4.1"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

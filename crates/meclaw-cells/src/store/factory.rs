@@ -41,6 +41,13 @@ impl CellFactory for StoreCellFactory {
         true
     }
 
+    /// GH #1077: the connection extensions every `store` connection carries —
+    /// the same hook [`wrap_store_db`] hands its own `DbConn` — for the doors
+    /// that write the store's `cell.db` through a connection of their own.
+    fn connection_setup(&self) -> Option<meclaw_colony::db_conn::ReopenSetup> {
+        Some(crate::store::query::install_connection_extensions)
+    }
+
     /// Pre-spawn validation. Same parse path as `spawn_cell`.
     fn validate_params(&self, raw: &JsonValue) -> Result<(), String> {
         StoreParams::parse(raw).map(|_| ())

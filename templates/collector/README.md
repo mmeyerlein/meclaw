@@ -471,7 +471,7 @@ instead. The memory hive's offer renders its head like this:
 ```
 ## memory (required)
 ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
-{"memory":{"facts":[{"subject":"","predicate":"","claim":"","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>"}],"topic":{"movement":"start|continue|end","name":""}}}
+{"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the person's words this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>"}],"topic":{"movement":"start|continue|end","name":""}}}
 ```
 
 **The ceiling is here, not in the offers.** `sidecar_max_chars` (6000) bounds the composed

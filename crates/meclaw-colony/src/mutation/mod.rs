@@ -23,6 +23,7 @@ pub mod stage_replace;
 pub mod substitute;
 pub mod subtree;
 pub(crate) mod swap;
+pub mod twin;
 pub mod validate;
 
 pub use manifest::{ManifestBody, ManifestError, ManifestOutcome, MutationDoorOutcome};

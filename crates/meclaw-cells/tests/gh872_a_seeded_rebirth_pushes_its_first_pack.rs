@@ -416,6 +416,130 @@ fn in_family(path: &str, family: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
 }
 
+// ─────────────────────────────────────────── the push lane, read off the log
+
+/// One delivery of the colony's own `message_log`, reduced to what the push
+/// lane's order is judged by.
+struct Logged {
+    rowid: i64,
+    trace: String,
+    from: String,
+    to: String,
+    route: String,
+    phase: String,
+}
+
+/// Every delivery colony B logged, in log order. The log is written by one
+/// writer in routing order, and `./store` answers one op at a time, so two
+/// store answers stand in the log in the order the store EXECUTED them.
+fn logged(td: &tempfile::TempDir) -> Vec<Logged> {
+    rows(
+        &td.path().join("colony.db"),
+        "SELECT CAST(rowid AS TEXT), trace_id, from_path, to_path, headers \
+         FROM message_log ORDER BY rowid",
+    )
+    .into_iter()
+    .map(|r| {
+        let h: Value = from_str(&r[4]).unwrap_or(Value::Null);
+        Logged {
+            rowid: r[0].parse().unwrap_or(0),
+            trace: r[1].clone(),
+            from: r[2].clone(),
+            to: r[3].clone(),
+            route: h["hop"]["route"].as_str().unwrap_or_default().to_string(),
+            phase: h["context"]["aff_phase"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        }
+    })
+    .collect()
+}
+
+/// `./store`'s answer to one of `./push`'s ops, by the phase push gave it.
+fn store_answer(l: &Logged, phase: &str) -> bool {
+    l.from.ends_with("/affinity/store") && l.to.ends_with("/affinity/push") && l.phase == phase
+}
+
+/// The receipt BOOKED: the log row of the store's answer to push's `acked`
+/// update (`pack_hash`, `sent_at` written) -- the first one, since a later
+/// receipt for the same hash moves nothing.
+fn booking(log: &[Logged]) -> Option<i64> {
+    log.iter()
+        .find(|l| store_answer(l, "acked"))
+        .map(|l| l.rowid)
+}
+
+/// The ticks that read the subscriber row AFTER the receipt was booked, as
+/// `(trace, entities answered)`, in the order of that read. Such a tick
+/// compares against the booked hash, so over an unchanged record it must stay
+/// silent.
+fn ticks_after(log: &[Logged], booked: i64) -> Vec<(String, bool)> {
+    log.iter()
+        .filter(|l| l.rowid > booked && store_answer(l, "subs"))
+        .map(|l| {
+            let answered = log
+                .iter()
+                .any(|e| e.trace == l.trace && store_answer(e, "entities"));
+            (l.trace.clone(), answered)
+        })
+        .collect()
+}
+
+/// The last log rows, `(from -> to, route, phase)`, for a failure message.
+fn tail(log: &[Logged]) -> Vec<String> {
+    log.iter()
+        .rev()
+        .take(16)
+        .map(|l| format!("{} -> {} route={} phase={}", l.from, l.to, l.route, l.phase))
+        .collect()
+}
+
+/// Until `done` holds over colony B's log. The wait is on EVENTS, not on the
+/// clock (GH #1069, the GH #987 pattern): every change of `progress` opens a
+/// fresh window, and only a lane that moves nothing for `RECV_TIMEOUT` is red.
+/// `progress` counts finite things (the rows of one road), never the clock's
+/// ticks -- a lane that keeps ticking without ever arriving must still end.
+/// And the whole wait is bounded by `4 x RECV_TIMEOUT` (review V0b I-1): the
+/// push re-sends an unconfirmed pack (`next_try` in templates/affinity/push),
+/// and every receipt of such a resend is progress, so without a ceiling a lane
+/// that never books would reset the window until nextest killed the test with
+/// no diagnosis.
+async fn until_log(
+    td: &tempfile::TempDir,
+    what: &str,
+    done: impl Fn(&[Logged]) -> bool,
+    progress: impl Fn(&[Logged]) -> usize,
+) -> Vec<Logged> {
+    let start = tokio::time::Instant::now();
+    let ceiling = 4 * RECV_TIMEOUT;
+    let mut log = logged(td);
+    let mut seen = progress(log.as_slice());
+    let mut window = start + RECV_TIMEOUT;
+    while !done(log.as_slice()) {
+        let now = progress(log.as_slice());
+        if now != seen {
+            seen = now;
+            window = tokio::time::Instant::now() + RECV_TIMEOUT;
+        }
+        assert!(
+            tokio::time::Instant::now() < window,
+            "{what}: not reached, and the lane made no progress for {RECV_TIMEOUT:?}; \
+             last log rows: {:#?}",
+            tail(&log)
+        );
+        assert!(
+            start.elapsed() < ceiling,
+            "{what}: not reached within {ceiling:?}, though the lane kept moving; \
+             last log rows: {:#?}",
+            tail(&log)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        log = logged(td);
+    }
+    log
+}
+
 /// Run the example's own tool -- what a reader runs, so what is under test.
 fn build_manifest(export_dir: &std::path::Path, scratch: &std::path::Path) -> Value {
     let out = std::process::Command::new("python3")
@@ -618,7 +742,9 @@ async fn a_member_born_from_an_export_seed_delivers_its_first_identity_pack() {
     );
     let mut b = boot(&b_td).await;
 
-    // Assert 1 -- at the receiver's rim: exactly one pack, carrying the record.
+    // Assert 1 -- at the receiver's rim: one pack, carrying the record, and no
+    // further one once its receipt is booked (the second half is below).
+    let mut first: Option<Message> = None;
     match next_route(&mut b.tap, "in_pack", RECV_TIMEOUT).await {
         None => broken.push(
             "assert 1: no `in_pack` reached the brain's rim within 30s -- the reborn \
@@ -639,13 +765,6 @@ async fn a_member_born_from_an_export_seed_delivers_its_first_identity_pack() {
                 Some(reply.as_str()),
                 "and the exported reply instructions: {body}"
             );
-            // Two more ticks at least: an unchanged record is not re-sent.
-            if let Some(second) = next_route(&mut b.tap, "in_pack", Duration::from_secs(5)).await {
-                broken.push(format!(
-                    "assert 1: a second `in_pack` over an unchanged record: {:?}",
-                    second.headers.hop
-                ));
-            }
             let ack = next_route(&mut b.sink, "pack_ack", RECV_TIMEOUT)
                 .await
                 .expect("the rim never acknowledged the pack");
@@ -670,25 +789,133 @@ async fn a_member_born_from_an_export_seed_delivers_its_first_identity_pack() {
                 );
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
+            first = Some(pack);
         }
     }
 
-    // Assert 2 -- in the store's own cell.db: the reborn member delivered.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut now_sent = String::new();
-    while tokio::time::Instant::now() < deadline {
-        now_sent = subscription_state(&b_td).map(|s| s.1).unwrap_or_default();
-        if !now_sent.is_empty() && now_sent != delivered.1 {
-            break;
+    // GH #1069: the receipt BOOKED, waited for as an event. Until then a
+    // second pack is the lane working as designed, not a defect: `./push`
+    // books a delivery only on the clean receipt (GH #877), so a tick that
+    // reads the row before the receipt is booked finds the old hash and sends
+    // the same pack again (templates/affinity/push, `script_inline`: the
+    // `fresh == pack_hash` skip and `next_try`, whose first resend goes on the
+    // very next tick). Under host load the receipt's road -- brief, rim,
+    // curator, `pack_ack`, push, store -- outlasted the two-second tick, and
+    // the old fixed five-second window called that resend "a second pack over
+    // an unchanged record" (gate 2026-10-07, 1320 s; alone 0/5 red).
+    let booked = match first {
+        Some(_) => {
+            let log = until_log(
+                &b_td,
+                "the receipt of the first pack is booked in the reborn store",
+                |log| booking(log).is_some(),
+                |log| {
+                    log.iter()
+                        .filter(|l| {
+                            l.route == "pack_ack" || l.route == "in_pack_ack" || l.phase == "acked"
+                        })
+                        .count()
+                },
+            )
+            .await;
+            booking(&log)
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+        None => None,
+    };
+
+    // Assert 2 -- in the store's own cell.db: the reborn member delivered. Read
+    // once the booking is logged: the store answers after its write committed.
+    let now_sent = subscription_state(&b_td).map(|s| s.1).unwrap_or_default();
     if now_sent.is_empty() || now_sent == delivered.1 {
         broken.push(format!(
             "assert 2: subscribers.sent_at in the reborn store is {now_sent:?}, the \
              exported value was {:?} -- nothing was delivered",
             delivered.1
         ));
+    }
+
+    // Assert 1, second half -- an unchanged record is not re-sent once its
+    // receipt is booked. GH #1069: judged by the ORDER the lane logged, not by
+    // a window on the wall clock. A tick whose read of the subscriber row the
+    // store answered after the booking compares against the booked hash and
+    // must send nothing; every pack must carry the one hash of the one record.
+    // Observed until three ticks have read the row after the booking and the
+    // first two have read the record as well -- each of those two had a whole
+    // further tick to hand a pack to `./brief`, and none may have.
+    if let (Some(first), Some(booked)) = (&first, booked) {
+        let log = until_log(
+            &b_td,
+            "three ticks read the subscriber row after the receipt was booked",
+            |log| {
+                let after = ticks_after(log, booked);
+                after.len() >= 3 && after.iter().take(2).all(|(_, answered)| *answered)
+            },
+            // Progress is bounded by what `done` asks for (review V0b I-1):
+            // ticks past the third, or answers past the first two, are not
+            // progress towards it and must not reopen the window.
+            |log| {
+                let after = ticks_after(log, booked);
+                after.len().min(3)
+                    + after
+                        .iter()
+                        .take(2)
+                        .filter(|(_, answered)| *answered)
+                        .count()
+            },
+        )
+        .await;
+        let after: Vec<String> = ticks_after(&log, booked)
+            .into_iter()
+            .map(|(trace, _)| trace)
+            .collect();
+        let sent_after: Vec<&String> = log
+            .iter()
+            .filter(|l| l.from.ends_with("/affinity/push") && l.route == "brief")
+            .map(|l| &l.trace)
+            .filter(|trace| after.contains(trace))
+            .collect();
+        let mut packs = vec![first.clone()];
+        while let Ok(m) = b.tap.try_recv() {
+            if hop_of(&m, "route") == "in_pack" {
+                packs.push(m);
+            }
+        }
+        if !sent_after.is_empty() {
+            // The red run says why (the diagnosis of the old window lock): the
+            // hash every pack carried and the row as the store holds it now.
+            broken.push(format!(
+                "assert 1: a tick that read the booked hash sent the pack again \
+                 (traces {sent_after:?}) -- an unchanged record is re-sent; hashes of \
+                 the packs at the rim {:?}; the store's row now (pack_hash, sent_at, \
+                 retry): {:?}",
+                packs
+                    .iter()
+                    .map(|p| hop_of(p, "pack_hash"))
+                    .collect::<Vec<_>>(),
+                rows(
+                    &b_td.path().join("main/affinity/store/cell.db"),
+                    &format!(
+                        "SELECT pack_hash, sent_at, retry FROM subscribers WHERE id = '{SUB_ID}'"
+                    ),
+                ),
+            ));
+        }
+        for p in &packs[1..] {
+            if hop_of(p, "pack_hash") != hop_of(first, "pack_hash") {
+                broken.push(format!(
+                    "assert 1: a second `in_pack` with another hash over an unchanged \
+                     record: {:?}",
+                    p.headers.hop
+                ));
+            }
+            if after.contains(&p.trace_id.to_string()) {
+                broken.push(format!(
+                    "assert 1: a second `in_pack` from a tick that read the booked \
+                     hash: {:?}",
+                    p.headers.hop
+                ));
+            }
+        }
     }
 
     b.h.shutdown().await;

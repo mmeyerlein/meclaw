@@ -4,7 +4,8 @@
   },
   "params": {
     "endpoint": "${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}",
-    "api_key": "${SEARCH_API_KEY:-}",
+    "api_key": "",
+    "credential_grant_id": "",
     "external_timeout_ms": 15000,
     "max_concurrency": 8
   },
@@ -54,6 +55,17 @@
         "error_code": {
           "type": "string",
           "required": false
+        },
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
         }
       }
     },
@@ -62,6 +74,10 @@
         "messages": {
           "type": "array",
           "required": true
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
         }
       }
     },
