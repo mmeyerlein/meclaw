@@ -46,6 +46,10 @@ pub const HOP_KEYS: &[(&str, &str)] = &[
     ("model", "string"),
     ("cache_expires_at", "string"),
     ("context_window", "number"),
+    ("input_soft", "number"),
+    ("input_hard", "number"),
+    ("cost_in", "number"),
+    ("cost_cached_in", "number"),
     ("dropped", "array"),
     ("unverified", "array"),
 ];
@@ -120,7 +124,7 @@ impl HopUsage {
 /// fields the request left out because the model does not take them, GH #999
 /// the ones it sent unchecked -- and those two (the request half) travel on
 /// an error answer too ([`HopCache::request_hop`]).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct HopCache {
     /// Seconds the provider keeps the written prefix warm. `Some` only with
     /// `cache_mode` not `off` and `cache_ttl_s > 0`: `off` marks nothing, and
@@ -128,6 +132,16 @@ pub(crate) struct HopCache {
     pub(crate) ttl_s: Option<u64>,
     /// The model's context window in tokens, `Some` only above 0.
     pub(crate) context_window: Option<u64>,
+    /// R-HK-15/16: the input bounds of the package, `Some` only above 0 --
+    /// what the curator (KF2, #1038) reads as `hop.input_soft` / `hop.input_hard`.
+    pub(crate) input_soft: Option<u64>,
+    pub(crate) input_hard: Option<u64>,
+    /// R-HK-16: the prompt prices of the package in cents per million tokens,
+    /// `Some` only above 0 (`hop.cost_in`, `hop.cost_cached_in`). The cached
+    /// tokens themselves travel as `tokens_cached` when the provider reports
+    /// them.
+    pub(crate) cost_in: Option<f64>,
+    pub(crate) cost_cached_in: Option<f64>,
     /// GH #993: the sampling fields the request did not carry because the
     /// model's `supported_params` does not name them
     /// (`translate::dropped_params`). Empty = nothing dropped and no key, so
@@ -146,6 +160,11 @@ impl HopCache {
             ttl_s: (params.cache_mode != CacheMode::Off && params.cache_ttl_s > 0)
                 .then_some(params.cache_ttl_s),
             context_window: (params.context_window > 0).then_some(params.context_window),
+            input_soft: (params.input_soft > 0).then_some(params.input_soft),
+            input_hard: (params.input_hard > 0).then_some(params.input_hard),
+            cost_in: (params.cost_in > 0.0 && params.cost_in.is_finite()).then_some(params.cost_in),
+            cost_cached_in: (params.cost_cached_in > 0.0 && params.cost_cached_in.is_finite())
+                .then_some(params.cost_cached_in),
             dropped: crate::llm::translate::dropped_params(params),
             unverified: crate::llm::translate::unverified_params(params),
         }
@@ -198,6 +217,18 @@ impl HopCache {
         }
         if let Some(window) = self.context_window {
             header.insert("context_window".into(), Value::from(window));
+        }
+        if let Some(n) = self.input_soft {
+            header.insert("input_soft".into(), Value::from(n));
+        }
+        if let Some(n) = self.input_hard {
+            header.insert("input_hard".into(), Value::from(n));
+        }
+        if let Some(c) = self.cost_in {
+            header.insert("cost_in".into(), Value::from(c));
+        }
+        if let Some(c) = self.cost_cached_in {
+            header.insert("cost_cached_in".into(), Value::from(c));
         }
         self.write_request_keys(header);
     }
@@ -664,8 +695,7 @@ mod tests {
         HopCache {
             ttl_s,
             context_window,
-            dropped: Vec::new(),
-            unverified: Vec::new(),
+            ..HopCache::default()
         }
     }
 
@@ -778,6 +808,10 @@ mod tests {
         let all = HopCache {
             dropped: vec!["temperature".into()],
             unverified: vec!["top_p".into()],
+            input_soft: Some(1),
+            input_hard: Some(2),
+            cost_in: Some(1.0),
+            cost_cached_in: Some(0.1),
             ..cache(Some(60), Some(1))
         };
         let success = header_of(full, all, 1, 1).await;

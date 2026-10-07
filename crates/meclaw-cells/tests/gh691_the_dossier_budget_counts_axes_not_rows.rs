@@ -49,7 +49,9 @@ fn run_probe(probe: &str) -> String {
     );
     let out = meclaw_testing::run_shipped_script(
         &program,
-        r#"{"envelope": {}, "body": {}, "params": {}}"#,
+        // GH #1040: the reserved dossier budget is an override since then
+        // (shipped 0, ranked by the question); these cases pin the override.
+        r#"{"envelope": {}, "body": {}, "params": {"tier1_self_budget": 6}}"#,
     );
     assert!(
         out.status.success(),

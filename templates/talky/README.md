@@ -1,4 +1,4 @@
-# `talky@6.6.3`
+# `talky@6.6.7`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.6.3` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.6.7` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -340,6 +340,11 @@ edge and **no** change to the exit at all -- which is the whole difference betwe
 edge and the negation chain it replaces. It is also what made `memory_recall` and
 `thread_recall` cheap to give back: one edge deleted each, and the name leaves on the default
 like every other tool.
+Since `6.6.7` ([#1044](https://github.com/mmeyerlein/meclaw/issues/1044)) the exit stamps `hop.recall_input_soft` on a `memory_recall` from
+the context that `./curator -> ./brain` lifts off the model call (the curator's usable window,
+empty without a package; empty on every other tool), so a recall the model asks for itself is
+sized like the pushed one -- still on the default, no edge more. Every exit of the composite
+clears the key.
 
 **Two properties keep that honest, and both are measured against this tree rather than
 assumed.** The guard is not decoration: `./dispatcher` emits four sorts (`calls`, `result`,
@@ -686,7 +691,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.6.3",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.6.7",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

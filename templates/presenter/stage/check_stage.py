@@ -1246,8 +1246,10 @@ def t_results(s, t):
     _, blocks = shown("digest", "last", "daily-digest",
                       {"ok": True, "op": "last", "digests": [theirs, mine]},
                       ["member:p", "member:q"], "g3")
-    t.check("a screen wider than the member's round sees nothing (the set is the member's)",
-            blocks, [])
+    # R-HP-18: a screen wider than the member's round (a third party shares it) shows the
+    # member's window with all of the member's data -- the newest digest the member holds
+    t.check("a screen wider than the member's round shows the member's newest digest",
+            [b["props"].get("body") for b in blocks], ["theirs"])
     _, blocks = shown("digest", "last", "daily-digest",
                       {"ok": True, "op": "last", "digests": [theirs, mine]}, ["member:p"], "g4")
     t.check("a digest of a wider round that holds the screen shows",
@@ -1494,12 +1496,13 @@ def t_foreign_round(s, t):
 
 
 def t_star_only(s, t):
-    """R-HP-9 (c), `window_requires_star_data`: a member's turn on a screen that a third
-    party shares (the turn's round does not cover the screen's, a member of the screen's
-    round is in it) opens a window only when `*` data are left after the audience gate --
-    no window with the working hint, no standard block, nothing without data. Switched
-    off, the reading before (b): the window opens on the verdict, `*` data fill it, the
-    standard stands in."""
+    """R-HP-18 (replaces R-HP-9 c): a window shows all of the member's data, also on a
+    screen that a third party shares (the turn's round does not cover the screen's, a
+    member of the screen's round is in it). The data are gated by the members of the
+    screen's round that are in the turn, not by the whole screen round: no `*` filter, no
+    standard block for a private lead, the window on the verdict. Another member's rows
+    stay out (identity, not company). `window_requires_star_data` on is the R-HP-9 (c)
+    way back: a window only on `*` data left after the screen's gate."""
     shared = ["member:a", "member:b"]
     mine = json.dumps(["agent:x", "member:a"])
     text = {"messages": [{"type": "text", "text": "her sample"}]}
@@ -1509,14 +1512,36 @@ def t_star_only(s, t):
         c.run({"route": "show_topics", "show_app": "/app"}, {"topics": [sample()]})
         return c
 
+    def star():
+        return cell(window_requires_star_data=True)
+
     def turn(c, tid, lead="rows"):
         out = c.run({"route": "turn", "turn_id": tid}, text, ctx={"audience_set": mine})
         t.check("%s: the decider is asked" % tid, "decide" in routes(out), True)
         return c.run({"route": "in_decision", "show_id": tid},
                      verdict("sample", 0.9, lead), ctx=DEC_CTX)
 
-    # (c) a private topic: the member's data never cover the third party -> no window
-    c = cell()
+    # R-HP-18, shipped and switched off: the window shows all of the member's data
+    for off in (None, False, "false"):
+        c = cell() if off is None else cell(window_requires_star_data=off)
+        out = turn(c, "a1")
+        t.check("all %r: the window opens on the verdict" % (off,), routes(out)[:2],
+                ["view", "in_show"])
+        asks = [e for e in out if e["header"]["route"] == "in_show" and e.get("op") == "data"]
+        t.check("all %r: the app picks among the member's rows" % (off,),
+                [e.get("screen_audience") for e in asks], [["member:a"]])
+        out = data(c, "a1", {"rows": {"audience_set": ["member:a"], "rows": [
+            {"name": "hers"}, {"name": "his", "audience_set": ["member:b"]},
+            {"name": "open", "audience_set": ["*"]}]}})
+        t.check("all %r: the member's rows are drawn" % (off,), routes(out), ["view"])
+        lst = out[0]["content"]["children"][1]["children"][0]
+        t.check("all %r: hers and `*`, never another member's" % (off,),
+                [r["props"].get("k") for r in lst["children"]], ["hers", "open"])
+        t.check("all %r: journal none" % (off,), [r["fallback"] for r in journal_of(out)],
+                ["none"])
+    # switched on (R-HP-9 c), a private topic: the member's data never cover the third
+    # party -> no window
+    c = star()
     out = turn(c, "p1")
     t.check("private: the app is asked, no window", routes(out), ["in_show"])
     out = data(c, "p1", {"rows": {"audience_set": ["member:a"], "rows": [{"name": "x"}]}})
@@ -1525,8 +1550,8 @@ def t_star_only(s, t):
     out = c.run({"route": "in_tick"})
     t.check("private: nothing to withdraw", routes(out), [])
     t.check("private: journal no_data", [r["fallback"] for r in journal_of(out)], ["no_data"])
-    # (c) a public topic: the window opens with the `*` data only
-    c = cell()
+    # on (c): a public topic: the window opens with the `*` data only
+    c = star()
     turn(c, "q1")
     out = data(c, "q1", {"rows": {"audience_set": ["*"], "rows": [
         {"name": "open", "audience_set": ["*"]}, {"name": "hers", "audience_set": ["member:a"]}]}})
@@ -1535,8 +1560,8 @@ def t_star_only(s, t):
     lst = out[0]["content"]["children"][1]["children"][0]
     t.check("public: only the `*` row", [r["props"].get("k") for r in lst["children"]], ["open"])
     t.check("public: journal none", [r["fallback"] for r in journal_of(out)], ["none"])
-    # (c) the lead cannot stand on its `*` set: no standard block instead
-    c = cell()
+    # on (c): the lead cannot stand on its `*` set: no standard block instead
+    c = star()
     turn(c, "v1")
     out = data(c, "v1", {"rows": {"audience_set": ["*"], "value": {"n": 1}},
                          "brief": {"audience_set": ["*"], "value": {"title": "Brief"}}})
@@ -1544,11 +1569,11 @@ def t_star_only(s, t):
     c.tick(4000)
     out = c.run({"route": "in_tick"})
     t.check("standard: nothing to withdraw", routes(out), [])
-    # (c) a member's turn never pulls the window of a covered turn of the same topic at
+    # on (c): a member's turn never pulls the window of a covered turn of the same topic at
     # its verdict: the window would leave the moment the private turn was judged, the
     # third party's own window cut off and its leaving a side channel (XB-M review I-2).
     covered = json.dumps(["agent:x"] + shared)
-    c = cell()
+    c = star()
     c.run({"route": "turn", "turn_id": "k1"}, text, ctx={"audience_set": covered})
     out = c.run({"route": "in_decision", "show_id": "k1"}, verdict("sample", 0.9, "rows"),
                 ctx=DEC_CTX)
@@ -1561,7 +1586,7 @@ def t_star_only(s, t):
     out = data(c, "k1", {"rows": {"audience_set": ["*"], "rows": [{"name": "k1"}]}})
     t.check("covered: its own data still fill its window", routes(out), ["view"])
     # ... and a member's `*` data replace it only when they open the window
-    c = cell()
+    c = star()
     c.run({"route": "turn", "turn_id": "k3"}, text, ctx={"audience_set": covered})
     c.run({"route": "in_decision", "show_id": "k3"}, verdict("sample", 0.9, "rows"),
           ctx=DEC_CTX)
@@ -1570,22 +1595,18 @@ def t_star_only(s, t):
     t.check("covered, then `*` data: the window is replaced", routes(out), ["view"])
     t.check("covered, then `*` data: the covered turn leaves now",
             [r["fallback"] for r in journal_of(out)], ["no_data", "none"])
-    # the switch off restores (b): the window on the verdict, the standard stands in
-    for off in (False, "false"):
-        c = cell(window_requires_star_data=off)
-        out = turn(c, "b1")
-        t.check("off %r: the window opens on the verdict" % (off,), routes(out)[:2],
-                ["view", "in_show"])
-        out = data(c, "b1", {"rows": {"audience_set": ["*"], "value": {"n": 1}},
-                             "brief": {"audience_set": ["*"], "value": {"title": "Brief"}}})
-        blocks = out[0]["content"]["children"][1]["children"]
-        t.check("off %r: standard instead" % (off,), [b["key"] for b in blocks],
-                ["show-sample-brief"])
-    c = cell(window_requires_star_data=False)
+    # a lead the member's data cannot fill: the standard block stands in, as anywhere
+    c = cell()
+    turn(c, "b1")
+    out = data(c, "b1", {"rows": {"audience_set": ["member:a"], "value": {"n": 1}},
+                         "brief": {"audience_set": ["member:a"], "value": {"title": "Brief"}}})
+    blocks = out[0]["content"]["children"][1]["children"]
+    t.check("all: standard instead", [b["key"] for b in blocks], ["show-sample-brief"])
+    c = cell()
     turn(c, "b2")
     c.tick(4000)
     out = c.run({"route": "in_tick"})
-    t.check("off: no data withdraws", routes(out), ["withdraw"])
+    t.check("all: no data withdraws", routes(out), ["withdraw"])
     # a turn of a foreign round (no member of the screen's round in it) opens nothing,
     # whatever the switch says (GH #1027)
     for sw in (True, False):
@@ -1597,6 +1618,61 @@ def t_star_only(s, t):
                 [r["fallback"] for r in journal_of(out)], ["foreign_round"])
 
 
+def t_clock(s, t):
+    """GH #1047: an order that fired is gone at the timer -- it is never removed, and the
+    clock's `schedule_not_found` for a removed order is no fault. Measured downstream: 6
+    dead letters `error` `clock_refused` `schedule_not_found` from `stage` in 5 of 109
+    archived gate runs, more often under host load, when the strike of the standing
+    order was still in the queue while `stage` handled the next turn."""
+    def clock(out):
+        return [(e["op"], e["schedule_id"]) for e in out if e["header"]["route"] == "clock"]
+
+    c = Cell(s)
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [sample()]})
+    out = c.run({"route": "turn", "turn_id": "c1"},
+                {"messages": [{"type": "text", "text": "x"}]})
+    first = clock(out)
+    t.check("the first turn orders one deadline", [op for op, _ in first], ["add"])
+    # The deadline passes: the timer fires and the order is `completed` there; its strike
+    # is still in the queue when the next turn comes.
+    c.tick(2000)
+    out = c.run({"route": "turn", "turn_id": "c2"},
+                {"messages": [{"type": "text", "text": "y"}]})
+    ops = clock(out)
+    t.check("no remove for an order whose moment has passed",
+            [sid for op, sid in ops if op == "remove"], [])
+    t.check("the next deadline is ordered", [op for op, _ in ops], ["add"])
+    # The late strike of the fired order closes the expired turn and leaves the new
+    # order standing.
+    out = c.run({"route": "in_tick", "schedule_id": first[0][1]})
+    t.check("the late strike times the first turn out",
+            [r["fallback"] for r in journal_of(out)], ["timeout"])
+    t.check("the late strike does not remove the order that struck",
+            [sid for op, sid in clock(out) if op == "remove" and sid == first[0][1]], [])
+    # A remove that met no order (it fired on the way): the order is gone, as wanted.
+    out = c.run({"route": "in_tick_error", "msg_type": "timer_op_error",
+                 "error_code": "schedule_not_found", "schedule_id": first[0][1]})
+    t.check("schedule_not_found is no fault", out, [])
+    # Every other refusal of the clock still leaves out loud.
+    out = c.run({"route": "in_tick_error", "msg_type": "timer_op_error",
+                 "error_code": "at_in_past", "schedule_id": ops[-1][1]})
+    t.check("another refusal leaves as error",
+            [(e["header"]["route"], e["header"].get("error_code")) for e in out],
+            [("error", "clock_refused")])
+    # An order whose moment has NOT passed is still removed when the deadline moves.
+    c2 = Cell(s)
+    c2.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+           {"topics": [sample()]})
+    first = clock(c2.run({"route": "turn", "turn_id": "d1"},
+                         {"messages": [{"type": "text", "text": "x"}]}))
+    c2.tick(10)
+    out = c2.run({"route": "in_decision", "show_id": "d1"}, verdict("sample", 0.9, "rows"),
+                 ctx=DEC_CTX)
+    t.check("a standing order that moves is removed",
+            [sid for op, sid in clock(out) if op == "remove"], [first[0][1]])
+
+
 TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_threshold),
           ("BINDING", t_binding), ("AUDIENCE", t_audience), ("TURNS", t_turns),
           ("PARTIAL", t_partial),
@@ -1605,7 +1681,7 @@ TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_
           ("SOURCE", t_source), ("REGISTRY", t_registry), ("DATAROUND", t_data_round),
           ("FOLLOWUP", t_followup), ("RESULTS", t_results),
           ("CONTRACT", t_contract), ("FOREIGN", t_foreign_round),
-          ("STARONLY", t_star_only)]
+          ("STARONLY", t_star_only), ("CLOCK", t_clock)]
 
 
 def main(argv):

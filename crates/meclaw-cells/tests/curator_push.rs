@@ -377,6 +377,8 @@ fn the_push_emits_the_collectors_key_set() {
         "memory_tier",
         "recall_window_from",
         "recall_window_to",
+        // GH #1040: the answering model's package, which only this hive knows.
+        "recall_input_soft",
     ]
     .into_iter()
     .collect();
@@ -576,6 +578,9 @@ fn recall_push_off_passes_the_collectors_query_through() {
     assert_eq!(asks.len(), 1);
     let mut want = obj(ask_hop("s1", "t2", "where again?"));
     want.insert("route".into(), json!("recall"));
+    // GH #1044: the question as it came, sized by the model's package like a
+    // pushed one -- no answer named a package here, so the key is empty.
+    want.insert("recall_input_soft".into(), json!(""));
     assert_eq!(asks[0].hop, want, "the ask as it came");
     assert_eq!(asks[0].messages(), vec![user("where again?")]);
 }
@@ -622,7 +627,9 @@ fn the_talky_budget_keeps_the_query_whole_at_the_memory() {
     }
     let recall = read_json(&repo("templates/memory-hive/recall/config.json"));
     let script = recall["params"]["script_inline"].as_str().expect("script");
-    let lit = "_int(\"query_safe_chars\", ";
+    // GH #1040: a knob the model package sizes; its literal is the value
+    // without a package, which is what the role's preset is held to.
+    let lit = "_pkg(\"query_safe_chars\", ";
     let at = script.find(lit).expect("the memory's query_safe_chars") + lit.len();
     let safe: f64 = script[at..at + script[at..].find(')').unwrap()]
         .trim()

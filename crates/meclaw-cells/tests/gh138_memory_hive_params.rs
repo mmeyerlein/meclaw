@@ -72,21 +72,22 @@ const SCRIPTED: &[Scripted] = &[
             ("tier0_max_foresight", "_int"),
             ("tier0_episode_chars", "_int"),
             ("tier0_tokens", "_int"),
-            ("tier1_leg_limit", "_int"),
+            ("tier1_leg_limit", "_pkg"),
             ("tier1_axis_limit", "_int"),
             ("tier1_graph_depth", "_int"),
             ("tier1_graph_nodes", "_int"),
             ("tier1_graph_fact_nodes", "_int"),
             ("tier1_graph_fact_limit", "_int"),
-            ("tier1_self_limit", "_int"),
+            ("tier1_self_limit", "_pkg"),
             ("tier1_self_budget", "_int"),
             ("self_legacy_subject", "_str"),
-            ("tier1_topk", "_int"),
+            ("tier1_topk", "_pkg"),
             ("sem_max_distance", "_float"),
             ("kw_min_score_ratio", "_float"),
-            ("bundle_episode_budget", "_int"),
-            ("tier1_tokens", "_int"),
-            ("tier1_item_chars", "_int"),
+            ("bundle_episode_budget", "_pkg"),
+            ("tier1_tokens", "_pkg"),
+            ("tier1_item_chars", "_pkg"),
+            ("bundle_share", "_float"),
             ("rrf_k", "_int"),
             ("rrf_w_keyword", "_float"),
             ("rrf_w_semantic", "_float"),
@@ -95,9 +96,9 @@ const SCRIPTED: &[Scripted] = &[
             ("rrf_w_self", "_float"),
             ("rrf_w_temporal_point", "_float"),
             ("rrf_agreement", "_float"),
-            ("query_safe_chars", "_int"),
-            ("query_max_chars", "_int"),
-            ("query_tokens", "_int"),
+            ("query_safe_chars", "_pkg"),
+            ("query_max_chars", "_pkg"),
+            ("query_tokens", "_pkg"),
         ],
         documented: &[],
     },
@@ -121,6 +122,13 @@ const SCRIPTED: &[Scripted] = &[
     Scripted {
         cell: "close-glue",
         knobs: &[("close_turn_rows", "_int"), ("close_fact_rows", "_int")],
+        documented: &[],
+    },
+    // GH #1042 fix round 1: the room bind's reach, the session keeper's idle
+    // window (pinned to the keeper's own value in gh1042).
+    Scripted {
+        cell: "extract-glue",
+        knobs: &[("generation_idle_ms", "_int")],
         documented: &[],
     },
 ];
@@ -306,7 +314,7 @@ fn nothing_in_the_shipped_hive_reads_a_behaviour_knob_out_of_the_environment() {
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("tier1_topk", 20)` is the value
 /// a cell uses when its config says nothing, and comparing the text is the
-/// complete check over all forty-four scripted knobs.
+/// complete check over all forty-five scripted knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let mut total = 0usize;
@@ -346,6 +354,19 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
             let lit: Value = meclaw_core::serde_json::from_str(lit).unwrap_or_else(|e| {
                 panic!("{cell}/{knob}: script literal {lit:?} is not json ({e})")
             });
+            if *kind == "_pkg" {
+                // GH #1040: a knob the model package sizes ships as null (derived
+                // per request); its literal is the value WITHOUT a package.
+                assert!(
+                    param.is_null(),
+                    "{cell}: params.{knob} is sized by the package and ships as null"
+                );
+                assert!(
+                    lit.is_number(),
+                    "{cell}: {knob} needs a number as its value without a package"
+                );
+                continue;
+            }
             assert_eq!(
                 lit, *param,
                 "{cell}: the script's own fallback for {knob} drifted from the shipped param"
@@ -369,8 +390,9 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 44,
-        "the scripted half of the migration is forty-four knobs"
+        total, 46,
+        "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040) \
+         and `generation_idle_ms` (GH #1042)"
     );
 }
 
@@ -378,14 +400,25 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
 /// which is a param already -- the migration there is the TOKEN leaving, not a
 /// key arriving. Pinned separately because the value is an object and there is
 /// no script to read a literal out of.
+///
+/// Since memory-hive 3.9.1 (KD diagnosis, GH #1037) `closer` and `dreamer`
+/// carry a token budget instead (`params.thinking_budget`), declared the same
+/// way.
 #[test]
 fn every_model_cell_carries_its_deliberation_budget_as_a_literal() {
-    for (cell, effort) in [
-        ("closer", "medium"),
-        ("dreamer", "medium"),
-        ("dialectic", "medium"),
-        ("judge", "high"),
-    ] {
+    for (cell, budget) in [("closer", 3072), ("dreamer", 1024)] {
+        let cfg = config(cell);
+        assert_eq!(
+            cfg["params"]["thinking_budget"], budget,
+            "{cell}: params.thinking_budget is not the shipped literal"
+        );
+        assert_eq!(
+            cfg["contract"]["settings"]["thinking_budget"]["default"],
+            cfg["params"]["thinking_budget"],
+            "{cell}: the declared thinking_budget and the shipped one disagree"
+        );
+    }
+    for (cell, effort) in [("dialectic", "medium"), ("judge", "high")] {
         let cfg = config(cell);
         let shipped = &cfg["params"]["provider_extra"];
         assert_eq!(
@@ -456,9 +489,9 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
         probe_with_params(
             "recall",
             meclaw_core::serde_json::json!({"self_legacy_subject": null}),
-            "_real.write(SELF_LEGACY_SUBJECT)"
+            "_real.write(\"[\" + SELF_LEGACY_SUBJECT + \"]\")"
         ),
-        "user",
+        "[user]",
         "a null name knob must fall back to the shipped default"
     );
     assert_eq!(

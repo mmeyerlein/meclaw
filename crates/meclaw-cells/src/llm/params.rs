@@ -7,9 +7,20 @@ fn default_temperature() -> f64 {
     0.7
 }
 
-fn default_max_tokens() -> u32 {
-    4096
-}
+/// GH #1037: the completion budget of a cell that names no cap of its own and
+/// holds no `max_output` from a model package. 32 768 because every chat row
+/// of the shipped catalogue lists at least 65 536 completion tokens (OpenRouter
+/// `top_provider.max_completion_tokens`, 2026-10-06: 65 536 to 131 072), and
+/// the old 4 096 was the limit of a 2023 model generation: a long consolidation
+/// hit it and the night kept the cut half (the dream step's 4 096, the issue's
+/// own measurement). Half the smallest listed figure leaves room for a model
+/// that is not in the catalogue, and a budget is not a cost -- a model that is
+/// done stops; only one that would have gone on is cut.
+pub const DEFAULT_MAX_TOKENS: u32 = 32_768;
+
+/// GH #1037: the most continuation calls one turn may make after a `length`
+/// finish. A bound, so a model that never stops cannot loop a cell forever.
+pub const LENGTH_CONTINUATIONS_MAX: u32 = 8;
 
 fn default_external_timeout_ms() -> u64 {
     110_000
@@ -217,8 +228,12 @@ pub struct LlmParams {
     /// Sampling temperature; default 0.7.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
-    /// Hard cap on generated tokens per response; default 4096.
-    #[serde(default = "default_max_tokens")]
+    /// The cell's OWN cap on generated tokens per response. 0 (the default)
+    /// = the cell names none: the request then carries the model package's
+    /// `max_output`, else [`DEFAULT_MAX_TOKENS`] (GH #1037, see
+    /// [`LlmParams::effective_max_tokens`]). Before GH #1037 the default was
+    /// 4 096 and every cell that named nothing was cut there.
+    #[serde(default)]
     pub max_tokens: u32,
     /// Ordered list of UBF `system`-subtree paths to concatenate into the
     /// system prompt; default `[]`.
@@ -358,6 +373,45 @@ pub struct LlmParams {
     /// package key: the registry pushes it with the model it belongs to.
     #[serde(default)]
     pub supported_params: Option<Vec<String>>,
+    /// GH #1037: the most tokens the model can generate in one answer, as its
+    /// catalogue row lists it. 0 (the default) = not stated. A package key:
+    /// the registry pushes it with the model it belongs to, so a cell that
+    /// names no cap of its own asks for what the model can give, and a cell
+    /// that names one never asks for more than that.
+    #[serde(default)]
+    pub max_output: u64,
+    /// GH #1037: how many continuation calls the cell makes when an answer
+    /// stops on `length` without a tool call -- the cut text goes back as the
+    /// assistant's turn with a request to go on, and the parts are joined
+    /// into one answer. Every continuation writes a log line, and an answer
+    /// still cut after the last one says so; nothing is cut in silence. 0
+    /// (the default) = the answer of before, with that line. At most
+    /// [`LENGTH_CONTINUATIONS_MAX`]. Chat-completions wire only (OR-HK.KF1.2).
+    #[serde(default)]
+    pub length_continuations: u32,
+    /// R-HK-15/16: the prompt size, in tokens, from which a rebuild of the
+    /// window pays for this model -- the curator's soft bound. The cell does
+    /// nothing with it but stamp it (`hop.input_soft`, only above 0). 0 (the
+    /// default) = not stated. A package key.
+    #[serde(default)]
+    pub input_soft: u64,
+    /// R-HK-15/16: the largest prompt, in tokens, the cell sends this model.
+    /// Above it the call is refused before any provider is asked
+    /// (`invalid_input`, `meta.error.kind` `input_over_hard`) with a line on
+    /// `meclaw::llm::window`; stamped as `hop.input_hard`. 0 (the default) =
+    /// no bound. A package key.
+    #[serde(default)]
+    pub input_hard: u64,
+    /// R-HK-16: the list price of one million prompt tokens, in cents. Only
+    /// stamped (`hop.cost_in`, above 0): the curator weighs a cached window
+    /// against a rebuild with it. A package key.
+    #[serde(default)]
+    pub cost_in: f64,
+    /// R-HK-16: the price of one million prompt tokens read from the
+    /// provider's cache, in cents. Only stamped (`hop.cost_cached_in`, above
+    /// 0). A package key.
+    #[serde(default)]
+    pub cost_cached_in: f64,
 }
 
 /// GH #890: the values `cache_mode` takes, as the refusal names them.
@@ -383,6 +437,29 @@ fn whole_number(key: &str, value: &Value) -> Result<u64, String> {
     })
 }
 
+/// R-HK-16: a price as the cell takes it -- a finite JSON number ≥ 0 (cents
+/// per million tokens carry fractions: a cached token of a cheap model costs
+/// 0.6), or a string of digits with at most one point (`${VAR}` yields a
+/// string). Anything else is refused by the param's name.
+fn price(key: &str, value: &Value) -> Result<f64, String> {
+    let parsed = match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s)
+            if (1..=24).contains(&s.len())
+                && s.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                && s.bytes().filter(|b| *b == b'.').count() <= 1 =>
+        {
+            s.parse::<f64>().ok()
+        }
+        _ => None,
+    };
+    parsed
+        .filter(|p| p.is_finite() && *p >= 0.0)
+        .ok_or_else(|| {
+            format!("{key} must be a price of at least 0 (a JSON number or a string of digits)")
+        })
+}
+
 /// GH #890: the raw params with the cache knobs checked BY NAME before serde
 /// sees them. A serde refusal of an enum names the variant it did not know,
 /// never the field, and would not take the digit strings `whole_number`
@@ -402,9 +479,20 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
                     .join(", ")
             ));
         }
-        for key in ["cache_ttl_s", "context_window"] {
+        for key in [
+            "cache_ttl_s",
+            "context_window",
+            "max_output",
+            "input_soft",
+            "input_hard",
+        ] {
             if let Some(v) = obj.get_mut(key) {
                 *v = Value::from(whole_number(key, v)?);
+            }
+        }
+        for key in ["cost_in", "cost_cached_in"] {
+            if let Some(v) = obj.get_mut(key) {
+                *v = Value::from(price(key, v)?);
             }
         }
     }
@@ -430,6 +518,8 @@ pub const REQUIREMENT_MAX_BYTES: usize = 2 * 1024;
 /// change. GH #890 adds the three that belong to a model as much as its name
 /// does: how its provider caches, for how long, and how large its window is.
 /// GH #993 adds which sampling params the model takes at all.
+/// GH #1037 adds the output limit; R-HK-15/16 the input bounds and the two
+/// prompt prices the curator weighs a cached window with.
 pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "model",
     "base_url",
@@ -447,6 +537,11 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "cache_ttl_s",
     "context_window",
     "supported_params",
+    "max_output",
+    "input_soft",
+    "input_hard",
+    "cost_in",
+    "cost_cached_in",
 ];
 
 /// GH #853: the absolute floor of the backstop margin, in ms.
@@ -605,6 +700,12 @@ impl LlmParams {
         if p.system_max_leaf_bytes == 0 {
             return Err("system_max_leaf_bytes must be at least 1".to_string());
         }
+        if p.length_continuations > LENGTH_CONTINUATIONS_MAX {
+            return Err(format!(
+                "length_continuations is {}; at most {LENGTH_CONTINUATIONS_MAX} are allowed",
+                p.length_continuations
+            ));
+        }
         // GH #853: the model block and the allow list are checked at birth, so
         // a run-time update (which re-parses the merge) is checked the same way.
         if let Some(mp) = &p.model_prompt
@@ -715,6 +816,20 @@ impl LlmParams {
     ///
     /// `parse` guarantees the derived value is consistent with `auth`, so this
     /// is total and never panics.
+    /// GH #1037: the completion budget a request carries. The cell's own cap
+    /// when it names one, never above the model's listed `max_output` (a
+    /// provider refuses a budget past the model's limit); without one, the
+    /// package's `max_output`; without both, [`DEFAULT_MAX_TOKENS`].
+    pub fn effective_max_tokens(&self) -> u32 {
+        let listed = u32::try_from(self.max_output).unwrap_or(u32::MAX);
+        match (self.max_tokens, listed) {
+            (0, 0) => DEFAULT_MAX_TOKENS,
+            (0, listed) => listed,
+            (own, 0) => own,
+            (own, listed) => own.min(listed),
+        }
+    }
+
     pub fn effective_wire_dialect(&self) -> WireDialect {
         match self.wire_dialect {
             Some(d) => d,
@@ -876,6 +991,16 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "context_window",
     // GH #993: the sampling params the model takes, a package key.
     "supported_params",
+    // GH #1037: the model's output limit (a package key) and the
+    // continuation budget after a `length` finish.
+    "max_output",
+    "length_continuations",
+    // R-HK-15/16: the input bounds and prompt prices of the model, package
+    // keys (stamped; `input_hard` also refuses).
+    "input_soft",
+    "input_hard",
+    "cost_in",
+    "cost_cached_in",
     // P10 auth dimension.
     "auth",
     "auth_ref",
@@ -980,7 +1105,10 @@ mod tests {
         assert_eq!(p.api_key.as_deref(), Some("x"));
         assert_eq!(p.base_url, None);
         assert_eq!(p.temperature, 0.7);
-        assert_eq!(p.max_tokens, 4096);
+        assert_eq!(p.max_tokens, 0, "GH #1037: no own cap");
+        assert_eq!(p.effective_max_tokens(), DEFAULT_MAX_TOKENS);
+        assert_eq!(p.max_output, 0);
+        assert_eq!(p.length_continuations, 0);
         assert!(p.system_order.is_empty());
         assert!(p.provider_extra.is_empty());
         assert_eq!(p.external_timeout_ms, 110_000);
@@ -1588,6 +1716,53 @@ mod tests {
         }
     }
 
+    /// GH #1037: the budget a request carries -- own cap, else the model's
+    /// listed output, else the modern default; an own cap never exceeds what
+    /// the model lists.
+    #[test]
+    fn gh1037_the_budget_is_own_cap_then_package_then_default() {
+        let budget = |extra: Value| {
+            let mut raw = api_key_raw();
+            for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+                raw[k] = v;
+            }
+            LlmParams::parse(&raw).unwrap().effective_max_tokens()
+        };
+        assert_eq!(budget(json!({})), DEFAULT_MAX_TOKENS);
+        assert_eq!(budget(json!({"max_output": 65_536})), 65_536);
+        assert_eq!(
+            budget(json!({"max_output": "128000"})),
+            128_000,
+            "digit string"
+        );
+        assert_eq!(budget(json!({"max_tokens": 20_000})), 20_000);
+        assert_eq!(
+            budget(json!({"max_tokens": 200_000, "max_output": 65_536})),
+            65_536,
+            "never above the model's limit"
+        );
+        assert_eq!(
+            budget(json!({"max_tokens": 20_000, "max_output": 65_536})),
+            20_000
+        );
+        assert!(MODEL_PACKAGE_KEYS.contains(&"max_output"));
+        assert!(!MODEL_PACKAGE_KEYS.contains(&"length_continuations"));
+    }
+
+    #[test]
+    fn gh1037_max_output_and_continuations_are_checked_by_name() {
+        let mut raw = api_key_raw();
+        raw["max_output"] = json!(-1);
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("max_output"), "{err}");
+        let mut raw = api_key_raw();
+        raw["length_continuations"] = json!(LENGTH_CONTINUATIONS_MAX + 1);
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("length_continuations"), "{err}");
+        raw["length_continuations"] = json!(LENGTH_CONTINUATIONS_MAX);
+        assert!(LlmParams::parse(&raw).is_ok());
+    }
+
     #[test]
     fn model_prompt_has_an_upper_bound() {
         let mut raw = api_key_raw();
@@ -1831,7 +2006,7 @@ mod tests {
         let p = LlmParams::parse(&raw).unwrap();
         assert_eq!(p.cache_ttl_s, 3600);
         assert_eq!(p.context_window, 200_000);
-        for key in ["cache_ttl_s", "context_window"] {
+        for key in ["cache_ttl_s", "context_window", "max_output"] {
             for bad in [
                 json!("3OO"),
                 json!(""),

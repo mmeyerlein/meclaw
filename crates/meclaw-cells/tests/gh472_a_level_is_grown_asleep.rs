@@ -233,7 +233,7 @@ fn an_unknown_birth_state_is_refused_by_name_and_no_manifest_comes_back() {
     let early = run_classify(json!({
         "recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "org", "name": "acme",
-                   "template": "org@2.1.11", "birth": "dormant"}}));
+                   "template": "org@2.1.18", "birth": "dormant"}}));
     assert_eq!(
         early["header"]["route"],
         json!("error"),

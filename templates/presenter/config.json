@@ -75,7 +75,7 @@
         },
         {
           "route": "error",
-          "because": "a store bundle or a clock order failed, or `./decide` refused a message that was no turn's call (`decide_refused`). It leaves rather than being logged, because a presenter that kept a fault to itself would be a screen that quietly stopped answering"
+          "because": "a store bundle or a clock order failed (a `remove` that met no order is not a failure: the order struck and is gone, GH #1047), or `./decide` refused a message that was no turn's call (`decide_refused`). It leaves rather than being logged, because a presenter that kept a fault to itself would be a screen that quietly stopped answering"
         },
         {
           "route": "model_refused",

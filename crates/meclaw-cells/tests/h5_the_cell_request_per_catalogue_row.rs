@@ -69,7 +69,8 @@ fn package_of(row: &Map<String, Value>) -> Map<String, Value> {
             out.insert((*param).into(), json!(s));
         }
     }
-    for key in ["cache_ttl_s", "context_window"] {
+    // GH #1037: the model's listed output limit is a column the push carries.
+    for key in ["cache_ttl_s", "context_window", "max_output"] {
         if let Some(n) = row.get(key).and_then(|v| v.as_u64())
             && n > 0
         {

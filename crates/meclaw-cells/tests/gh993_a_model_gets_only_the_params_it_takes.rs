@@ -123,7 +123,7 @@ async fn gh993_a_model_without_temperature_gets_none() {
         "a named field still travels: {request}"
     );
     assert_eq!(
-        request["max_tokens"], 4096,
+        request["max_tokens"], 32_768,
         "not a sampling field: {request}"
     );
     assert_eq!(hop["finish_reason"], "stop", "{hop:?}");

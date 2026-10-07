@@ -9,7 +9,6 @@
     "api_key": "${DISPLAY_JUDGE_API_KEY:-}",
     "base_url": "${DISPLAY_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
-    "max_tokens": 600,
     "external_timeout_ms": 8000,
     "system_order": ["instructions"],
     "provider_extra": {"response_format": {"type": "json_object"}}
@@ -37,6 +36,10 @@
               "cost": {"type": "number", "required": false},
               "cache_expires_at": {"type": "string", "required": false},
               "context_window": {"type": "number", "required": false},
+              "input_soft": {"type": "number", "required": false},
+              "input_hard": {"type": "number", "required": false},
+              "cost_in": {"type": "number", "required": false},
+              "cost_cached_in": {"type": "number", "required": false},
               "dropped": {"type": "array", "required": false},
               "unverified": {"type": "array", "required": false}}
     },

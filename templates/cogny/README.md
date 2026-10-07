@@ -1,4 +1,4 @@
-# `cogny@5.8.2`
+# `cogny@5.8.6`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.8.0"},
+{"cell": {"type": "ref", "template": "curator@1.10.1"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.8.2` above it in its provenance chain.
+`cogny@5.8.6` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -636,6 +636,11 @@ The `curate` edge restores under the same bound (GH #919): the curator between
 collector and brain spends about twenty routing decisions of ledger round trips per round,
 and without it paid them out of what the legs before the round left.
 
+Since `5.8.6` ([#1044](https://github.com/mmeyerlein/meclaw/issues/1044)) `./curator -> ./brain` lifts `hop.recall_input_soft` (the curator's
+usable window, empty without a package) into the call's context, and a `memory_recall` of the
+model leaves on the tool exit with it on the hop (empty on every other tool); every exit of the
+composite clears the key.
+
 ## Knobs
 
 The collector's knobs are **params of `./collector`** (since `collector@1.2.0`):
@@ -680,7 +685,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.8.2", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.8.6", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

@@ -1,4 +1,4 @@
-# `affinity@3.10.0`
+# `affinity@3.10.1`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -10,7 +10,7 @@ Six cells:
 | path | type | role |
 |---|---|---|
 | `store` | `store` | the domain: entities, relations, trust, disclosure, subscribers, proposals, audit -- plus `port_scratch`, which is not domain at all (§ The seed) |
-| `brief` | `code` | the only reader of the domain -- audience filter and pack rendering. Appends its own `audit` row per brief |
+| `brief` | `code` | the only reader of the domain -- audience filter and pack rendering. Appends its own `audit` row per brief. Runs `warm` since 3.10.1 (#1021): one brief request is six runs in series (the request, then one per store phase), and it keeps no state between messages and reads stdin as text only |
 | `gate` | `code` | the only writer of the domain -- AIeOS validation, minting, audit. Runs `warm` since 3.6.0 (#852): it sits under every member door, keeps no state between messages and reads stdin as text only |
 | `push` | `code` | push-on-change: hashes what a subscriber would get, and stays silent when it did not move. Writes that hash and `sent_at` back onto the subscriber row only when the pack's receipt comes back clean on `in_pack_ack` (GH #877); until then it resends on the next tick and then after a wait that doubles up to six hours, and a refused receipt parks the pack until it changes (`subscribers.retry`). Plus an `audit` row per tick |
 | `clock` | `timer` | the push tick (6-field Quartz cron, **UTC**) |
@@ -679,7 +679,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.10.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.10.1` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -1005,7 +1005,7 @@ enters as the seed of a new hive, where the template's default decides, never in
 that names the column (`schema_mismatch`): a missing column without a default, a changed type, a
 column this store does not declare, a header `version` newer than the table's.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.0`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.1`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

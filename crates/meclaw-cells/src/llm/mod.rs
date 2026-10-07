@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod cell;
+pub(crate) mod continuation;
 pub mod factory;
 pub(crate) mod latency;
 pub(crate) mod output;
@@ -19,6 +20,7 @@ pub(crate) mod tool_scope;
 pub(crate) mod translate;
 pub(crate) mod translate_decisions;
 pub(crate) mod translate_responses;
+pub(crate) mod window;
 pub mod wire;
 
 pub use cell::LlmCell;

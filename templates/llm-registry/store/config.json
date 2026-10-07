@@ -10,6 +10,26 @@
         "base_url": "text",
         "wire_dialect": "text",
         "context_window": "int",
+        "max_output": {
+          "type": "int",
+          "default": 0
+        },
+        "input_soft": {
+          "type": "int",
+          "default": 0
+        },
+        "input_hard": {
+          "type": "int",
+          "default": 0
+        },
+        "cost_cached_in": {
+          "type": "json",
+          "default": 0
+        },
+        "cost_cache_write": {
+          "type": "json",
+          "default": 0
+        },
         "cache_mode": "text",
         "cache_ttl_s": "int",
         "cost_in": "int",

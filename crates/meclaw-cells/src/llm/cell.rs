@@ -3,10 +3,11 @@
 
 use crate::llm::params::{AuthMode, WireDialect};
 use crate::llm::translate::{TranslateError, TranslatedResponse};
+use crate::llm::window;
 use crate::llm::wire::WireError;
 use crate::llm::{
-    auth, latency, output, package, params::LlmParams, state, system_gate, tool_scope, translate,
-    translate_decisions, translate_responses, wire,
+    auth, continuation, latency, output, package, params::LlmParams, state, system_gate,
+    tool_scope, translate, translate_decisions, translate_responses, wire,
 };
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
@@ -948,6 +949,106 @@ impl LlmCell {
         )
         .await;
         self.log_phases(&clock, "ok");
+    }
+
+    /// GH #1037: continue an answer cut on `length` up to
+    /// `length_continuations` times and join the parts; write one line per
+    /// continuation and one for an answer that stays cut. A failed
+    /// continuation call keeps the text so far: what was answered is not
+    /// thrown away because the rest could not be fetched. Every call is held
+    /// to the message's backstop (`continuation::continuation_timeout`), so
+    /// the backstop never drops an answer a continuation was still adding to.
+    #[allow(clippy::too_many_arguments)]
+    async fn continue_after_length(
+        &self,
+        path: &str,
+        url: &str,
+        headers: &[(String, String)],
+        request_json: &meclaw_core::serde_json::Value,
+        timeout: std::time::Duration,
+        started_at_unix_ms: i64,
+        mut answer: translate::TranslatedResponse,
+    ) -> translate::TranslatedResponse {
+        let budget = self.params.effective_max_tokens();
+        let max = self.params.length_continuations;
+        let mut round = 0u32;
+        while let Some(so_far) = continuation::continuable_text(&answer) {
+            if round >= max {
+                let why = if max == 0 {
+                    "length_continuations is 0"
+                } else {
+                    "continuation budget spent"
+                };
+                tracing::warn!(
+                    target: continuation::LENGTH_LOG_TARGET,
+                    "{}",
+                    continuation::cut_line(path, budget, round, why)
+                );
+                break;
+            }
+            let elapsed_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
+            let call_timeout = match continuation::continuation_timeout(
+                timeout,
+                self.message_timeout_ms,
+                elapsed_ms,
+            ) {
+                Ok(t) => t,
+                Err(why) => {
+                    tracing::warn!(
+                        target: continuation::LENGTH_LOG_TARGET,
+                        "{}",
+                        continuation::cut_line(path, budget, round, &why)
+                    );
+                    break;
+                }
+            };
+            round += 1;
+            tracing::warn!(
+                target: continuation::LENGTH_LOG_TARGET,
+                "{}",
+                continuation::continuing_line(path, round, max, budget, so_far.chars().count())
+            );
+            let mut req = continuation::continuation_request(request_json, &so_far);
+            // R-HK-15/16: the continuation carries the text so far, so the
+            // window is checked again; a full window keeps the answer cut.
+            if let Err(r) = window::apply(&self.params, &mut req, "max_tokens", path) {
+                tracing::warn!(
+                    target: continuation::LENGTH_LOG_TARGET,
+                    "{}",
+                    continuation::cut_line(path, budget, round - 1, &r.detail())
+                );
+                break;
+            }
+            let (res, _timings) = wire::call_openai_timed(
+                &self.http,
+                url,
+                self.bearer(),
+                headers,
+                &req,
+                call_timeout,
+            )
+            .await;
+            match res
+                .map_err(|e| format!("{e:?}"))
+                .and_then(|j| translate::parse_openai_response(&j).map_err(|e| format!("{e:?}")))
+            {
+                Ok(next) => answer = continuation::joined(&so_far, &answer, next),
+                Err(e) => {
+                    tracing::warn!(
+                        target: continuation::LENGTH_LOG_TARGET,
+                        "{}",
+                        continuation::cut_line(
+                            path,
+                            budget,
+                            round - 1,
+                            &format!("continuation call failed: {}", e.chars().take(200).collect::<String>())
+                        )
+                    );
+                    break;
+                }
+            }
+        }
+        answer
     }
 
     /// The credential this cell presents, in precedence order.
@@ -2080,22 +2181,38 @@ impl LlmCell {
                             &input_messages,
                             image_parts,
                         );
-                        // GH #124: same phase boundary as the chat lane.
-                        clock.translated();
-                        if tracing::enabled!(target: latency::LATENCY_TARGET, tracing::Level::DEBUG)
-                        {
-                            latency::log_request_detail(
-                                self.dialect_name(),
-                                meclaw_core::serde_json::to_string(&request_json)
-                                    .map(|s| s.len())
-                                    .unwrap_or(0),
-                                input_messages.len(),
-                                tools.len(),
-                                image_part_count,
-                                system_string.len(),
-                            );
+                        // R-HK-15/16: the window, as on the chat wire.
+                        if let Err(r) = window::apply(
+                            &self.params,
+                            &mut request_json,
+                            "max_output_tokens",
+                            sink.sender_path().as_str(),
+                        ) {
+                            Err(LaneFailure {
+                                code: "invalid_input",
+                                source: "window",
+                                detail: r.detail(),
+                                extra: Some(r.meta()),
+                            })
+                        } else {
+                            // GH #124: same phase boundary as the chat lane.
+                            clock.translated();
+                            if tracing::enabled!(target: latency::LATENCY_TARGET, tracing::Level::DEBUG)
+                            {
+                                latency::log_request_detail(
+                                    self.dialect_name(),
+                                    meclaw_core::serde_json::to_string(&request_json)
+                                        .map(|s| s.len())
+                                        .unwrap_or(0),
+                                    input_messages.len(),
+                                    tools.len(),
+                                    image_part_count,
+                                    system_string.len(),
+                                );
+                            }
+                            run_responses_lane(self, &request_json, timeout, &mut wire_timings)
+                                .await
                         }
-                        run_responses_lane(self, &request_json, timeout, &mut wire_timings).await
                     }
                     Err(e) => Err(LaneFailure::from_translate(&e, "translate")),
                 };
@@ -2127,7 +2244,7 @@ impl LlmCell {
                         // GH #999: a call that reached the provider names what
                         // its request left out and what it sent unchecked; a
                         // request that was never built names nothing.
-                        let request_hop = (f.source != "translate")
+                        let request_hop = (f.source != "translate" && f.source != "window")
                             .then(|| output::HopCache::request_hop(&self.params))
                             .flatten();
                         output::emit_error_with_hop_for(
@@ -2153,7 +2270,7 @@ impl LlmCell {
             }
 
             // 5d: build OpenAI Chat-Completions request body.
-            let request_json = match translate::build_openai_request(
+            let mut request_json = match translate::build_openai_request(
                 &self.params,
                 &system_string,
                 &input_messages,
@@ -2189,6 +2306,31 @@ impl LlmCell {
                     return;
                 }
             };
+            // 5e (R-HK-15/16): the window -- refuse above `input_hard` (no
+            // model call), clamp the budget to what `context_window` leaves.
+            if let Err(r) = window::apply(
+                &self.params,
+                &mut request_json,
+                "max_tokens",
+                sink.sender_path().as_str(),
+            ) {
+                output::emit_error_for(
+                    &self.params.provider,
+                    sink,
+                    reply_target,
+                    "invalid_input",
+                    &r.detail(),
+                    "window",
+                    input_messages,
+                    started_at_unix_ms,
+                    (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                    None,
+                    None,
+                    Some(r.meta()),
+                )
+                .await;
+                return;
+            }
             // GH #124 phase boundary: system read-back, tools, prompt concat,
             // attachment reads + base64 and the request build all land in
             // `translate_ms`. The DEBUG line explains a large one (a megabyte
@@ -2294,6 +2436,20 @@ impl LlmCell {
                     return;
                 }
             };
+
+            // Step 7b (GH #1037): a `length` finish is continued, never cut
+            // in silence -- see `continuation.rs` for why the cell owns it.
+            let translated = self
+                .continue_after_length(
+                    sink.sender_path().as_str(),
+                    &url,
+                    &attribution_headers,
+                    &request_json,
+                    timeout,
+                    started_at_unix_ms,
+                    translated,
+                )
+                .await;
 
             // Step 8: emit the assistant turn as an atomic UBF body (end).
             let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;

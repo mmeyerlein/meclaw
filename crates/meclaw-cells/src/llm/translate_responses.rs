@@ -72,7 +72,10 @@ pub(crate) fn build_responses_request(
                 body.insert(key.into(), value);
             }
         }
-        body.insert("max_output_tokens".into(), json!(params.max_tokens));
+        body.insert(
+            "max_output_tokens".into(),
+            json!(params.effective_max_tokens()),
+        );
     }
     if !tools_extracted.is_empty() {
         let tools: Vec<Value> = tools_extracted.iter().map(to_responses_tool).collect();

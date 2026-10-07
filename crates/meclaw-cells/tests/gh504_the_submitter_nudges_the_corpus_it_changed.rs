@@ -461,8 +461,16 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // `builder-librarian@2.2.30` (GH #1025); 1.26.10 re-pins it at
         // `builder-librarian@2.2.31` (GH #1018, GH #1019); 1.26.11 re-pins it at
         // `builder-librarian@2.2.32` with `display@2.10.4` (GH #1028, #1029);
-        // 1.26.12 re-pins it at `builder-librarian@2.2.33` (GH #1024).
-        "builder@1.26.12"
+        // 1.26.12 re-pins it at `builder-librarian@2.2.33` (GH #1024); 1.26.13
+        // re-pins it at `builder-librarian@2.2.34` (GH #1027); 1.26.14 re-pins it
+        // at `builder-librarian@2.2.35` (GH #1021); 1.26.15 re-pins it at
+        // `builder-librarian@2.2.37` with `display@2.10.5` and `curator@1.9.0` (GH #1037);
+        // 1.26.17 re-pins it at `builder-librarian@2.2.38` with `curator@1.10.0` (GH #1040);
+        // 1.26.18 re-pins it at `builder-librarian@2.2.39` (GH #1039); 1.26.19
+        // re-pins it at `builder-librarian@2.2.40` with `curator@1.10.1` (GH #1044);
+        // 1.26.20 re-pins it at `builder-librarian@2.2.41` (GH #1042); 1.26.21
+        // re-pins it at `builder-librarian@2.2.42` (GH #1047).
+        "builder@1.26.21"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

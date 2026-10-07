@@ -7,6 +7,7 @@
 #     scripts/lane_sync.sh run <ssh-target> <strand> <mode> <base> [gate.sh options]
 #     scripts/lane_sync.sh fetch <ssh-target> <strand> <dir>
 #     scripts/lane_sync.sh test <ssh-target> <strand> <filterset> [nextest args]
+#                                                         (golden switches: see `cmd_test`)
 #     scripts/lane_sync.sh status <ssh-target>            one status word line for `strand.sh lanes status`
 #
 # `scripts/strand.sh gate --host <lane>` is the caller; nobody needs to run
@@ -285,14 +286,105 @@ cmd_run() {
 # every tier run there. `MECLAW_TIER_LANE` tells the tier it runs ON a lane
 # (the lanes check is for the owner's machine), and a build host runs no
 # colony, so the tests run at full width. Exit = the remote exit, 255 when
-# ssh lost the host.
+# ssh lost the host; 2 when goldens the run wrote did not come back.
+#
+# KEEP GOING (GH #1050): a test run is there to name every red test of the
+# filterset. `--no-fail-fast` goes along unless the caller asked for the
+# opposite (`--fail-fast`, `--max-fail`): measured on a lane, a filterset of
+# six locks with five expected red named one per run, a different one each
+# time, and the fix took two runs of four and eight minutes to see.
+#
+# GOLDEN SWITCHES (GH #1051): ssh does not carry the caller's environment, so
+# a test that rewrites its goldens under a switch never saw the switch on the
+# lane, and what it wrote there stayed there (the owner's builder copied it
+# back by hand). The switches below travel on the command line when they are
+# set here -- an ALLOWLIST by exact name, never a pattern: a pattern over the
+# environment is how a key or a token would leave this machine. When one
+# travelled, the golden files the run changed come back into this tree.
+GOLDEN_SWITCHES=(GH277_WRITE_GOLDEN MECLAW_GH935_BLESS)
+
+# What counts as a golden: a tracked or new (not ignored) file under a
+# `fixtures/` or `golden/` directory. Hashed THERE before and after the run;
+# a file whose hash moved is what the run wrote. Nothing else comes back.
+# NUL-terminated records `<sha256>  <path>` (`sha256sum -z` escapes no name;
+# without it a backslash in a name moved the path one column, review N5).
+# shellcheck disable=SC2016
+GOLDEN_HASH='spec=(":(glob)**/fixtures/**" ":(glob)**/golden/**")
+{ git ls-files -z -- "${spec[@]}"; git ls-files -z -o --exclude-standard -- "${spec[@]}"; } \
+    | xargs -0 -r sha256sum -z -- 2>/dev/null | LC_ALL=C sort -z; true'
+
 cmd_test() {
     local target="$1" strand="$2"; shift 2
-    local wt="$ROOT/wt/$strand" args="" a
-    for a in "$@"; do args+=" $(q "$a")"; done
+    local wt="$ROOT/wt/$strand" args="" a envs="" name keep=1 first=1 tail=0 binargs=""
+    for a in "$@"; do
+        # the first word is the filterset, never an option
+        if [ "$first" = 1 ]; then first=0; args+=" $(q "$a")"; continue; fi
+        # behind a `--` the words belong to the test binary: `--no-fail-fast`
+        # goes before it, and a `--fail-fast` there is not nextest's (review N3)
+        if [ "$tail" = 1 ]; then binargs+=" $(q "$a")"; continue; fi
+        if [ "$a" = -- ]; then tail=1; binargs+=" --"; continue; fi
+        args+=" $(q "$a")"
+        case "$a" in --fail-fast|--no-fail-fast|--max-fail|--max-fail=*) keep=0 ;; esac
+    done
+    [ "$keep" = 1 ] && args+=" --no-fail-fast"
+    args+="$binargs"
+    for name in "${GOLDEN_SWITCHES[@]}"; do
+        [ -n "${!name+x}" ] && envs+=" $name=$(q "${!name}")"
+    done
+    local before="" rc
+    if [ -n "$envs" ]; then
+        before=$(mktemp) || die "no temp file"
+        remote "$target" "cd $(q "$wt") && bash -c $(q "$GOLDEN_HASH")" >"$before" \
+            || { rm -f "$before"; die "the golden hashes on $target failed"; }
+    fi
     # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" -o ServerAliveInterval=60 "$target" \
-        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && CARGO_TARGET_DIR=$(q "$ROOT/target") MECLAW_TIER_LANE=1 NEXTEST_TEST_THREADS=\$(nproc) scripts/test-tier.sh filter$args"
+        "export PATH=\"\$HOME/.cargo/bin:\$PATH\" && cd $(q "$wt") && CARGO_TARGET_DIR=$(q "$ROOT/target") MECLAW_TIER_LANE=1 NEXTEST_TEST_THREADS=\$(nproc)$envs scripts/test-tier.sh filter$args"
+    rc=$?
+    [ -n "$envs" ] || return "$rc"
+    if [ "$rc" = 255 ]; then rm -f "$before"; return "$rc"; fi
+    golden_back "$target" "$wt" "$before" || { rm -f "$before"; return 2; }
+    rm -f "$before"
+    return "$rc"
+}
+
+# `golden_back <target> <wt> <hash file before>`: the goldens the run changed,
+# from the host's tree into this one, each named on stderr (the kit lifts the
+# lines out of the test log). The host's tree held this tree's state when the
+# run began (commit + overlay), so a golden whose file HERE no longer matches
+# the hash before was edited here during the run: it stays, the line names it
+# as a conflict, the exit is 1 -- the lane's copy never overwrites it.
+golden_back() {
+    local target="$1" wt="$2" before="$3" after top list f rec h rc=0
+    local -A had=()
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || die "not a git repository"
+    after=$(mktemp) || die "no temp file"
+    remote "$target" "cd $(q "$wt") && bash -c $(q "$GOLDEN_HASH")" >"$after" \
+        || { rm -f "$after"; echo "lane_sync: golden fetch failed -- no hashes from $target" >&2; return 1; }
+    while IFS= read -r -d '' rec; do had["${rec:66}"]="${rec:0:64}"; done <"$before"
+    list=$(mktemp) || die "no temp file"
+    while IFS= read -r -d '' rec; do
+        f="${rec:66}"
+        secret_name "$f" && continue
+        h=""
+        [ -f "$top/$f" ] && h=$(sha256sum <"$top/$f" | cut -c1-64)
+        if [ "$h" != "${had["$f"]:-}" ]; then
+            echo "lane_sync: golden conflict: $f -- changed here during the run, kept;" \
+                "the lane's copy stays on $target" >&2
+            rc=1
+            continue
+        fi
+        printf '%s\0' "$f"
+    done < <(LC_ALL=C comm -z -13 "$before" "$after") >"$list"
+    if [ -s "$list" ]; then
+        rsync -a --from0 --files-from="$list" -e "ssh ${SSH_OPTS[*]}" "$target:$wt/" "$top/" \
+            || { rm -f "$list" "$after"; echo "lane_sync: golden fetch failed -- rsync from $target" >&2; return 1; }
+        while IFS= read -r -d '' f; do echo "lane_sync: golden back: $f" >&2; done <"$list"
+    elif [ "$rc" = 0 ]; then
+        echo "lane_sync: golden back: none -- the run changed no golden" >&2
+    fi
+    rm -f "$list" "$after"
+    return "$rc"
 }
 
 cmd_fetch() {

@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "disclosure_rows": 200,
     "list_disclosure_rows": 5000,
     "list_people": 50,

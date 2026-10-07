@@ -436,6 +436,13 @@ fn the_package_keys_are_the_contract() {
             // GH #993: which sampling params the model takes -- a contract
             // change, made on purpose.
             "supported_params",
+            // GH #1037: the model's listed output limit -- a contract change,
+            // made on purpose.
+            "max_output",
+            "input_soft",
+            "input_hard",
+            "cost_in",
+            "cost_cached_in",
         ]
     );
     // Every package key is a known, run-time-mutable param.

@@ -9,7 +9,6 @@
     "model": "${LLM_REGISTRY_TRANSLATOR_MODEL:-anthropic/claude-opus-5.5}",
     "api_key": "${OPENROUTER_API_KEY:-}",
     "temperature": 0,
-    "max_tokens": 600,
     "external_timeout_ms": 60000,
     "system_order": [
       "instructions"
@@ -105,6 +104,22 @@
           "required": false
         },
         "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
           "type": "number",
           "required": false
         },

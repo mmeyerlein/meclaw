@@ -1,4 +1,4 @@
-# `llm-registry@2.7.0`
+# `llm-registry@2.8.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -110,6 +110,11 @@ it is born with.
 | `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own; `decisions` marks the row's protocol and is never sent, see below) |
 | `model_prompt` | `prompt` -- the lines this model needs in every system prompt and no other model does; the brain puts them FIRST in its system part |
 | `cache_mode`, `cache_ttl_s`, `context_window` | the columns of the same names -- how the model's provider caches a prompt prefix and for how many seconds, and its window in tokens; empty or 0 = the cell keeps its own (GH #890) |
+| `max_output` | the column of the same name -- the most tokens the model generates in one answer, as its provider lists it (the note names the source); 0 = not stated. A brain that names no cap of its own asks for exactly this, and one that names a cap never asks for more (GH #1037) |
+| `input_soft` | the column of the same name -- the prompt size in tokens from which a rebuild of the window pays (25 % of `input_hard` in the shipped rows); 0 = not stated. The brain only stamps it (`hop.input_soft`), the curator reads it (R-HK-15/16) |
+| `input_hard` | the column of the same name -- the largest prompt in tokens the brain sends this model; above it the call is refused without a model call (`invalid_input`, kind `input_over_hard`). 0 = no bound |
+| `cost_in` | the column of the same name -- list price of a million prompt tokens in cents, stamped as `hop.cost_in` |
+| `cost_cached_in` | the column of the same name -- the price of a million prompt tokens read from the provider's cache, in cents and with fractions (`pricing.input_cache_read` of the listing), stamped as `hop.cost_cached_in`. The row's `cost_cache_write` (cache write price) stays in the catalogue and is not pushed |
 | `reasoning_effort`, `reasoning_wire`, `reasoning`, `thinking_budget`, `max_tokens`, `temperature`, `external_timeout_ms`, `provider_extra` | `package`, a json object; any other key in it is dropped and never reaches a cell |
 
 The key list is the llm cell's own (`MODEL_PACKAGE_KEYS`, GH #853), and a template test holds
@@ -174,11 +179,13 @@ A push is a **params-only** message -- an empty `system` slot and no `messages` 
 ```json
 {"system": {},
  "params": {"model": "provider-b/model-large", "base_url": "https://gateway.example/api/v1",
-            "wire_dialect": "responses", "reasoning_effort": "medium", "max_tokens": 4096,
+            "wire_dialect": "responses", "reasoning_effort": "medium", "max_output": 128000,
+            "input_soft": 250000, "input_hard": 1000000, "cost_in": 10, "cost_cached_in": 1,
             "model_prompt": "…",
-            "$reset": ["reasoning_wire", "reasoning", "thinking_budget", "temperature",
-                       "external_timeout_ms", "provider_extra", "cache_mode",
-                       "cache_ttl_s", "context_window"]}}
+            "$reset": ["reasoning_wire", "reasoning", "thinking_budget", "max_tokens",
+                       "temperature", "external_timeout_ms", "provider_extra",
+                       "cache_mode", "cache_ttl_s", "context_window",
+                       "supported_params"]}}
 ```
 
 It carries the WHOLE package and `$reset` for every package key the package does not set, so no

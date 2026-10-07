@@ -650,6 +650,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -682,6 +683,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -711,6 +713,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -740,6 +743,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -769,6 +773,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -831,6 +836,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -860,6 +866,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -889,6 +896,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -918,6 +926,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -970,6 +979,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -999,6 +1009,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -1028,6 +1039,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -1065,6 +1077,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -1127,6 +1140,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -1159,6 +1173,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -1191,6 +1206,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -1223,6 +1239,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }
@@ -1240,7 +1257,8 @@
               "memory_tier": "has(hop.memory_tier) ? hop.memory_tier : ''",
               "recall_as_of": "''",
               "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
-              "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''"
+              "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
+              "recall_input_soft": "has(context.recall_input_soft) ? context.recall_input_soft : ''"
             }
           }
         },
@@ -1278,6 +1296,7 @@
               "recall_subject",
               "recall_window_from",
               "recall_window_to",
+              "recall_input_soft",
               "store_origin"
             ]
           }

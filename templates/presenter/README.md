@@ -1,4 +1,4 @@
-# `presenter@1.2.3`
+# `presenter@1.2.6`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -15,6 +15,13 @@ presenter/          hive, an app (tag `app`): screen out [view, withdraw], back 
   store             store -- tables shows, pending, journal, work
   clock             timer -- one one-shot `deadline` at a time
 ```
+
+`stage` moves the one `deadline` by removing the standing order and adding the next. An order
+whose moment has passed is not removed: it struck and is gone at the timer, even while its
+strike still waits in `stage`'s queue, and the late strike only re-reads the deadlines. A
+`remove` the clock answers `schedule_not_found` met an order that struck on the way; the order
+is gone, so nothing leaves. Every other clock refusal leaves as `error` `clock_refused` (GH
+#1047).
 
 ## The contract
 
@@ -89,7 +96,7 @@ after `data_wait_ms` the view is withdrawn.
 | `data_wait_ms` | 4000 | how long an open window waits for a placeable block; a manifest value wins |
 | `also_threshold` | 0.5 | confidence the second block needs |
 | `screen_audience` | `[]` | the screen's round (canonical list) |
-| `window_requires_star_data` | `true` | on a screen a third party shares (a member's turn whose round does not cover the screen's), a window opens only on `*` data left after the audience gate -- no working hint, no standard block, nothing without data; `false` opens it on the verdict as before |
+| `window_requires_star_data` | `false` | off, a window shows all of the member's data, also on a screen a third party shares (gated by the members of the screen's round that are in the turn -- another member's rows stay out); `true` is the way back to R-HP-9 (c): a window only on `*` data left after the screen's gate |
 | `builtin_thresholds` | `{}` | a threshold of its own for one of the presenter's own topics (`search`, `work` and those of `builtin_topics`), by name, each in (0, 1]; a topic not named takes `threshold`, an app's topic keeps its manifest's |
 | `work_hint` | `Working on it…` | the hint's text |
 | `catalog` | the display's block copy | written by `scripts/display_sync.py` only |
@@ -199,7 +206,8 @@ stands, or the one block of a topic with one candidate), `unsure`, `no_topic`, `
 stands instead of the lead), `no_data` (withdrawn, or never opened) and `foreign_round` (no member of the screen's round is
 in the turn's round, or the turn has none: the decider is not asked and nothing opens -- a
 window alone would tell the screen what someone else asked; a screen without a round skips this
-check). A member's turn on a screen a third party shares is asked as usual; with
+check). A member's turn on a screen a third party shares is asked as usual and its window
+shows all of the member's data (R-HP-18); with
 `window_requires_star_data` on, its window opens with the first block bound from `*` data (the
 window time is then the time to that block), and without such data it journals `no_data`
 with nothing shown. The three times count from the turn's

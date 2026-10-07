@@ -15,7 +15,10 @@
         "content": "text",
         "happened_at": "text",
         "recorded_at": "text",
-        "affect": "text"
+        "affect": "text",
+        "speaker_name": "text",
+        "closed_at": "text",
+        "closure_source": "text"
       }
     },
     "query_timeout_ms": 5000

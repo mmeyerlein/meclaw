@@ -16,7 +16,10 @@
         "content": "text",
         "happened_at": "text",
         "recorded_at": "text",
-        "affect": "text"
+        "affect": "text",
+        "speaker_name": "text",
+        "closed_at": "text",
+        "closure_source": "text"
       },
       "topics": {
         "id": "text",
@@ -82,7 +85,8 @@
         "source_fact_ids": "json",
         "audience_set": "text",
         "created_at": "text",
-        "updated_at": "text"
+        "updated_at": "text",
+        "closure_source": "text"
       },
       "skills": {
         "id": "text",

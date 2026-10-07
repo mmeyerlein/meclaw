@@ -1,4 +1,4 @@
-# `member@2.5.7`
+# `member@2.5.14`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and three edges.
@@ -83,7 +83,7 @@ memory answers it itself:
 
 | edge | lane | what it does |
 |---|---|---|
-| `./assistants -> ./memory-hive` | `tool`, `hop.tool_name == 'memory_recall'` | turns the call into the hive's own `tool_call` and stamps the round: `audience_now`, `channel`, `session_id`, `turn_id` (off the hop, and off the context when the hop names none -- the dispatcher's `tool` emission never does; since `1.10.1`, [#841](https://github.com/mmeyerlein/meclaw/issues/841)) |
+| `./assistants -> ./memory-hive` | `tool`, `hop.tool_name == 'memory_recall'` | turns the call into the hive's own `tool_call` and stamps the round: `audience_now`, `channel`, `session_id`, `turn_id` (off the hop, and off the context when the hop names none -- the dispatcher's `tool` emission never does; since `1.10.1`, [#841](https://github.com/mmeyerlein/meclaw/issues/841)); since `2.5.13` also `recall_input_soft` off the hop (`''` without), the asking model's usable window the memory sizes the bundle by, as on the two recall doors ([#1044](https://github.com/mmeyerlein/meclaw/issues/1044)) |
 | `./memory-hive -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` — an ordinary tool result re-entering the round that asked, refusals included |
 | `./assistants -> ./memory-hive` | `schemas` | a generation's menu tick, turned into the hive's own `in_schemas` |
 | `./memory-hive -> ./assistants` | `tool_schemas` | the declaration, restamped to `in_menu` and stamped `context.tool_answerer = 'memory'` — the key the menu merge of #529 files an answerer under |
@@ -879,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.7` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.14` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.7"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.14"}]
 }}
 ```
 
@@ -1124,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.3"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.7"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

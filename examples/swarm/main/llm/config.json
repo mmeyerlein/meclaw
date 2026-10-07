@@ -9,7 +9,6 @@
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.2,
-    "max_tokens": 512,
     "system_order": [
       "identity"
     ],

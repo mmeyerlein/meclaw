@@ -218,7 +218,9 @@ fn the_semantic_page_is_not_spent_on_copies_of_the_question() {
             "audience_set",
             "content",
             "happened_at",
-            "recorded_at"
+            "recorded_at",
+            "closure_source",
+            "speaker_name"
         ]),
         "{ep_aud}"
     );

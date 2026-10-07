@@ -67,9 +67,9 @@ pub struct Dials {
     /// `null` leaves the shipped `["search", "work"]`, `[]` is a presenter with no topic of
     /// its own.
     pub observed_topics: Value,
-    /// R-HP-9: the stage's `window_requires_star_data`; `null` leaves the shipped value
-    /// (on: a member's turn on a screen a third party shares opens a window only on `*`
-    /// data), `false` is the reading before (the window on the verdict).
+    /// The stage's `window_requires_star_data`; `null` leaves the shipped value (off,
+    /// R-HP-18: a window shows all of the member's data, also on a screen a third party
+    /// shares), `true` is the R-HP-9 (c) way back (a window only on `*` data).
     pub window_requires_star_data: Value,
 }
 

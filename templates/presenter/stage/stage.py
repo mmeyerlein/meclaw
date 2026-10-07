@@ -72,8 +72,9 @@ DEFAULTS = {
     "data_wait_ms": 4000,
     "also_threshold": 0.5,
     "work_hint": "Working on it…",
-    # R-HP-9 (c): see `gate_round`. Off = the reading before (b, R-DP-b).
-    "window_requires_star_data": True,
+    # R-HP-18: off, a window shows all of the member's data (`window_round`); on is the
+    # way back to R-HP-9 (c), see `gate_round`.
+    "window_requires_star_data": False,
 }
 
 PANE = "display-pane"
@@ -295,11 +296,12 @@ def gate_round(turn_round, screen_round, params):
     - "foreign": no member of the screen's round is in the turn, or the turn has no
       round -- nothing is asked, nothing opens (GH #1027);
     - "star": a member of the screen's round is in the turn, but the round does not
-      cover the screen (a third party shares it) -- with `window_requires_star_data` on
-      (R-HP-9 c), the window opens only on `*` data left after the gate, never with the
-      working hint and never with the standard block instead, so a private topic leaves
-      no trace on a shared screen; off, "open" (R-DP-b: the window on the verdict, the
-      data gated).
+      cover the screen (a third party shares it), and `window_requires_star_data` is on
+      (R-HP-9 c, the way back): the window opens only on `*` data left after the screen's
+      gate, never with the working hint and never with the standard block instead. Off
+      (shipped, R-HP-18), "open": the window shows all of the member's data, gated by
+      `window_round`. The owner, 06.10.: a window is almost always the member's phone or
+      private browser, the shared TV the rare case; the chat keeps its audience.
     """
     screen = as_round(screen_round) or []
     if not screen or covers(turn_round, screen):
@@ -308,6 +310,21 @@ def gate_round(turn_round, screen_round, params):
     if not any(m in have for m in screen if m.startswith("member:")):
         return "foreign"
     return "star" if knob(params, "window_requires_star_data") else "open"
+
+
+def window_round(rec, params):
+    """The round a turn's window data are gated by (R-HP-18): the members of the screen's
+    round that are in the turn. A turn that covers the screen gets the screen's round, as
+    always; a member's turn on a screen a third party shares gets the member's part of it,
+    so the window shows all of the member's data and never another member's rows (the
+    third party's presence does not filter, identity does -- a foreign round opened nothing
+    before this is asked, GH #1027). A screen without a round stays at `*` (empty), and
+    with `window_requires_star_data` on (`star_only`) the screen's whole round gates."""
+    screen = as_round(params.get("screen_audience")) or []
+    if not screen or rec.get("star_only"):
+        return screen
+    have = as_round(rec.get("audience_set")) or []
+    return [m for m in screen if m in have]
 
 
 def filter_set(data_set, screen_round):
@@ -1191,7 +1208,11 @@ def clock_ops(r, now, struck=""):
     """Zero, one or two orders: remove the standing one, add the next (GH #553: no poll)."""
     at = next_due(r)
     old = r.get("due") or {}
-    if old.get("sid") == struck:
+    if old.get("sid") == struck or (old and int(old.get("at") or 0) <= now):
+        # GH #1047: a one-shot that struck is `completed` at the timer and gone. Its moment
+        # has passed even when its strike still waits in this cell's queue behind the event
+        # at hand (the race measured downstream: 6 `clock_refused` `schedule_not_found`
+        # in 5 of 109 gate runs). A late strike only re-reads the deadlines.
         old = {}
     ops = []
     if at is None:
@@ -1437,11 +1458,11 @@ def lane_decision(body, hop, params, now):
                                     "lead": rec["keys"][0], "also": rec["keys"][1:],
                                     "turn_id": tid,
                                     "sets": wanted_sets(manifest, rec["keys"]),
-                                    # OR-DP-82: the screen's round rides with the question,
+                                    # OR-DP-82: the window's round rides with the question,
                                     # so an app that picks between rows of different rounds
-                                    # picks only among rows this screen may see.
-                                    "screen_audience": sorted(set(
-                                        as_round(params.get("screen_audience")) or []))},
+                                    # picks only among rows this window may show (the
+                                    # member's part of a shared screen, R-HP-18).
+                                    "screen_audience": sorted(set(window_round(rec, params)))},
                         **app_head(show["owner"], show.get("show_at") or ""))]
     else:
         # The presenter's own topic (GH #963): no app to ask. A declared source is read
@@ -1480,10 +1501,10 @@ def lane_show_data(body, hop, ctx, params, now):
 
 def feed(r, rec, manifest, sets, params, now):
     """Data sets for a shown turn, from its app (`show_data`), a resident (`resident_answer`)
-    or the presenter's own observations: gated by the screen's round, then every block
-    that can stand now is placed (P.6), the first one journaled."""
+    or the presenter's own observations: gated by the window's round (`window_round`),
+    then every block that can stand now is placed (P.6), the first one journaled."""
     tid = rec["turn_id"]
-    screen = params.get("screen_audience")
+    screen = window_round(rec, params)
     for name, data in sets.items():
         kept = filter_set(data, screen)
         if kept is not None and name not in rec["sets"]:
@@ -1823,9 +1844,9 @@ def lane_tool_result(body, hop, ctx, params, now):
 def own_sets(r, rec, topic, params):
     if topic == "search":
         return search_sets((rec.get("observed") or {}).get("hits") or [],
-                           params.get("screen_audience"))
+                           window_round(rec, params))
     if topic == "work":
-        return work_sets(r["work"], params.get("screen_audience"), params, rec)
+        return work_sets(r["work"], window_round(rec, params), params, rec)
     return {}
 
 
@@ -2034,6 +2055,11 @@ def handle(doc):
     if route == "in_tick":
         return lane_tick(hop, now)
     if route == "in_tick_error":
+        # GH #1047: `stage` orders only `add` under a fresh id and `remove`, so
+        # `schedule_not_found` answers a remove whose order already left the clock (it
+        # struck on the way). The order is gone, which is what the remove wanted: no fault.
+        if str(hop.get("error_code") or "") == "schedule_not_found":
+            return []
         return [error("clock_refused", str(body.get("detail") or hop.get("error_code")
                                              or "the clock refused an order"))]
     if route == "show_topics":

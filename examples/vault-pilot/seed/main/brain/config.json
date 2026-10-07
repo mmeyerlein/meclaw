@@ -9,7 +9,6 @@
     "api_key": "${EXAMPLE_PROVIDER_KEY:-}",
     "base_url": "${EXAMPLE_PROVIDER_BASE_URL:-https://api.openai.com/v1}",
     "credential_grant_id": "grant:example-provider-primary@member-example",
-    "max_tokens": 128,
     "external_timeout_ms": 20000
   },
   "contract": {

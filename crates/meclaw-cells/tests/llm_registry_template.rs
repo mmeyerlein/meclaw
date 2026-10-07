@@ -518,7 +518,7 @@ fn write_placeholder_seed(dir: &std::path::Path) {
     let models = [
         json!({"schema": {"model_id": "text", "provider": "text", "base_url": "text",
             "wire_dialect": "text", "context_window": "int", "cache_mode": "text",
-            "cache_ttl_s": "int", "cost_in": "int",
+            "cache_ttl_s": "int", "cost_in": "int", "max_output": "int",
             "cost_out": "int", "caps": "json", "traits": "json", "status": "text",
             "note": "text", "package": "json", "prompt": "text", "strengths": "text"}}),
         json!({"model_id": "provider-a/model-small", "provider": "gateway", "base_url": gw,
@@ -753,7 +753,8 @@ async fn catalogue_plain(
         rx,
         json!({"operation": "insert", "table": "models",
                "row": {"model_id": model_id, "provider": "gateway", "base_url": "",
-                       "wire_dialect": "", "context_window": 32000, "cost_in": 1,
+                       "wire_dialect": "", "context_window": 32000, "max_output": 65536,
+                       "cost_in": 1,
                        "cost_out": 1, "caps": {"tools": true}, "traits": {},
                        "status": "active", "note": "TEST ROW", "package": package,
                        "prompt": prompt}}),
@@ -862,6 +863,11 @@ const PACKAGE_KEYS: &[&str] = &[
     "cache_ttl_s",
     "context_window",
     "supported_params",
+    "max_output",
+    "input_soft",
+    "input_hard",
+    "cost_in",
+    "cost_cached_in",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins
@@ -1199,9 +1205,16 @@ async fn a_remap_command_pushes_params_to_exactly_the_unpinned_subscribers() {
         Some(32000),
         "the window travels with the model: {body}"
     );
+    // GH #1037: and so does its output limit, so a brain that names no cap
+    // of its own asks for what the model can give.
+    assert_eq!(
+        body["params"]["max_output"].as_i64(),
+        Some(65536),
+        "the output limit travels with the model: {body}"
+    );
     let mut rest: Vec<String> = PACKAGE_KEYS
         .iter()
-        .filter(|k| !["model", "context_window"].contains(k))
+        .filter(|k| !["model", "context_window", "max_output", "cost_in"].contains(k))
         .map(|k| k.to_string())
         .collect();
     rest.sort();
@@ -1768,6 +1781,8 @@ async fn the_precedence_is_targeted_then_global_then_tier_then_start() {
                 "max_tokens",
                 "reasoning_effort",
                 "context_window",
+                "max_output",
+                "cost_in",
             ]
             .contains(k)
         })

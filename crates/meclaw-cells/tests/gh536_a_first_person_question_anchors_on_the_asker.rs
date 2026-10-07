@@ -262,7 +262,13 @@ fn fused_of(out: &[Value]) -> Value {
 /// The fusion, driven out of a REAL parked fan: `t1-legs` with an empty walk and
 /// an empty semantic leg, so the only leg that can nominate anything is `self`.
 fn fuse(legs_row: &Value) -> Vec<Value> {
-    let out = run(bundle_reply(
+    fuse_with(legs_row, json!({}))
+}
+
+/// `fuse` under the recall cell's `params` (GH #1040: the reserved dossier
+/// budget is an override since then).
+fn fuse_with(legs_row: &Value, params: Value) -> Vec<Value> {
+    let mut doc = bundle_reply(
         "t1-legs",
         &[
             ("r-legs-sem-aud", json!([])),
@@ -271,7 +277,9 @@ fn fuse(legs_row: &Value) -> Vec<Value> {
                 json!([scratch("legs", legs_row), scratch("sem", &json!([]))]),
             ),
         ],
-    ));
+    );
+    doc["params"] = params;
+    let out = run(doc);
     assert_eq!(
         out[0]["header"]["phase"], "t1-emit",
         "no walk, no join — straight to the hydration: {out:#?}"
@@ -280,6 +288,33 @@ fn fuse(legs_row: &Value) -> Vec<Value> {
 }
 
 // ═════════════════════════════════════════════ 1. the asker's facts are asked for
+
+/// GH #1040 (review B1): the legacy spelling stays on by default -- the six
+/// `user` facts KD2 § 2 found in every bundle sat there by the reserved seats
+/// and the recency order, both gone with #1040 -- and the empty string is the
+/// one way to switch it off.
+#[test]
+fn the_legacy_spelling_is_read_unless_a_hive_switches_it_off() {
+    let subjects_of = |params: Value| {
+        let mut req = request();
+        req["params"] = params;
+        let out = run(req);
+        let fan = fan_of(&out);
+        let mine = call(&fan, "r-fan-self").expect("the self leg is part of the fan");
+        mine["where"]["canonical_subject"]["in"]
+            .as_array()
+            .expect("an `in` over the asker's subjects")
+            .clone()
+    };
+    let shipped = subjects_of(json!({}));
+    assert!(shipped.iter().any(|s| s == "alex"), "{shipped:?}");
+    assert!(
+        shipped.iter().any(|s| s == "user"),
+        "the legacy spelling is read by default: {shipped:?}"
+    );
+    let off = subjects_of(json!({"self_legacy_subject": ""}));
+    assert!(!off.iter().any(|s| s == "user"), "{off:?}");
+}
 
 /// The identity is read off `audience_now` and nothing else has to be promoted
 /// for it: `member:alex` is a person, `agent:aide` is a lens on the hive
@@ -399,7 +434,9 @@ fn the_dossier_gets_a_budget_and_not_the_whole_fact_half() {
             .map(|i| json!({"kind": "episode", "id": format!("e-{i}")}))
             .collect::<Vec<_>>()
     );
-    let fused = fused_of(&fuse(&row));
+    // GH #1040: the reserved budget of six is an override since then (shipped
+    // 0, the dossier ranked by the question); this case pins the override.
+    let fused = fused_of(&fuse_with(&row, json!({"tier1_self_budget": 6})));
     let seated: Vec<&str> = fused["candidates"]
         .as_array()
         .unwrap()

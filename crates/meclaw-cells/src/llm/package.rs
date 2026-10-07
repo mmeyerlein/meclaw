@@ -85,7 +85,13 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             ),
             "reasoning" => params.reasoning.as_ref().map(|r| r.to_string()),
             "thinking_budget" => params.thinking_budget.map(|b| b.to_string()),
-            "max_tokens" => Some(params.max_tokens.to_string()),
+            // GH #1037: 0 = the cell names no cap; the line then shows the
+            // budget the request carries, marked as derived.
+            "max_tokens" => Some(if params.max_tokens > 0 {
+                params.max_tokens.to_string()
+            } else {
+                format!("auto:{}", params.effective_max_tokens())
+            }),
             "temperature" => Some(params.temperature.to_string()),
             "external_timeout_ms" => Some(params.external_timeout_ms.to_string()),
             "provider_extra" => (!params.provider_extra.is_empty()).then(|| {
@@ -118,6 +124,14 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
                 .supported_params
                 .as_ref()
                 .map(|names| format!("[{}]", names.join(","))),
+            "max_output" => (params.max_output > 0).then(|| params.max_output.to_string()),
+            // R-HK-15/16: shown only when stated.
+            "input_soft" => (params.input_soft > 0).then(|| params.input_soft.to_string()),
+            "input_hard" => (params.input_hard > 0).then(|| params.input_hard.to_string()),
+            "cost_in" => (params.cost_in > 0.0).then(|| params.cost_in.to_string()),
+            "cost_cached_in" => {
+                (params.cost_cached_in > 0.0).then(|| params.cost_cached_in.to_string())
+            }
             _ => None,
         };
         if let Some(v) = value {
@@ -284,6 +298,24 @@ mod tests {
         assert!(line.contains("cache_mode=breakpoints[start]"), "{line}");
         assert!(line.contains("cache_ttl_s=300[overlay]"), "{line}");
         assert!(line.contains("context_window=64000[start]"), "{line}");
+    }
+
+    /// GH #1037: a cell without its own cap shows the budget its request
+    /// carries as derived, and the model's limit when a package stated one.
+    #[test]
+    fn gh1037_the_line_names_the_budget_and_its_source() {
+        let bare =
+            LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k"})).unwrap();
+        let line = params_line("/a", &bare, &Map::new());
+        assert!(line.contains("max_tokens=auto:32768[start]"), "{line}");
+        assert!(!line.contains("max_output"), "{line}");
+        let p = LlmParams::parse(&json!({
+            "provider": "openai", "model": "m", "api_key": "k", "max_output": 65536,
+        }))
+        .unwrap();
+        let line = params_line("/a", &p, &obj(json!({"max_output": 65536})));
+        assert!(line.contains("max_tokens=auto:65536[start]"), "{line}");
+        assert!(line.contains("max_output=65536[overlay]"), "{line}");
     }
 
     /// OR-KX-C1: `breakpoints` on the Responses wire is `implicit`, and that is

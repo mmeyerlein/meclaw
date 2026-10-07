@@ -5,6 +5,7 @@
 #     scripts/strand.sh new <name> --issue <nr> [options]
 #     scripts/strand.sh gate [<mode>] [--host <lane>] [gate.sh options]
 #     scripts/strand.sh test '<nextest filterset>' [--host <lane>] [nextest args]
+#         (GH277_WRITE_GOLDEN=1 / MECLAW_GH935_BLESS=1 travel; the goldens come back)
 #     scripts/strand.sh report [--strand <name>]
 #     scripts/strand.sh close [--strand <name>] [--do]
 #     scripts/strand.sh token take|release|who|check|init|off|lane [options]
@@ -65,6 +66,7 @@
 #     token init [--max N] [--ttl MIN] [--force]   arm the host (refuses over a queue)
 #     token init --lanes a,b,c [--ttl MIN]         arm one named token per build lane
 #     token take [--strand S] [--lane NAME]        hold a token (that lane) or join the queue
+#     token take ... --wait                         block until taken (start it in the background)
 #     token release [--strand S]                   give it back, name the next
 #     token who                                    holders, queue, last events
 #     token check [--pid P]                        what the gate and the tier call
@@ -736,6 +738,17 @@ cmd_test() {
             --strand) need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
             --wave)   need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
             --)       shift; extra+=("$@"); break ;;
+            # GH #1050: an option before the filterset is a nextest argument,
+            # not the filterset (`test --no-fail-fast '<expr>'` ran `-E
+            # --no-fail-fast`). The ones that take a value take the next word
+            # (`-p meclaw-cells '<expr>'` made the package the filterset).
+            --run-ignored|-j|--test-threads|--retries|--max-fail|--partition|--status-level \
+            |--final-status-level|--failure-output|--success-output|--cargo-profile|--features \
+            |-p|--package|-F|--exclude|--test|--bin|--example|--bench|--target|--target-dir \
+            |--no-tests|-P|--profile|--manifest-path|--config|--tool-config-file|--color \
+            |--message-format|--build-jobs|--show-progress)
+                      need_value "$1" "$#"; extra+=("$1" "$2"); shift 2 ;;
+            -*)       extra+=("$1"); shift ;;
             *)        if [ -z "$expr" ]; then expr="$1"; else extra+=("$1"); fi; shift ;;
         esac
     done
@@ -832,6 +845,13 @@ cmd_test() {
         rc=6
     fi
     [ "$rc" = 0 ] || tail -20 "$log"
+    # Every red test by name (GH #1050): the tail above is the output of the
+    # LAST failure only (`failure-output = "immediate-final"`), and a red line
+    # of a filterset with five red locks read like one.
+    [ "$rc" = 0 ] || grep -E '^ +(FAIL|TIMEOUT|SIG[A-Z]+|LEAK-FAIL) \[' "$log" \
+        | sed -E 's/\[[^]]*\] //; s/^ +/  /' | awk '!seen[$0]++'
+    # The goldens that came back from the lane (GH #1051).
+    sed -n 's/^lane_sync: \(golden .*\)$/strand: \1/p' "$log"
     printf 'TEST [%s] %s/%s %ss %s\n' "$expr" "${passed:-0}" "${total:-0}" "$secs" "$verdict" \
         | tee -a "$log"
     return "$rc"
@@ -1117,6 +1137,42 @@ cmd_token() {
         take|release|who|check|init|off|lane) ;;
         *) die "token: expected take|release|who|check|init|off|lane" ;;
     esac
+    # `take --wait`: block until the take succeeds. A waiter is an entry in
+    # the token file and nothing more -- nothing in it takes a lane that comes
+    # free, it waits for somebody to wake its builder. Measured 07.10.: a
+    # builder that ended its turn in the queue waited 115 min beside a free
+    # lane until the orchestrator dropped it. Started in the BACKGROUND, the
+    # exit of this call is the wake-up. Only a queued take (exit 3) is tried
+    # again; every other refusal goes through at once. FIFO stays the take's
+    # own rule: a retry keeps the waiter's place and passes nobody ahead.
+    if [ "$verb" = take ]; then
+        local a wait=0 rest=() trc tries=0 werr
+        for a in "$@"; do
+            if [ "$a" = --wait ]; then wait=1; else rest+=("$a"); fi
+        done
+        if [ "$wait" = 1 ]; then
+            werr=$(mktemp) || die "no temp file"
+            while :; do
+                # the queue line once, not every retry -- but the words of the
+                # round that ends the wait are said (review N4: a later refusal,
+                # the lane gone after `init --force`, came back as a bare exit).
+                # A subshell, so a `die` in it ends the round, not the waiter.
+                if [ "$tries" = 0 ]; then
+                    cmd_token take ${rest[@]+"${rest[@]}"}
+                else
+                    ( cmd_token take ${rest[@]+"${rest[@]}"} ) 2>"$werr"
+                fi
+                trc=$?
+                tries=$((tries + 1))
+                if [ "$trc" != 3 ]; then
+                    [ "$tries" = 1 ] || cat "$werr" >&2
+                    rm -f "$werr"
+                    return "$trc"
+                fi
+                sleep "${MECLAW_TOKEN_WAIT_SECS:-30}"
+            done
+        fi
+    fi
     local strand_in="" wave_in="" max="3" ttl="90" pid="" force=0
     local lanes="" lane_want="" max_set=0
     while [ $# -gt 0 ]; do

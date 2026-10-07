@@ -10,7 +10,6 @@
     "requirement": "Decides whether the colony should change itself: it weighs measurements against a charter, reasons through what would happen otherwise and states a decision with its way back. It needs the strongest reasoning available and careful, structured output of a few thousand tokens. It runs on a slow cycle and nobody waits on it, so up to two minutes and a high price per call are acceptable, and a weaker model here is a false economy.",
     "api_key": "${OPENROUTER_API_KEY}",
     "external_timeout_ms": 120000,
-    "max_tokens": 4000,
     "system_order": [
       "role",
       "method",
@@ -114,6 +113,22 @@
           "required": false
         },
         "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
           "type": "number",
           "required": false
         },

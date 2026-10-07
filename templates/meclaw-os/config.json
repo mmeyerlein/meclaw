@@ -25,35 +25,35 @@
         },
         {
           "route": "in_read",
-          "because": "read the control loop's record -- its charter, its cycle receipts, the hints it holds -- page by page and as stored. It decides nothing and starts no cycle, and nothing at this level consumes it, so the lane is the shell's. Derived from argus@1.3.2"
+          "because": "read the control loop's record -- its charter, its cycle receipts, the hints it holds -- page by page and as stored. It decides nothing and starts no cycle, and nothing at this level consumes it, so the lane is the shell's. Derived from argus@1.3.3"
         },
         {
           "route": "in_hint",
-          "because": "hand the control loop a hypothesis: one line with an origin and a confidence, stored and acknowledged, shown to its judge at the earliest in its next cycle and never counted as a measurement. Nothing at this level consumes it, so the lane is the shell's. Derived from argus@1.3.2"
+          "because": "hand the control loop a hypothesis: one line with an origin and a confidence, stored and acknowledged, shown to its judge at the earliest in its next cycle and never counted as a measurement. Nothing at this level consumes it, so the lane is the shell's. Derived from argus@1.3.3"
         },
         {
           "route": "in_hand",
-          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from llm-registry@2.7.0"
+          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from llm-registry@2.8.0"
         },
         {
           "route": "in_select",
-          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from llm-registry@2.7.0"
+          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from llm-registry@2.8.0"
         },
         {
           "route": "in_turn",
-          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@2.1.11"
+          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@2.1.18"
         },
         {
           "route": "in_recall",
-          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@2.1.11"
+          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@2.1.18"
         },
         {
           "route": "in_brief",
-          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@2.1.11"
+          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@2.1.18"
         },
         {
           "route": "in_propose",
-          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@2.1.11"
+          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@2.1.18"
         },
         {
           "route": "in_build",
@@ -73,23 +73,23 @@
         },
         {
           "route": "in_export",
-          "because": "a demand that one of an organisation's members hand out its memory as a versioned document. The level carries it because the namespace beneath declares it and a lane an occupant accepts is a lane no caller can reach unless the level does too. The usual sender is the front door -- `./operator` raises `export` and this level's own edge re-stamps it onto this lane -- and the rim door exists because a colony may also trigger one from outside without going through the front door. Derived from org@2.1.11"
+          "because": "a demand that one of an organisation's members hand out its memory as a versioned document. The level carries it because the namespace beneath declares it and a lane an occupant accepts is a lane no caller can reach unless the level does too. The usual sender is the front door -- `./operator` raises `export` and this level's own edge re-stamps it onto this lane -- and the rim door exists because a colony may also trigger one from outside without going through the front door. Derived from org@2.1.18"
         },
         {
           "route": "in_import",
-          "because": "one part of a memory document, on its way to the member whose hive it belongs to. It is the return leg of `in_export`, and the shell carries it for the same reason: nothing at this level produces memory parts and nothing here consumes them, so a lane the organisations below can answer would die as `no_route` at the outermost boundary if the shell did not declare it. It crosses untouched -- the shell reads no part and decides nothing about what may enter -- and the receipt comes back on the `dump` lane the member already drains. Derived from the accepts list of org@2.1.11"
+          "because": "one part of a memory document, on its way to the member whose hive it belongs to. It is the return leg of `in_export`, and the shell carries it for the same reason: nothing at this level produces memory parts and nothing here consumes them, so a lane the organisations below can answer would die as `no_route` at the outermost boundary if the shell did not declare it. It crosses untouched -- the shell reads no part and decides nothing about what may enter -- and the receipt comes back on the `dump` lane the member already drains. Derived from the accepts list of org@2.1.18"
         },
         {
           "route": "mutation_committed",
-          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. It enters at the hive `colony.json` names in `mutation_receipts.to` -- this level -- and is drawn onwards ONE LEVEL AT A TIME into `./orgs`, which is what makes every level that declares it a mandatory hop under ADR-0020. It replaces a poll: the tool menus and the screens below used to ask a timer's question every few minutes, and the boot receipt is the first fill, so a colony that has just started already knows. Derived from org@2.1.11"
+          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. It enters at the hive `colony.json` names in `mutation_receipts.to` -- this level -- and is drawn onwards ONE LEVEL AT A TIME into `./orgs`, which is what makes every level that declares it a mandatory hop under ADR-0020. It replaces a poll: the tool menus and the screens below used to ask a timer's question every few minutes, and the boot receipt is the first fill, so a colony that has just started already knows. Derived from org@2.1.18"
         },
         {
           "route": "in_stats",
-          "because": "a curator's counts coming back to the control loop, answering its `stats` question: body `stats` with the window, the counts per kind, metadata-only samples and whether the count was truncated, `hop.stats_tag` echoing the ask. Nothing at this level wires the loop to a curator yet, so the lane is the shell's to carry; an answer that names no open ask is dropped inside. Derived from argus@1.3.2"
+          "because": "a curator's counts coming back to the control loop, answering its `stats` question: body `stats` with the window, the counts per kind, metadata-only samples and whether the count was truncated, `hop.stats_tag` echoing the ask. Nothing at this level wires the loop to a curator yet, so the lane is the shell's to carry; an answer that names no open ask is dropped inside. Derived from argus@1.3.3"
         },
         {
           "route": "in_eval",
-          "because": "an evaluator's verdict on one text change the control loop proposed: body `eval` with the verdict, the batch and its size, `hop.eval_tag` echoing the order. The loop applies the change only on a passing batch large enough to count. Nothing at this level evaluates, so the lane is the shell's to carry. Derived from argus@1.3.2"
+          "because": "an evaluator's verdict on one text change the control loop proposed: body `eval` with the verdict, the batch and its size, `hop.eval_tag` echoing the order. The loop applies the change only on a passing batch large enough to count. Nothing at this level evaluates, so the lane is the shell's to carry. Derived from argus@1.3.3"
         }
       ],
       "emits": [
@@ -99,7 +99,7 @@
         },
         {
           "route": "ack",
-          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.2 and org@2.1.11 Since 1.9.0 the model registry raises it too, for every command on `in_hand` (GH #855)."
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.2 and org@2.1.18 Since 1.9.0 the model registry raises it too, for every command on `in_hand` (GH #855)."
         },
         {
           "route": "mutate",
@@ -111,35 +111,35 @@
         },
         {
           "route": "read",
-          "because": "the control loop's answer to `in_read`: the rows asked for and the cursor for the next page, or the refusal by name. Derived from argus@1.3.2"
+          "because": "the control loop's answer to `in_read`: the rows asked for and the cursor for the next page, or the refusal by name. Derived from argus@1.3.3"
         },
         {
           "route": "hint_ack",
-          "because": "the control loop's answer to `in_hint`: the id of the stored hint, or the refusal by name. An acknowledgement says the hint is kept, not that anything will be done about it. Derived from argus@1.3.2"
+          "because": "the control loop's answer to `in_hint`: the id of the stored hint, or the refusal by name. An acknowledgement says the hint is kept, not that anything will be done about it. Derived from argus@1.3.3"
         },
         {
           "route": "answer",
-          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@2.1.11 Since 1.9.0 a SECOND sender raises it: the model registry, with the model a lookup resolved or the view per cell `show` answers with (GH #855). One lane, two senders -- a caller subscribes to the lane, not to whoever raised it."
+          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@2.1.18 Since 1.9.0 a SECOND sender raises it: the model registry, with the model a lookup resolved or the view per cell `show` answers with (GH #855). One lane, two senders -- a caller subscribes to the lane, not to whoever raised it."
         },
         {
           "route": "bundle",
-          "because": "the bundle a member's memory produced for an asker outside that member, carried out of the organisation and out of the shell (GH #533). It is the return leg of `in_recall`, which this level has accepted since it was written: a lane that goes down and does not come back is a question with no answer, and the answer died at the first boundary that had not declared it. This level neither reads the bundle nor the reply-to token that addresses it. Derived from org@2.1.11"
+          "because": "the bundle a member's memory produced for an asker outside that member, carried out of the organisation and out of the shell (GH #533). It is the return leg of `in_recall`, which this level has accepted since it was written: a lane that goes down and does not come back is a question with no answer, and the answer died at the first boundary that had not declared it. This level neither reads the bundle nor the reply-to token that addresses it. Derived from org@2.1.18"
         },
         {
           "route": "reject",
-          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@2.1.11"
+          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@2.1.18"
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.2, argus@1.0.0 and org@2.1.11 Since 1.9.0 the model registry's lanes fail here as well (GH #855)."
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.2, argus@1.0.0 and org@2.1.18 Since 1.9.0 the model registry's lanes fail here as well (GH #855)."
         },
         {
           "route": "write",
-          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@2.1.11"
+          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@2.1.18"
         },
         {
           "route": "turn_write",
-          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. It is NOT the only consumer either, and until GH #527 it effectively was: no shipped topology routed the lane anywhere, so every stored turn climbed nine hops and dead-lettered here as `hive_no_route`. The member fans it into its own memory hive now; what still arrives at this rim is the copy, and a distribution that wants an archive of its own wires it -- `examples/meclaw-os/` routes it to `./sink` and says so. Derived from org@2.1.11"
+          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. It is NOT the only consumer either, and until GH #527 it effectively was: no shipped topology routed the lane anywhere, so every stored turn climbed nine hops and dead-lettered here as `hive_no_route`. The member fans it into its own memory hive now; what still arrives at this rim is the copy, and a distribution that wants an archive of its own wires it -- `examples/meclaw-os/` routes it to `./sink` and says so. Derived from org@2.1.18"
         },
         {
           "route": "receipt",
@@ -147,11 +147,11 @@
         },
         {
           "route": "close_report",
-          "because": "the receipt of one close pass -- what the strong model added, sharpened, corrected, closed or restated when it read an ended session whole. Nothing in this shell triggers the pass (a member fires it on its own closed sessions) and nothing here reads the receipt, so the outermost boundary does the one thing it can honestly do: it refuses to swallow it. Derived from org@2.1.11"
+          "because": "the receipt of one close pass -- what the strong model added, sharpened, corrected, closed or restated when it read an ended session whole. Nothing in this shell triggers the pass (a member fires it on its own closed sessions) and nothing here reads the receipt, so the outermost boundary does the one thing it can honestly do: it refuses to swallow it. Derived from org@2.1.18"
         },
         {
           "route": "dump",
-          "because": "the receipt of one applied import part, from a member somewhere below, on its way out of the colony. Same reason as `close_report`: the shell is transit for a receipt it did not ask for. Derived from the emits list of org@2.1.11 (GH #555)"
+          "because": "the receipt of one applied import part, from a member somewhere below, on its way out of the colony. Same reason as `close_report`: the shell is transit for a receipt it did not ask for. Derived from the emits list of org@2.1.18 (GH #555)"
         },
         {
           "route": "catalogue",
@@ -159,15 +159,15 @@
         },
         {
           "route": "stats",
-          "because": "the control loop asking a curator about its own ledger for a goal that names a role: the window, the kinds to count, the role and a tag. Nothing at this level answers it, and a colony that draws no edge for it gets role goals receipted as unanswered and never judged. Derived from argus@1.3.2"
+          "because": "the control loop asking a curator about its own ledger for a goal that names a role: the window, the kinds to count, the role and a tag. Nothing at this level answers it, and a colony that draws no edge for it gets role goals receipted as unanswered and never judged. Derived from argus@1.3.3"
         },
         {
           "route": "eval",
-          "because": "one text change the control loop wants tried on an evaluation batch before anything moves. Nothing at this level evaluates; a colony that draws no edge for it gets every text change discarded as unanswered, which is the safe way for the lane to be missing. Derived from argus@1.3.2"
+          "because": "one text change the control loop wants tried on an evaluation batch before anything moves. Nothing at this level evaluates; a colony that draws no edge for it gets every text change discarded as unanswered, which is the safe way for the lane to be missing. Derived from argus@1.3.3"
         },
         {
           "route": "slot_update",
-          "because": "a text change that passed its evaluation batch, or the way back from one: the slot's name and text, `hop.target` naming the cell. Like `mutate` it reaches only the cells a colony draws an edge to. Derived from argus@1.3.2"
+          "because": "a text change that passed its evaluation batch, or the way back from one: the slot's name and text, `hop.target` naming the cell. Like `mutate` it reaches only the cells a colony draws an edge to. Derived from argus@1.3.3"
         }
       ]
     },

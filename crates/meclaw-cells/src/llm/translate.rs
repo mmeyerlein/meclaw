@@ -121,7 +121,7 @@ fn walk_collect(node: &Value, out: &mut Vec<String>) {
 ///   "model": params.model,
 ///   "messages": [{"role":"system","content": system_string}?, ...mapped_turns],
 ///   "temperature": params.temperature,
-///   "max_tokens": params.max_tokens,
+///   "max_tokens": params.effective_max_tokens(),   // GH #1037
 ///   "tools": tools_extracted    // omitted when empty
 /// }
 /// ```
@@ -182,7 +182,7 @@ pub(crate) fn build_openai_request(
         let (key, value) = sampling.remove(i);
         body.insert(key.into(), value);
     }
-    body.insert("max_tokens".into(), json!(params.max_tokens));
+    body.insert("max_tokens".into(), json!(params.effective_max_tokens()));
     if !tools_extracted.is_empty() {
         body.insert("tools".into(), Value::Array(tools_extracted.to_vec()));
     }
@@ -1609,7 +1609,8 @@ mod tests {
                 "model": "gpt-4o",
                 "messages": [{"role": "user", "content": "Hi"}],
                 "temperature": 0.7,
-                "max_tokens": 4096,
+                // GH #1037: no own cap, no package -- the modern default.
+                "max_tokens": 32768,
             })
         );
         // No `tools`-key when empty.
@@ -2428,7 +2429,7 @@ mod gh993_tests {
     fn gh993_the_responses_wire_drops_temperature_by_the_same_list() {
         let without = responses(json!({"supported_params": ["top_p"]}));
         assert!(without.get("temperature").is_none(), "{without}");
-        assert_eq!(without["max_output_tokens"], 4096, "not a sampling field");
+        assert_eq!(without["max_output_tokens"], 32_768, "not a sampling field");
         let with = responses(json!({"supported_params": ["temperature"]}));
         assert_eq!(with["temperature"], 0.3, "{with}");
         let before = responses(json!({}));

@@ -188,6 +188,10 @@ out of `pending` (GitHub #52). Two consequences worth knowing before wiring it:
   composite (the seam edge promotes it), and without it a block cannot be bound and is
   rejected. That is the safe direction: the turn stays in the queue and the close pass
   reads it later.
+  A session that holds no turn of a person (a duplex call's delegation travels under the
+  call id, its person's turns under the session-keeper's generation) is looked up once more
+  in the room, and the block binds only inside the room's open generation of its own round
+  (since 3.11.2, GH #1042).
 - **The per-turn write lane has to be on.** A block whose turn is not yet an episode has
   nothing to bind to and is likewise rejected. One extraction later is a delay; a fact hung
   on the wrong turn is a defect, and only one of the two can be repaired.

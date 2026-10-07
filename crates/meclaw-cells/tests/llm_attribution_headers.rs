@@ -183,7 +183,7 @@ async fn cell_handle_passes_attribution_params_to_wire_and_keeps_body_clean() {
     assert_eq!(snaps[0].temperature(), Some(0.7));
     assert_eq!(
         snaps[0].body.get("max_tokens").and_then(|v| v.as_u64()),
-        Some(4096)
+        Some(32768)
     );
     assert!(
         snaps[0].body.get("http_referer").is_none(),

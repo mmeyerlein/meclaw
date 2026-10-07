@@ -321,7 +321,8 @@
               "turn_id": "hop.turn_id",
               "session_id": "hop.session_id",
               "iter": "hop.iter",
-              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''"
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
             },
             "restore_ttl": true
           }
@@ -386,7 +387,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -430,7 +432,8 @@
             },
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -471,7 +474,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -482,7 +486,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -493,7 +498,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -525,7 +531,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "gap_ask"
+              "gap_ask",
+              "recall_input_soft"
             ]
           }
         },
@@ -542,7 +549,8 @@
             ],
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -553,7 +561,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -564,7 +573,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -576,7 +586,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "gap_ask"
+              "gap_ask",
+              "recall_input_soft"
             ]
           }
         },
@@ -590,7 +601,8 @@
             },
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -601,7 +613,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -611,9 +624,13 @@
           "default": true,
           "condition": "has(hop.route) && hop.route == 'tool'",
           "modifier": {
+            "set_hop": {
+              "recall_input_soft": "has(hop.tool_name) && hop.tool_name == 'memory_recall' && has(context.recall_input_soft) ? context.recall_input_soft : ''"
+            },
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -624,7 +641,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -645,7 +663,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -656,7 +675,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -707,7 +727,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -718,7 +739,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         },
@@ -729,7 +751,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "curator_call"
+              "curator_call",
+              "recall_input_soft"
             ]
           }
         }

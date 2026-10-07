@@ -213,8 +213,13 @@ fn compare_config(rel: &str, val: &Value) -> (usize, Vec<String>) {
                  cell itself would be told different things."
             ));
         }
+        // GH #1040: a knob the model package sizes (`_pkg`) ships as null and
+        // is derived per request; its literal is the value WITHOUT a package,
+        // not a second copy of the param.
+        let sized_by_package = param.is_null() && src.contains(&format!("_pkg(\"{key}\", "));
         if let Some(literal) = script_literal(src, key)
             && &literal != param
+            && !sized_by_package
         {
             findings.push(format!(
                 "{rel}: the script's own fallback for {key} is {literal}, but params.{key} is \

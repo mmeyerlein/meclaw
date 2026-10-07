@@ -110,7 +110,7 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
 
     let meta = read_json(&root.join("template.json"));
     assert_eq!(
-        meta["version"], "2.5.7",
+        meta["version"], "2.5.14",
         "a lane an app can use and could not before is the second digit \
          (docs/development-rules.md § 4). The number is the LEVEL's, not this \
          lane's: it moved on again with member@1.9.0, which wired the channel \
@@ -151,7 +151,15 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          (GH #995); 2.5.5 only pins `file-space@1.4.2` (GH #996); 2.5.6 only pins \
          `file-space@1.4.3` and `memory-hive@3.8.4` and derives `./assistants` from \
          `assistant@3.7.2` (GH #999); 2.5.7 only pins `memory-hive@3.9.0` and \
-         derives `./assistants` from `assistant@3.7.3` (GH #1018, GH #1019). None of it \
+         derives `./assistants` from `assistant@3.7.3` (GH #1018, GH #1019); 2.5.8 only pins `affinity@3.10.1` \
+         (GH #1021); 2.5.9 only pins `memory-hive@3.9.1` and derives `./assistants` \
+         from `assistant@3.7.4` (GH #1037); 2.5.10 only derives `./assistants` \
+         from `assistant@3.7.5` (GH #1038); 2.5.11 promotes `recall_input_soft`, \
+         pins `memory-hive@3.10.0` and derives `./assistants` from `assistant@3.7.6` \
+         (GH #1040); 2.5.12 only pins `memory-hive@3.11.0` (GH #1039); 2.5.13 promotes \
+         `recall_input_soft` on the `tool_call` door, pins `memory-hive@3.11.1` and \
+         derives `./assistants` from `assistant@3.7.7` (GH #1044); 2.5.14 only pins \
+         `memory-hive@3.11.2` (GH #1042). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"
     );

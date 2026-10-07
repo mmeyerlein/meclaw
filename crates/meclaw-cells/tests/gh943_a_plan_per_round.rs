@@ -1595,7 +1595,7 @@ fn gh949_the_ledger_seed_holds_no_bare_round_key() {
     if !shipped() {
         return;
     }
-    const BARE: [&str; 7] = [
+    const BARE: [&str; 9] = [
         "window_plan",
         "rebuild_running",
         "last_call",
@@ -1603,6 +1603,8 @@ fn gh949_the_ledger_seed_holds_no_bare_round_key() {
         "actions_pending",
         "pending:summary",
         "summary_audience",
+        "curate",
+        "aim",
     ];
     let seed = std::fs::read_to_string(repo("templates/curator/ledger/seed/state.jsonl"))
         .expect("the state seed");

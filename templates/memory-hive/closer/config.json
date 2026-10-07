@@ -10,18 +10,14 @@
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
-    "max_tokens": 8192,
     "external_timeout_ms": 110000,
+    "length_continuations": 2,
     "system_order": [
       "instructions"
     ],
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
-    "provider_extra": {
-      "reasoning": {
-        "effort": "medium"
-      }
-    }
+    "thinking_budget": 3072
   },
   "contract": {
     "version": "1.0.0",
@@ -31,15 +27,11 @@
         "secret": false,
         "description": "MODEL_CLOSER — REQUIRED, no default: a model default in code is how a run silently measures a different model than the report claims (P5 finding). Here it would also revoke a ruling: Q9 decides the close pass runs on a strong model, and a close pass that quietly falls back to a cheap one measures nothing and sharpens less than it costs"
       },
-      "provider_extra": {
-        "type": "object",
+      "thinking_budget": {
+        "type": "number",
         "secret": false,
-        "default": {
-          "reasoning": {
-            "effort": "medium"
-          }
-        },
-        "description": "The provider overlay of this cell. Its one knob is the deliberation budget at provider_extra.reasoning.effort, a LITERAL of this cell's own `params` since GH #138 and no longer the colony-wide `MEMORY_REASONING_CLOSE` — set explicitly, never inherited from the provider default, and NOT minimal: a strong model asked to sharpen a session it is seeing whole is not a minimal-effort call. Declared as the overlay rather than as the flat `reasoning_effort` param because the overlay is applied last and wins over that param anyway; a setting named after the flat param would name a field this cell does not set."
+        "default": 3072,
+        "description": "The deliberation budget of this cell in tokens, a literal of its own `params` (KD diagnosis 2026-10-06, R-HK-15): sent as `reasoning.max_tokens`, so the provider cannot map an effort to whatever it likes; the close pass reasons over a whole round; at day 0 it spent 6.6k of 8k tokens thinking under effort medium. Until memory-hive 3.9.0 the knob was `provider_extra.reasoning.effort` \"medium\". A registry push resets it to this value; no model package carries it."
       }
     },
     "emits": {
@@ -91,6 +83,22 @@
           "required": false
         },
         "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
           "type": "number",
           "required": false
         },

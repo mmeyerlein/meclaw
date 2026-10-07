@@ -221,10 +221,12 @@ fn the_hive_wires_the_judge() {
         judge["params"]["provider_extra"]["response_format"]["type"],
         "json_object"
     );
+    // GH #1037: the judge names no output cap; it asks for what its model
+    // lists. A short verdict stays short by its prompt, not by a token cut.
     assert!(
-        judge["params"]["max_tokens"]
-            .as_u64()
-            .is_some_and(|n| n <= 1000)
+        judge["params"].get("max_tokens").is_none(),
+        "{}",
+        judge["params"]
     );
     // Measured on a throw-away colony: with 4 s two verdicts in nine timed
     // out against a provider answering in 2-4 s (OR-C-Bau-9).

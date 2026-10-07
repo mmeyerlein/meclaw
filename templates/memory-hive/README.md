@@ -1,4 +1,4 @@
-# `memory-hive@3.9.0`
+# `memory-hive@3.11.2`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -594,9 +594,9 @@ hive's own port edge stamps (`close_pass`), and that key buys exactly one privil
 carry a `shown` window, so its `replaces` can be honoured — see the replacement window in the
 opening list above.
 
-What the pass did leaves on `close_report` with ten numbers on the hop (`added`, `sharpened`,
+What the pass did leaves on `close_report` with thirteen numbers on the hop (`added`, `sharpened`,
 `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions`, `truncated`, `groups`,
-`unaudienced`). **Drain it**: the
+`unaudienced`, and since 3.11.0 `retracted`, `forgotten`, `named`). **Drain it**: the
 writes answer nobody, so without the report a caller cannot tell a pass that ran and changed
 nothing from a pass that never ran at all. A pass with no verdict — the call errored, the answer
 was not JSON, or the parked verdict was gone — leaves on `reject` with
@@ -831,6 +831,27 @@ page. One limit stays: the bind trusts that the answered turn is stored before t
 its way is bound to the turn before it. The turn keeps its `pending` row, and the close pass,
 which names one episode per fact, speaks for it.
 
+When the session holds no turn of a person. Since 3.11.2
+([#1042](https://github.com/mmeyerlein/meclaw/issues/1042)) a session page without a single
+`user` or `peer` episode is followed by one read of the ROOM. That is the case of a duplex phone
+call. Its delegation round comes straight from the channel and carries the call id as
+`session_id`, while the person's turns of the same call pass the session-keeper and are written
+under its generation, which outlives one call. The block binds only inside the room's OPEN
+generation of its own round, the one the keeper would stamp the next turn with. A generation ends
+in exactly two ways: a turn of another round seals it, or the room stays silent past the keeper's
+idle window (`session-keeper/close` `idle_ms`, two hours). So the room page reaches back no further
+than that window (`generation_idle_ms`, the keeper's value, the call's own session left out), the
+generation is the one of the room's newest turn of a person, and that turn must be of the block's
+round. A newer turn of another round, or a room whose last turn is older than the window, is the
+old refusal: the turn the block answers is not written yet, and the turns that are belong to a
+generation that ended. Measured on the member that showed the defect: the evening's generation
+ended at 21:19, the next one opened at 06:25, and without the bound a block of the morning's
+first call bound to a turn nine hours old. The round is never widened: a fact inherits the cast
+of the episode it hangs on, so only rows of the block's round are ever bound, and the page reads
+metadata, never `content`. A `topic` the block moves is filed under the generation too, where the
+generation's close pass reads topics. Every channel whose turns and answers share one session
+binds exactly as before, and a close pass never reads the room.
+
 A fact that names its speaker does not wait. The model sees the frame `[peer <ref> · <name>]` on
 the first line of every peer turn, and the contract asks it to copy that reference into the fact
 as `source`; a fact of the member's own side carries none. The ingress binds a named fact to the
@@ -887,6 +908,91 @@ An episode hit from a peer turn is shown as `peer <ref>`.
 The per-turn contract tells a front model the same: a turn marked `[peer <ref> · <name>]` is
 recorded as what that participant stated (`inline-contract.md`).
 
+## A peer known by name ([#1039](https://github.com/mmeyerlein/meclaw/issues/1039))
+
+Until 3.11.0 a peer was a reference and nothing else. In a six-month synthetic history 174 of 235
+facts from peer turns read "the peer ...", "they ..." or "Peer a8e021ae ...", `subject_aliases` held no
+row, and a question that named the person found what others had said about them and never their
+own words. Two thirds of the wrong answers came from there.
+
+Since 3.11.0 two ways bind a reference to a name, and both write the same row of
+`subject_aliases`: the spelling `peer <ref>` means the name.
+
+- **The channel's display name.** The collector hands a peer turn on with `speaker` (the name the
+  channel knows the participant by) beside `speaker_ref`. The writer keeps it on the episode
+  (`episodes.speaker_name`) and binds `peer <ref>` to it in the same store bundle.
+- **The member naming the peer** ("this is my nephew Rufus"). Only a reader of the whole session
+  sees that, so the close pass answers it with `names: [{ref, name, episode_id}]`. The turn has to
+  be the member's own, and the reference the speaker of a peer turn of the round. A peer
+  introducing themselves binds nothing: the name a peer gives for themselves is their claim, and
+  the colony's name for them arrives through the writer. Before it binds, the pass reads the
+  `peer <ref>` rows of `subject_aliases`; a name another reference already answers to is not
+  handed to a second one (a journal line `name_taken`). Then it re-derives the subject column, so
+  facts filed before the name was known answer to it too.
+- **The colony's name wins.** The writer's binding is an upsert, so the display name a trusted
+  gate or the affinity record gives overrides whatever a close pass bound. The close pass writes
+  `if_absent` and never bends a binding that is there. Both use `resolve`, which lands a name that
+  is itself an alias on what it means.
+
+The ingress files every fact a peer states about themselves under `peer <ref>`, whatever pronoun the
+model wrote (`They`, `I`, `the peer`, the bare reference). A subject that names somebody else stays
+as written. The store derives `canonical_subject` from the alias table on every write, so a
+self-statement carries the name as its canonical subject. That makes it findable by name in both
+places that look for one: the subject query (`in_query {subject}`) and the full text index, which
+covers `canonical_subject`.
+
+The reference stays the source. The audience rule, the closure rules and the belief rules read
+`source`, and a name is a label, not an identity. Recall renders a bound self-statement as
+`Rufus Rietdorf (peer a8e021ae) says: ...` and a peer's episode as
+`Rufus Rietdorf (peer a8e021ae)` when the turn carried a display name. An unbound reference, and a
+peer's statement about somebody else, keep the bare reference; the round's `roster` legend still
+names it.
+
+## Forgetting on request ([#1039](https://github.com/mmeyerlein/meclaw/issues/1039))
+
+"Forget that" used to be stored as a turn and not acted on: the secret's fact stayed open and both
+episodes kept reaching the bundle. Since 3.11.0 the close pass answers such a turn with
+`forget: [{episode_id, words, fact_ids}]`.
+
+- Only the person forgets, never a peer or the agent. The cited turn has to be the member's own,
+  and its own text has to carry a forget cue (a fixed list in English and German: "forget",
+  "don't remember", "delete", "vergiss", "nicht merken", "lösch" and their kin). The closer reads
+  a peer's turns too, so its verdict alone proves nothing; a request without the cue is counted
+  as unseen.
+- The pass marks the facts it names and searches for the rest. The search is narrow on purpose:
+  at least two distinct words of three letters or more that are not filler, matched in a fact's
+  `claim` (never its subject, so a name alone reaches nobody's every fact) or an episode's
+  `content`, only open facts, and nothing recorded after the request turn. A search that hits 64
+  rows is too broad to be about one thing: it marks nothing and leaves a journal line
+  `forget_too_broad`. The search reaches every room the round sits in (`covers`), since the
+  person asking is in each of them. The mark is
+  `closure_source = forget_request:<turn id>`, with `expired_at` on a fact and `closed_at` on an
+  episode. A row that another closure already ended keeps that closure's provenance.
+- Nothing is deleted. The rows stay, so the log stays the audit, and a mark is reverted by
+  clearing the two columns.
+- Recall drops every row whose `closure_source` starts with `forget_request:`, on the gate every
+  leg already passes (`visible_row`). The request turn is marked too when it holds the words, so it
+  does not repeat the secret either.
+
+A belief the night derived from a forgotten fact carries the mark too: every belief whose
+`source_fact_ids` holds a marked fact gets the same `closure_source` (beliefs carry the column
+since 3.11.0), `active` untouched, and both belief reads of recall skip it.
+
+When the forgotten fact had replaced an older one (Krakow corrected Lyon), recall shows the older
+fact again, marked as a broken chain. The forgotten value does not come back, the one before it
+does.
+
+The same release gives the pass a `retract` verb: `retract: [{fact_id, episode_id, why}]` ends a
+record its own speaker took back with nothing in its place (`closure_source` `close:<session>:retract`).
+Before it, the only way to end a record was `correct`, which needs a replacement claim, so a claim
+taken back stayed open.
+
+Why the pass corrected nothing in 75 days: it is shown only the records of the session it closes.
+A correction in a later session of something said in an earlier one is the night's job (the
+supersession phases), and a peer's correction never ends another speaker's statement (the source
+rule above). With the name binding the person's own, newer statement now reaches the bundle next
+to the rumour.
+
 ## An affect mark on an episode ([#936](https://github.com/mmeyerlein/meclaw/issues/936))
 
 `episodes.affect` holds one mark of how a turn read -- `{valence: -1..1, arousal: 0..1, confidence: 0..1,
@@ -939,7 +1045,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.9.0` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.11.2` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1346,7 +1452,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.7",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.14",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1418,21 +1524,22 @@ say "no legacy subject at all".
 | `tier0_max_foresight` | `10` | Item cap of the bundle's foresight leg (facts that are about a future the memory has been told about) |
 | `tier0_episode_chars` | `400` | Episode truncation inside the bundle (truncate, never delete) |
 | `tier0_tokens` | `1200` | Token budget of the tier-0 bundle |
-| `tier1_leg_limit` | `20` | Per-leg candidate cap of the tier-1 fan |
+| `tier1_leg_limit` | `null` (package; `20` without) | Per-leg candidate cap of the tier-1 fan |
 | `tier1_axis_limit` | `200` | Page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without its predecessors** — `history: []` on the record in `recall_diagnostic`, no `previously` key in the payload — rather than with a guessed chain |
 | `tier1_graph_depth` | `2` | `max_depth` of the graph leg's `traverse` (store cap: 5) |
 | `tier1_graph_nodes` | `200` | `max_nodes` of the graph leg's `traverse` — the fan-out kill switch, so one hub entity cannot turn a recall into a walk of the whole graph |
 | `tier1_graph_fact_nodes` | `64` | How many distinct walked nodes go into the join's `in` filter (GH #520). The walk is already ranked when the cut is taken, so what falls off is the tail of the walk, never its front |
 | `tier1_graph_fact_limit` | `100` | Page bound of the join's `select facts` (GH #520). Generous on purpose: one popular subject carries a long version chain, and the leg's own `tier1_leg_limit` is the cut that decides what votes. A full page marks the leg **capped**, exactly as a full traverse page does |
-| `tier1_self_limit` | `20` | Page bound of the **self** leg (GH #536): how many of the asker's own facts it NOMINATES, newest first. Generous, because a member's dossier is a small bounded set (21 live rows on the hive this was measured on) and the leg has no query signal to rank by: what it cannot rank it must not cut early |
-| `tier1_self_budget` | `6` | How many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut. Since 3.4.1 the budget counts **axes**, not rows ([#691](https://github.com/mmeyerlein/meclaw/issues/691)): the rows of one `(subject, predicate)` take one seat before any axis takes a second, and a multi axis (`has_child`) enumerates and is never folded |
-| `self_legacy_subject` | `"user"` | The pre-canonicalisation spelling of *the member whose hive this is* (GH #536). The extraction lane writes a PERSON NAME into `facts.subject` today; everything written before it did carries the literal `user` — 23 of 29 self facts on the measured hive — and those rows are about the asker exactly as the new ones are. A **migration artefact**, named as one: the empty string switches it off for a hive that never had them |
-| `tier1_topk` | `20` | How many fused candidates survive the RRF cut into the tier-1 bundle |
+| `tier1_self_limit` | `null` (package; `20` without) | Page bound of the **self** leg (GH #536): how many of the asker's own facts it NOMINATES, newest first. Generous, because a member's dossier is a small bounded set (21 live rows on the hive this was measured on) and the leg has no query signal to rank by: what it cannot rank it must not cut early. Since GH #1040 it grows with the package like every other leg: the question now ranks the page, but only the rows the page holds |
+| `tier1_self_budget` | `0` | Since GH #1040 `0`: no seat is reserved — the self leg ranks its rows by the question, a matching row competes in the fused order and one that matches nothing fills only places no ranked element wanted; a number above 0 is the old reserved floor. With a number above 0 (the pre-#1040 floor): how many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut. Since 3.4.1 the budget counts **axes**, not rows ([#691](https://github.com/mmeyerlein/meclaw/issues/691)): the rows of one `(subject, predicate)` take one seat before any axis takes a second, and a multi axis (`has_child`) enumerates and is never folded |
+| `self_legacy_subject` | `"user"` | The pre-canonicalisation spelling of *the member whose hive this is* (GH #536). The extraction lane writes a PERSON NAME into `facts.subject` today; everything written before it did carries the literal `user` — 23 of 29 self facts on the measured hive — and those rows are about the asker exactly as the new ones are. A **migration artefact**, named as one: the empty string switches it off for a hive that never had them. Since GH #1040 its rows are ranked by the question like every dossier row: one the question does not match fills only places no ranked element wanted, so the spelling displaces nothing; switch it off only after the subjects were rewritten on the transfer lane |
+| `tier1_topk` | `null` (package; `20` without) | How many fused candidates survive the RRF cut into the tier-1 bundle |
 | `sem_max_distance` | `0.5` | Relevance floor of the **semantic** leg (#297), as a fraction of the embedding's BIT WIDTH: a hit at or beyond `0.5 × dim` differing bits is where a random binary vector sits, so at the default the cut removes coin flips and cannot cost a genuine hit. `similar` RANKS and never filters — without this every one of its `tier1_leg_limit` rows votes in the fusion as loudly as a real hit. A missing, zero or non-numeric `dim` means no scale, and without a scale there is no cut |
 | `kw_min_score_ratio` | `0.1` | Relevance floor of the **keyword** leg (#297), as a fraction of that page's OWN best bm25 rank — so the fact search and the episode search are never measured against each other's scale. bm25 is smaller-is-better, so the floor is `best × ratio` and a row survives at or below it. `0` switches the cut off (the ablation knob), and a page whose best rank is not negative carries no usable signal, so it is left uncut |
-| `bundle_episode_budget` | `6` | The episode share of the fusion cut (P15 O-7): episodes take at most this many of the `TOPK` slots and keep that many against any fact wall. Whichever side cannot fill its share lets the other backfill, so the bundle is never shorter than a plain prefix would be |
-| `tier1_tokens` | `2000` | Token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit. It measures the **payload** candidate — what travels to the model — never the record in `recall_diagnostic`: the trace pays no prompt budget, so costing it would spend the whole #296 saving on refilling the budget instead of shipping a smaller bundle. `tier1_topk` stays the count cap |
-| `tier1_item_chars` | `400` | Per-item truncation inside the tier-1 bundle (a claim, an episode's content, a supersession marker). Truncate, never drop |
+| `bundle_episode_budget` | `null` (package; `6` without) | The episode share of the fusion cut (P15 O-7): episodes take at most this many of the `TOPK` slots and keep that many against any fact wall. Whichever side cannot fill its share lets the other backfill, so the bundle is never shorter than a plain prefix would be |
+| `tier1_tokens` | `null` (package; `2000` without) | Token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit. It measures the **payload** candidate — what travels to the model — never the record in `recall_diagnostic`: the trace pays no prompt budget, so costing it would spend the whole #296 saving on refilling the budget instead of shipping a smaller bundle. `tier1_topk` stays the count cap |
+| `tier1_item_chars` | `null` (package; `400` without) | Per-item truncation inside the tier-1 bundle (a claim, an episode's content, a supersession marker). Truncate, never drop |
+| `bundle_share` | `0.05` | GH #1040: the share of the asker's usable window (its model package's `input_soft`, cut by the curator to the model's window and the role's `quality_cap`; context `recall_input_soft` from the curator's ask) the tier-1 bundle takes, never under 2000 tokens. Every knob shown as `null` (package) grows by the same factor — `tier1_item_chars` and the three query limits by at most twice. luna (`input_soft` 250k) under talky (`quality_cap` 120k): 6k tokens, 60 items, 60 per leg, 18 episodes, 800 characters per item, queries 400/500/48 — the low end of the 5-10 % of the usable window KD2 proposed. Without a package the old values hold; a number set on a knob overrides the package for that knob |
 | `rrf_k` | `60` | RRF constant |
 | `rrf_w_keyword` | `1.0` | Fusion weight of the keyword (FTS) leg |
 | `rrf_w_semantic` | `1.0` | Fusion weight of the semantic (embedding) leg |
@@ -1441,9 +1548,9 @@ say "no legacy subject at all".
 | `rrf_w_self` | `1.0` | Weight of the **self** leg (GH #536). Its rank list is recency, not relevance — it is the one leg the query does not shape — so a hit two query-driven legs agree on outranks it through the agreement factor rather than through a special case. `0` leaves the leg as discovery only, which is the ablation the eval prices |
 | `rrf_w_temporal_point` | `0.0` | Weight of the temporal leg in **point** mode. Measured, not chosen: 50 identical LongMemEval extractions, paired — `0.0` gives R@1 **84.0 vs 74.0** and R@5 **98.0 vs 96.0**, flips **11:1** (sign test p=0.0063), and across 100 runs (2×50) the leg never carried a hit **alone**. Set it to `1.0` to restore the pre-O-4 fusion |
 | `rrf_agreement` | `0.5` | Strength of the agreement factor in the fusion (#297): a candidate two VOTING legs found is multiplied once, three legs twice. `0` restores the plain rank sum |
-| `query_safe_chars` | `200` | A query at or below this length reaches the legs untouched. Above it the hygiene guard runs (GH #88) |
-| `query_max_chars` | `250` | Hard clamp of the hygiene guard: whatever survived the question / tail-sentence steps is cut to its last this many characters, so the cost of a recall stops depending on how much context the caller pasted |
-| `query_tokens` | `24` | How many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
+| `query_safe_chars` | `null` (package; `200` without) | A query at or below this length reaches the legs untouched. Above it the hygiene guard runs (GH #88) |
+| `query_max_chars` | `null` (package; `250` without) | Hard clamp of the hygiene guard: whatever survived the question / tail-sentence steps is cut to its last this many characters, so the cost of a recall stops depending on how much context the caller pasted |
+| `query_tokens` | `null` (package; `24` without) | How many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
 
 ### The params of `./dream-glue`
 
@@ -1528,17 +1635,39 @@ select run_id, status, llm_calls, verdicts from consolidation_log order by delta
 
 ### The deliberation budget of the four model cells
 
-Each of `closer`, `dreamer`, `dialectic` and `judge` sets its own
-`params.provider_extra.reasoning.effort` explicitly -- never inherited from the provider default,
-and never `minimal`. It was `${MEMORY_REASONING_*}` until 3.2.0 and is a literal now.
+Each of `closer`, `dreamer`, `dialectic` and `judge` sets its deliberation explicitly -- never
+inherited from the provider default, and never `minimal`. It was `${MEMORY_REASONING_*}` until
+3.2.0 and is a literal now. Since 3.9.1 `closer` and `dreamer` carry a token budget
+(`params.thinking_budget`, sent as `reasoning.max_tokens`) instead of an effort; the two others
+keep `params.provider_extra.reasoning.effort`.
 
-| cell | `provider_extra.reasoning.effort` | why |
+| cell | deliberation | why |
 |---|---|---|
-| `closer` | `medium` | a strong model asked to sharpen a session it is seeing whole is not a shape-filling call |
-| `dreamer` | `medium` | the nightly change narrative |
-| `dialectic` | `medium` | the tier-2 answer with its gap statement |
-| `judge` | `high` | the identity verdicts are written into the store and every later read consumes them, so this is the one lane where thinking is worth paying for |
+| `closer` | `thinking_budget: 3072` | a strong model asked to sharpen a session it is seeing whole is not a shape-filling call; under effort `medium` it spent 6.6k of 8k tokens thinking |
+| `dreamer` | `thinking_budget: 1024` | the nightly change narrative, one sentence per changed fact |
+| `dialectic` | effort `medium` | the tier-2 answer with its gap statement |
+| `judge` | effort `high` | the identity verdicts are written into the store and every later read consumes them, so this is the one lane where thinking is worth paying for |
 
+
+### The output budget, and a cut answer (GH #1037)
+
+None of the four model cells names a `max_tokens` any more. Until 3.9.0 the night asked for 4 096
+tokens, the identity judgement for 4 096, the close pass for 8 192 and the dialectic for 1 024 --
+limits of an earlier model generation -- and a long consolidation stopped on `length`: the glue
+read a cut verdict as "not JSON" and lost the run. Now each cell asks for what its model lists
+(`max_output` of the registry package, else the `llm` cell's default of 32 768), and `closer`,
+`dreamer` and `judge` set `length_continuations: 2`: an answer that still stops on `length` is
+continued by the cell itself, the parts are joined into one verdict with the usage of every call
+summed, and each continuation writes a line on `meclaw::llm::length` -- so does an answer that
+stays cut. The glue sees one whole answer, or one marked `length`; never a silent half.
+
+Thinking runs on a budget of the cell, not on an effort the provider maps as it likes: `dreamer`
+sets `thinking_budget: 1024`, `closer` `thinking_budget: 3072` (until 3.9.0 both sent
+`provider_extra.reasoning.effort = "medium"`, and the closer spent 6.6k of its 8k on thinking on a
+day-0 run). The budget is a param of the cell; a registry push resets it to the cell's own value. The
+closer's schema names its scale: `confidence` is a whole number from 0 to 100. It used to show `0`,
+models answered fractions, and every fact landed at 0 or 1 of 100; the glue now also reads a
+fraction of at most 1 as one.
 
 **Model recommendation (P15 R10): put the memory lane on a strong model.** Since 3.0.0 the model
 that mints facts mid-conversation is the FRONT model, not one of this hive's slots (#298) — so
@@ -1912,6 +2041,33 @@ classes, not two: a fact only the `self` leg nominated gets at most `SELF_BUDGET
 query hits are waiting; a fact a query leg *also* found is not a dossier row at all and is seated
 with the rest, agreement bonus and everything. Leftover slots fall back to the dossier, so a
 question nothing else answered — the case this leg exists for — is still answered by it.
+
+**Since GH #1040 no seat is reserved, and the question ranks the dossier.** Measured in a
+benchmark run (KD2): the same six facts with the legacy subject `user` — errands and small talk
+nobody asked about — stood in all 120 bundles of the run, a third of every bundle, while facts that
+answered the question were in the store and not in the bundle. The floor protected the dossier
+against exactly the hits it should lose to. Now the self leg ranks its rows by the question
+(`self_by_query`: the question's words, the asker's own names left out, against the row's claim and
+predicate; equal scores keep recency), a row that matches competes in the fused order like every
+other fact, and a row that matches nothing votes nowhere and only fills places no ranked element
+wanted — still in axis order, so a question nothing else answered is still answered by the dossier.
+The dossier never displaces a better-ranked element. `tier1_self_budget` above 0 restores the
+reserved floor described here as an override.
+
+**Since GH #1040 the bundle is sized by the asker's model package.** The curator keeps the
+answering model's `input_soft` (the llm cell's stamp since GH #1037), cut to the usable window (the
+model's window, at most the role's `quality_cap`), and hands it over on every ask as context
+`recall_input_soft`; the bundle takes `bundle_share` (5 %) of it, never under the old
+2000 tokens, and the count limits grow by the same factor (the old defaults were one proportion,
+20 items of about 100 tokens). Item length and the query guard grow by at most twice: a query is
+not a window, and past a few sentences a longer one buys contamination. An ask without a package
+— a tool call of the model (GH #1044), an older curator — is sized exactly as before; a number set
+on a knob wins over the package for that knob. A `tier1_tokens` set to a number is a ceiling: the
+count and item limits grow by its factor where that is the smaller one, never below the old values.
+Since 3.11.1 (GH #1044) the model's own `memory_recall` call and the ask of a role without the curator's push
+carry the same value: the curator stamps it on its model call, the core hands it on the hop of the
+tool call, the member's door promotes it like the ask's, and the edge from `./tool` to `./recall`
+passes it on (an outside caller without it keeps the old sizes).
 
 **Since 3.4.1 the budget counts axes, and "a query leg also found it" means a VOTING leg**
 ([#691](https://github.com/mmeyerlein/meclaw/issues/691)). Measured live on the question *what
@@ -2450,6 +2606,7 @@ What is deliberately **not** answerable:
 | guarded `update … set {status:'inline'\|'nothing'\|'close'} where {episode_id in …, status:'pending'}` | the coverage guard (#52, #298, #300) -- the annotation of a turn settles that turn's row, and the value names the reader: `inline` when the front model's block carried content, `nothing` when its verdict was an honest empty one, `close` when the annotation came from the close pass. Guarded on `pending`, so re-running the same annotation moves nothing a second time and a settled row keeps the verdict that settled it |
 | guarded `update … set {status:'close'} where {session_id, status:'pending'}` | the close pass's sweep (#300) -- the second writer of `status`, and the last one: when a pass finishes a session it settles the rows of that session nobody ever annotated. Both writers guard on `status:'pending'`, so whichever lands first wins and neither overwrites a settled row; the two are the ONLY writers besides the enqueue (no claim, no gate, no recovery sweep survived #298), which is what keeps `pending` readable as exactly one thing -- a turn nobody has answered for yet |
 | `select episodes where {session_id, sender in ['user','peer','assistant']} order by recorded_at desc limit 32` | the inline BIND -- the turn a block that names none is speaking for, and since the #849 follow-up the turn of each participant a fact names as its `source`. The `assistant` rows are only the boundaries of what was answered. `sender` is what makes it deterministic: the answer's own episode is written by the same per-turn lane, concurrently, so "newest episode" would be a race and "newest turn somebody else spoke" is not. Since 3.5.0 a `peer` turn is one of them ([#849](https://github.com/mmeyerlein/meclaw/issues/849)) |
+| `select episodes where {channel, session_id != <the block's session>, recorded_at >= now - generation_idle_ms, sender in ['user','peer','assistant']} order by recorded_at desc limit 32` | the second page of the inline BIND, read once when the session page holds no `user`/`peer` turn (never for a close pass): the room inside the session-keeper's idle window. Bound is only the room's open generation of the block's round, the generation of the newest turn of a person; a newer turn of another round means that generation was sealed. A duplex call's delegation travels under the call id and finds its person's turns only here. Since 3.11.2 ([#1042](https://github.com/mmeyerlein/meclaw/issues/1042)) |
 | the trailing `select recall_scratch` of a parking bundle | the exactly-once election of the tier-1 read path. Of two hops that park concurrently exactly ONE reads a complete set, because the `store` is stateful and a bundle is one message — and a leg that arrives TWICE is a duplicate, not a complete set, so it parks (loudly, on stderr) instead of emitting a second time. **Explicit withdrawal (GH #418):** the guarded `update recall_scratch set fired=1 where {request_id, leg, fired:0}` this row used to describe no longer exists, and no read path writes or reads `fired`. Tier 0 has had no gate to guard since 2.3.4 — see [One round trip for tier 0](#one-round-trip-for-tier-0-gh-295) |
 | window guard on `(delta_from, delta_to)` and on `run_id` | dream lane, stage 2 |
 | two `limit 1` reads on `facts` (`recorded_at > delta_from`, then `expired_at > delta_from`) before the dreamer | dream lane, the change gate ([#857](https://github.com/mmeyerlein/meclaw/issues/857)): nothing moved, no model call, the window still advances |

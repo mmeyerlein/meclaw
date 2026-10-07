@@ -79,7 +79,7 @@ async fn an_unset_reasoning_param_sends_no_reasoning_field_at_all() {
     );
     // …and nothing else moved: the pre-#124 body is intact.
     assert_eq!(body["model"], "gpt-4o");
-    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["max_tokens"], 32_768, "GH #1037: the modern default");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

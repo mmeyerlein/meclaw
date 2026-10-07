@@ -10,8 +10,8 @@
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
-    "max_tokens": 4096,
     "external_timeout_ms": 110000,
+    "length_continuations": 2,
     "system_order": [
       "instructions"
     ],
@@ -92,6 +92,22 @@
           "required": false
         },
         "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
           "type": "number",
           "required": false
         },

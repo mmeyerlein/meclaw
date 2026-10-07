@@ -12,7 +12,6 @@
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.3,
-    "max_tokens": 4096,
     "external_timeout_ms": 300000,
     "system_order": [
       "identity",
@@ -123,6 +122,22 @@
           "required": false
         },
         "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
           "type": "number",
           "required": false
         },

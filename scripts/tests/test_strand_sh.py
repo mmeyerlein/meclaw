@@ -26,6 +26,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import time
 import sys
 import tempfile
 import unittest
@@ -1324,6 +1325,65 @@ class TestTokenLanes(TokenTestCase):
         self.assertEqual(["south", "north"],
                          [h["lane"] for h in self.state()["holders"]])
 
+    # A waiter is an entry in a file: nothing in it takes the lane that comes
+    # free, and a builder that ended its turn waited 115 min beside a free
+    # lane until the orchestrator dropped it. `take --wait` blocks until the
+    # take succeeds -- started in the background, its exit wakes the builder.
+    def test_take_wait_blocks_until_the_lane_is_free(self):
+        self.arm("--lanes", "north")
+        self.assertEqual(0, self.take("welle-x/a").returncode)
+        env = kit_env(self.repo, {"MECLAW_STRAND_NOW": str(self.T0),
+                                  "MECLAW_TOKEN_WAIT_SECS": "0.2"})
+        proc = subprocess.Popen([str(self.repo / "scripts" / "strand.sh"), "token", "take",
+                                 "--strand", "welle-x/b", "--wait"], cwd=str(self.repo),
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            for _ in range(100):
+                if "welle-x/b" in self.waiting():
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(proc.poll(), "take --wait returned while the lane was held")
+            self.assertEqual(0, self.token("release", "--strand", "welle-x/a").returncode)
+            out, err = proc.communicate(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        self.assertEqual(0, proc.returncode, out + err)
+        self.assertEqual("lane north", out.strip().splitlines()[-1])
+        self.assertEqual(["welle-x/b"], self.holders())
+
+    def test_take_wait_passes_other_refusals_through(self):
+        self.arm("--lanes", "north")
+        res = self.token("take", "--strand", "welle-x/b", "--lane", "nowhere", "--wait")
+        self.assertNotEqual(0, res.returncode)
+        self.assertNotEqual(3, res.returncode)
+
+    def test_take_wait_names_a_later_refusal(self):
+        # review N4: the retries ran with `2>/dev/null`; a refusal after the
+        # first round (the lane gone after `init --force`) came back as a
+        # bare exit 2.
+        self.arm("--lanes", "north,south")
+        self.assertEqual(0, self.take_lane("welle-x/a", "north").returncode)
+        env = kit_env(self.repo, {"MECLAW_STRAND_NOW": str(self.T0),
+                                  "MECLAW_TOKEN_WAIT_SECS": "0.2"})
+        proc = subprocess.Popen([str(self.repo / "scripts" / "strand.sh"), "token", "take",
+                                 "--strand", "welle-x/b", "--lane", "north", "--wait"],
+                                cwd=str(self.repo), env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        try:
+            for _ in range(100):
+                if "welle-x/b" in self.waiting():
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(proc.poll(), "take --wait returned while the lane was held")
+            self.assertEqual(0, self.token("init", "--force", "--lanes", "south").returncode)
+            out, err = proc.communicate(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        self.assertNotIn(proc.returncode, (0, 3), out + err)
+        self.assertIn("no lane north", err)
+
     def test_a_released_lane_goes_to_the_next(self):
         self.arm("--lanes", "north,south")
         self.take("welle-x/a")
@@ -1511,6 +1571,9 @@ printf '%s\\t%s\\n' "$host" "$*" >>"$FAKE_SSH_LOG"
 case "$host" in
     *unreachable*) echo "ssh: connect to host $host: Connection timed out" >&2; exit 255 ;;
 esac
+# A real ssh does not carry the caller's environment: the golden switches
+# (GH #1051) and a secret beside them reach the host only on the command line.
+unset GH277_WRITE_GOLDEN MECLAW_GH935_BLESS FAKE_SECRET_API_KEY
 exec bash -c "$*"
 """
 
@@ -1556,10 +1619,34 @@ PLAN_HOST_LOCAL = ("ok\tscope-ok\t0\ttrue\t\n"
 # line nextest prints and exits with FAKE_CARGO_RC. FAKE_CARGO_NO_SUMMARY
 # leaves the summary out, FAKE_CARGO_ERR goes to stderr (a refused filter).
 FAKE_CARGO = """#!/usr/bin/env bash
+# every word on its own, a filterset with blanks or `|` stays one (review N6)
+printf 'words %s\\n' "$(printf '<%s>' "$@")" >>"$FAKE_CARGO_LOG"
 printf 'cargo %s\\n' "$*" >>"$FAKE_CARGO_LOG"
+# GH #1051: a golden writer, run in the host's tree. It rewrites a golden and,
+# beside it, a tracked file that is no golden -- only the first may come back.
+if [ "${GH277_WRITE_GOLDEN:-}" = 1 ]; then
+    printf 'rewritten on the lane\\n' >plans/composition-reference/golden/talky.manifest
+    printf 'touched by the run\\n' >README.md
+    mkdir -p crates/x/tests/fixtures
+    printf 'new golden\\n' >crates/x/tests/fixtures/gh1_new.json
+    # a name `sha256sum` escapes (review N5): a backslash and a blank
+    printf 'odd name\\n' >'crates/x/tests/fixtures/gh1 odd\\name.json'
+fi
+# the other switch of the allowlist (review N6)
+if [ "${MECLAW_GH935_BLESS:-}" = 1 ]; then
+    mkdir -p crates/x/tests/golden
+    printf 'blessed\\n' >crates/x/tests/golden/gh935.txt
+fi
+# a golden touched HERE while the lane runs (review N6): FAKE_LOCAL_TOUCH
+[ -z "${FAKE_LOCAL_TOUCH:-}" ] || printf 'edited here during the run\\n' >"$FAKE_LOCAL_TOUCH"
+printf 'env %s\\n' "${FAKE_SECRET_API_KEY:-unset}" >>"$FAKE_CARGO_LOG"
 [ -z "${FAKE_CARGO_ERR:-}" ] || echo "$FAKE_CARGO_ERR" >&2
 if [ -z "${FAKE_CARGO_NO_SUMMARY:-}" ]; then
     echo "        PASS [   0.010s] meclaw-cells::gh1_x a_case"
+    for f in ${FAKE_CARGO_FAILS:-}; do
+        echo "        FAIL [   0.020s] meclaw-cells::gh1_x $f"
+        i=0; while [ "$i" -lt "${FAKE_CARGO_TAIL:-0}" ]; do echo "  output line $i of $f"; i=$((i+1)); done
+    done
     echo "     Summary [   0.420s] ${FAKE_CARGO_TOTAL:-3} tests run: ${FAKE_CARGO_PASSED:-3} passed, 0 skipped"
 fi
 exit "${FAKE_CARGO_RC:-0}"
@@ -1900,6 +1987,181 @@ class TestGateHost(TokenTestCase):
         self.assertEqual(100, res.returncode, res.stdout + res.stderr)
         self.assertRegex(res.stdout.strip().splitlines()[-1],
                          r"^TEST \[binary\(~gh1_x\)\] 2/3 \d+s RED$")
+
+    # GH #1050: every nextest argument reaches nextest -- after the filterset,
+    # before it, behind `--` -- and a test run keeps going after a failure.
+    def cargo_argv(self):
+        return self.cargo_log.read_text().splitlines()[-2]
+
+    def test_nextest_args_after_the_filterset_reach_nextest(self):
+        env = self.fake_cargo()
+        res = self.strand_test("binary(~gh1_x)", "--no-fail-fast", "--run-ignored", "only",
+                               "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(self.cargo_argv().endswith(
+            "-E binary(~gh1_x) --no-fail-fast --run-ignored only"), self.cargo_argv())
+
+    def test_nextest_args_before_the_filterset_are_no_filterset(self):
+        env = self.fake_cargo()
+        res = self.strand_test("--no-fail-fast", "--run-ignored", "only", "binary(~gh1_x)",
+                               "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(self.cargo_argv().endswith(
+            "-E binary(~gh1_x) --no-fail-fast --run-ignored only"), self.cargo_argv())
+        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[binary\(~gh1_x\)\] 3/3 ")
+
+    def test_args_behind_a_double_dash_reach_nextest(self):
+        env = self.fake_cargo()
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", "--", "--retries", "2",
+                               skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(self.cargo_argv().endswith("-E binary(~gh1_x) --retries 2 --no-fail-fast"),
+                        self.cargo_argv())
+
+    def test_a_test_run_keeps_going_after_a_failure_unless_asked(self):
+        env = self.fake_cargo()
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(self.cargo_argv().endswith("-E binary(~gh1_x) --no-fail-fast"),
+                        self.cargo_argv())
+        for asked in (["--fail-fast"], ["--max-fail", "2"], ["--max-fail=2"]):
+            with self.subTest(asked=asked):
+                res = self.strand_test("binary(~gh1_x)", *asked, "--host", "north",
+                                       skip="lane-test", env=env)
+                self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+                self.assertNotIn("--no-fail-fast", self.cargo_argv())
+
+    def test_a_red_run_names_every_failing_test(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_RC": "100", "FAKE_CARGO_PASSED": "1",
+                    "FAKE_CARGO_FAILS": "first_case second_case third_case",
+                    "FAKE_CARGO_TAIL": "40"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
+        for name in ("first_case", "second_case", "third_case"):
+            with self.subTest(name=name):
+                self.assertIn("FAIL meclaw-cells::gh1_x %s" % name, res.stdout)
+
+    # GH #1051: a golden switch travels on the command line, the goldens the
+    # run wrote come back, nothing else does, and no secret travels.
+    def test_a_golden_switch_reaches_the_lane_and_the_goldens_come_back(self):
+        env = self.fake_cargo()
+        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
+        (self.tree / "README.md").write_text("changed, not committed\n")
+        env.update({"GH277_WRITE_GOLDEN": "1", "FAKE_SECRET_API_KEY": "sk-never-sent"})
+        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GH277_WRITE_GOLDEN=1", self.ssh_log.read_text())
+        self.assertEqual("rewritten on the lane\n", (self.tree / "plans" / "composition-reference"
+                                                     / "golden" / "talky.manifest").read_text())
+        self.assertEqual("new golden\n",
+                         (self.tree / "crates/x/tests/fixtures/gh1_new.json").read_text())
+        self.assertIn("golden back: plans/composition-reference/golden/talky.manifest", res.stdout)
+        self.assertIn("golden back: crates/x/tests/fixtures/gh1_new.json", res.stdout)
+        # not a golden: stays as it is here
+        self.assertEqual("changed, not committed\n", (self.tree / "README.md").read_text())
+        self.assertNotIn("golden back: README.md", res.stdout)
+        self.assertNotIn("sk-never-sent", self.ssh_log.read_text())
+        self.assertIn("env unset", self.cargo_log.read_text())
+        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[")
+
+    def test_a_golden_whose_name_sha256sum_escapes_comes_back(self):
+        # review N5: `cut -c67-` cut a name with a backslash one column off
+        env = self.fake_cargo()
+        env.update({"GH277_WRITE_GOLDEN": "1"})
+        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("odd name\n",
+                         (self.tree / "crates/x/tests/fixtures/gh1 odd\\name.json").read_text())
+        self.assertIn("golden back: crates/x/tests/fixtures/gh1 odd\\name.json", res.stdout)
+
+    def test_the_bless_switch_travels_and_its_golden_comes_back(self):
+        env = self.fake_cargo()
+        env.update({"MECLAW_GH935_BLESS": "1"})
+        res = self.strand_test("binary(~gh935_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("MECLAW_GH935_BLESS=1", self.ssh_log.read_text())
+        self.assertEqual("blessed\n",
+                         (self.tree / "crates/x/tests/golden/gh935.txt").read_text())
+        self.assertIn("golden back: crates/x/tests/golden/gh935.txt", res.stdout)
+
+    def test_a_failed_golden_fetch_exits_2_and_says_so(self):
+        env = self.fake_cargo()
+        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
+        env.update({"GH277_WRITE_GOLDEN": "1", "FAKE_RSYNC_FAIL": str(self.tree) + "/"})
+        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("golden fetch failed", res.stdout)
+        self.assertEqual("the old golden\n", (self.tree / "plans" / "composition-reference"
+                                              / "golden" / "talky.manifest").read_text())
+        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[.*RED$")
+
+    def test_a_golden_changed_here_but_not_on_the_lane_stays(self):
+        env = self.fake_cargo()
+        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n",
+                     "plans/composition-reference/golden/other.manifest": "committed\n"})
+        other = self.tree / "plans" / "composition-reference" / "golden" / "other.manifest"
+        other.write_text("changed here, not committed\n")
+        env.update({"GH277_WRITE_GOLDEN": "1"})
+        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("changed here, not committed\n", other.read_text())
+        self.assertNotIn("other.manifest", res.stdout)
+
+    def test_a_golden_changed_here_during_the_run_is_kept_and_named(self):
+        # The lane's copy would overwrite an edit made here while it ran: it
+        # stays, the line names it, the run exits 2.
+        env = self.fake_cargo()
+        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
+        talky = self.tree / "plans" / "composition-reference" / "golden" / "talky.manifest"
+        env.update({"GH277_WRITE_GOLDEN": "1", "FAKE_LOCAL_TOUCH": str(talky)})
+        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("edited here during the run\n", talky.read_text())
+        self.assertIn("golden conflict: plans/composition-reference/golden/talky.manifest",
+                      res.stdout)
+        # the others still come back
+        self.assertIn("golden back: crates/x/tests/fixtures/gh1_new.json", res.stdout)
+
+    def test_value_options_before_the_filterset_take_their_value(self):
+        # review N2: `test -p meclaw-cells '<expr>'` made the package the filter
+        env = self.fake_cargo()
+        res = self.strand_test("-p", "meclaw-cells", "--no-tests", "fail", "binary(~gh1_x)",
+                               "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(self.cargo_argv().endswith(
+            "-E binary(~gh1_x) -p meclaw-cells --no-tests fail --no-fail-fast"), self.cargo_argv())
+        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[binary\(~gh1_x\)\] 3/3 ")
+
+    def test_no_fail_fast_goes_before_the_test_binary_args(self):
+        # review N3: behind a second `--` the words belong to the test binary
+        env = self.fake_cargo()
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", "--", "--retries", "2",
+                               "--", "--exact", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(self.cargo_argv().endswith(
+            "-E binary(~gh1_x) --retries 2 --no-fail-fast -- --exact"), self.cargo_argv())
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", "--", "--", "--fail-fast",
+                               skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(self.cargo_argv().endswith(
+            "-E binary(~gh1_x) --no-fail-fast -- --fail-fast"), self.cargo_argv())
+
+    def test_a_filterset_with_blanks_and_a_bar_stays_one_word(self):
+        env = self.fake_cargo()
+        expr = "binary(~gh1_x) | test(=a b)"
+        res = self.strand_test(expr, "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        words = [l for l in self.cargo_log.read_text().splitlines() if l.startswith("words ")][-1]
+        self.assertIn("<-E><%s>" % expr, words)
+
+    def test_without_a_golden_switch_nothing_comes_back(self):
+        env = self.fake_cargo()
+        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
+        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("WRITE_GOLDEN", self.ssh_log.read_text())
+        self.assertNotIn("golden back", res.stdout)
 
     # GH #997: a run in which no test ran is no proof. The filter named a
     # helper module, matched no test, and the line read `0/0 ... GREEN`.

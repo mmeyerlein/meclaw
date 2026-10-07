@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 35] = [
+const SHARED: [&str; 36] = [
     "actor",
     "asker",
     "audience_now",
@@ -158,6 +158,9 @@ const SHARED: [&str; 35] = [
     "recall_query",
     "recall_window_from",
     "recall_window_to",
+    // GH #1040: the asker's model package, a sixth recall key of the same kind
+    // (the member's door sets it, the memory hive deletes it on every exit).
+    "recall_input_soft",
     "requester",
     "session_id",
     // GH #949 -- who speaks in a turn, `member:<person>`, stamped by the entry

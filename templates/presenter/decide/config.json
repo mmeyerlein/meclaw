@@ -132,6 +132,22 @@
           "type": "number",
           "required": false
         },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
+          "type": "number",
+          "required": false
+        },
         "dropped": {
           "type": "array",
           "required": false
