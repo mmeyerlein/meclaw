@@ -592,41 +592,60 @@ fn walk(rows: &dyn Fn(&str) -> Value, answer: &dyn Fn(usize, &Value) -> Option<V
         }
         let ops: Vec<&Value> = msgs.iter().filter(|m| route(m) == "cstore").collect();
         assert_eq!(ops.len(), 1, "the read chain is sequential: {msgs:?}");
-        let args = args_of(ops[0]);
         let phase = ops[0]["header"]["phase"]
             .as_str()
             .expect("phase")
             .to_string();
-        let operation = args["operation"].as_str().unwrap_or("").to_string();
-        let table = args["table"].as_str().unwrap_or("");
-        let answer_rows = match (operation.as_str(), table) {
-            ("insert", "scratch") => {
-                scratch.push(args["row"].clone());
-                json!([])
-            }
-            ("select", "scratch") => {
-                let limit = args["limit"].as_u64().unwrap_or(u64::MAX) as usize;
-                Value::Array(
-                    scratch
-                        .iter()
-                        .rev()
-                        .filter(|r| r["key"] == args["where"]["key"])
-                        .take(limit)
-                        .cloned()
-                        .collect(),
-                )
-            }
-            ("select", t) => rows(t),
-            _ => json!([]),
+        // GH #295: a message of N > 1 tool calls is a bundle, run in order and
+        // answered as one (R-TR-25: the exceptions read leaves with the mute
+        // reads, and their park with the conversion).
+        let calls = ops[0]["messages"].as_array().expect("tool calls").clone();
+        let mut answers = Vec::new();
+        for call in &calls {
+            let args: Value =
+                serde_json::from_str(call["text"].as_str().expect("op text")).expect("op args");
+            let operation = args["operation"].as_str().unwrap_or("").to_string();
+            let table = args["table"].as_str().unwrap_or("");
+            let answer_rows = match (operation.as_str(), table) {
+                ("insert", "scratch") => {
+                    scratch.push(args["row"].clone());
+                    json!([])
+                }
+                ("select", "scratch") => {
+                    let limit = args["limit"].as_u64().unwrap_or(u64::MAX) as usize;
+                    Value::Array(
+                        scratch
+                            .iter()
+                            .rev()
+                            .filter(|r| r["key"] == args["where"]["key"])
+                            .take(limit)
+                            .cloned()
+                            .collect(),
+                    )
+                }
+                ("select", t) => rows(t),
+                _ => json!([]),
+            };
+            answers.push((call["id"].clone(), operation, answer_rows));
+        }
+        let reply = if answers.len() == 1 {
+            let (_, operation, answer_rows) = &answers[0];
+            json!({"header": {"context": close_ctx(&phase, group),
+                              "hop": {"operation": operation, "rows_affected": 1}},
+                   "messages": [{"origin": "tool", "type": "tool_result", "id": "r",
+                                 "text": answer_rows.to_string()}]})
+        } else {
+            json!({"header": {"context": close_ctx(&phase, group),
+                              "hop": {"operation": "bundle", "rows_affected": answers.len(),
+                                      "bundle_errors": 0}},
+                   "messages": answers.iter().map(|(id, _, r)| json!(
+                       {"origin": "tool", "type": "tool_result", "id": id,
+                        "text": r.to_string()})).collect::<Vec<_>>(),
+                   "results": answers.iter().map(|(id, op, _)| json!(
+                       {"tool_call_id": id, "operation": op, "rows_affected": 1}))
+                       .collect::<Vec<_>>()})
         };
-        msgs = run(
-            CLOSE_GLUE,
-            &json!({"header": {"context": close_ctx(&phase, group),
-                               "hop": {"operation": operation, "rows_affected": 1}},
-                    "messages": [{"origin": "tool", "type": "tool_result", "id": "r",
-                                  "text": answer_rows.to_string()}]}),
-        )
-        .0;
+        msgs = run(CLOSE_GLUE, &reply).0;
     }
     panic!("the close pass did not terminate within 80 round trips");
 }

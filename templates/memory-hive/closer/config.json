@@ -68,7 +68,10 @@
         },
         "finish_reason": {
           "type": "string",
-          "required": true
+          "required": true,
+          "optional_on_route": [
+            "credential_request"
+          ]
         },
         "tokens_prompt": {
           "type": "number",

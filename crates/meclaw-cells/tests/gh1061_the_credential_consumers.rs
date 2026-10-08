@@ -550,20 +550,34 @@ fn channel_road(decls: &[Value]) -> ChannelRoad {
                 e["from"].as_str().unwrap_or(""),
                 e["to"].as_str().unwrap_or(""),
             );
-            if e["lane"] == "credential_request" {
-                assert_eq!(abs(to), format!("{MEMBER}/access"), "{e}");
+            let cond = e["condition"].as_str().unwrap_or("");
+            let broker = format!("{MEMBER}/access");
+            // GH #1102: the channel road is plain deep edges -- a `lane` would
+            // make them v-lanes, and `channels` declares no connect point.
+            let is_ask = abs(to) == broker && cond.contains("hop.route == 'credential_request'");
+            let is_answer =
+                abs(from) == broker && cond.contains("hop.operation == 'vault.deliver'");
+            if is_ask || is_answer {
+                assert!(
+                    e["lane"].is_null(),
+                    "GH #1102: a channel credential edge carries no lane: {e}"
+                );
+            }
+            if is_ask {
                 let req = e["modifier"]["set_context"]["requester"]
                     .as_str()
                     .unwrap_or("");
                 road.asks
                     .insert(abs(from), req.trim_matches('\'').to_string());
             }
-            if e["lane"].is_null() && abs(from).starts_with(&format!("{MEMBER}/channels/")) {
+            if !is_ask
+                && e["lane"].is_null()
+                && abs(from).starts_with(&format!("{MEMBER}/channels/"))
+            {
                 road.outs
                     .push((abs(from), e["condition"].as_str().unwrap_or("").to_string()));
             }
-            if e["lane"] == "in_sealed" {
-                assert_eq!(abs(from), format!("{MEMBER}/access"), "{e}");
+            if is_answer {
                 road.answers
                     .entry(abs(to))
                     .or_default()
@@ -597,7 +611,7 @@ fn assert_channel_granted(road: &ChannelRoad, cell: &str, want: &[(&str, &str)])
     let req = road
         .asks
         .get(cell)
-        .unwrap_or_else(|| panic!("no credential_request v-lane from {cell}: {:?}", road.asks));
+        .unwrap_or_else(|| panic!("no credential_request edge from {cell}: {:?}", road.asks));
     let guards = road.answers.get(cell).cloned().unwrap_or_default();
     assert_eq!(
         road.grants.len(),

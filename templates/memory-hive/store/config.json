@@ -19,7 +19,11 @@
         "affect": "text",
         "speaker_name": "text",
         "closed_at": "text",
-        "closure_source": "text"
+        "closure_source": "text",
+        "muted_at": "text",
+        "mute_source": "text",
+        "mute_words": "text",
+        "unmuted_at": "text"
       },
       "topics": {
         "id": "text",
@@ -54,7 +58,11 @@
         "superseded_by": "text",
         "closure_source": "text",
         "confidence": "int",
-        "source": "text"
+        "source": "text",
+        "muted_at": "text",
+        "mute_source": "text",
+        "mute_words": "text",
+        "unmuted_at": "text"
       },
       "entities": {
         "id": "text",
@@ -93,7 +101,11 @@
         "audience_set": "text",
         "created_at": "text",
         "updated_at": "text",
-        "closure_source": "text"
+        "closure_source": "text",
+        "muted_at": "text",
+        "mute_source": "text",
+        "mute_words": "text",
+        "unmuted_at": "text"
       },
       "skills": {
         "id": "text",
@@ -240,6 +252,18 @@
         "table": "entity_edges",
         "on": [
           "dst_entity"
+        ]
+      },
+      "episodes_mute_source": {
+        "table": "episodes",
+        "on": [
+          "mute_source"
+        ]
+      },
+      "episodes_closure_source": {
+        "table": "episodes",
+        "on": [
+          "closure_source"
         ]
       }
     }

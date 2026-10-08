@@ -1148,7 +1148,7 @@ fn overlay_dirs_for_rel(
 /// # Errors
 /// Whatever [`ref_target`] reports for a malformed, unresolvable or cyclic
 /// reference on the way down.
-fn template_dir_for_rel(
+pub(crate) fn template_dir_for_rel(
     template_root: &std::path::Path,
     templates: &crate::templates::TemplatesRegistry,
     rel_path: &str,
@@ -2372,7 +2372,7 @@ pub fn stage_subtree(
 /// the outer is always a direct instantiation whose chain is the one hop, so
 /// both read the same — but a stamp that already names hops above it must not
 /// lose them here.
-fn provenance_for(
+pub(crate) fn provenance_for(
     outer: &crate::config::NodeProvenance,
     node: &CellNode,
 ) -> crate::config::NodeProvenance {

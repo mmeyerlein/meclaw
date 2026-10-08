@@ -94,6 +94,8 @@ const SCRIPTED: &[Scripted] = &[
             ("bundle_share", "_float"),
             // GH #1085: the window of an asker no request names one for.
             ("input_soft_fallback", "_int"),
+            // GH #1095: the stop words are language data beside the cell.
+            ("stopwords_lang", "_data"),
             ("rrf_k", "_int"),
             ("rrf_w_keyword", "_float"),
             ("rrf_w_semantic", "_float"),
@@ -385,6 +387,20 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
                 "{cell}: params.{knob} and contract.settings.{knob}.default disagree"
             );
 
+            if *kind == "_data" {
+                // A data block has one home, the params: the script reads it
+                // with no fallback of its own -- `_data("<knob>", None)` (fail
+                // closed) or a bare `P.get("<knob>")` -- never a second copy of
+                // the data.
+                assert!(param.is_object(), "{cell}: params.{knob} is a data block");
+                let helper = format!("_data(\"{knob}\", None)");
+                let bare = format!("P.get(\"{knob}\")");
+                assert!(
+                    src.contains(&helper) || src.contains(&bare),
+                    "{cell}: the script does not read {knob} as a data block without a literal copy"
+                );
+                continue;
+            }
             // `NAME = _int("tier1_topk", 20)` -- the literal after the comma.
             let needle = format!("{kind}(\"{knob}\", ");
             let at = src
@@ -402,13 +418,6 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
             let lit: Value = meclaw_core::serde_json::from_str(lit).unwrap_or_else(|e| {
                 panic!("{cell}/{knob}: script literal {lit:?} is not json ({e})")
             });
-            if *kind == "_data" {
-                // A data block has one home, the params: the script's fallback
-                // is None (fail closed), never a second copy of the data.
-                assert!(param.is_object(), "{cell}: params.{knob} is a data block");
-                assert!(lit.is_null(), "{cell}: {knob} carries no literal copy");
-                continue;
-            }
             if *kind == "_pkg" || *kind == "_grown" {
                 // GH #1040: a knob the model package sizes ships as null (derived
                 // per request); its literal is the value WITHOUT a package.
@@ -451,14 +460,15 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 58,
+        total, 59,
         "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040), \
          `generation_idle_ms` (GH #1042), `require_quote` (GH #1079), `tier1_graph_node_facts` \
          and the four graph page sizes of `recall`, the three thresholds and two page sizes of \
          `entity-glue` (GH #1057), the language data `forget_lang` of `close-glue` (GH #1074) and \
          its switch `forget_fallback` (R-TR-25), less `tier0_episode_chars` and \
          `tier1_item_chars` (GH #1085: an item has no length of its own), plus \
-         `input_soft_fallback` (GH #1085)"
+         `input_soft_fallback` (GH #1085), plus the language data `stopwords_lang` of `recall` \
+         (GH #1095)"
     );
 }
 

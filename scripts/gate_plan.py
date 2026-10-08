@@ -196,7 +196,20 @@ STATIONS (S strand, I integration, R release, C ci)
                     report is stale, incomplete or absent the pass does not turn
                     red, it ASKS the owner (ruling on GH #621, 2026-09-22; see
                     `gate.sh --decide`). No station talks to a provider
-    export-selftest export_infra; I/R always (seconds, pure Python)
+    export-selftest export_infra; I/R always (seconds, pure Python). Two
+                    commands: the drift fixtures and the lock of
+                    `export-tree-tests` (`test_export_tree_tests.py`)
+    export-tree-tests  R always, right before `export-audit` (GH #1101).
+                    Builds the export tree of HEAD dry (the index of
+                    `make_export.py`), selects IN IT every integration test
+                    that reads the shipped catalogue (`_is_catalogue_wide` or
+                    `_names_the_shipped_root` -- this module's rules, no hand
+                    list) and runs them with nextest in a fresh target, one
+                    call per crate. cargo:1. A test green in the private tree
+                    and red in the export -- a count or a floor over the
+                    templates that ship (0.62.1) -- is RED here instead of in
+                    the public CI. Never in C: plans/ does not travel, and the
+                    public tree IS the export tree
     export-audit    I/R always, last station. TWO shapes, one station name:
                     R runs the FULL audit (scope `R1-R17`, cargo:1 --
                     make_export.py runs `cargo check --workspace
@@ -490,6 +503,7 @@ CI_EXCLUDED = frozenset({
     "persona-cases",     # workshop/evals/persona/
     "persona-receipt",   # workshop/evals/persona/
     "export-selftest",   # plans/export-fixtures/
+    "export-tree-tests",  # plans/export-fixtures/
     "export-audit",      # plans/export-fixtures/
     "deny",              # the CI `deny` job runs the cargo-deny action itself
     "deny-advisories",   # ... and would double-run or skip here
@@ -507,7 +521,8 @@ STATION_ORDER = (
     "tests", "slow-tests", "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "scenarios:display",
     "browser:display", "recall-harness",
-    "deny-advisories", "persona-cases", "persona-receipt", "export-selftest", "export-audit",
+    "deny-advisories", "persona-cases", "persona-receipt", "export-selftest",
+    "export-tree-tests", "export-audit",
 )
 
 
@@ -1921,7 +1936,17 @@ def plan(paths, mode, repo=None):
         # it is the self-test of the very rules the audit below applies.
         out["export-selftest"] = station(
             "export-selftest", "drift-fixtures", False,
-            [["python3", "plans/export-fixtures/test_drift_gate.py"]])
+            [["python3", "plans/export-fixtures/test_drift_gate.py"],
+             ["python3", "plans/export-fixtures/test_export_tree_tests.py"]])
+
+    if mode == "release":
+        # GH #1101: the tests whose answer depends on WHICH templates ship, run
+        # in the tree that ships. The export audit scans test literals (R2b/R2e);
+        # a count or a floor over the catalogue holds no literal to scan.
+        # cargo:1 -- a fresh target inside the export tree, like R9.
+        out["export-tree-tests"] = station(
+            "export-tree-tests", "catalogue tests in the export tree", True,
+            [["python3", "plans/export-fixtures/export_tree_tests.py", "--rev", "HEAD"]])
 
     if ir:
         # `{receipt}` is a placeholder the runner substitutes with the path it

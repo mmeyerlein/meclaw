@@ -59,12 +59,23 @@ fn run_python(src: &str) -> std::process::Output {
     child.wait_with_output().expect("wait")
 }
 
+/// The stub stdin of a probe: no message, and the keyword leg's stop words as
+/// the cell ships them (GH #1095: a param, not script text).
+fn probe_stdin() -> String {
+    let raw = std::fs::read_to_string("../../templates/memory-hive/recall/config.json")
+        .expect("recall config");
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("config json");
+    serde_json::json!({"envelope": {}, "body": {},
+        "params": {"stopwords_lang": v["params"]["stopwords_lang"].clone()}})
+    .to_string()
+}
+
 fn run_probe_window(probe: &str) -> String {
     let src = format!(
         concat!(
             "import sys, io\n",
             "_script = {}\n",
-            "sys.stdin = io.StringIO('{{\"envelope\": {{}}, \"body\": {{}}, \"params\": {{}}}}')\n",
+            "sys.stdin = io.StringIO({})\n",
             "_sink, _real = io.StringIO(), sys.stdout\n",
             "sys.stdout = _sink\n",
             "try:\n",
@@ -76,6 +87,7 @@ fn run_probe_window(probe: &str) -> String {
             "{}"
         ),
         serde_json::to_string(&recall_script()).unwrap(),
+        serde_json::to_string(&probe_stdin()).unwrap(),
         probe
     );
     let out = run_python(&src);

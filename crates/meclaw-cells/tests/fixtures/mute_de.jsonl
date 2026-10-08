@@ -1,0 +1,12 @@
+{"test": "keeps-aside", "text": "Sprich das mit dem Geld vom Nachbarn nicht mehr an.", "words": "geld nachbarn", "asks": "geld nachbarn"}
+{"test": "keeps-aside", "text": "Bitte das Geld vom Nachbarn nicht mehr ansprechen.", "words": "geld nachbarn", "asks": ""}
+{"test": "keeps-aside", "text": "Erwähne das mit dem Geld vom Nachbarn bitte nie wieder.", "words": "geld nachbarn", "asks": "geld nachbarn"}
+{"test": "confirms", "question": "Meinst du das Geld, das dein Nachbar dir schuldet?", "text": "Ja, genau das Geld vom Nachbarn.", "words": "geld nachbarn"}
+{"test": "takes-up", "text": "Hat mein Nachbar das Geld schon zurückgezahlt?", "words": "geld nachbarn"}
+{"test": "cited-only", "text": "Lösche was ich über den Zahnarzt gesagt habe.", "words": "zahnarzt termin"}
+{"test": "asked", "text": "Wie viel schuldet mir mein Nachbar noch?", "words": "geld nachbar schuldet"}
+{"test": "asked", "text": "Was schuldet mir mein Nachbar?", "words": "nachbar schulden"}
+{"test": "asked", "text": "Was hat der Arzt gesagt?", "words": "kolja arzt"}
+{"test": "not-asked", "text": "Wie wird das Wetter morgen?", "words": "geld nachbar schuldet"}
+{"test": "not-asked", "text": "Der Arzt war nett.", "words": "kolja arzt"}
+{"test": "not-asked", "text": "Mein Nachbar hat heute gegrüßt.", "words": "geld nachbar schuldet"}

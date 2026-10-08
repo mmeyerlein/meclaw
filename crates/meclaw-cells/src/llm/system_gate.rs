@@ -14,8 +14,9 @@
 //!   default: it needs no declaration and holds for every cell. The leaf bound
 //!   is no fixed number (GH #1085, R-IG-1): `system_max_leaf_bytes` when the
 //!   operator sets it, else what the model's window can take at all (the
-//!   catalog row's `input_hard`, else `context_window`, at three bytes a
-//!   token -- `LlmParams::window_bound_bytes`), else the carrier ceiling.
+//!   catalog row's `input_hard`, else `context_window`, at the row's
+//!   `chars_per_token` (three without a row) --
+//!   `LlmParams::window_bound_bytes`), else the carrier ceiling.
 //! * **Allowlist — opt-in.** `system_writable` pins which subtrees a MESSAGE
 //!   may write at all. Unset (the default) means "no allowlist configured" and
 //!   every slot path stays writable — the operator's direct `@external` system
@@ -59,9 +60,11 @@ pub(crate) const DEFAULT_SYSTEM_MAX_SLOTS: usize = 256;
 pub(crate) enum LeafBound {
     /// The operator's `system_max_leaf_bytes`.
     Param,
-    /// The catalog row's `input_hard`, at three bytes a token.
+    /// The catalog row's `input_hard`, at the row's `chars_per_token` (three
+    /// without a row).
     InputHard,
-    /// The catalog row's `context_window`, at three bytes a token.
+    /// The catalog row's `context_window`, at the row's `chars_per_token`
+    /// (three without a row).
     ContextWindow,
     /// No window known: the carrier ceiling
     /// ([`crate::content_budget::CARRIER_MAX_BYTES`]).

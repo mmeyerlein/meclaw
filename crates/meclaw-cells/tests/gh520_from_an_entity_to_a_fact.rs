@@ -77,8 +77,15 @@ fn script_of(path: &str) -> String {
 }
 
 /// Hand the shipped script to python3 **on stdin**, never in argv (GH #279).
-fn run(doc: Value) -> Vec<Value> {
+fn run(mut doc: Value) -> Vec<Value> {
     let script = script_of(RECALL_CONFIG);
+    // The keyword leg's stop words are a param since GH #1095; a doc that
+    // names none runs on the shipped value, as a colony's cell would.
+    if doc.get("params").is_none() {
+        let raw = std::fs::read_to_string(RECALL_CONFIG).expect("recall config");
+        let v: Value = meclaw_core::serde_json::from_str(&raw).expect("config json");
+        doc["params"] = meclaw_core::serde_json::json!({"stopwords_lang": v["params"]["stopwords_lang"].clone()});
+    }
     let src = format!(
         concat!(
             "import sys, io\n",

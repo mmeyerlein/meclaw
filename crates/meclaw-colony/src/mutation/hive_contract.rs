@@ -805,62 +805,96 @@ pub fn collect_dropped_lanes(
         let Ok(tpl) = templates.resolve(tpl_ref) else {
             continue; // `template_missing` at the door
         };
-        let hive_path = crate::mutation::resolve_scoped_path(guard_scope, name);
-        let Some(standing) = contracts.iter().find(|c| c.hive_path == hive_path.as_str()) else {
-            continue;
-        };
-        let renewed = contract_from_cell_dir(&tpl.filesystem_path, hive_path.as_str());
-        let dropped: Vec<&Lane> = standing
-            .accepts
-            .iter()
-            .filter(|lane| {
-                renewed
-                    .as_ref()
-                    .is_some_and(|n| !n.accepts.iter().any(|l| l.route == lane.route))
-            })
-            .collect();
-        if dropped.is_empty() {
-            continue;
-        }
-        let mut outer: Vec<&crate::edge_table::Edge> = edges
-            .iter()
-            .filter(|e| {
-                e.to.as_str() == hive_path.as_str() && !standing.is_interior(e.from.as_str())
-            })
-            .collect();
-        outer.sort_by(|a, b| a.from.as_str().cmp(b.from.as_str()));
-        for edge in outer {
-            let Some(route) = edge
-                .modifier
-                .as_ref()
-                .and_then(|m| m.source.set_hop.get("route"))
-                .and_then(|src| constant_route(src))
-            else {
-                continue;
-            };
-            let Some(lane) = dropped.iter().find(|l| l.route == route) else {
-                continue;
-            };
-            let error = MutationError::HiveContract(format!(
-                "replace_nodes '{name}': '{tpl_ref}' no longer accepts the lane '{route}' \
-                 ({because}), but the edge {from} -> {hive} states hop.route='{route}' into \
-                 the hive. A hive loses no lane somebody hangs on: take that edge off first, \
-                 or lift to a version that keeps the lane.",
-                because = lane.because,
-                from = edge.from.as_str(),
-                hive = hive_path.as_str(),
-            ));
-            let address = Some(hive_path.as_str().to_string());
-            into.push(if lane.because.is_empty() {
-                Violation::from_error(Stage::ContractLocality, &error, address)
+        let lifted = crate::mutation::resolve_scoped_path(guard_scope, name);
+        // GH #1083: a lift renews every standing hive nested in the lifted one
+        // too, from the template node at its place — so a nested hive can lose
+        // a lane as well, and is held to the same rule. Its template directory
+        // is found the way the staging finds it (`template_dir_for_rel`
+        // follows a `ref`); one that cannot be found renews nothing here.
+        let mut targets: Vec<(&HiveContract, Option<HiveContract>)> = Vec::new();
+        for standing in contracts {
+            let renewed = if standing.hive_path == lifted.as_str() {
+                contract_from_cell_dir(&tpl.filesystem_path, lifted.as_str())
+            } else if let Some(rel) = standing
+                .hive_path
+                .strip_prefix(lifted.as_str())
+                .and_then(|r| r.strip_prefix('/'))
+                .filter(|r| !r.is_empty())
+            {
+                let Ok(dir) = crate::mutation::subtree::template_dir_for_rel(
+                    &tpl.filesystem_path,
+                    templates,
+                    rel,
+                ) else {
+                    continue;
+                };
+                contract_from_cell_dir(&dir, standing.hive_path.as_str())
             } else {
-                Violation::from_error_because(
-                    Stage::ContractLocality,
-                    &error,
-                    address,
-                    lane.because.clone(),
-                )
-            });
+                continue;
+            };
+            targets.push((standing, renewed));
+        }
+        targets.sort_by(|a, b| a.0.hive_path.cmp(&b.0.hive_path));
+        for (standing, renewed) in targets {
+            let hive_path = standing.hive_path.as_str();
+            let dropped: Vec<&Lane> = standing
+                .accepts
+                .iter()
+                .filter(|lane| {
+                    renewed
+                        .as_ref()
+                        .is_some_and(|n| !n.accepts.iter().any(|l| l.route == lane.route))
+                })
+                .collect();
+            if dropped.is_empty() {
+                continue;
+            }
+            // An outer edge comes from outside the LIFTED hive: an edge from
+            // inside it is part of the old inner graph, which the lift lays
+            // anew from the template (`old_inner_edges`).
+            let nested = hive_path != lifted.as_str();
+            let mut outer: Vec<&crate::edge_table::Edge> = edges
+                .iter()
+                .filter(|e| {
+                    e.to.as_str() == hive_path
+                        && !standing.is_interior(e.from.as_str())
+                        && !(nested && crate::connectivity::is_self_or_descendant(&e.from, &lifted))
+                })
+                .collect();
+            outer.sort_by(|a, b| a.from.as_str().cmp(b.from.as_str()));
+            for edge in outer {
+                let Some(route) = edge
+                    .modifier
+                    .as_ref()
+                    .and_then(|m| m.source.set_hop.get("route"))
+                    .and_then(|src| constant_route(src))
+                else {
+                    continue;
+                };
+                let Some(lane) = dropped.iter().find(|l| l.route == route) else {
+                    continue;
+                };
+                let error = MutationError::HiveContract(format!(
+                    "replace_nodes '{name}': '{tpl_ref}' no longer accepts the lane '{route}' \
+                     ({because}), but the edge {from} -> {hive} states hop.route='{route}' into \
+                     the hive. A hive loses no lane somebody hangs on: take that edge off first, \
+                     or lift to a version that keeps the lane.",
+                    because = lane.because,
+                    from = edge.from.as_str(),
+                    hive = hive_path,
+                ));
+                let address = Some(hive_path.to_string());
+                into.push(if lane.because.is_empty() {
+                    Violation::from_error(Stage::ContractLocality, &error, address)
+                } else {
+                    Violation::from_error_because(
+                        Stage::ContractLocality,
+                        &error,
+                        address,
+                        lane.because.clone(),
+                    )
+                });
+            }
         }
     }
 }

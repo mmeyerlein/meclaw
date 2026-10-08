@@ -19,7 +19,10 @@
 //! declaration is rendered afresh from the template as well, under the
 //! hive's OLD `cell.id`, and staged beside the children as
 //! `config.json.replace` — not as a `config.json`, which a rename would take
-//! for a fresh hive.
+//! for a fresh hive. Every hive NESTED in the lifted one that stands is
+//! renewed the same way (GH #1083), each under its own old `cell.id`: a
+//! hive marker is never compared, so without this it kept the contract of
+//! its birth while the leaves below it moved on.
 //!
 //! Everything here is pre-destructive: the plan is built under
 //! `.staging/<mutation_id>/`, every refusal leaves the live tree
@@ -44,6 +47,7 @@ use super::subtree::{
     classify_subtree_nodes_in, is_self_or_rel_descendant, parse_subtree, rename_roots,
     resolve_internal_edges, stage_rename_root, stamped_version,
 };
+use super::subtree::{provenance_for, template_dir_for_rel};
 use super::{NodeChange, NodeVerdict};
 use crate::templates::TemplatesRegistry;
 use meclaw_core::{JsonValue, Path};
@@ -77,9 +81,10 @@ pub struct StagedReplace {
     /// Children that stand as the template would write them — untouched (F1),
     /// listed so the recompute reaches them.
     pub kept: Vec<ResolvedExistingNode>,
-    /// Hive markers below the lifted node that stand — untouched, listed for
-    /// the same reason. The lifted hive itself is NOT in here; its renewal is
-    /// [`Self::declaration`].
+    /// Hive markers below the lifted node that stand — their directories
+    /// untouched, listed for the same reason; their declarations are renewed
+    /// through [`Self::nested_declarations`]. The lifted hive itself is NOT in
+    /// here; its renewal is [`Self::declaration`].
     pub kept_hives: Vec<ResolvedExistingHive>,
     /// Nodes of the old tree the template does not name — left standing, to be
     /// disconnected by the new inner edges. Receipt and recompute material;
@@ -89,6 +94,14 @@ pub struct StagedReplace {
     /// `config.json.replace`; `None` when the lifted node is the template's
     /// single cell and therefore itself added, changed or kept.
     pub declaration: Option<StagedDeclaration>,
+    /// GH #1083 — the renewed declaration of every standing hive nested in
+    /// the lifted one, rendered like [`Self::declaration`] from the template
+    /// node at its place (through `ref`s, with the ref defaults and the
+    /// entry's params for that path), under its own old `cell.id`. Without it
+    /// a nested hive kept the contract of its birth, and a leaf of the new
+    /// version reached on a new v-lane was refused `v_lane_no_connect_point`
+    /// (measured by the 0.62.0 migration proof, `…/curator/summarizer`).
+    pub nested_declarations: Vec<NestedDeclaration>,
     /// The template's inner edges, resolved to absolute paths and
     /// containment-checked — what the apply lays in place of the old inner
     /// graph. Empty for a leaf template.
@@ -129,6 +142,19 @@ pub struct StagedDeclaration {
     pub final_path: PathBuf,
 }
 
+/// GH #1083 — one standing hive nested in a lifted composite and its renewed
+/// declaration.
+#[derive(Debug, Clone)]
+pub struct NestedDeclaration {
+    /// Absolute logical path of the nested hive.
+    pub absolute_path: Path,
+    /// Its on-disk directory (the declaration's `final_path` is
+    /// `<final_dir>/config.json`).
+    pub final_dir: PathBuf,
+    /// The staged file and the one it replaces.
+    pub declaration: StagedDeclaration,
+}
+
 /// Stage every `replace_nodes` entry of `diff` under `.staging/<mutation_id>/`.
 ///
 /// Reads the same arguments as
@@ -157,6 +183,7 @@ pub fn stage_replace_nodes(
 ) -> Result<Vec<StagedReplace>, MutationError> {
     let mut out = Vec::new();
     let replaces = diff.get("replace_nodes").and_then(|v| v.as_array());
+    refuse_nested_lifts(scope, replaces.map(Vec::as_slice).unwrap_or(&[]))?;
     for r in replaces.into_iter().flatten() {
         pulse.tick();
         let name = r
@@ -193,6 +220,39 @@ pub fn stage_replace_nodes(
     Ok(out)
 }
 
+/// GH #1083 — two entries of one diff may not lift the same tree twice. A
+/// lift renews every standing hive below it (its declaration and its
+/// children), so a second entry on a node inside it — or on the node itself —
+/// would stage the same files a second time under the same
+/// `.staging/<mutation_id>/` and one lift would silently overwrite the other.
+///
+/// # Errors
+/// [`MutationError::Schema`] naming both entries.
+fn refuse_nested_lifts(scope: &str, replaces: &[JsonValue]) -> Result<(), MutationError> {
+    let names: Vec<(&str, Path)> = replaces
+        .iter()
+        .filter_map(|r| {
+            r.get("match")
+                .and_then(|m| m.get("name"))
+                .and_then(|v| v.as_str())
+        })
+        .map(|n| (n, crate::mutation::resolve_scoped_path(scope, n)))
+        .collect();
+    for (i, (inner, inner_abs)) in names.iter().enumerate() {
+        for (j, (outer, outer_abs)) in names.iter().enumerate() {
+            if i != j && crate::connectivity::is_self_or_descendant(inner_abs, outer_abs) {
+                return Err(MutationError::Schema(format!(
+                    "replace_nodes[] '{inner}' lies in the tree of '{outer}', which the same \
+                     diff lifts — a lift renews everything below it, so the tree would be \
+                     staged twice. Lift the outer node once, or lift them in two mutations. \
+                     Nothing was written."
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One entry: partition, refuse what cannot be lifted, stage the children,
 /// render the declaration.
 #[allow(clippy::too_many_arguments)]
@@ -220,7 +280,24 @@ fn stage_one_lift(
             final_path.display()
         )));
     }
-    refuse_class_mismatch(name, &final_path, &template, tpl_ref)?;
+    let template_is_hive = template.hives.iter().any(|h| h.is_empty());
+    refuse_class_mismatch(name, &final_path, template_is_hive, tpl_ref)?;
+    // GH #1083: a lift renews the nested hives' declarations too, so the same
+    // class rule holds at every standing node below the lifted one — a hive
+    // the new version turns into a leaf (or a leaf it turns into a hive)
+    // would otherwise get a declaration of the other class written over it.
+    for node in template.cells.iter().filter(|n| !n.rel_path.is_empty()) {
+        let nested =
+            crate::path_truth::resolve_cell_dir(root, scope, &format!("{name}/{}", node.rel_path));
+        if nested.exists() {
+            refuse_class_mismatch(
+                &format!("{name}/{}", node.rel_path),
+                &nested,
+                template.hives.contains(&node.rel_path),
+                tpl_ref,
+            )?;
+        }
+    }
     // Ruling T3-C2: the ONE override set — the entry's `with.params` in the
     // `override_params` shape every door merges — read by the partition (to
     // tell kept from changed) and by the instantiation (to write) alike. On a
@@ -300,7 +377,7 @@ fn stage_one_lift(
             &root_staging_path,
             &final_path,
             template_root,
-            &overrides,
+            &overrides.for_cell(""),
             &provenance,
             env,
             ctx,
@@ -309,6 +386,19 @@ fn stage_one_lift(
     } else {
         None
     };
+    let nested_declarations = stage_nested_declarations(
+        &root_staging_path,
+        template_root,
+        &template,
+        templates,
+        &partition.existing_hives,
+        &subtree_root_abs,
+        &overrides,
+        &provenance,
+        env,
+        ctx,
+        factories,
+    )?;
     let internal_edges = resolve_internal_edges(&template, &subtree_root_abs)?;
     // The lifted hive itself stands in `existing_hives` (its directory is
     // there); its renewal is the declaration above, not a kept marker.
@@ -340,9 +430,73 @@ fn stage_one_lift(
         kept_hives,
         left: partition.left,
         declaration,
+        nested_declarations,
         internal_edges,
         changes,
     })
+}
+
+/// GH #1083 — renew every standing hive nested in the lifted one, the way a
+/// fresh instantiation would write it: the template node at that place
+/// (`template_dir_for_rel` follows a `ref`), the ref defaults of the
+/// enclosing template layered under the entry's params for that path (the
+/// same layering `stage_rename_root` gives a staged branch), the node's own
+/// provenance (`provenance_for`, the last `ref` hop), and its OLD `cell.id`.
+/// Staged as `<staging>/<rel>/config.json.replace`, beside whatever the lift
+/// stages below that hive.
+#[allow(clippy::too_many_arguments)]
+fn stage_nested_declarations(
+    root_staging_path: &std::path::Path,
+    template_root: &std::path::Path,
+    template: &SubtreeTemplate,
+    templates: &TemplatesRegistry,
+    existing_hives: &[ResolvedExistingHive],
+    subtree_root_abs: &Path,
+    overrides: &SubtreeOverrides,
+    provenance: &crate::config::NodeProvenance,
+    env: &HashMap<String, String>,
+    ctx: &HashMap<String, String>,
+    factories: &crate::CellFactoryRegistry,
+) -> Result<Vec<NestedDeclaration>, MutationError> {
+    let layered = overrides.with_ref_defaults(&template.ref_overrides, ctx)?;
+    let mut out = Vec::new();
+    for hive in existing_hives {
+        let Some(rel) = hive
+            .absolute_path
+            .as_str()
+            .strip_prefix(subtree_root_abs.as_str())
+            .and_then(|r| r.strip_prefix('/'))
+            .filter(|r| !r.is_empty())
+        else {
+            continue; // the lifted hive itself: `stage_declaration` above
+        };
+        // Only a node the new version declares a hive gets a hive
+        // declaration; a class change is refused before (`refuse_class_mismatch`).
+        let Some(node) = template
+            .cells
+            .iter()
+            .find(|n| n.rel_path == rel && template.hives.iter().any(|h| h == rel))
+        else {
+            continue;
+        };
+        let template_dir = template_dir_for_rel(template_root, templates, rel)?;
+        let declaration = stage_declaration(
+            &root_staging_path.join(rel),
+            &hive.final_path,
+            &template_dir,
+            &layered.for_cell(rel),
+            &provenance_for(provenance, node),
+            env,
+            ctx,
+            factories,
+        )?;
+        out.push(NestedDeclaration {
+            absolute_path: hive.absolute_path.clone(),
+            final_dir: hive.final_path.clone(),
+            declaration,
+        });
+    }
+    Ok(out)
 }
 
 /// GH #682 (OR-P4) — the receipt's entries for one lift, sorted by path.
@@ -504,7 +658,7 @@ fn holds_a_store(dir: &std::path::Path) -> bool {
 fn refuse_class_mismatch(
     name: &str,
     final_path: &std::path::Path,
-    template: &SubtreeTemplate,
+    template_is_hive: bool,
     tpl_ref: &str,
 ) -> Result<(), MutationError> {
     let standing_is_hive = std::fs::read_to_string(final_path.join("config.json"))
@@ -517,7 +671,6 @@ fn refuse_class_mismatch(
                 .map(|t| t == "hive")
         })
         .unwrap_or(false);
-    let template_is_hive = template.hives.iter().any(|h| h.is_empty());
     if standing_is_hive == template_is_hive {
         return Ok(());
     }
@@ -658,7 +811,7 @@ fn stage_declaration(
     root_staging_path: &std::path::Path,
     final_path: &std::path::Path,
     template_root: &std::path::Path,
-    overrides: &SubtreeOverrides,
+    node_override: &JsonValue,
     provenance: &crate::config::NodeProvenance,
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
@@ -677,7 +830,7 @@ fn stage_declaration(
         root_staging_path,
         env,
         ctx,
-        &overrides.for_cell(""),
+        node_override,
         Some(provenance),
         factories,
     )?;

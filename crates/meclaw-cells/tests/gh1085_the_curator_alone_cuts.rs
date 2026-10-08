@@ -855,21 +855,39 @@ fn the_leaf_bound_is_the_llm_cells() {
         return;
     }
     let n = meclaw_cells::content_budget::CARRIER_MAX_BYTES;
-    let params = std::fs::read_to_string(repo("crates/meclaw-cells/src/llm/params.rs"))
-        .expect("the llm params");
-    let bound = params
-        .split("pub fn window_bound_bytes")
-        .nth(1)
-        .expect("window_bound_bytes");
-    assert!(
-        bound[..bound.find("\n    }\n").unwrap_or(bound.len())]
-            .contains("crate::content_budget::CARRIER_MAX_BYTES"),
-        "the gate falls back to the carrier ceiling without a window"
+    // The bound itself, asked of the llm cell's params (Fable review #12):
+    // without a window the carrier ceiling, with one the window at the row's
+    // `chars_per_token` -- no split of the source that a reformat would break.
+    let bound = |extra: Value| {
+        let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k"});
+        for (k, v) in extra.as_object().expect("object") {
+            raw[k] = v.clone();
+        }
+        meclaw_cells::LlmParams::parse(&raw)
+            .expect("params")
+            .window_bound_bytes()
+            .0
+    };
+    assert_eq!(
+        bound(json!({})),
+        n,
+        "the gate falls back to the carrier ceiling"
+    );
+    assert_eq!(
+        bound(json!({"input_hard": 1000, "chars_per_token": 4})),
+        4000,
+        "with a window the bound counts at the row's rate"
+    );
+    assert_eq!(
+        bound(json!({"input_hard": 1000})),
+        (1000 * meclaw_cells::content_budget::CHARS_PER_TOKEN) as usize,
+        "a row without a rate counts at three bytes a token"
     );
     for cell in ["handover", "intake", "policy"] {
-        assert!(
-            script_of(cell).contains(&format!("LEAF_MAX_BYTES = {n}\n")),
-            "{cell} mirrors {n}"
+        assert_eq!(
+            pure(&script_of(cell), "LEAF_MAX_BYTES", json!(null)),
+            json!(n),
+            "{cell} mirrors the carrier ceiling"
         );
     }
 }

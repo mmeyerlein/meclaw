@@ -684,8 +684,11 @@ fn old_tool_results_shrink_before_segments() {
     // GH #1085 (fix review G1 M4): a summary still to be made has no estimate
     // of its own any more (4000 characters for talky before), so the window at
     // which this happens is the old 5800 less 4000 characters' worth of aim
-    // (1000 tokens / rebuild_to 0.35): 2943.
-    let (mut h, first) = under_pressure(2943);
+    // (1000 tokens / rebuild_to 0.35): 2943 at four characters a token. Since
+    // Fable review #5 the plan counts at the row's `chars_per_token`, three
+    // without a row (`content_budget`), so the same characters weigh 4/3 as
+    // many tokens and the window is 2943 x 4 / 3 = 3924.
+    let (mut h, first) = under_pressure(3924);
     assert_eq!(h.plan()["shrunk"], json!([r1.clone()]));
     assert_ne!(h.plan()["summary"], json!(""), "the summary is kept");
     let call = h.curate("s", "r4", 0, json!([user("next")]), mode("x"));

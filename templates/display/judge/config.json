@@ -30,7 +30,7 @@
       "body": {"messages": {"type": "array", "required": true}, "meta": {"type": "object", "required": false}},
       "hop": {"route": {"type": "string", "values": ["credential_request"], "required": false},
               "grant_id": {"type": "string", "required": false},
-              "finish_reason": {"type": "string", "required": true},
+              "finish_reason": {"type": "string", "required": true, "optional_on_route": ["credential_request"]},
               "tokens_prompt": {"type": "number", "required": false},
               "tokens_completion": {"type": "number", "required": false},
               "model": {"type": "string", "required": false},

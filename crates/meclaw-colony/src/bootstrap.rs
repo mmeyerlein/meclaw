@@ -735,8 +735,21 @@ pub fn plan_bootstrap_with_env(
         // `config.json`-Writes only at instantiation). Env-only token set:
         // `${ctx.*}` / `${uuid7:*}` are mutation-side substitutions and have no
         // filesystem-side producer (spec § Variable substitution).
-        let substituted = match crate::mutation::substitute::substitute_env_only(&raw_parsed, &env)
-        {
+        //
+        // GH #1084: a PARKED node (`<name>~<version>`, or any row under a
+        // parked hive -- `is_parked_path` reads every segment, the same
+        // reading the mutation door and the registry use) never runs, so it is
+        // never resolved: its placeholders stay verbatim and no secret reaches
+        // it. Resolving it made a colony depend on every variable an old
+        // template version once named -- the migration proof of #801 counted
+        // 14x `env_var_missing` after the old provider keys left `.env`, every
+        // one from a parked node, and the colony did not start.
+        let resolved = if crate::mutation::validate::is_parked_path(mc_path.as_str()) {
+            Ok(raw_parsed.clone())
+        } else {
+            crate::mutation::substitute::substitute_env_only(&raw_parsed, &env)
+        };
+        let substituted = match resolved {
             Ok(v) => v,
             Err(e) => {
                 let reason = match &e {
@@ -1069,9 +1082,18 @@ pub fn plan_bootstrap_with_env(
             let cell_id = overlay_entry
                 .map(|(id, _status)| *id)
                 .unwrap_or_else(Uuid::now_v7);
+            // GH #1084 (review): a genuinely-new PARKED node (`<name>~<version>`,
+            // or any row under a parked hive) is NOT active on an overlay miss.
+            // It never runs, its placeholders stay verbatim (see above), and the
+            // edge recompute below never reaches a leaf without edges -- so the
+            // default here is its final word: it registers through
+            // `register_inactive_non_spawned` and is never spawned with a
+            // literal `${VAR}` in its params. A `move_nodes` that unparks it
+            // reads its config afresh (env-resolved) and the recompute there
+            // decides its activity.
             let active = match overlay_entry {
                 Some((_id, status)) => status == "active",
-                None => true,
+                None => !crate::mutation::validate::is_parked_path(mc_path.as_str()),
             };
             // Paket-6 C: distinguish a persisted `failed` status from a plain
             // `inactive` one. A failed cell rehydrates `failed=true` (and
@@ -1311,6 +1333,7 @@ pub fn plan_bootstrap_with_env(
         for cell in &mut plan.cells {
             if overlay.get(&cell.path).is_none()
                 && cell.path.as_str() != "/"
+                && !crate::mutation::validate::is_parked_path(cell.path.as_str())
                 && scope.contains(&cell.path)
             {
                 cell.active =

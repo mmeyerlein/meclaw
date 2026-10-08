@@ -136,13 +136,13 @@ fn every_wish_goes_straight_to_the_renderer() {
         out[0]["header"]["route"].clone()
     };
     assert_eq!(
-        route_of("member", "member@2.5.22", "alex", ORG),
+        route_of("member", "member@2.5.25", "alex", ORG),
         json!("recipe"),
         "a member wish is a wish like any other now: nothing about it has to be \
          read off the tree first"
     );
     assert_eq!(
-        route_of("org", "org@2.1.26", "acme", "/os"),
+        route_of("org", "org@2.1.29", "acme", "/os"),
         json!("recipe"),
         "and the level that never took the detour is unchanged"
     );

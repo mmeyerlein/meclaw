@@ -177,6 +177,39 @@ fn drive(rows: &dyn Fn(&str) -> serde_json::Value) -> Vec<serde_json::Value> {
         let Some((phase, args)) = one_op(&msgs) else {
             return collected;
         };
+        // GH #295: N > 1 tool calls in the one message are a bundle, answered
+        // as one (R-TR-25: the exceptions read leaves with the mute reads).
+        let calls = msgs
+            .iter()
+            .find(|m| m["header"]["route"] == "cstore")
+            .and_then(|m| m["messages"].as_array())
+            .cloned()
+            .unwrap_or_default();
+        if calls.len() > 1 {
+            let mut turns = Vec::new();
+            let mut results = Vec::new();
+            for call in &calls {
+                let leg: serde_json::Value =
+                    serde_json::from_str(call["text"].as_str().expect("op text")).expect("op args");
+                let answer = if leg["operation"] == "select" {
+                    rows(leg["table"].as_str().unwrap_or(""))
+                } else {
+                    serde_json::json!([])
+                };
+                turns.push(serde_json::json!({"origin": "tool", "type": "tool_result",
+                                              "id": call["id"], "text": answer.to_string()}));
+                results.push(serde_json::json!({"tool_call_id": call["id"],
+                                                "operation": leg["operation"],
+                                                "rows_affected": 1}));
+                collected.push(leg);
+            }
+            let mut reply = store_reply(&phase, "bundle", &serde_json::json!([]));
+            reply["header"]["hop"]["bundle_errors"] = serde_json::json!(0);
+            reply["messages"] = serde_json::Value::Array(turns);
+            reply["results"] = serde_json::Value::Array(results);
+            msgs = emit(reply);
+            continue;
+        }
         let operation = args["operation"].as_str().unwrap_or("").to_string();
         let table = args["table"].as_str().unwrap_or("").to_string();
         collected.push(args);
@@ -353,7 +386,8 @@ fn each_result_set_is_parked_before_the_next_read_leaves() {
         .iter()
         .filter(|a| a["operation"] == "insert" && a["table"] == "scratch")
         .collect();
-    assert_eq!(parked.len(), 4, "one park per read, under one key: {ops:?}");
+    // R-TR-25: the fifth set is the member's mutes
+    assert_eq!(parked.len(), 5, "one park per read, under one key: {ops:?}");
     let key = format!("close:{SESSION}");
     let mut kinds: Vec<&str> = Vec::new();
     for p in &parked {
@@ -368,7 +402,7 @@ fn each_result_set_is_parked_before_the_next_read_leaves() {
         );
     }
     kinds.sort_unstable();
-    assert_eq!(kinds, ["exceptions", "facts", "topics", "turns"]);
+    assert_eq!(kinds, ["exceptions", "facts", "mutes", "topics", "turns"]);
     // And the meet: the last READ takes the four back under that one key. Since
     // GH #933 an empty session (no round to ask) goes straight to the apply, so
     // the sweep write may follow the meet -- but no further read does.
@@ -390,7 +424,12 @@ fn a_full_page_is_recognised_as_one_rather_than_guessed() {
     // dropped before parking and its presence is what `hop.truncated` (task 17)
     // reports.
     let ops = drive(&nothing);
-    let window = read_of(&ops, "episodes");
+    // the first read of the chain; the mutes and the upgrade read episodes too
+    let window = ops
+        .iter()
+        .find(|a| a["operation"] == "select" && a["table"] == "episodes")
+        .expect("the window read")
+        .clone();
     let bound = config(GLUE_CONFIG)["contract"]["settings"]["close_turn_rows"]["default"]
         .as_u64()
         .expect("the declared page bound");

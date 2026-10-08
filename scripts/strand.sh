@@ -846,8 +846,61 @@ cmd_test() {
     # nextest's summary: `N tests run: P passed, ...` -- the last one counts.
     total=$(grep -oE '[0-9]+ tests? run: [0-9]+ passed' "$log" | tail -1 | sed -E 's/^([0-9]+).*/\1/')
     passed=$(grep -oE '[0-9]+ tests? run: [0-9]+ passed' "$log" | tail -1 | sed -E 's/.*run: ([0-9]+) passed/\1/')
+    # A stress series (`--stress-count N`) is graded by its ITERATIONS (GH
+    # #1086): nextest prints one `Stress test [..] iteration i/N: T tests run:
+    # P passed, F failed` line per iteration and closes with `Summary [..]
+    # R/N stress run iterations: G passed, B failed`. The tests-run grep above
+    # read only the LAST iteration (measured 07.10.: `75/75 GREEN`, exit 0,
+    # while 3 of 5 iterations were red), so the counts become the sum over all
+    # iterations and any red iteration -- or a series cut short -- is RED with
+    # a non-zero exit, whatever exit came back from the lane.
+    local stress="" s_n s_ran s_red s_pass s_total
+    stress=$(awk '
+        /Stress test \[.*\] iteration [0-9]+\/[0-9]+: [0-9]+ tests? run:/ {
+            line = $0
+            sub(/.* iteration /, "", line)
+            split(line, a, /[\/:]/); n = a[2] + 0; it++
+            t = line; sub(/^[^:]*: /, "", t); total += t + 0
+            p = t; sub(/.*run: /, "", p); pass += p + 0
+            # every class of red nextest counts on the line: failed, timed
+            # out, exec failed (a test that never started) -- review M1
+            if (t ~ /, [1-9][0-9]* (failed|timed out|exec failed)/) red++
+        }
+        /Summary \[.*\] [0-9]+\/[0-9]+ stress run iterations:/ {
+            line = $0; sub(/.*\] /, "", line)
+            split(line, b, /[\/ ]/); ran = b[1] + 0; n = b[2] + 0
+            # a green series has no failed count at all (`5/5 ...: 5 passed`)
+            sred = 0
+            if (line ~ /passed, [0-9]+ failed/) {
+                f = line; sub(/.* passed, /, "", f); sred = f + 0
+            }
+            seen = 1
+        }
+        END {
+            if (!it && !seen) exit
+            if (seen && sred > red) red = sred
+            if (!seen) ran = it
+            if (!n) n = it
+            printf "%d %d %d %d %d\n", n, ran, red, pass, total
+        }' "$log")
+    if [ -n "$stress" ]; then
+        read -r s_n s_ran s_red s_pass s_total <<<"$stress"
+        passed=$s_pass
+        total=$s_total
+    fi
     verdict=GREEN
     [ "$rc" = 0 ] || verdict=RED
+    if [ -n "$stress" ]; then
+        if [ "$s_red" -gt 0 ] || [ "$s_ran" -lt "$s_n" ]; then
+            verdict="RED ($s_red/$s_n iterations red"
+            [ "$s_ran" -ge "$s_n" ] || verdict="$verdict, $s_ran/$s_n ran"
+            verdict="$verdict)"
+            # nextest's own code for failed tests, when the lane said 0
+            [ "$rc" != 0 ] || rc=100
+        elif [ "$rc" = 0 ]; then
+            verdict="GREEN ($s_n/$s_n iterations green)"
+        fi
+    fi
     # Zero tests prove nothing (GH #997): the tier's own `no tests matched`
     # (exit 6), a zero in the summary, a clean exit without one, nextest's
     # "no tests to run" (4) or a filterset it refused -- RED, exit 6, and the
@@ -868,9 +921,13 @@ cmd_test() {
     [ "$rc" = 0 ] || tail -20 "$log"
     # Every red test by name (GH #1050): the tail above is the output of the
     # LAST failure only (`failure-output = "immediate-final"`), and a red line
-    # of a filterset with five red locks read like one.
+    # of a filterset with five red locks read like one. A stress series tags
+    # each line with its iteration (`[2/5] (48/75)`); without the tag a test
+    # red in three iterations is named once (GH #1086).
     [ "$rc" = 0 ] || grep -E '^ +(FAIL|TIMEOUT|SIG[A-Z]+|LEAK-FAIL) \[' "$log" \
-        | sed -E 's/\[[^]]*\] //; s/^ +/  /' | awk '!seen[$0]++'
+        | sed -E 's/\[[^]]*\] //; s/^ +/  /' \
+        | sed -E 's/^(  [A-Z-]+ )\[ *[0-9]+\/[0-9]+\] \( *[0-9]+\/[0-9]+\) /\1/' \
+        | awk '!seen[$0]++'
     # The goldens that came back from the lane (GH #1051).
     sed -n 's/^lane_sync: \(golden .*\)$/strand: \1/p' "$log"
     printf 'TEST [%s] %s/%s %ss %s\n' "$expr" "${passed:-0}" "${total:-0}" "$secs" "$verdict" \

@@ -796,6 +796,27 @@ class Classify(unittest.TestCase):
         self.assertEqual(st[-1].scope, "R1-R17")
         self.assertIn("deny-advisories", by_name(st))
 
+    def test_release_runs_the_catalogue_tests_in_the_export_tree(self):
+        """GH #1101: a count over the templates that ship is judged where they ship."""
+        st = gp.plan(["docs/x.md"], "release", repo=None)
+        names = [s.name for s in st]
+        self.assertEqual(names[-2:], ["export-tree-tests", "export-audit"])
+        ett = by_name(st)["export-tree-tests"]
+        self.assertTrue(ett.cargo)
+        self.assertEqual(ett.cmds, [["python3", "plans/export-fixtures/export_tree_tests.py",
+                                     "--rev", "HEAD"]])
+
+    def test_export_tree_tests_is_release_only_and_never_ci(self):
+        for mode in ("strand", "integration", "ci"):
+            names = [s.name for s in gp.plan(["templates/x/config.json"], mode, repo=None)]
+            self.assertNotIn("export-tree-tests", names, mode)
+        self.assertIn("export-tree-tests", gp.CI_EXCLUDED)
+
+    def test_export_selftest_runs_the_lock_of_export_tree_tests(self):
+        st = by_name(gp.plan(["docs/x.md"], "integration", repo=None))
+        self.assertIn(["python3", "plans/export-fixtures/test_export_tree_tests.py"],
+                      st["export-selftest"].cmds)
+
     def test_integration_ends_with_the_dry_export_audit(self):
         """The cheap export rules belong in the pass that declares a wave done.
 

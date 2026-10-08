@@ -1,4 +1,4 @@
-# `meclaw-os@2.2.40`
+# `meclaw-os@2.2.44`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -592,7 +592,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.40"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.44"}}
 ```
 
 ```bash
@@ -676,7 +676,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.40"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.44"}],
           "add_edges": []}}
 ```
 
@@ -698,7 +698,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.26"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.29"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

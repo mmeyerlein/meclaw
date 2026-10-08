@@ -249,6 +249,7 @@ fn every_fallback_window_is_the_row_it_names() {
     files.sort();
     assert!(!files.is_empty(), "the scan sees the templates");
     let mut held = 0usize;
+    let mut held_in: BTreeMap<&Path, usize> = BTreeMap::new();
     let mut wrong = Vec::new();
     for f in &files {
         let Ok(doc) = meclaw_core::serde_json::from_str::<Value>(
@@ -259,6 +260,7 @@ fn every_fallback_window_is_the_row_it_names() {
         let rel = f.strip_prefix(repo("")).unwrap_or(f).display().to_string();
         let (n, bad) = check(&doc, &catalogue);
         held += n;
+        held_in.insert(f.as_path(), n);
         wrong.extend(bad.into_iter().map(|w| format!("{rel} {w}")));
     }
     println!(
@@ -272,18 +274,57 @@ fn every_fallback_window_is_the_row_it_names() {
         "a fallback window must be the input_soft of the catalogue row it names (OR-IG-9):\n{}",
         wrong.join("\n")
     );
-    // Review M-2: a scan that finds nothing is no proof. Nine producers ship
-    // a fallback (firewall, prep, recall, policy, handover, coder-pipeline and
-    // research-assistant dispatch, derive twice), each as param and setting,
-    // most also as a script literal.
+    // Review M-2: a scan that finds nothing is no proof. The floor is what
+    // THIS tree ships: a producer of `SHIPS` counts where its template is on
+    // disk (the public tree carries neither coder-pipeline nor
+    // research-assistant), and each one present must hold its windows. A
+    // template that is there without the config it is listed with has moved
+    // it -- that is red, never a smaller floor.
+    let root = repo("templates");
+    let mut floor = 0usize;
+    let mut short = Vec::new();
+    for (template, cell, want) in SHIPS {
+        if !root.join(template).is_dir() {
+            continue;
+        }
+        let config = root.join(template).join(cell).join("config.json");
+        let got = held_in.get(config.as_path()).copied().unwrap_or(0);
+        floor += want;
+        if got < *want {
+            let rel = config
+                .strip_prefix(repo(""))
+                .unwrap_or(&config)
+                .display()
+                .to_string();
+            short.push(format!("{rel}: held {got}, ships {want}"));
+        }
+    }
     assert!(
-        held >= MIN_HELD,
-        "the scan held only {held} fallback window(s), at least {MIN_HELD} ship"
+        floor > 0,
+        "no producer of SHIPS is in this tree -- the scan proves nothing"
+    );
+    assert!(
+        short.is_empty() && held >= floor,
+        "the scan held only {held} fallback window(s), at least {floor} ship:\n{}",
+        short.join("\n")
     );
 }
 
-/// The fewest fallback windows the shipped templates hold (Review M-2).
-const MIN_HELD: usize = 20;
+/// The producers that ship a fallback window (Review M-2): template, the
+/// config inside it, and the fewest windows that config holds -- each as
+/// param and setting, most also as a script literal (derive twice: its own
+/// window and the embedding row's). Only templates on disk count, so the
+/// floor is that of the tree the test runs in.
+const SHIPS: &[(&str, &str, usize)] = &[
+    ("coder-pipeline", "dispatch", 3),
+    ("curator", "handover", 2),
+    ("curator", "policy", 2),
+    ("file-space", "derive", 6),
+    ("firewall", "screen", 3),
+    ("memory-hive", "recall", 3),
+    ("research-assistant", "dispatch", 3),
+    ("summarizer", "prep", 3),
+];
 
 /// The scan finds what it claims to find: each written form, and a value that
 /// is no catalogue row.

@@ -288,8 +288,35 @@ fn run_pass(store: &mut Store, rows: &dyn Fn(&str) -> Value, verdict: &Value) ->
             .collect();
         assert_eq!(store_ops.len(), 1, "the read chain is sequential: {msgs:?}");
         let op = store_ops[0];
-        let args = args_of(op);
         let phase = op["header"]["phase"].as_str().expect("phase").to_string();
+        // GH #295: N > 1 tool calls are a bundle, run in order, answered as one
+        // (R-TR-25: the exceptions read leaves with the mute reads).
+        let calls = op["messages"].as_array().expect("tool calls").clone();
+        if calls.len() > 1 {
+            let mut turns = Vec::new();
+            let mut results = Vec::new();
+            for (i, call) in calls.iter().enumerate() {
+                let args: Value =
+                    serde_json::from_str(call["text"].as_str().expect("op text")).expect("op args");
+                if i > 0 {
+                    ops.push(args.clone());
+                }
+                let answer = store.answer(&args, rows);
+                turns.push(
+                    json!({"origin": "tool", "type": "tool_result", "id": call["id"],
+                                  "text": answer.to_string()}),
+                );
+                results.push(json!({"tool_call_id": call["id"],
+                                    "operation": args["operation"], "rows_affected": 1}));
+            }
+            let mut reply = store_reply(&phase, "bundle", &json!([]));
+            reply["header"]["hop"]["bundle_errors"] = json!(0);
+            reply["messages"] = Value::Array(turns);
+            reply["results"] = Value::Array(results);
+            msgs = emit(CLOSE_GLUE, reply);
+            continue;
+        }
+        let args = args_of(op);
         let operation = args["operation"].as_str().unwrap_or("").to_string();
         let answer = store.answer(&args, rows);
         msgs = emit(CLOSE_GLUE, store_reply(&phase, &operation, &answer));

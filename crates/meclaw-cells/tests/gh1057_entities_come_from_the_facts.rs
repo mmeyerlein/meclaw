@@ -1266,7 +1266,9 @@ fn the_graph_leg_brings_the_connecting_fact() {
     let doc = json!({"header": {"context": {"mem_phase": "-", "recall_id": "r",
                                             "recall_query": "In which city does the flatmate of my grandson live now?",
                                             "audience_now": AUD, "channel": "tg:private"},
-                                "hop": {}}, "messages": []});
+                                "hop": {}}, "messages": [],
+                     // GH #1095: the keyword leg's stop words are a param.
+                     "params": {"stopwords_lang": config(RECALL)["params"]["stopwords_lang"].clone()}});
     let epi = r#"
 paths = [
   {"node": "frieda quastberg", "depth": 1, "weight_sum": 1, "path": ["greta grimmbach", "frieda quastberg"],

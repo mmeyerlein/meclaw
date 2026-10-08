@@ -220,6 +220,9 @@ fn the_semantic_page_is_not_spent_on_copies_of_the_question() {
             "happened_at",
             "recorded_at",
             "closure_source",
+            "muted_at",
+            "unmuted_at",
+            "mute_words",
             "speaker_name"
         ]),
         "{ep_aud}"

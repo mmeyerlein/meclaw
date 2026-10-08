@@ -381,7 +381,9 @@ fn search_reads_long_lines_whole_and_cuts_them_only_at_the_budget() {
 /// Fix review G2 M-6: a regular expression is not run over a line longer
 /// than the budget (its backtracking has no bound; a minified line of a few
 /// MB ran the cell into its timeout) -- the search is refused with the line
-/// and the numbers, never cut. No budget: every line is searched.
+/// and the numbers, never cut. No budget (Fable review #9): the carrier
+/// ceiling bounds it instead -- a line of a few KB is searched, a multi-MB
+/// one is refused like over a budget.
 #[test]
 fn a_regex_over_a_line_past_the_budget_is_refused_with_the_number() {
     let long = "z".repeat(5000);
@@ -390,13 +392,30 @@ fn a_regex_over_a_line_past_the_budget_is_refused_with_the_number() {
         "(globals().update(MAX_CHARS=3000), regex_over_budget(ARGS))[1]",
         json!(["short", long, "short"]),
     );
-    assert_eq!(got, json!([2, 5000]));
+    assert_eq!(got, json!([2, 5000, 3000, "the budget of the window"]));
     let got = pure("read", "regex_over_budget(ARGS)", json!(["short", long]));
-    assert_eq!(got, Value::Null, "no budget, no refusal");
+    assert_eq!(
+        got,
+        Value::Null,
+        "no budget, a line under the carrier is searched"
+    );
+    let carrier = meclaw_cells::content_budget::CARRIER_MAX_BYTES;
+    assert_eq!(
+        pure("read", "CARRIER_MAX_BYTES", json!(null)),
+        json!(carrier),
+        "read mirrors the carrier ceiling"
+    );
+    let huge = "m".repeat(carrier + 1);
+    let got = pure("read", "regex_over_budget(ARGS)", json!(["short", huge]));
+    assert_eq!(
+        got,
+        json!([2, carrier + 1, carrier, "the carrier ceiling"]),
+        "no window: a multi-MB line stays bounded"
+    );
     let script = script_of("read");
     assert!(
         script.contains("over = regex_over_budget(lines) if mode == \"regex\" else None")
-            && script.contains("fail(S, \"too_long\", \"line %d is %d chars > %d, the budget"),
+            && script.contains("fail(S, \"too_long\", \"line %d is %d chars > %d, %s: a"),
         "the search lane refuses before it runs the expression"
     );
 }

@@ -28,6 +28,10 @@
       "reminder": true
     },
     {
+      "pattern": "(?:bitte\\s+)?(?P<verb>sprich|sprecht|sprechen\\s+sie|erw(?:ä|ae)hne|erw(?:ä|ae)hnt|erw(?:ä|ae)hnen\\s+sie)\\b(?:\\s+(?:bitte|einfach))*[\\s,]+{thing}(?=.*\\b(?:nicht\\s+mehr|nie\\s+wieder|nie\\s+mehr)\\b)",
+      "reminder": false
+    },
+    {
       "pattern": "(?:bitte\\s+)?merk\\s+dir\\s+das\\s+nicht\\b",
       "reminder": false
     }
@@ -35,5 +39,12 @@
   "negation": "\\b(?:nicht|nie|niemals|keinesfalls|keineswegs)\\b",
   "told": "\\b(?:gesagt|erz(?:ä|ae)hlt|erw(?:ä|ae)hnt)\\b|\\bdas\\s+mit\\b",
   "conjunction": "\\b(?:und|oder|sowie)\\b",
-  "stopwords": "der die das dem den des ein eine einen einem einer und oder mit von vom zum zur bei für fuer über ueber was ich mir mich mein meine meinen meinem meiner dir dich dein deine sie ihr ihm ihn ist sind war hat habe hab nicht bitte vergiss vergessen gesagt sache auch noch dass wie wir uns erzählt erzaehlt erwähnt erwaehnt behalten sagte hatte weißt weisst alles einfach beim gestern heute vorhin neulich gesprochen geredet geschrieben lösch lösche loesch loesche"
+  "stopwords": "der die das dem den des ein eine einen einem einer und oder mit von vom zum zur bei für fuer über ueber was ich mir mich mein meine meinen meinem meiner dir dich dein deine sie ihr ihm ihn ist sind war hat habe hab nicht bitte vergiss vergessen gesagt sache auch noch dass wie wir uns erzählt erzaehlt erwähnt erwaehnt behalten sagte hatte weißt weisst alles einfach beim gestern heute vorhin neulich gesprochen geredet geschrieben lösch lösche loesch loesche mehr wieder nie",
+  "fallback_verbs": "vergiss|vergesst|vergessen|vergessen\\s+sie|sprich|sprecht|sprechen\\s+sie|erw(?:ä|ae)hne|erw(?:ä|ae)hnt|erw(?:ä|ae)hnen\\s+sie",
+  "keeps_muted": [
+    "\\bnicht\\s+mehr\\s+(?:an)?(?:sprechen|erw(?:ä|ae)hnen|reden)\\b",
+    "\\b(?:sprich|sprecht|sprechen\\s+sie|erw(?:ä|ae)hne|erw(?:ä|ae)hnt|erw(?:ä|ae)hnen\\s+sie|rede|redet)\\b[^.!?]*\\b(?:nicht\\s+mehr|nie\\s+wieder|nie\\s+mehr)\\b",
+    "\\bkein\\s+wort\\s+mehr\\b"
+  ],
+  "affirms": "^\\W*(?:ja|jawohl|genau|richtig|stimmt|exakt)\\b"
 }

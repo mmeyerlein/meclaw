@@ -384,11 +384,15 @@ fn an_episode_neighbour_becomes_an_episode_candidate_gated_from_episodes() {
             "happened_at",
             "recorded_at",
             "closure_source",
+            "muted_at",
+            "unmuted_at",
+            "mute_words",
             "speaker_name"
         ]),
         "an episode carries its own gate columns and no axis — plus, since GH #691, \
          what the duplicate fold reads (normal form and recency), and, since GH #1039, \
-         the forget mark the recall gate reads and the name a peer is rendered by: {ep_aud}"
+         the forget mark the recall gate reads and the name a peer is rendered by, and, since \
+         GH #1095, the mute the same gate reads: {ep_aud}"
     );
 }
 

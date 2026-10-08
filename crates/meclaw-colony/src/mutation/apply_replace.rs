@@ -105,6 +105,9 @@ pub struct AppliedLift {
     /// The hive's `config.json` this lift overwrote, and the bytes that
     /// stood there before.
     pub declaration: Option<(PathBuf, Vec<u8>)>,
+    /// GH #1083 — the nested hives' `config.json` files this lift overwrote,
+    /// each with the bytes that stood there before.
+    pub nested_declarations: Vec<(PathBuf, Vec<u8>)>,
     /// Every registry row moved aside, `(from, to)`, prefix rows included.
     pub moved_rows: Vec<(Path, Path)>,
     /// Every hive scope moved aside, `(from, to)`.
@@ -257,6 +260,19 @@ pub fn apply_lift_files(lift: &StagedReplace, done: &mut AppliedLift) -> Result<
         })?;
         done.declaration = Some((decl.final_path.clone(), previous));
     }
+    for nested in &lift.nested_declarations {
+        let decl = &nested.declaration;
+        let previous = std::fs::read(&decl.final_path)
+            .map_err(|e| format!("read the standing declaration {:?}: {e}", decl.final_path))?;
+        std::fs::rename(&decl.staging_path, &decl.final_path).map_err(|e| {
+            format!(
+                "rename {:?} -> {:?}: {e}",
+                decl.staging_path, decl.final_path
+            )
+        })?;
+        done.nested_declarations
+            .push((decl.final_path.clone(), previous));
+    }
     Ok(())
 }
 
@@ -297,6 +313,16 @@ pub fn undo_lift_files(done: &AppliedLift, mutation_id: &str) {
             error = %e,
             "lift rollback could not restore the hive's declaration"
         );
+    }
+    for (path, previous) in done.nested_declarations.iter().rev() {
+        if let Err(e) = std::fs::write(path, previous) {
+            tracing::error!(
+                mutation_id = %mutation_id,
+                path = %path.display(),
+                error = %e,
+                "lift rollback could not restore a nested hive's declaration"
+            );
+        }
     }
 }
 
@@ -448,12 +474,24 @@ pub fn renewed_contracts(
     let mut out: Vec<_> = standing
         .into_iter()
         .filter(|c| {
-            !lifts
-                .iter()
-                .any(|l| l.absolute_path.as_str() == c.hive_path)
+            !lifts.iter().any(|l| {
+                l.absolute_path.as_str() == c.hive_path
+                    || l.nested_declarations
+                        .iter()
+                        .any(|n| n.absolute_path.as_str() == c.hive_path)
+            })
         })
         .collect();
     for lift in lifts {
+        // GH #1083: a nested hive is judged by its renewed declaration too.
+        for n in &lift.nested_declarations {
+            if let Some(c) = crate::mutation::hive_contract::contract_from_cell_dir(
+                &n.final_dir,
+                n.absolute_path.as_str(),
+            ) {
+                out.push(c);
+            }
+        }
         if lift.declaration.is_none() {
             continue;
         }

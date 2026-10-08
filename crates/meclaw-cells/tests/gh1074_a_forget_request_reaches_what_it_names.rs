@@ -88,7 +88,24 @@ fn params() -> Value {
     cfg["params"].clone()
 }
 
+/// R-TR-25: a `forget-*` phase carries the request, the time it asked and
+/// its words (`forget-e|r1|<at>|w,w`); the locks below name a search by its
+/// first two parts, `raw_calls` keeps the whole phase.
 fn tool_calls(out: &[Value]) -> Vec<(String, Value)> {
+    raw_calls(out)
+        .into_iter()
+        .map(|(p, o)| {
+            let short = if p.starts_with("forget-") {
+                p.splitn(3, '|').take(2).collect::<Vec<_>>().join("|")
+            } else {
+                p
+            };
+            (short, o)
+        })
+        .collect()
+}
+
+fn raw_calls(out: &[Value]) -> Vec<(String, Value)> {
     let mut found = Vec::new();
     for m in out {
         let phase = m["header"]["phase"]
@@ -178,10 +195,9 @@ fn apply_round(verdict: Value, turns: Vec<Value>) -> Vec<Value> {
     apply_round_with(verdict, turns, json!([]))
 }
 
-/// The params with the fallback switched on. It ships off (R-TR-25: until the
-/// mute semantics replace forgetting), and every `apply_round` case pins what
-/// it does where it runs, so each of them sets the switch itself;
-/// `the_fallback_is_off_by_default` reads the shipped params.
+/// The params with the fallback switched on -- the shipped value since the
+/// mute semantics (R-TR-25); every `apply_round` case pins it itself, and
+/// `the_fallback_is_on_by_default` reads the shipped params.
 fn fallback_params() -> Value {
     let mut p = params();
     p["forget_fallback"] = json!(true);
@@ -282,19 +298,20 @@ fn a_member_request_the_closer_skipped_is_still_honoured() {
         ep("r1")["where"]["happened_at"],
         json!({"lte": "2026-02-10T09:00:00Z"})
     );
-    assert_eq!(ep("r1")["limit"], 64);
-    // review N2: searched, not yet forgotten -- the answers report the marks
-    assert_eq!(report(&out)["forgotten"], 0);
-    assert_eq!(report(&out)["forget_searched"], 2);
+    // R-TR-25: a mute may be broad, the search is unbounded
+    assert!(ep("r1").get("limit").is_none(), "{}", ep("r1"));
+    // review N2: searched, not yet muted -- the answers report the mutes
+    assert_eq!(report(&out)["muted"], 0);
+    assert_eq!(report(&out)["mute_searched"], 2);
     assert_the_declaration_admits(CLOSE, &out);
 }
 
-/// R-TR-25: the shipped switch is off, so the two member requests the case
-/// above searches are left alone where the closer cites neither -- with the
-/// key missing, null or blanked alike -- and a request the closer cites is
-/// still honoured.
+/// R-TR-25: since a request mutes (undone by one turn, never hiding a thing
+/// from a question) the switch ships on -- with the key missing, null or
+/// blanked alike -- and only `false` leaves an uncited request alone, while a
+/// request the closer cites is honoured either way.
 #[test]
-fn the_fallback_is_off_by_default() {
+fn the_fallback_is_on_by_default() {
     let skipped = json!({"nothing_to_add": true, "forget": []});
     let mut missing = params();
     missing
@@ -312,26 +329,29 @@ fn the_fallback_is_off_by_default() {
         ("blank", blank),
     ] {
         let out = apply_round_params(skipped.clone(), later_round(), json!([]), p);
-        assert!(
-            forget_calls(&out).is_empty(),
-            "{name}: an uncited request marks nothing: {:?}",
-            forget_calls(&out)
-        );
-        assert_eq!(report(&out)["forgotten"], 0, "{name}");
-        assert_eq!(report(&out)["forget_searched"], 0, "{name}");
+        assert_eq!(report(&out)["mute_searched"], 2, "{name}: {}", report(&out));
     }
     assert_eq!(
         params()["forget_fallback"],
-        json!(false),
-        "the switch ships off"
+        json!(true),
+        "the switch ships on"
     );
+    let mut off = params();
+    off["forget_fallback"] = json!(false);
+    let out = apply_round_params(skipped, later_round(), json!([]), off.clone());
+    assert!(
+        forget_calls(&out).is_empty(),
+        "off: an uncited request mutes nothing: {:?}",
+        forget_calls(&out)
+    );
+    assert_eq!(report(&out)["mute_searched"], 0);
 
     let cited = apply_round_params(
         json!({"forget": [{"episode_id": "r1", "words": "neighbour owes money",
                            "fact_ids": []}]}),
         later_round(),
         json!([]),
-        params(),
+        off,
     );
     let mut phases: Vec<String> = searches(&cited).into_iter().map(|(p, _)| p).collect();
     phases.sort();
@@ -340,7 +360,7 @@ fn the_fallback_is_off_by_default() {
         vec!["forget-e|r1", "forget-f|r1", "forget-o|r1", "forget-s|r1"],
         "the cited request alone, never the uncited r6"
     );
-    assert_eq!(report(&cited)["forget_searched"], 1);
+    assert_eq!(report(&cited)["mute_searched"], 1);
 }
 
 #[test]
@@ -361,8 +381,8 @@ fn a_request_the_closer_cited_is_searched_once() {
         ep["match"], "\"neighbour\" AND \"owes\" AND \"money\"",
         "the closer's words win where it gave them"
     );
-    assert_eq!(report(&out)["forgotten"], 0);
-    assert_eq!(report(&out)["forget_searched"], 1);
+    assert_eq!(report(&out)["muted"], 0);
+    assert_eq!(report(&out)["mute_searched"], 1);
 }
 
 #[test]
@@ -417,10 +437,8 @@ fn the_facts_of_a_forgotten_episode_carry_the_mark() {
     // never a fact another speaker stated
     assert_eq!(lookup.1["where"]["episode_id"], json!({"in": ["e-secret"]}));
     assert_eq!(lookup.1["where"]["source"], json!({"or_null": {"eq": ""}}));
-    assert_eq!(
-        lookup.1["where"]["closure_source"],
-        json!({"or_null": {"eq": ""}})
-    );
+    // R-TR-25: a closed fact of a muted episode is muted too (no closure filter)
+    assert!(lookup.1["where"].get("closure_source").is_none());
     assert_the_declaration_admits(CLOSE, &out);
 
     // The facts come back: marked like every forgotten row, never deleted, and
@@ -433,8 +451,11 @@ fn the_facts_of_a_forgotten_episode_carry_the_mark() {
         .find(|(_, o)| o["operation"] == "update" && o["table"] == "facts")
         .unwrap_or_else(|| panic!("no fact mark: {calls:?}"));
     assert_eq!(fact.1["where"]["id"], json!({"in": ["f-owes"]}));
-    assert_eq!(fact.1["set"]["closure_source"], "forget_request:r1");
-    assert!(fact.1["set"]["expired_at"].is_string());
+    // R-TR-25: a mute, never a closure
+    assert_eq!(fact.1["set"]["mute_source"], "forget_request:r1");
+    assert!(fact.1["set"]["muted_at"].is_string());
+    assert!(fact.1["set"].get("closure_source").is_none());
+    assert!(fact.1["set"].get("expired_at").is_none());
     let belief = calls
         .iter()
         .find(|(_, o)| o["table"] == "beliefs")
@@ -512,8 +533,8 @@ fn the_four_counter_examples_of_the_review_mark_nothing() {
         .collect();
     let out = apply_round(json!({"nothing_to_add": true, "forget": []}), turns);
     assert!(forget_calls(&out).is_empty(), "{:?}", forget_calls(&out));
-    assert_eq!(report(&out)["forgotten"], 0);
-    assert_eq!(report(&out)["forget_searched"], 0);
+    assert_eq!(report(&out)["muted"], 0);
+    assert_eq!(report(&out)["mute_searched"], 0);
 }
 
 #[test]
@@ -562,7 +583,7 @@ fn the_asking_words_open_the_sentence_and_name_the_thing() {
         assert_eq!(m, c["want"], "{text}");
         assert_eq!(
             (phase.as_str(), limit),
-            ("forget-e|r1", json!(64)),
+            ("forget-e|r1", Value::Null),
             "{text}"
         );
     }
@@ -576,18 +597,22 @@ fn a_request_may_name_its_thing_in_one_word() {
         assert_eq!(m, c["want"], "{text}");
         assert_eq!(
             (phase.as_str(), limit),
-            ("forget-e|r1|8", json!(8)),
+            ("forget-e|r1", Value::Null),
             "{text}"
         );
     }
-    // eight rows of one word are too broad, seven are marked
+    // R-TR-25: no bound of its own any more -- eight rows of one word are
+    // eight mutes
     let rows = |n: usize| Value::Array((0..n).map(|i| json!({"id": format!("e{i}")})).collect());
-    let (out, journal) = back_with_journal("forget-e|r1|8", "search", rows(8));
-    assert!(tool_calls(&out).is_empty(), "{:?}", tool_calls(&out));
-    assert!(journal.contains("forget_too_broad"), "{journal}");
-    let calls = tool_calls(&back("forget-e|r1|8", "search", rows(7)));
+    let (out, journal) = back_with_journal("forget-e|r1", "search", rows(8));
+    assert!(!journal.contains("too_broad"), "{journal}");
+    let calls = tool_calls(&out);
     assert_eq!(calls[0].1["operation"], "update");
-    assert_eq!(calls[0].1["set"]["closure_source"], "forget_request:r1");
+    assert_eq!(calls[0].1["set"]["mute_source"], "forget_request:r1");
+    assert_eq!(
+        calls[0].1["where"]["id"]["in"].as_array().map(Vec::len),
+        Some(8)
+    );
 }
 
 /// Review D1 (kf89 deep review), the dealbreaker: "forget what I said, <the
@@ -672,28 +697,29 @@ fn a_correction_never_forgets_the_new_value() {
 fn a_forget_counts_where_rows_are_marked() {
     let rows = |n: usize| Value::Array((0..n).map(|i| json!({"id": format!("e{i}")})).collect());
     let reported = |out: &[Value]| report_of(out, "forget");
-    let r = reported(&back("forget-e|r1|8", "search", rows(8)));
+    // R-TR-25: `muted` / `mute_unmatched` replace `forgotten`,
+    // `forget_too_broad` and `forget_unmatched` -- nothing is too broad
+    let r = reported(&back("forget-e|r1", "search", rows(64)));
     assert_eq!(
-        (
-            r["forgotten"].clone(),
-            r["forget_too_broad"].clone(),
-            r["forget_unmatched"].clone()
-        ),
-        (json!(0), json!(1), json!(0))
+        (r["muted"].clone(), r["mute_unmatched"].clone()),
+        (json!(64), json!(0))
     );
+    for gone in ["forgotten", "forget_too_broad", "forget_unmatched"] {
+        assert!(r.get(gone).is_none(), "{gone}: {r}");
+    }
     let r = reported(&back("forget-f|r1", "search", rows(0)));
     assert_eq!(
-        (r["forgotten"].clone(), r["forget_unmatched"].clone()),
+        (r["muted"].clone(), r["mute_unmatched"].clone()),
         (json!(0), json!(1))
     );
     let r = reported(&back("forget-e|r1", "search", rows(3)));
     assert_eq!(
-        (r["forgotten"].clone(), r["request"].clone()),
+        (r["muted"].clone(), r["request"].clone()),
         (json!(3), json!("r1"))
     );
     let r = reported(&back("forget-o|r1", "search", rows(1)));
     assert_eq!(
-        (r["forgotten"].clone(), r["search"].clone()),
+        (r["muted"].clone(), r["search"].clone()),
         (json!(1), json!("o"))
     );
 }
@@ -780,6 +806,10 @@ fn only_the_speakers_own_facts_are_forgotten() {
 
 #[test]
 fn a_later_turn_of_the_session_is_not_reached() {
+    // R-TR-25: the later turn names only part of the thing. One that named all
+    // of it ("the bank debt ...") would be the member taking the topic up
+    // again in the same session, and such a request is not muted at all
+    // (gh1095 `a_request_is_honoured_once_and_not_against_its_own_session`).
     let out = apply_round(
         json!({"nothing_to_add": true, "forget": []}),
         vec![
@@ -801,7 +831,7 @@ fn a_later_turn_of_the_session_is_not_reached() {
                 "r7",
                 "user",
                 "member:e",
-                "The bank debt from 2020 is paid off now.",
+                "The debt from 2020 is paid off now.",
                 "2026-02-10T09:10:00Z",
             ),
         ],
@@ -824,15 +854,22 @@ fn a_later_turn_of_the_session_is_not_reached() {
         of("forget-f|r1")["where"]["session_id"],
         json!({"or_null": {"neq": "s-2"}})
     );
-    // a full provenance page is marked and said
+    // R-TR-25: the provenance read has no page any more -- every fact of a
+    // muted episode is muted with it
     let page = Value::Array(
-        (0..256)
+        (0..300)
             .map(|i| json!({"id": format!("f{i:03}")}))
             .collect(),
     );
     let (out, journal) = back_with_journal("forget-p|r1", "select", page);
-    assert!(journal.contains("forget_provenance_truncated"), "{journal}");
+    assert!(!journal.contains("truncated"), "{journal}");
     assert_eq!(tool_calls(&out)[0].1["table"], "facts");
+    assert_eq!(
+        tool_calls(&out)[0].1["where"]["id"]["in"]
+            .as_array()
+            .map(Vec::len),
+        Some(300)
+    );
 }
 
 /// The grammar of a request is language DATA with one home: the files beside
@@ -949,5 +986,8 @@ fn a_typo_in_a_switch_keeps_the_default() {
         p,
     );
     assert!(!out.is_empty(), "the lane went on");
-    assert!(forget_calls(&out).is_empty(), "the default is off: {out:?}");
+    assert!(
+        !forget_calls(&out).is_empty(),
+        "the default (on, R-TR-25) holds: {out:?}"
+    );
 }

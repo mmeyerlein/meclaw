@@ -21,10 +21,21 @@
     {
       "pattern": "(?:please\\s+(?:don'?t|do\\s+not)\\s+(?:remember|keep)|(?:please\\s+)?stop\\s+(?:remembering|keeping))\\b",
       "reminder": false
+    },
+    {
+      "pattern": "(?:please\\s+)?(?:don'?t|do\\s+not|never)\\s+(?:ever\\s+)?(?P<verb>bring\\s+up|mention)\\s+{thing}(?=.*\\bagain\\b)",
+      "reminder": false
     }
   ],
   "negation": "",
   "told": "\\b(?:told|said|mentioned|shared|say|tell)\\b|\\bthat\\s+about\\b",
   "conjunction": "\\b(?:and|or)\\b",
-  "stopwords": "the and that this with about what said say says for from you your his her him she they them their our was were are has have had not but all any can please forget remember don dont thing things told tell telling mentioned keep want know knew just could would should will okay hey delete erase stop remembering everything also really again earlier before recently yesterday today talked spoke shared wrote regarding"
+  "stopwords": "the and that this with about what said say says for from you your his her him she they them their our was were are has have had not but all any can please forget remember don dont thing things told tell telling mentioned keep want know knew just could would should will okay hey delete erase stop remembering everything also really again earlier before recently yesterday today talked spoke shared wrote regarding",
+  "fallback_verbs": "forget|bring\\s+up|mention",
+  "keeps_muted": [
+    "\\b(?:don'?t|do\\s+not|never|stop)\\s+(?:ever\\s+)?(?:bring(?:ing)?\\s+(?:\\w+\\s+)?up|mention(?:ing)?|talk(?:ing)?\\s+about|ask(?:ing)?\\s+(?:me\\s+)?about)\\b",
+    "\\b(?:don'?t|do\\s+not)\\s+want\\s+to\\s+(?:talk|hear)\\s+about\\b",
+    "\\b(?:don'?t|do\\s+not|never)\\b[^.!?]*\\bagain\\b"
+  ],
+  "affirms": "^\\W*(?:yes|yeah|yep|exactly|right|correct)\\b"
 }

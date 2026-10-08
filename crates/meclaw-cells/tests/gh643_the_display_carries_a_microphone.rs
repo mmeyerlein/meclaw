@@ -328,7 +328,7 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.10.6",
+        template["version"], "2.10.7",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
@@ -375,7 +375,8 @@ fn the_template_says_it_carries_a_microphone() {
          refs `web@2.3.0` (GH #1001), only the pin, and to 2.10.4 for the window \
          order and the drifting light (GH #1028, #1029), a repair, and to \
          2.10.5 for a judge without the old 600-token cap (GH #1037), a repair, and \
-         2.10.6 for a judge whose key comes as a sealed vault grant (GH #801), a repair"
+         2.10.6 for a judge whose key comes as a sealed vault grant (GH #801), a repair, and \
+         2.10.7 for a judge that may ask for that key under emits validation (GH #1094), a repair"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -390,7 +391,7 @@ fn the_template_says_it_carries_a_microphone() {
     // own.
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.10.6`"),
+        readme.starts_with("# `display@2.10.7`"),
         "the README heads with the version it describes"
     );
     assert!(

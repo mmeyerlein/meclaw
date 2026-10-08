@@ -391,6 +391,12 @@ fn the_worked_example_amortises_after_three_turns() {
 /// A talky with two tool results of ~3 000 characters each and a usable
 /// window far above them, rebuilt on a turn whose package says `soft`.
 fn under_package_pressure(soft: i64) -> (Hive, String) {
+    under_package_pressure_with(soft, json!({}))
+}
+
+/// `under_package_pressure` with more of the row on the answer (`extra`, e.g.
+/// the row's `chars_per_token`).
+fn under_package_pressure_with(soft: i64, extra: Value) -> (Hive, String) {
     let mut h = talky(&[
         ("policy", "keep_recent", json!(2)),
         ("policy", "context_window", json!(1_000_000)),
@@ -419,8 +425,11 @@ fn under_package_pressure(soft: i64) -> (Hive, String) {
         &call,
         "stop",
         with(
-            json!({"tokens_prompt": soft, "cache_expires_at": "2099-01-01T00:00:00Z"}),
-            package(soft, soft * 4, 10.0, 1.0),
+            with(
+                json!({"tokens_prompt": soft, "cache_expires_at": "2099-01-01T00:00:00Z"}),
+                package(soft, soft * 4, 10.0, 1.0),
+            ),
+            extra,
         ),
         json!([said("ok")]),
     );
@@ -450,6 +459,61 @@ fn a_package_rebuild_aims_at_the_share_of_input_soft() {
     // A soft limit of 100 000: an aim of 70 000, room enough.
     let (h, _) = under_package_pressure(100_000);
     assert_eq!(h.plan()["shrunk"], json!([]));
+}
+
+/// Fable review #5 (GH #1085): the plan of a rebuild estimates its window at
+/// the answering row's `chars_per_token`, the rate the llm cell counts with,
+/// never at a fixed four of the curator's own. The tap keeps the row's rate
+/// with the other limits; the plan is measured in the pure half, at an aim of
+/// 1 750 tokens (a `soft` rebuild under a soft limit of 2 500). The two tool
+/// results and their turns are 6 110 characters -- about 2 037 tokens at
+/// three a token, about 1 528 at four. So a row of three shrinks the older
+/// result, a row of four (luna) does not, and a row without a rate counts at
+/// three, like `content_budget`.
+#[test]
+fn the_plan_counts_at_the_rows_rate() {
+    if !shipped() {
+        return;
+    }
+    clear_of_midnight();
+    let (h, _) = under_package_pressure_with(2500, json!({"chars_per_token": 4}));
+    assert_eq!(
+        h.state("chars_per_token"),
+        "4.0",
+        "the tap keeps the row's rate"
+    );
+    let now: i64 = 1_791_438_280_000;
+    let row = |i: i64, turn: &str, kind: &str, chars: i64, iter: i64| {
+        json!({"seq": (now - 30_000 + i * 1000) * 1000, "session_id": "s",
+               "turn_id": turn, "iter": iter,
+               "kind": if kind == "user" { "user" } else { "item" },
+               "hash": format!("{i:02}{}", "a".repeat(62)), "at": "2026-10-08T05:44:10Z",
+               "chars": chars, "type": kind,
+               "name": if kind == "tool_call" { "look" } else { "" }})
+    };
+    let rows = json!([
+        row(1, "r1", "user", 10, 0),
+        row(2, "r1", "tool_call", 32, 0),
+        row(3, "r1", "tool_result", 3012, 0),
+        row(4, "r1", "assistant", 8, 1),
+        row(5, "r2", "user", 5, 0),
+        row(6, "r2", "tool_call", 32, 0),
+        row(7, "r2", "tool_result", 3000, 0),
+        row(8, "r2", "assistant", 8, 1),
+        row(9, "r3", "user", 3, 0),
+    ]);
+    let (got, err) = policy_scope(
+        json!({"role": "talky", "keep_recent": 2, "keep_rounds": 1,
+               "context_window": 1_000_000}),
+        "[short_id(ARGS['rows'][2]['hash'])] + [window_plan(ARGS['rows'], [], [], [], {}, \
+         ARGS['now'], (), (), 1000000, None, aim=1750, chars_per_token=r)['plan']['shrunk'] \
+         for r in (4, 3, 0)]",
+        json!({"rows": rows, "now": now}),
+    );
+    let r1 = got[0].clone();
+    assert_eq!(got[1], json!([]), "at luna's four the window fits: {err}");
+    assert_eq!(got[2], json!([r1.clone()]), "at three it does not: {err}");
+    assert_eq!(got[3], json!([r1]), "no rate: three, never four: {err}");
 }
 
 /// How far behind the clock `under_package_pressure` places its rows.

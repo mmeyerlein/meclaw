@@ -38,11 +38,17 @@
           "values": [
             "web_search"
           ],
-          "required": true
+          "required": true,
+          "optional_on_route": [
+            "credential_request"
+          ]
         },
         "result_count": {
           "type": "number",
-          "required": true
+          "required": true,
+          "optional_on_route": [
+            "credential_request"
+          ]
         },
         "duration_ms": {
           "type": "number",

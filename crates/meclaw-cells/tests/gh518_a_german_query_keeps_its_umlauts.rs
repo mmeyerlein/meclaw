@@ -54,6 +54,15 @@ fn resolve_vars(script: &str) -> String {
     out
 }
 
+/// The keyword leg's stop words as the cell ships them (GH #1095: a param, not
+/// script text), so the probe filters exactly what a colony filters.
+fn shipped_stop_words() -> serde_json::Value {
+    let raw = std::fs::read_to_string("../../templates/memory-hive/recall/config.json")
+        .expect("recall config");
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("config json");
+    v["params"]["stopwords_lang"].clone()
+}
+
 /// Hand a probe program to python3 **on stdin**, never in argv: the probe
 /// embeds the whole shipped script, and one argv string is capped at 128 KiB.
 fn run_python(src: &str) -> std::process::Output {
@@ -73,7 +82,9 @@ fn run_python(src: &str) -> std::process::Output {
 /// Runs the module body against an empty stdin (it parks) and then evaluates
 /// `probe` against the module globals.
 fn run_probe(probe: &str) -> String {
-    let stdin = serde_json::json!({"envelope": {}, "body": {}, "params": {}}).to_string();
+    let stdin = serde_json::json!({"envelope": {}, "body": {},
+        "params": {"stopwords_lang": shipped_stop_words()}})
+    .to_string();
     let src = format!(
         concat!(
             "import sys, io\n",

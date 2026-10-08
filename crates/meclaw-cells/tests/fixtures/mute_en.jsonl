@@ -1,0 +1,13 @@
+{"test": "keeps-aside", "text": "Don't bring up the money my neighbour owes me again.", "words": "money neighbour owes", "asks": "money neighbour owes"}
+{"test": "keeps-aside", "text": "Please never mention the money my neighbour owes me again.", "words": "money neighbour owes", "asks": "money neighbour owes"}
+{"test": "keeps-aside", "text": "I don't want to talk about the money my neighbour owes me.", "words": "money neighbour owes", "asks": ""}
+{"test": "confirms", "question": "Do you mean the money your neighbour owes you?", "text": "Yes, the money my neighbour owes me.", "words": "money neighbour owes"}
+{"test": "takes-up", "text": "Did my neighbour ever pay back the money he owes me?", "words": "money neighbour owes"}
+{"test": "cited-only", "text": "Delete the reminder for the dentist.", "words": "reminder dentist"}
+{"test": "cited-only", "text": "Please erase the note about the plumber.", "words": "note plumber"}
+{"test": "asked", "text": "How much money is my neighbour owed?", "words": "money neighbour owes"}
+{"test": "asked", "text": "Did my neighbour repay me yet?", "words": "neighbour repaid"}
+{"test": "asked", "text": "What did the doctor say?", "words": "ann doctor"}
+{"test": "not-asked", "text": "What will the weather be like tomorrow?", "words": "money neighbour owes"}
+{"test": "not-asked", "text": "My neighbour waved at me this morning.", "words": "money neighbour owes"}
+{"test": "not-asked", "text": "The doctor was kind.", "words": "ann doctor"}

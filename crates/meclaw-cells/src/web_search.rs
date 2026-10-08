@@ -21,7 +21,8 @@ pub struct WebSearchCell {
     /// is re-sent to the model on every subsequent round. A conforming provider
     /// list longer than the page is trimmed in place; the JSON stays valid and
     /// carries the cut visibly (`"truncated": true`, `"total_results": N`,
-    /// `"cut": "<k> of <n> results shown; ..."`), because the hop header does
+    /// `"cut": "...[cut: <k> of <n> results shown; ...]"`, the one mark of
+    /// `content_budget::cut_mark`), because the hop header does
     /// not travel into the thread row the model reads. `header.result_count`
     /// keeps the full provider count. Since GH #1085 (OR-IG-6) the page size
     /// is the model's to choose: a call's `max_results` argument overrides
@@ -216,9 +217,11 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
                                     obj.insert("total_results".into(), Value::from(n as u64));
                                     obj.insert(
                                         "cut".into(),
-                                        Value::String(format!(
-                                            "{page} of {n} results shown; call again with a \
-                                             higher max_results to see more"
+                                        Value::String(crate::content_budget::cut_mark(
+                                            page,
+                                            n,
+                                            "results",
+                                            "call again with a higher max_results",
                                         )),
                                     );
                                 }
@@ -967,8 +970,15 @@ mod tests {
         );
         assert_eq!(v["total_results"], 5, "and the full count is named there");
         assert_eq!(
-            v["cut"], "2 of 5 results shown; call again with a higher max_results to see more",
+            v["cut"], "...[cut: 2 of 5 results shown; call again with a higher max_results]",
             "the mark says how many of how many, and how to get the rest (OR-IG-6)"
+        );
+        // Fable review #3: the one mark format of every cut (design section 3),
+        // never a sentence of this cell's own.
+        let cut = v["cut"].as_str().expect("a mark");
+        assert!(
+            cut.starts_with("...[cut: ") && cut.ends_with(']'),
+            "the one mark format: {cut}"
         );
         assert_eq!(
             em.content["header"]["truncated"], true,
@@ -1041,7 +1051,7 @@ mod tests {
         assert_eq!(v["total_results"], 5);
         assert_eq!(
             v["cut"],
-            "4 of 5 results shown; call again with a higher max_results to see more"
+            "...[cut: 4 of 5 results shown; call again with a higher max_results]"
         );
 
         let all = run(r#"{"query":"x","max_results":10}"#).await;

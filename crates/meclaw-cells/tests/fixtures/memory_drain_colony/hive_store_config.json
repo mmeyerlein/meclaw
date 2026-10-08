@@ -18,7 +18,11 @@
         "affect": "text",
         "speaker_name": "text",
         "closed_at": "text",
-        "closure_source": "text"
+        "closure_source": "text",
+        "muted_at": "text",
+        "mute_source": "text",
+        "mute_words": "text",
+        "unmuted_at": "text"
       }
     },
     "query_timeout_ms": 5000

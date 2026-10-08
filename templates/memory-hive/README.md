@@ -1,4 +1,4 @@
-# `memory-hive@3.13.3`
+# `memory-hive@3.14.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Sixteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -606,11 +606,17 @@ opening list above.
 
 What the pass did leaves on `close_report` with fourteen numbers on the hop (`added`, `sharpened`,
 `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions`, `truncated`, `groups`,
-`unaudienced`, since 3.11.0 `retracted`, `forgotten`, `named`, and since 3.13.1 `forget_searched`).
-`forgotten` counts the rows the pass marked by the ids the closer named, `forget_searched` the
-forget searches it sent; each search answers on a `close_report` of its own with `phase: forget`,
-the request, the search (`f` facts, `s` the request's subject, `o` the object, `e` episodes) and
-`forgotten`, `forget_too_broad` or `forget_unmatched`. **Drain it**: the
+`unaudienced`, since 3.11.0 `retracted`, `named`, and since [#1095](https://github.com/mmeyerlein/meclaw/issues/1095)
+`muted`, `mute_searched` and `unmuted`, which replace `forgotten` and `forget_searched`).
+`muted` counts the requests the pass muted by the ids the closer named, `mute_searched` the
+requests whose searches it sent, `unmuted` the mutes it lifted; each search answers on a `close_report` of its own with `phase: forget`,
+the request, the search (`f` facts of other sessions, `s` of this session, `o` of the request's own turn, `e` episodes, `p` facts by provenance) and
+`muted` or `mute_unmatched` (they replace `forgotten`, `forget_too_broad` and `forget_unmatched`).
+`mute_skipped` lists every request the pass found and did not mute, each `{request, reason}`
+(`already_muted`: an earlier run of the session muted it; `taken_up`: the member took the topic up
+again later in the same session), and is absent where there is none. A refused op of the upgrade
+of an older store (below) never stops the pass: it reports on a `close_report` with
+`phase: mute-up`, `mute_up_refused` and `store_error`, and the next pass tries again. **Drain it**: the
 writes answer nobody, so without the report a caller cannot tell a pass that ran and changed
 nothing from a pass that never ran at all. A pass with no verdict — the call errored, the answer
 was not JSON, or the parked verdict was gone — leaves on `reject` with
@@ -962,60 +968,99 @@ The reference stays the source. The audience rule, the closure rules and the bel
 peer's statement about somebody else, keep the bare reference; the round's `roster` legend still
 names it.
 
-## Forgetting on request ([#1039](https://github.com/mmeyerlein/meclaw/issues/1039))
+## Forgetting on request: the topic is muted ([#1039](https://github.com/mmeyerlein/meclaw/issues/1039), [#1095](https://github.com/mmeyerlein/meclaw/issues/1095))
 
 "Forget that" used to be stored as a turn and not acted on: the secret's fact stayed open and both
 episodes kept reaching the bundle. Since 3.11.0 the close pass answers such a turn with
-`forget: [{episode_id, words, fact_ids}]`.
+`forget: [{episode_id, words, fact_ids}]`. Since [#1095](https://github.com/mmeyerlein/meclaw/issues/1095)
+the request **mutes** the topic instead of closing it: a member who says "forget what I told you
+about X" wants X not brought up again unasked, and still answered when they ask for it themselves.
+Deleting is not this feature.
 
-- Only the person forgets, never a peer or the agent. The cited turn has to be the member's own,
+- Only the person asks, never a peer or the agent. The cited turn has to be the member's own,
   and its own text has to carry a forget cue ("forget", "don't remember", "delete" and their kin).
   The cues, the filler words, the forms of an ask and the narrative frames are language data beside
   the cell, one file per language (`close-glue/lang/en.json`, `close-glue/lang/de.json`), carried
-  into `params.forget_lang`; every language is tried, and without the block nothing is marked. The closer reads
+  into `params.forget_lang`; every language is tried, and without the block nothing is muted. The closer reads
   a peer's turns too, so its verdict alone proves nothing; a request without the cue is counted
   as unseen.
-- The pass marks the facts it names and searches for the rest. The search is narrow on purpose:
-  at least two distinct words of three letters or more that are not filler, matched in a fact's
-  `claim` (never its subject, so a name alone reaches nobody's every fact) or an episode's
-  `content`, only open facts, and nothing from after the request turn (a fact by its `valid_from`, an episode by its `happened_at`). A search that hits 64
-  rows is too broad to be about one thing: it marks nothing and leaves a journal line
-  `forget_too_broad`. The search reaches every room the round sits in (`covers`), since the
-  person asking is in each of them. The mark is
-  `closure_source = forget_request:<turn id>`, with `expired_at` on a fact and `closed_at` on an
-  episode. A row that another closure already ended keeps that closure's provenance.
-- Nothing is deleted. The rows stay, so the log stays the audit, and a mark is reverted by
-  clearing the two columns.
-- Recall drops every row whose `closure_source` starts with `forget_request:`, on the gate every
-  leg already passes (`visible_row`). The request turn is marked too when it holds the words, so it
-  does not repeat the secret either.
+- The pass mutes the facts it names and searches for the rest: at least two distinct words of three
+  letters or more that are not filler (one where the sentence says the thing was told), matched in
+  a fact's `claim` (never its subject, so a name alone reaches nobody's every fact) or an episode's
+  `content`, only open facts, and nothing from after the request turn (a fact by its `valid_from`,
+  an episode by its `happened_at`). The search reaches every room the round sits in (`covers`),
+  since the person asking is in each of them. It is not bounded: a mute hides nothing from a
+  question and one turn lifts it, so "forget everything about the doctor" mutes every row that
+  names the doctor (the 64-row `forget_too_broad` cut of the closing semantics is gone).
+- The mute is four columns on `episodes`, `facts` and `beliefs`: `muted_at` (when the member asked),
+  `mute_source` (`forget_request:<turn id>`), `mute_words` (the words of the thing) and
+  `unmuted_at`. `closed_at`, `expired_at` and `closure_source` are never touched, and nothing is
+  deleted: the rows stay, so the log stays the audit.
+- Recall raises no muted row unasked, on the gate every leg already passes (`visible_row`): the
+  tier-0 bundle, built per turn without a question, never shows one, and an ask shows one only
+  where its words carry every word of the row's `mute_words`, or, where the asker's own words are
+  a question (a `?`), all of them but one and at least one -- the member's "how much does my
+  neighbour still owe me?" about "money neighbour owes", "what did the doctor say?" about a
+  two-word topic with the doctor in it, or the model's `memory_recall` naming the thing. A
+  statement that names part of a topic raises nothing. The mode is the asker's words, not a knob,
+  so no caller can forget to set it. A mute without words (none is written since kfm M1c) answers
+  every ask that has words and still stays out of the tier-0 bundle: muted, never unanswerable.
+  A word counts in another inflection too: two words are one where they share a prefix of
+  max(4, the shorter word less two) letters, a word of five letters or fewer all of it but its
+  last, never fewer than three ("owes" / "owe" / "owed", "neighbour" / "neighbours",
+  "repaid" / "repaying"; "own" is no "owe"). Only the asker's own words count: the bracket the curator's push puts in front of them
+  (`[topic: ...; mentioned: ...; refers to: ...]`) is its guess at the conversation, not a
+  question, so an open topic that happens to name the thing raises nothing. A subject question
+  (`in_query` with `subject`) answers a muted fact only where the subject itself names the thing.
+- The member lifts a mute by taking the topic up again: a turn of their own after the request,
+  not itself asking to forget, that carries every word of `mute_words` (inflected as above) sets `unmuted_at` on every
+  row of that request in the next close pass (`unmuted` on the report). The agent naming it, a
+  peer, a turn before the request or a part of the words lift nothing. Neither does a turn that
+  keeps the topic aside ("don't bring up the money my neighbour owes me again", the language's
+  `keeps_muted`; where the grammar reads such a sentence it is a request of its own) or a yes to
+  the other side's question which topic was meant (a turn opening with the language's `affirms`
+  right after a question). A request the member takes up again later in its own session is not
+  muted at all, and a request already muted is not honoured twice (the pass reads the live mutes
+  before it meets, `mutes` among its parked sets, and the session's own turns carry their mark).
+  Both reads run on an index (`episodes(mute_source)`, `episodes(closure_source)`; the store
+  creates a declared index on boot, on an existing store too).
+- A fact the closer sharpens or corrects keeps the mute of the fact it replaces: the window the
+  pass hands the ingress (`shown`) says which statement is muted, and the replacement takes the
+  mute over.
 
 Since 3.13.0 ([#1074](https://github.com/mmeyerlein/meclaw/issues/1074)) the pass can honour the
 request even when the closer leaves it out: the member's own sentence is the request, and its
 words narrow the search exactly like a closer's `words`. This fallback is the switch
-`forget_fallback` and ships off, until the mute semantics (R-TR-25) replace forgetting; off, only
-a request the closer cites is honoured, still checked against the turn's own text. Only an ask counts, a sentence that
+`forget_fallback`; since the mute semantics it ships on (a blanked line, null or a typo keep it on),
+and `false` honours only a request the closer cites, still checked against the turn's own text. Since kfm M1c it
+honours only the verbs of the language's `fallback_verbs` (forget, and "don't bring up / mention ... again"): "delete
+the reminder for the dentist" speaks to an appointment, so delete and erase mute only where the closer cites the
+turn. Only an ask counts, a sentence that
 starts with the verb or puts "please", "can you" or "I want you to" before it and names a thing;
-"I always forget my keys" states something and "forget it" names nothing, so neither marks a row.
-The facts of a forgotten episode go with it through their provenance (`episode_id`), and a fact
+"I always forget my keys" states something and "forget it" names nothing, so neither mutes a row.
+The facts of a muted episode go with it through their provenance (`episode_id`), and a fact
 is searched in the window of its `valid_from`, so a fact said before the request is reached even
 when it was recorded after it.
 
-Since 3.13.1 a correction never forgets its new value. In "forget what I said, the appointment is on
-Wednesday" the clause after the request is what the member says now: the thing to forget ends
+Since 3.13.1 a correction never mutes its new value. In "forget what I said, the appointment is on
+Wednesday" the clause after the request is what the member says now: the thing ends
 before it, the object search needs every one of its words, and on such a continuation the object
 search and the request's own episode are left out. That holds for a request the closer quotes,
 too. "Forget that about my son" is a narrative frame like "what I told you": the search is for
 "son". The episode search reaches the member's own side of the conversation (`sender` is not a
 peer), so the agent's turn that repeated the secret goes with it and another member's turn stays.
 
-A belief the night derived from a forgotten fact carries the mark too: every belief whose
-`source_fact_ids` holds a marked fact gets the same `closure_source` (beliefs carry the column
-since 3.11.0), `active` untouched, and both belief reads of recall skip it.
+A belief made of a muted fact is muted with it: the close pass mutes every belief whose
+`source_fact_ids` holds a fact it mutes, and the night gives a belief it derives from a muted fact
+that fact's mute (`active` untouched either way).
 
-When the forgotten fact had replaced an older one (Krakow corrected Lyon), recall shows the older
-fact again, marked as a broken chain. The forgotten value does not come back, the one before it
-does.
+A store written by a closing release still holds requests as closures (`closure_source`
+`forget_request:<turn>`, `closed_at` on the episodes, `expired_at` on the facts). Every close pass
+converts the requests of one page of such episodes into mutes on all three tables (the closure
+undone, the words taken from the request turn, or, where that turn is not on the page, the words
+its closed turns share), so the upgrade needs no step of its own; until a
+row is converted recall keeps it hidden as before. A request that closed facts but no episode keeps
+its closure.
 
 The same release gives the pass a `retract` verb: `retract: [{fact_id, episode_id, why}]` ends a
 record its own speaker took back with nothing in its place (`closure_source` `close:<session>:retract`).
@@ -1110,8 +1155,8 @@ What the derivation reads, and what it writes:
   as whole words in a claim. The longest spelling wins, so "Mahler" inside "Moritz Mahler" (a subject or an alias
   of its own) is no mention of Mahler; a subject that joins names ("Frieda Quastberg and Greta Grimmbach", a comma,
   "&") is no name and hides none of them. A name written with a capital counts only with its capital, so "a rose"
-  is no mention of Rose. A forgotten or retracted fact (`closure_source` `forget_request:...` or
-  `close:<session>:retract`) is no evidence; a superseded one still is.
+  is no mention of Rose. A retracted fact or one a closing release forgot (`closure_source`
+  `close:<session>:retract` or `forget_request:...`) is no evidence; a superseded or a muted one still is.
 - **An edge** joins two entities one fact names together -- its subject, the entities its claim mentions, its
   speaker; for a subject that joins names, the entities that subject spells, matched like a mention -- one row per direction and per channel and audience, which it inherits from the evidencing facts.
   `relation` is the newest such claim (`relation_at` keeps its instant), `weight` the count, `evidence` the fact
@@ -1168,7 +1213,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.13.3` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.14.1` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1575,7 +1620,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.22",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.25",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1707,7 +1752,7 @@ there is a value that is not `"1"` and the ask is OFF (the apply half runs eithe
 |---|---|---|
 | `close_turn_rows` | `512` | Cap of the session page the close pass reads (GH #300). Counts episode rows of ONE session, newest first, so a session longer than the page loses its OLDEST turns rather than its last ones: the later a turn is, the more likely it is the one that corrects an earlier, which is the whole reason the pass exists. A param of this cell since GH #138, so two members are tuned apart |
 | `close_fact_rows` | `256` | Cap of the fact page the close pass reads (GH #300). Counts the OPEN facts of ONE session -- the records the per-turn path already wrote and the only records the pass may name when it supersedes one. A separate knob from close_turn_rows because it counts a different thing: a short session can carry a long history if its subject has been talked about before |
-| `forget_fallback` | `false` | `true` also honours a member's own request to forget that the closer did not cite (GH #1074): the pass reads the asking sentence itself, by the grammar of `forget_lang`, and searches with its words. `false` (the default, also `"false"`, `0`, `"0"`, a blanked line or null) honours only the requests the closer cites, each still checked against the turn's own text; it stays off until the mute semantics (R-TR-25) replace forgetting. Any other value stops the cell with the knob's name on stderr. |
+| `forget_fallback` | `true` | `true` (the default; a blanked line, null or a typo keep it) also honours a member's own request to forget that the closer did not cite (GH #1074): the pass reads the asking sentence itself, by the grammar of `forget_lang`, and mutes with its words. Since the mute semantics (#1095) it ships on: a mute hides nothing from a question and one turn of the member lifts it. Only the verbs of the language's `fallback_verbs` are honoured this way (forget; delete and erase only where the closer cites the turn). `false` (also `"false"`, `0`, `"0"`) honours only the requests the closer cites, each still checked against the turn's own text; any other value is said on stderr and the default holds. |
 
 ### The params of `./extract-glue`
 

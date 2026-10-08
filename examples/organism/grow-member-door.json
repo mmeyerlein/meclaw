@@ -9,7 +9,7 @@
     "add_nodes": [
       {
         "name": "scribe",
-        "template": "assistant@3.7.13",
+        "template": "assistant@3.7.14",
         "override_params": {
           "cogny/brain": {
             "temperature": 0.2

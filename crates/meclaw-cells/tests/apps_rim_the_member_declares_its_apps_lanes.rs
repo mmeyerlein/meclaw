@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "2.5.22",
+            v, "2.5.25",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -458,12 +458,15 @@ fn the_versions_moved_with_the_declarations() {
              `./assistants` from `assistant@3.7.11` (GH #1087), the third digit; 2.5.21 only pins \
              `assistant@3.7.12`, `file-space@1.4.6`, `firewall@2.4.1`, \
              `graph-space@1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085), the third digit; 2.5.22 only pins \
-             `assistant@3.7.13` and `memory-hive@3.13.3` (GH #1085, no window of a role's own), the third digit"
+             `assistant@3.7.13` and `memory-hive@3.13.3` (GH #1085, no window of a role's own), the third digit; 2.5.23 only pins \
+             `assistant@3.7.14` and `memory-hive@3.13.4` (GH #1094), the third digit; 2.5.24 only pins \
+             `memory-hive@3.14.0` (GH #1095), the third digit; 2.5.25 only pins \
+             `memory-hive@3.14.1` (GH #1095), the third digit"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.7.13",
+            v, "3.7.14",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -522,7 +525,8 @@ fn the_versions_moved_with_the_declarations() {
              `talky@6.7.1` and `cogny@5.9.1` (GH #801), the third digit; 3.7.11 only \
              pins `talky@6.7.2` (GH #1087), the third digit; 3.7.12 only pins \
              `talky@6.7.3`, `cogny@5.9.2` and `tools@1.4.7` (GH #1085), the third digit; 3.7.13 only pins \
-             `cogny@5.9.3` and `talky@6.7.4` (GH #1085, no window of a role's own), the third digit"
+             `cogny@5.9.3` and `talky@6.7.4` (GH #1085, no window of a role's own), the third digit; 3.7.14 only pins \
+             `cogny@5.9.4` and `talky@6.7.5` (GH #1094), the third digit"
         );
     }
 }

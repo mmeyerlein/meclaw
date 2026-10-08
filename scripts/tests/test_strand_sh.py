@@ -1759,6 +1759,33 @@ fi
 [ -z "${FAKE_LOCAL_TOUCH:-}" ] || printf 'edited here during the run\\n' >"$FAKE_LOCAL_TOUCH"
 printf 'env %s\\n' "${FAKE_SECRET_API_KEY:-unset}" >>"$FAKE_CARGO_LOG"
 [ -z "${FAKE_CARGO_ERR:-}" ] || echo "$FAKE_CARGO_ERR" >&2
+# GH #1086: a stress series -- FAKE_CARGO_STRESS holds the failed tests of
+# each iteration ("0 1 1 1 0"), printed in nextest's own stress shape.
+if [ -n "${FAKE_CARGO_STRESS:-}" ]; then
+    n=0; for f in $FAKE_CARGO_STRESS; do n=$((n+1)); done
+    i=0; ok=0; bad=0
+    for f in $FAKE_CARGO_STRESS; do
+        i=$((i+1))
+        echo " Stress test iteration $i/$n (00:00:00 elapsed so far)"
+        if [ "$f" = 0 ]; then
+            ok=$((ok+1))
+            echo " Stress test [   0.420s] iteration $i/$n: 3 tests run: 3 passed (1 slow), 5 skipped"
+        else
+            bad=$((bad+1))
+            # FAKE_CARGO_STRESS_KIND: the class of red (default `failed`)
+            kind="${FAKE_CARGO_STRESS_KIND:-failed}"; mark=FAIL
+            [ "$kind" != "timed out" ] || mark=TIMEOUT
+            echo "        $mark [   0.020s] [$i/$n] (2/3) meclaw-cells::gh1_x a_case"
+            echo " Stress test [   0.420s] iteration $i/$n: 3 tests run: $((3-f)) passed (1 slow), $f $kind, 5 skipped"
+        fi
+    done
+    # nextest leaves the failed count out of a green series (measured 07.10.)
+    tail=""; [ "$bad" = 0 ] || tail=", $bad failed"
+    # FAKE_CARGO_STRESS_NO_SUMMARY: a lane cut off before nextest's summary
+    [ -n "${FAKE_CARGO_STRESS_NO_SUMMARY:-}" ] \\
+        || echo "     Summary [   2.100s] ${FAKE_CARGO_STRESS_RAN:-$n}/$n stress run iterations: $ok passed$tail"
+    exit "${FAKE_CARGO_RC:-0}"
+fi
 if [ -z "${FAKE_CARGO_NO_SUMMARY:-}" ]; then
     echo "        PASS [   0.010s] meclaw-cells::gh1_x a_case"
     for f in ${FAKE_CARGO_FAILS:-}; do
@@ -2394,6 +2421,62 @@ class TestGateHost(TokenTestCase):
         self.assertEqual(101, res.returncode, res.stdout + res.stderr)
         last = res.stdout.strip().splitlines()[-1]
         self.assertRegex(last, r"^TEST \[binary\(~gh1_x\)\] 0/0 \d+s RED$")
+
+    # GH #1086: `--stress-count 5` printed `75/75 GREEN` and exit 0 while 3
+    # of 5 iterations had FAIL lines -- the line read the LAST iteration's
+    # test count, and the exit was 0. A series is graded by its iterations.
+    def test_a_stress_series_with_a_red_iteration_is_red(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_STRESS": "0 1 1 1 0"})
+        res = self.strand_test("binary(~gh1_x)", "--stress-count", "5", "--host", "north",
+                               skip="lane-test", env=env)
+        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1],
+                         r"^TEST \[binary\(~gh1_x\)\] 12/15 \d+s RED \(3/5 iterations red\)$")
+        # red in three iterations, named once (review M2)
+        self.assertEqual(1, res.stdout.count("FAIL meclaw-cells::gh1_x a_case"), res.stdout)
+
+    # Review M1: an iteration red only by `timed out` or `exec failed` --
+    # no `failed` count of its own -- is a red iteration too. Without the
+    # closing summary (a lane cut off) the iteration lines are all there is.
+    def test_a_stress_iteration_red_only_by_timeout_or_exec_failure_is_red(self):
+        for kind in ("timed out", "exec failed"):
+            with self.subTest(kind=kind):
+                env = self.fake_cargo()
+                env.update({"FAKE_CARGO_STRESS": "0 1 0", "FAKE_CARGO_STRESS_KIND": kind,
+                            "FAKE_CARGO_STRESS_NO_SUMMARY": "1", "FAKE_CARGO_RC": "0"})
+                res = self.strand_test("binary(~gh1_x)", "--host", "north",
+                                       skip="lane-test", env=env)
+                self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
+                self.assertRegex(res.stdout.strip().splitlines()[-1],
+                                 r"RED \(1/3 iterations red\)$")
+
+    def test_a_stress_series_red_only_in_the_log_is_red_even_on_exit_zero(self):
+        # The exit of the lane is not trusted alone: the measured run of GH
+        # #1086 came back 0. Grading reads the iteration lines too.
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_STRESS": "1 0", "FAKE_CARGO_RC": "0"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1], r"RED \(1/2 iterations red\)$")
+        self.assertIn("FAIL meclaw-cells::gh1_x a_case", res.stdout)
+
+    def test_a_cut_short_stress_series_is_red(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_STRESS": "0 0 0", "FAKE_CARGO_STRESS_RAN": "2"})
+        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
+        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1],
+                         r"RED \(0/3 iterations red, 2/3 ran\)$")
+
+    def test_a_green_stress_series_stays_green(self):
+        env = self.fake_cargo()
+        env.update({"FAKE_CARGO_STRESS": "0 0 0 0 0"})
+        res = self.strand_test("binary(~gh1_x)", "--stress-count", "5", "--host", "north",
+                               skip="lane-test", env=env)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout.strip().splitlines()[-1],
+                         r"^TEST \[binary\(~gh1_x\)\] 15/15 \d+s GREEN \(5/5 iterations green\)$")
 
     def test_strand_test_without_a_token_is_exit_three(self):
         env = self.fake_cargo()

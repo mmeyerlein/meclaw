@@ -306,7 +306,7 @@ retired model (`unknown_model`), a targeted `match` that covers no subscriber
 nobody set (`unknown_override`), a reset of a path that is no subscriber (`no_subscriber`), a
 catalogue column that does not exist (`unknown_model_field`) or has the wrong type or size
 (`invalid_model_field`: a `prompt` the row's model could never take -- over its `input_hard`
-window at three bytes a token, else over its `context_window`, else over the 4 MiB carrier
+window at the row's `chars_per_token` (three without a row), else over its `context_window`, else over the 4 MiB carrier
 ceiling, the rule every llm cell refuses a pushed `model_prompt` by since
 [#1085](https://github.com/mmeyerlein/meclaw/issues/1085), the ack naming
 `too_long: model_prompt <n> > <max> bytes` --, `strengths` over the 4 MiB carrier ceiling (`too_long: strengths <n> > <max> bytes`; strengths ride in every question to the translator, so they have no size of their own below the carrier since #1085), a `model_id` that is not one token of

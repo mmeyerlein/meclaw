@@ -232,25 +232,42 @@ fn recall_renders_the_name_beside_the_reference() {
     );
 }
 
+/// A closure of the closing releases (`forget_request:`, before R-TR-25
+/// converted it) is still shown to nobody; a mute (R-TR-25) is shown to an ask
+/// that names it and to no other, and a lifted mute to everyone.
 #[test]
 fn recall_shows_nothing_marked_forgotten() {
     let script = shipped_script(RECALL);
     let program = format!(
-        "def visible(a, c):\n    return True\n{}\n{}\n{}\nimport json\nprint(json.dumps([visible_row(r) for r in json.loads({})]))",
+        "import re\nASKED_WORDS = {{'neighbour', 'owes', 'money'}}\nphase = 't1-fan'\nctx = {{'recall_query': 'neighbour owes money'}}\ndef visible(a, c):\n    return True\n{}\n{}\n{}\n{}\n{}\n{}\n{}\nimport json\nprint(json.dumps([visible_row(r) for r in json.loads({})]))",
         block_of(&script, "FORGET_SOURCE"),
+        block_of(&script, "PUSH_PREFIX"),
         block_of(&script, "def forgotten"),
+        block_of(&script, "def muted"),
+        block_of(&script, "def names_word"),
+        block_of(&script, "def asked_for"),
         block_of(&script, "def visible_row"),
         json!([
             {"closure_source": "forget_request:e2"},
             {"closure_source": "close:s-1"},
             {"closure_source": null},
-            {}
+            {},
+            {"muted_at": "2026-01-01T10:02:00Z", "mute_words": "kolja owes"},
+            {"muted_at": "2026-01-01T10:02:00Z", "mute_words": "money neighbour owes"},
+            {"muted_at": "2026-01-01T10:02:00Z", "mute_words": "kolja owes",
+             "unmuted_at": "2026-02-01T00:00:00Z"},
+            {"muted_at": "2026-01-01T10:02:00Z", "mute_words": ""}
         ])
         // as a Python string literal, so JSON's `null` never meets Python
         .to_string()
         .pipe_json()
     );
-    assert_eq!(py(&program), "[false, true, true, true]");
+    // kfm M1c (review 4): the last row, a mute without words, answers the
+    // ask -- muted, never unanswerable
+    assert_eq!(
+        py(&program),
+        "[false, true, true, true, false, true, true, true]"
+    );
 }
 
 #[test]
@@ -461,7 +478,19 @@ fn a_forget_request_marks_and_never_deletes() {
         .collect();
     assert_eq!(marks.len(), 1, "{calls:?}");
     assert_eq!(marks[0]["where"]["id"], json!({"in": ["f-debt"]}));
-    assert_eq!(marks[0]["set"]["closure_source"], "forget_request:e3");
+    // R-TR-25: a mute, never a closure
+    assert_eq!(marks[0]["set"]["mute_source"], "forget_request:e3");
+    assert_eq!(marks[0]["set"]["mute_words"], "kolja owes");
+    assert!(
+        marks[0]["set"].get("closure_source").is_none(),
+        "{:?}",
+        marks[0]
+    );
+    assert!(
+        marks[0]["set"].get("expired_at").is_none(),
+        "{:?}",
+        marks[0]
+    );
     let searches: Vec<(String, Value)> = calls
         .into_iter()
         .filter(|(_, o)| o["operation"] == "search")
@@ -476,14 +505,14 @@ fn a_forget_request_marks_and_never_deletes() {
     );
     for (phase, op) in &searches {
         assert!(
-            phase.ends_with("|e3"),
-            "the request rides in the phase: {phase}"
+            phase.contains("|e3|2026-01-01T10:02:00Z|kolja,owes"),
+            "the request, its time and its words ride in the phase: {phase}"
         );
         assert_eq!(
             op["where"]["audience_set"]["covers"],
             json!(["agent:a", "member:e", "peer:rq"])
         );
-        assert_eq!(op["limit"], 64);
+        assert!(op.get("limit").is_none(), "a mute may be broad: {op}");
     }
     let fact_search = &searches
         .iter()
@@ -516,7 +545,7 @@ fn a_forget_request_marks_and_never_deletes() {
         json!({"lte": "2026-01-01T10:02:00Z"})
     );
     let r = report(&out);
-    assert_eq!(r["forgotten"], 1);
+    assert_eq!(r["muted"], 1);
     assert_eq!(
         r["unseen_refs"], 4,
         "peer turn, uncued member turn, two thin requests"
@@ -528,13 +557,13 @@ fn a_forget_request_marks_and_never_deletes() {
         beliefs[0]["where"]["source_fact_ids"],
         json!({"covers": ["f-debt"]})
     );
-    assert_eq!(beliefs[0]["set"]["closure_source"], "forget_request:e3");
+    assert_eq!(beliefs[0]["set"]["mute_source"], "forget_request:e3");
     assert!(
         beliefs[0]["set"].get("active").is_none(),
         "the mark alone, never active"
     );
 
-    // Too broad: 64 hits mark nothing by search (B2).
+    // R-TR-25: no request is too broad to mute -- 64 hits are 64 mutes.
     let broad: Vec<Value> = (0..64).map(|i| json!({"id": format!("f-{i}")})).collect();
     let none = emit_all(
         &shipped_script(CLOSE),
@@ -545,9 +574,11 @@ fn a_forget_request_marks_and_never_deletes() {
                           "text": Value::Array(broad).to_string()}]
         }),
     );
-    assert!(
-        tool_calls(&none).is_empty(),
-        "a too-broad request marked rows: {none:?}"
+    let wide = tool_calls(&none);
+    assert_eq!(wide[0].1["table"], "facts", "{none:?}");
+    assert_eq!(
+        wide[0].1["where"]["id"]["in"].as_array().map(Vec::len),
+        Some(64)
     );
 
     // Facts the search found are marked, and so are the beliefs made of them.
@@ -578,7 +609,7 @@ fn a_forget_request_marks_and_never_deletes() {
     assert_eq!(mark["operation"], "update");
     assert_eq!(mark["table"], "episodes");
     assert_eq!(mark["where"]["id"], json!({"in": ["e2", "e3"]}));
-    assert_eq!(mark["set"]["closure_source"], "forget_request:e3");
+    assert_eq!(mark["set"]["mute_source"], "forget_request:e3");
 }
 
 fn names_back(name: &str, bound: Value) -> Vec<Value> {
@@ -883,7 +914,7 @@ async fn gh1039_a_peer_turn_through_the_door_answers_to_the_name() {
         );
         let (_, search) = tool_calls(&plan)
             .into_iter()
-            .find(|(p, _)| p == "forget-f|e3")
+            .find(|(p, _)| p.starts_with("forget-f|e3|"))
             .expect("a facts search");
         let found = store_op(&db, search);
         assert_eq!(found.error_code, None, "{:?}", found.error_text);
@@ -897,10 +928,22 @@ async fn gh1039_a_peer_turn_through_the_door_answers_to_the_name() {
     );
     let hits = searched("note rumour");
     assert_eq!(hits.len(), 1, "{hits:?}");
+    // The answer comes back on the phase the search left with: it carries
+    // the request's time and words, and the mute is written with them (kfm
+    // M1c: a mute without words answers every ask, so the old two-part phase
+    // would let the subject question below through).
+    let plan = apply_round(
+        json!({"forget": [{"episode_id": "e3", "words": "note rumour", "fact_ids": []}]}),
+        asked.clone(),
+    );
+    let (phase, _) = tool_calls(&plan)
+        .into_iter()
+        .find(|(p, _)| p.starts_with("forget-f|e3|"))
+        .expect("a facts search");
     let back = emit_all(
         &shipped_script(CLOSE),
         &json!({
-            "header": {"context": {"mem_phase": "forget-f|e3", "session_id": "s-9"},
+            "header": {"context": {"mem_phase": phase, "session_id": "s-9"},
                        "hop": {"operation": "search"}},
             "messages": [{"origin": "tool", "type": "tool_result",
                           "text": Value::Array(hits).to_string()}]
@@ -923,18 +966,23 @@ async fn gh1039_a_peer_turn_through_the_door_answers_to_the_name() {
     assert_eq!(
         rows(
             &db,
-            "SELECT closure_source FROM facts WHERE id = 'f-rumour'"
+            "SELECT mute_source, COALESCE(closure_source, ''), COALESCE(expired_at, '') \
+             FROM facts WHERE id = 'f-rumour'"
         ),
-        vec![vec!["forget_request:e3".to_string()]],
-        "the row still exists"
+        vec![vec![
+            "forget_request:e3".to_string(),
+            String::new(),
+            String::new()
+        ]],
+        "the row still exists, muted and open (R-TR-25)"
     );
     assert_eq!(
         rows(
             &db,
-            "SELECT closure_source, CAST(active AS TEXT) FROM beliefs WHERE id = 'b-rumour'"
+            "SELECT mute_source, CAST(active AS TEXT) FROM beliefs WHERE id = 'b-rumour'"
         ),
         vec![vec!["forget_request:e3".to_string(), "1".to_string()]],
-        "the belief made of the rumour carries the mark"
+        "the belief made of the rumour carries the mute"
     );
     h.shutdown().await;
 }
