@@ -129,7 +129,7 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since talky@4.2.1 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1): `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. It is consulted only when NO ordinary edge out of ./dispatcher fired for the message. Since talky@6.0.0 no name is reserved here (GH #889). `memory_recall` was reserved until talky@5.0.0: this composite served it out of its own collector and declared its schema by hand, and since GH #552 it is an ORDINARY tool name -- the member's memory hive declares it, answers it, and this default edge carries the call out like any other. Two properties keep it honest, and both were measured against this tree rather than assumed. FIRST, the guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary happened to fire for them; the condition names the one lane this default consumes and leaves the rest to no_route. SECOND, the no-tee requirement: ./dispatcher has four out-edges here (calls, result and answer into ./collector, plus this one) and every ordinary one of them is conditioned on its own lane -- there is NO unconditional tee. If the set ever grows one (a logger, a tap, a mirror), it must be conditioned on its own routes, or it silences this default for every tool call and the parent's tool cells go dark. The sender inventory of the whole composite, for the same reason: nine senders (., ./session-keeper, ./schemas, ./collector, ./curator, ./brain, ./splitter, ./dispatcher, ./errors) over 57 edges (39 at 6.0.0; GH #953 added ./curator -> ./session-keeper, the curator's turn_write as the keeper's in_answered), seven of which reach `.` (./collector four times, ./curator four times -- write, turn_write, pack_ack, model_refused --, ./session-keeper twice, ./brain for a refused model, ./splitter for the sidecar, ./dispatcher for this default, ./errors for error) -- and the sender-wide rule means an edge a PARENT draws from ./talky/dispatcher counts here too"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since talky@4.2.1 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1): `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. It is consulted only when NO ordinary edge out of ./dispatcher fired for the message. Since talky@6.0.0 no name is reserved here (GH #889). `memory_recall` was reserved until talky@5.0.0: this composite served it out of its own collector and declared its schema by hand, and since GH #552 it is an ORDINARY tool name -- the member's memory hive declares it, answers it, and this default edge carries the call out like any other. Two properties keep it honest, and both were measured against this tree rather than assumed. FIRST, the guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary happened to fire for them; the condition names the one lane this default consumes and leaves the rest to no_route. SECOND, the no-tee requirement: ./dispatcher has four out-edges here (calls, result and answer into ./collector, plus this one) and every ordinary one of them is conditioned on its own lane -- there is NO unconditional tee. If the set ever grows one (a logger, a tap, a mirror), it must be conditioned on its own routes, or it silences this default for every tool call and the parent's tool cells go dark. The sender inventory of the whole composite, for the same reason: nine senders (., ./session-keeper, ./schemas, ./collector, ./curator, ./brain, ./splitter, ./dispatcher, ./errors) over 57 edges (39 at 6.0.0; GH #953 added ./curator -> ./session-keeper, the curator's turn_write as the keeper's in_answered), seven of which reach `.` (./collector four times, ./curator four times -- write, turn_write, pack_ack, model_refused --, ./session-keeper twice, ./brain for a refused model, ./splitter for the sidecar, ./dispatcher for this default, ./errors for error) -- and the sender-wide rule means an edge a PARENT draws from ./talky/dispatcher counts here too Since GH #1085 (OR-IG-8) this exit also sets `context.input_soft` to the window the brain stamped on the answer that asked (`hop.input_soft`, which `dispatcher@1.2.3` hands on to each call), so a tool behind any number of cells still knows the window its result is read in and cuts to its share of it; without a stamp the key is empty and the tool delivers whole."
         },
         {
           "route": "error",
@@ -390,7 +390,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -435,7 +436,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -477,7 +479,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -489,7 +492,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -501,7 +505,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -534,7 +539,8 @@
               "tool_answerer",
               "curator_call",
               "gap_ask",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -552,7 +558,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -564,7 +571,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -576,7 +584,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -589,7 +598,8 @@
               "tool_answerer",
               "curator_call",
               "gap_ask",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -604,7 +614,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -616,7 +627,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -628,6 +640,9 @@
           "modifier": {
             "set_hop": {
               "recall_input_soft": "has(hop.tool_name) && hop.tool_name == 'memory_recall' && has(context.recall_input_soft) ? context.recall_input_soft : ''"
+            },
+            "set_context": {
+              "input_soft": "has(hop.input_soft) ? hop.input_soft : ''"
             },
             "delete_context": [
               "tool_answerer",
@@ -644,7 +659,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -666,7 +682,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -678,7 +695,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -730,7 +748,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -742,7 +761,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -754,7 +774,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },

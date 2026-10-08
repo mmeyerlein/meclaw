@@ -1,4 +1,4 @@
-# `builder-librarian@2.2.47`
+# `builder-librarian@2.2.53`
 
 Lexical retrieval over the builder's own knowledge base, as a hive of existing cell types
 -- no new cell type, no Rust. Three cells: `retrieve` (a `code` cell, the query/brief state
@@ -169,44 +169,43 @@ pins the three against each other. Retune one librarian without touching another
 
 ```json
 {"add_nodes": [{"name": "builder-librarian", "template": "builder-librarian",
-  "override_params": {"retrieve": {"topk": 8, "row_chars": 2000}}}]}
+  "override_params": {"retrieve": {"topk": 8}}}]}
 ```
 
 | param of `./retrieve` | default | meaning |
 |---|---|---|
 | `topk` | `5` | how many rows the store returns and the briefing renders |
-| `row_chars` | `1200` | the window one rendered row may spend -- for every kind but `template` and `level` |
-| `catalogue_chars` | `4000` | the window for a CATALOGUE row (`kind: "template"`), which is the corpus chunker's own cap, so such a row travels whole |
-| `level_chars` | `1600` | the window for a LEVEL row (`kind: "level"`), which carries a composition level's complete transit edge set |
 
 A numeric knob may arrive as a string, and one blanked or set to `null` means "not
 configured" and falls back to the shipped default -- an operator who empties a line in a
 config did not mean to stop the cell.
 
-**A cut row says it was cut** ([#511](https://github.com/mmeyerlein/meclaw/issues/511)).
-The retriever used to hand the model `text[:1200]` of every hit: silent, mid-word, and the
-same number for every kind. Measured over the shipped corpus that cut 330 of 603 rows --
-and 80 of the 87 CATALOGUE rows, which is the class where it did the damage. A catalogue row
-is `CONTRACT --`, `STORES --`, `PARAMS --` and then the whole `template.json`, and
-`description.examples` is the LAST key of every one of them, so the cut landed every time on
-the only place a template's worked instantiation is published. One measured wish looked
-`clock` up three times, got the identical cut row back each time, correctly read the corpus
-as exhausted, and spent its repair budget guessing the two param names the row already
-carried.
+**A cut row says it was cut** ([#511](https://github.com/mmeyerlein/meclaw/issues/511)),
+**and no number of the retriever's own decides the cut**
+([#1085](https://github.com/mmeyerlein/meclaw/issues/1085)). The retriever used to hand the
+model `text[:1200]` of every hit: silent, mid-word, and the same number for every kind.
+Measured over the shipped corpus that cut 330 of 603 rows -- and 80 of the 87 CATALOGUE
+rows, which is the class where it did the damage. A catalogue row is `CONTRACT --`,
+`STORES --`, `PARAMS --` and then the whole `template.json`, and `description.examples` is
+the LAST key of every one of them, so the cut landed every time on the only place a
+template's worked instantiation is published. One measured wish looked `clock` up three
+times, got the identical cut row back each time, correctly read the corpus as exhausted, and
+spent its repair budget guessing the two param names the row already carried.
 
-So the window is per kind, and a cut is never silent. A catalogue row travels whole, bounded
-by the discipline that wrote it rather than cut a second time on the way out. Anything else
-keeps the recall window and, when it does not fit, is cut on a word boundary and carries the
-marker
+#511 gave each kind a window of its own (1200, 4000, 1600 characters); #1085 takes the
+numbers away. The briefing is one tool result, and it takes a tool result's share (10 %) of
+the reading model's usable window -- `input_soft` in the request's context or on its hop, at
+three characters a token. Rows travel whole, best first, while they fit; the first that does
+not is cut and ends in the one mark every template uses,
 
 ```
-… [TRUNCATED: <n> of <m> characters were not sent. This row is a FRAGMENT and not a whole
-statement. A template's own catalogue row is never cut -- ask catalogue_lookup for it by name.]
+...[cut: <shown> of <total> chars shown; budget of the window; ask catalogue_lookup for it by name]
 ```
 
-which is the `-cont` discipline of [#344](https://github.com/mmeyerlein/meclaw/issues/344) on
-the retrieval side: a fragment a reader knows is a fragment is a different object from one it
-does not.
+and every row after it is named with its size, `...[dropped: <row id> (<n> chars) over
+budget]`. Without a known window every row travels whole. This is the `-cont` discipline of
+[#344](https://github.com/mmeyerlein/meclaw/issues/344) on the retrieval side: a fragment a
+reader knows is a fragment is a different object from one it does not.
 
 ## The seed corpus is a BUILD PRODUCT -- do not hand-edit it
 

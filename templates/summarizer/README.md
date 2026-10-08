@@ -1,4 +1,4 @@
-# `summarizer@2.2.7`
+# `summarizer@2.2.8`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -22,9 +22,20 @@ generation opens lazily on the first morning turn and already carries the handov
   exactly one emission on route `summary` -- or exactly one on `summary_error`, never
   both, never silence.
 - **Recency weighting as structure, not hope.** The prompt is shaped deterministically
-  before any model sees it: the newest `recent_turns` turns travel verbatim,
-  everything older phases out to a bounded per-turn preview and is counted, tool rounds
-  enter as capped previews. What the model weights is what the prompt already weighted.
+  before any model sees it: the newest `recent_turns` turns travel verbatim and last,
+  everything older comes first and is counted, tool rounds enter as context. Nothing
+  has a length of its own (GH #1085): the prompt takes up to half of the window of the
+  model that reads it, `./writer` -- `input_soft_fallback`, the window of the catalog row
+  the writer is born on (`input_soft_fallback_row`); a context `input_soft` or
+  `recall_input_soft` names the window of the asker, not of the writer, and is not
+  read -- and beyond it the older turns and tool texts are cut fairly,
+  each with the mark `...[cut: <shown> of <total> chars shown; budget of the window]`.
+  A writer on a smaller window refuses the prompt without a model call
+  (`invalid_input`, `input_over_hard` and its number); the same day, read back from the
+  refused prompt, is sized ONCE more at half of that number (context `window_refit`
+  marks it, the summary carries `window_refit: "1"` and stderr names the number; a
+  second refusal leaves on `summary_error`). What the model weights is
+  what the prompt already weighted.
 - **The prompt lives in the glue phase.** An `llm` cell has no `params.system` slot; its
   system state arrives by message. `prep` sends the instructions fresh with every batch
   (`system.instructions`, accumulate-replace: an idempotent upsert), next to the one user
@@ -164,13 +175,16 @@ a cell carries under `params` may be named
 | param (on `./prep`) | default | meaning |
 |---|---|---|
 | `recent_turns` | `12` | how many of the newest turns travel verbatim into the prompt |
-| `phaseout_chars` | `200` | per-turn character cap on the phased-out older turns |
-| `tool_chars` | `200` | per-item character cap on tool call/result previews |
-| `round_lines` | `40` | how many tool-activity lines enter at most (newest kept) |
+| `round_lines` | `40` | how many tool-activity lines enter at most (newest kept; the dropped ones are named in the prompt) |
+| `input_soft_fallback` | `250000` | the writer's window in tokens (a request's `input_soft` is the asker's and is not read): `input_soft` of the catalog row the writer is born on (OR-IG-9). Its model is a birth token (`ctx.model`), and the llm-registry's tier for a small, inexpensive writer is `light`, `openai/gpt-6-luna`. The prompt takes half of it; `0` sends the day whole |
+| `input_soft_fallback_row` | `openai/gpt-6-luna` | the catalog row `input_soft_fallback` is; the script does not read it, the drift lock `gh1085_fallback_windows_match_the_catalog` holds the two together. A writer born on another model sets both |
+
+`phaseout_chars` and `tool_chars` (both `200`) are gone since 2.2.8 (GH #1085): a
+fixed length per turn is no budget. The writer's window is.
 
 ```json
 "override_params": {
-  "summarizer/prep": {"recent_turns": 24, "phaseout_chars": 400}
+  "summarizer/prep": {"recent_turns": 24, "round_lines": 80}
 }
 ```
 

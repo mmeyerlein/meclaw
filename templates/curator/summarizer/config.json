@@ -6,7 +6,7 @@
   "params": {
     "provider": "openai",
     "model": "${ctx.model}",
-    "requirement": "Condenses the older part of an exchange with a model into a short plain report of what was said, in order, adding nothing and judging nothing. It needs faithful summarising over a transcript of several thousand tokens and must keep to a stated length. Nobody waits on it and it runs only when a cache has gone cold or a window has grown too long, so a small, inexpensive model is enough.",
+    "requirement": "Condenses the older part of an exchange with a model into a short plain report of what was said, in order, adding nothing and judging nothing. It needs faithful summarising and a context window that holds the older part of the exchange: the transcript takes up to half of it, and the report is as short as useful and as long as needed. Nobody waits on it and it runs only when a cache has gone cold or a window has grown too long, so a small, inexpensive model is enough.",
     "api_key": "",
     "credential_grant_id": "",
     "base_url": "https://openrouter.ai/api/v1",

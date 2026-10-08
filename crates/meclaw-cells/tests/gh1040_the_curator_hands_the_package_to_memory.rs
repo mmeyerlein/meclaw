@@ -73,19 +73,25 @@ fn the_package_of_the_last_answer_rides_on_the_next_ask() {
         json!({"input_soft": 250000, "input_hard": 1000000, "cost_in": 10.0,
                "cost_cached_in": 1.0}),
     );
-    // Review M1: the share is of the USABLE window -- talky's `quality_cap`
-    // 120 000 under luna's `input_soft` 250 000 -- not of the raw soft limit.
-    assert_eq!(h.state("input_soft"), "120000", "{:?}", h.stderr);
+    // GH #1085 (R-IG-1): the window is luna's catalog row, `input_soft`
+    // 250 000 -- no role cuts it any more (talky's `quality_cap` made it
+    // 120 000 until curator 1.11.2).
+    assert_eq!(h.state("input_soft"), "250000", "{:?}", h.stderr);
     assert_eq!(
         soft_of(&ask(&mut h, "t2", "And what does he do?")),
-        "120000"
+        "250000"
     );
 }
 
 #[test]
-fn the_package_is_cut_to_the_usable_window() {
-    // A window smaller than the cap, and a soft limit under both.
+fn the_package_is_cut_to_the_models_window() {
+    // A model window smaller than the soft limit, a soft limit under the
+    // model window, and luna's row whole: the window is the model's own.
     for (usage, kept) in [
+        (
+            json!({"input_soft": 250000, "context_window": 1050000}),
+            "250000",
+        ),
         (
             json!({"input_soft": 250000, "context_window": 100000}),
             "100000",

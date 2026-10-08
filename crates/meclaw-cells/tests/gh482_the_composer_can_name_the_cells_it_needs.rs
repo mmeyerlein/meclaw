@@ -514,7 +514,7 @@ async fn one_manifest_builds_the_feed_out_of_four_named_templates() {
                      "emit_headers": {}}]}},
                 {"name": "ask", "template": "scriptlet@1.0.1",
                  "override_params": {"script_inline": ask_script(&format!("http://{addr}/feed.json"))}},
-                {"name": "feed", "template": "fetcher@1.0.0",
+                {"name": "feed", "template": "fetcher@1.0.1",
                  "override_params": {"allow_private_networks": true, "external_timeout_ms": 10000}},
                 {"name": "dedupe", "template": "scriptlet@1.0.1",
                  "override_params": {"script_inline": DEDUPE_SCRIPT}},

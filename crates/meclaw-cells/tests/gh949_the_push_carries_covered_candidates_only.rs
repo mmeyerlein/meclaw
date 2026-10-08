@@ -5,7 +5,8 @@
 //! `blocks`, kind `candidate`). `curator/push` hands the ones a turn carries
 //! to the MODEL: as ONE `memory_recall` pair -- the call's `query` the
 //! triggers the person's words hit, the result a frame line and the part
-//! `[<text>; <text>]` within `candidate_budget` characters -- on the list of
+//! `[<text>; <text>]` within its share of the window (a twentieth of the
+//! state `input_soft`, R-IG-1; every candidate without one) -- on the list of
 //! pairs it gives `./intake` (`in_addendum`) for the round of the ask, ahead
 //! of the round's first turn, the road of a gap's find. The memory question
 //! (`recall_query`) never carries them: it reaches the memory alone, which
@@ -25,8 +26,9 @@
 //! * a `once` candidate is carried exactly once, and the ledger says so;
 //! * a candidate is not carried again within `candidate_cooldown` turns, and
 //!   every showing is a pair of its own;
-//! * the budget takes whole candidates, best first, and marks only those;
-//! * `candidate_budget` 0 is off -- not even a read of the table;
+//! * the budget takes whole candidates, best first, marks only those, and says
+//!   the ones it left out behind the part (R-IG-1, GH #1085);
+//! * `candidate_push` "0" is off -- not even a read of the table;
 //! * a turn that carries no candidate leaves byte for byte as curator 1.5.0
 //!   sent it and hands `./intake` no pair: with an empty table, with rows
 //!   that do not pass, with the candidates off, and with a ledger that has no
@@ -320,11 +322,14 @@ fn the_push_declares_its_candidate_knobs() {
         return;
     }
     let push = cell_config("push");
-    for (knob, default) in [("candidate_budget", 400), ("candidate_cooldown", 5)] {
-        assert_eq!(push["params"][knob], json!(default), "params.{knob}");
+    for (knob, default, ty) in [
+        ("candidate_push", json!("1"), "string"),
+        ("candidate_cooldown", json!(5), "number"),
+    ] {
+        assert_eq!(push["params"][knob], default, "params.{knob}");
         let s = &push["contract"]["settings"][knob];
-        assert_eq!(s["type"], "number", "settings.{knob}");
-        assert_eq!(s["default"], json!(default), "settings.{knob}");
+        assert_eq!(s["type"], ty, "settings.{knob}");
+        assert_eq!(s["default"], default, "settings.{knob}");
         assert!(
             s["description"].as_str().is_some_and(|d| !d.is_empty()),
             "settings.{knob} says what it does"
@@ -625,19 +630,22 @@ fn a_candidate_waits_its_cooldown() {
 
 // ============================================================ the budget
 
-/// Whole candidates, best first: with 40 characters the priority-9 text
-/// (25 with its brackets) goes, the priority-8 one would not fit beside it
-/// and stays out whole, the short priority-1 one still fits. Only what was
-/// carried is marked.
+/// Whole candidates, best first: with 40 characters -- a twentieth of the
+/// window this hive serves, `input_soft` 267 tokens (R-IG-1) -- the
+/// priority-9 text (25 with its brackets) goes, the priority-8 one would not
+/// fit beside it and stays out whole, said behind the part with its length,
+/// the short priority-1 one still fits. Only what was carried is marked.
 #[test]
 fn the_budget_cuts_by_priority() {
     if !shipped() {
         return;
     }
-    let mut h = talky(&[
-        ("push", "candidate_budget", json!(40)),
-        ("push", "candidate_cooldown", json!(0)),
-    ]);
+    let mut h = talky(&[("push", "candidate_cooldown", json!(0))]);
+    h.db.execute(
+        "INSERT INTO state (key, value) VALUES ('input_soft', '267')",
+        [],
+    )
+    .unwrap();
     sow(
         &mut h,
         "p9",
@@ -660,9 +668,13 @@ fn the_budget_cuts_by_priority() {
     );
     sow(&mut h, "p1", "gamma", EA, &[], "", false, 1);
     let part = carried(&mut h, &json!(EA), "s1", "t1", "hi");
-    assert_eq!(part, "[alpha alpha alpha alpha; gamma]");
+    assert_eq!(
+        part,
+        "[alpha alpha alpha alpha; gamma] ...[dropped: 1 candidates (24 chars) over budget]"
+    );
+    let (whole, _) = part.split_once(" ...[dropped:").expect("the mark");
     assert!(
-        part.chars().count() <= 40,
+        whole.chars().count() <= 40,
         "the part keeps its budget: {part}"
     );
     let marked: Vec<(String, bool)> = marks_of(&h)
@@ -680,11 +692,11 @@ fn the_budget_cuts_by_priority() {
 }
 
 #[test]
-fn a_budget_of_zero_switches_them_off() {
+fn candidate_push_zero_switches_them_off() {
     if !shipped() {
         return;
     }
-    let mut h = talky(&[("push", "candidate_budget", json!(0))]);
+    let mut h = talky(&[("push", "candidate_push", json!("0"))]);
     sow(&mut h, "o", "say it once", ALL, &[], "", true, 9);
     h.ledger_ops.clear();
     assert_eq!(carried(&mut h, &json!(EA), "s1", "t1", "hi"), "");
@@ -758,7 +770,7 @@ fn a_turn_without_candidates_leaves_as_before() {
     let mut sent = Vec::new();
     for track in ["empty", "passing none", "off", "no table"] {
         let mut h = if track == "off" {
-            talky(&[("push", "candidate_budget", json!(0))])
+            talky(&[("push", "candidate_push", json!("0"))])
         } else {
             talky(&[])
         };

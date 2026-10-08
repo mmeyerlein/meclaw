@@ -1,4 +1,4 @@
-# `collector@5.1.0`
+# `collector@5.1.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -206,7 +206,6 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `brief_slots` | `[]` | slots to brief affinity about the counterpart of a turn; empty = no brief leg ([#834](https://github.com/mmeyerlein/meclaw/issues/834)). Set (`["peer", "channel"]`), a turn whose context carries `counterpart` raises ONE `brief` at its opening and the fan-in waits for `leg-brief`; a turn without one parks the leg empty and waits for nothing. See "The brief leg" below. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
 | `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` and, since GH #892, `cogny` cut the block and switch it on; a composite without a splitter leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
-| `sidecar_max_chars` | `6000` | the ceiling of the composed contract, in characters (GH #889: nothing else since `collector@5.0.0`). It is re-read by the provider on every turn of every conversation, and the sections come from templates this cell does not own -- so the bound lives HERE, where the block is assembled, rather than as a promise each offering template has to keep. Over it, OPTIONAL sections fall from the back of the alphabetical order, with a warn line on stderr naming what fell. A REQUIRED section never falls: a section every turn has to carry is not a budget item, and a contract still over the ceiling with nothing but required sections left is KEPT and the overrun reported, because the alternative is a fence whose contents were never stated. |
 | `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
 
 Removed in `collector@5.0.0` (GH #889): `window_turns`, `window_bytes`, `turn_chars`, `tool_chars`,
@@ -238,7 +237,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.1.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.1.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -474,16 +473,21 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the person's words this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>"}],"topic":{"movement":"start|continue|end","name":""}}}
 ```
 
-**The ceiling is here, not in the offers.** `sidecar_max_chars` (6000) bounds the composed
-text, because every character of it is re-read by the provider on every turn of every
-conversation and the sections come from templates this cell does not own -- a bound each of
-them had to keep would be a promise nobody could check. Over it, OPTIONAL sections fall from
-the BACK of the alphabetical order, one at a time, with a warn line on stderr naming what
-fell -- which a `code` cell puts into `log.jsonl` at warn level with `had_stderr` on the
-emission. A REQUIRED section never falls: a section every turn has to carry is not a budget
-item, and dropping one would ask a model for a fence and then refuse to say what goes in it.
-A contract still over the ceiling with nothing but required sections left is KEPT and the
-overrun reported, for the same reason.
+**The contract goes whole (since `collector@5.1.1`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
+back with a warn line on stderr alone. What fits the model's window is decided where the window
+is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
+`instructions.sidecar` and, over its share of the usable window, drops OPTIONAL sections from the
+BACK of this cell's order, each said in the contract as `...[dropped: <name> (<n> chars) over
+budget]` and on the call's `hop.cuts`. A REQUIRED section never falls: a section every turn has to
+carry is not a budget item, and dropping one would ask a model for a fence and then refuse to say
+what goes in it. The order here is what makes "the back" the same on every derivation, and each
+section opens a paragraph with `## <name> (required)` or `## <name> (optional)`, the form the
+curator reads. The frame above the sections (preamble, whole-object shape, the obligation by
+name) is one block of this cell's script, `sidecar-frame v1`, kept byte for byte in
+`curator/policy`, which writes the frame anew over the sections it kept -- a frame that still
+named a dropped section would ask the model for a section it has no words for (the malformed
+blocks GH #606 measured).
 
 **Nobody offering anything is an EMPTY slot, not a silence.** `{"text": ""}` -- the same rule
 the `consult` slot follows: durable state is revoked, never merely abandoned. A collector that
@@ -507,14 +511,15 @@ the answer to the question, not a symptom.
 
 **`hop.sidecar_sections`** joins `menu_count`, `menu_self`, `menu_answerers` and
 `menu_unknown` on the `menu` message: the sections that are IN the contract, in the order they
-stand in it -- so after the cap, not the offers the merge started from. Empty rather than
+stand in it -- the contract as offered; what the brain got is that less the sections the curator
+dropped, which its call names in `hop.cuts`. Empty rather than
 absent, and empty means no section entered the contract: either nobody offered one, and the
 slot is then written EMPTY so the brain's last contract is revoked, or this collector does not
 ask for a block at all and nothing is written. `menu_answerers` beside it says who was asked.
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there are two -- `sidecar` and `sidecar_max_chars`.
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.1.1` (the curator decides what fits, R-IG-1).
 
 ### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)
 

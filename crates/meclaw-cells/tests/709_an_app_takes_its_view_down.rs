@@ -110,7 +110,7 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
 
     let meta = read_json(&root.join("template.json"));
     assert_eq!(
-        meta["version"], "2.5.17",
+        meta["version"], "2.5.22",
         "a lane an app can use and could not before is the second digit \
          (docs/development-rules.md § 4). The number is the LEVEL's, not this \
          lane's: it moved on again with member@1.9.0, which wired the channel \
@@ -163,7 +163,13 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          from `assistant@3.7.8` (GH #1036); 2.5.16 only pins `memory-hive@3.12.0` \
          and derives `./assistants` from `assistant@3.7.9` (GH #1079); 2.5.17 only pins \
          `access@2.5.1`, `file-space@1.4.5` and `memory-hive@3.12.1` and derives \
-         `./assistants` from `assistant@3.7.10` (GH #801). None of it \
+         `./assistants` from `assistant@3.7.10` (GH #801); 2.5.18 only pins \
+         `memory-hive@3.13.0` (GH #1057, #1074); 2.5.19 only pins `memory-hive@3.13.1` \
+         (GH #1057, #1074); 2.5.20 only derives `./assistants` from \
+         `assistant@3.7.11` (GH #1087); 2.5.21 only pins \
+         `assistant@3.7.12`, `file-space@1.4.6`, `firewall@2.4.1`, \
+         `graph-space@1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085); 2.5.22 only pins \
+         `assistant@3.7.13` and `memory-hive@3.13.3` (GH #1085, no window of a role's own). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"
     );

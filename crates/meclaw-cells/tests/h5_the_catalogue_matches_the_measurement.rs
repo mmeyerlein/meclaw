@@ -55,6 +55,23 @@ fn slug(model_id: &str) -> String {
     model_id.replace('/', "__")
 }
 
+/// GH #1085: the directory the tool records a row under -- its `slug_of`:
+/// a `local` row (a server on the operator's own hardware) under
+/// `local__<slug>`, every other row under its slug.
+fn record_slug(row: &Map<String, Value>) -> String {
+    let s = slug(&model_id(row));
+    if is_local(row) {
+        format!("local__{s}")
+    } else {
+        s
+    }
+}
+
+/// A row the operator's own server runs (`provider` `local`).
+fn is_local(row: &Map<String, Value>) -> bool {
+    row.get("provider").and_then(|v| v.as_str()) == Some("local")
+}
+
 /// The quoted names between `open` and the next `close` -- the list form of
 /// both the Rust const and the Python tuple.
 fn quoted_list(src: &str, open: &str, close: &str) -> Vec<String> {
@@ -118,8 +135,10 @@ fn listed(row: &Map<String, Value>) -> Option<Vec<String>> {
         })
 }
 
-fn measured_path(model_id: &str) -> PathBuf {
-    conformance_dir().join(slug(model_id)).join("measured.json")
+fn measured_path(row: &Map<String, Value>) -> PathBuf {
+    conformance_dir()
+        .join(record_slug(row))
+        .join("measured.json")
 }
 
 fn read_json(path: &Path) -> Value {
@@ -143,8 +162,13 @@ fn h5_every_active_chat_row_names_its_params() {
     };
     let rows = chat_rows(&path);
     assert!(!rows.is_empty(), "the catalogue has active chat rows");
+    // GH #1085: a local server answers every field with 200, so its
+    // measurement verifies none (`accepted_unverified`) and its row names no
+    // list -- the cell then sends the fields unverified, as it did before
+    // GH #993. `h5_the_catalogue_says_what_was_measured` holds it to that.
     let bare: Vec<String> = rows
         .iter()
+        .filter(|r| !is_local(r))
         .filter(|r| listed(r).is_none_or(|l| l.is_empty()))
         .map(model_id)
         .collect();
@@ -164,8 +188,8 @@ fn h5_every_active_chat_row_was_measured() {
     };
     let missing: Vec<String> = chat_rows(&path)
         .iter()
+        .filter(|row| !measured_path(row).is_file())
         .map(model_id)
-        .filter(|id| !measured_path(id).is_file())
         .map(|id| format!("{id}: {}", remeasure(&id)))
         .collect();
     assert!(
@@ -185,7 +209,7 @@ fn h5_the_catalogue_says_what_was_measured() {
     let mut wrong = Vec::new();
     for row in chat_rows(&path) {
         let id = model_id(&row);
-        let file = measured_path(&id);
+        let file = measured_path(&row);
         if !file.is_file() {
             continue; // h5_every_active_chat_row_was_measured names it
         }

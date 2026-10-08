@@ -80,10 +80,13 @@ const SCRIPTED: &[Scripted] = &[
     Scripted {
         cell: "summarizer/prep",
         knobs: &[
+            // `phaseout_chars` and `tool_chars` left with GH #1085 (R-IG-1): a
+            // fixed length per turn is no budget, the request's window is.
             ("recent_turns", "_int"),
-            ("phaseout_chars", "_int"),
-            ("tool_chars", "_int"),
             ("round_lines", "_int"),
+            // GH #1085: the writer's window when no request names one, a
+            // catalog row (the smallest chat window), not a length per turn.
+            ("input_soft_fallback", "_int"),
         ],
     },
     Scripted {
@@ -221,6 +224,16 @@ fn substitutions(value: &Value, out: &mut Vec<String>) {
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
+/// GH #1085 (OR-IG-9): `<fallback>_row` beside a fallback window knob names
+/// the catalogue row the window is -- a label for the reader and for the drift
+/// lock `gh1085_fallback_windows_match_the_catalog`, which holds the two
+/// together. The script never reads it, so it is a param and a setting but no
+/// knob of the script.
+fn is_row_label(key: &str, knobs: &[&str]) -> bool {
+    key.strip_suffix("_row")
+        .is_some_and(|k| k.ends_with("input_soft_fallback") && knobs.contains(&k))
+}
+
 /// Claim 1. The old surface is not deprecated, it is absent: every token left in
 /// the three templates is a provider-lane name, and the sweep is over the whole
 /// subtree so a cell nobody was thinking about cannot keep one.
@@ -280,7 +293,7 @@ fn nothing_in_the_shipped_three_reads_a_behaviour_knob_out_of_the_environment() 
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("idle_ms", …)` is the value a cell
 /// uses when its config says nothing, and comparing the text is the complete
-/// check over all eleven knobs.
+/// check over all ten knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let mut total = 0usize;
@@ -327,24 +340,31 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         }
 
         // No knob may hide: every non-substrate param is one of the declared ones.
+        let knob_names: Vec<&str> = group.knobs.iter().map(|(k, _)| *k).collect();
+        let labels = params
+            .keys()
+            .filter(|key| is_row_label(key, &knob_names))
+            .count();
         for key in params.keys() {
             assert!(
                 SUBSTRATE_CODE_PARAMS.contains(&key.as_str())
-                    || group.knobs.iter().any(|(k, _)| k == key),
+                    || group.knobs.iter().any(|(k, _)| k == key)
+                    || is_row_label(key, &knob_names),
                 "{}: params.{key} is neither a substrate param nor a declared knob",
                 group.cell
             );
         }
         assert_eq!(
             settings.len(),
-            group.knobs.len(),
+            group.knobs.len() + labels,
             "{}: contract.settings and the knob inventory disagree in size",
             group.cell
         );
     }
     assert_eq!(
-        total, 11,
-        "the scripted half of this migration is ten knobs, and GH #954 added `heal_limit`"
+        total, 10,
+        "the scripted half of this migration is ten knobs, GH #954 added `heal_limit` and \
+         GH #1085 took `phaseout_chars` and `tool_chars` away and added `input_soft_fallback`"
     );
 }
 
@@ -513,9 +533,9 @@ fn batch_doc(turns: Vec<Value>) -> Value {
 }
 
 /// The summarizer's recency weighting. Negative half: the shipped twelve keeps
-/// four turns verbatim, so nothing is condensed. Positive half: an override of
-/// two cuts the two oldest to a preview and COUNTS them, which is the whole
-/// behaviour of the knob.
+/// four turns verbatim, so nothing is phased out. Positive half: an override of
+/// two moves the two oldest into the older part and COUNTS them, which is the
+/// whole behaviour of the knob -- whole, since GH #1085: no window, no cut.
 #[test]
 fn the_recency_cut_comes_from_the_params() {
     let day = || {
@@ -550,17 +570,18 @@ fn the_recency_cut_comes_from_the_params() {
 
     let tuned = prompt_of(&emit_with_params(
         "summarizer/prep",
-        json!({"recent_turns": 2, "phaseout_chars": 10}),
+        json!({"recent_turns": 2}),
         batch_doc(day()),
     ));
     assert!(
         tuned.contains("gamma-recent") && tuned.contains("delta-recent"),
         "the newest two still travel whole: {tuned}"
     );
-    assert!(
-        tuned.contains("alpha-0123") && !tuned.contains("ALPHA-TAIL"),
-        "the older two are cut to the preview the param names: {tuned}"
-    );
+    let older = tuned
+        .find("ALPHA-TAIL")
+        .unwrap_or_else(|| panic!("the older two travel whole: {tuned}"));
+    let recent = tuned.find("## Recent turns").expect("the recent section");
+    assert!(older < recent, "in the older part, first: {tuned}");
     assert!(
         tuned.contains("2 older turn"),
         "what was condensed is counted, not hidden: {tuned}"

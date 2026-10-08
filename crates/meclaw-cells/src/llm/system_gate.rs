@@ -8,10 +8,14 @@
 //!
 //! The gate is a **message-path** gate. Two independent halves:
 //!
-//! * **Bounds — always on.** A leaf larger than `system_max_leaf_bytes` or a
-//!   write that would push the tree past `system_max_slots` distinct slots is a
-//!   loud reject, never a truncation and never a silent drop. This is the safe
-//!   default: it needs no declaration and holds for every cell.
+//! * **Bounds — always on.** A leaf larger than the leaf bound or a write that
+//!   would push the tree past `system_max_slots` distinct slots is a loud
+//!   reject, never a truncation and never a silent drop. This is the safe
+//!   default: it needs no declaration and holds for every cell. The leaf bound
+//!   is no fixed number (GH #1085, R-IG-1): `system_max_leaf_bytes` when the
+//!   operator sets it, else what the model's window can take at all (the
+//!   catalog row's `input_hard`, else `context_window`, at three bytes a
+//!   token -- `LlmParams::window_bound_bytes`), else the carrier ceiling.
 //! * **Allowlist — opt-in.** `system_writable` pins which subtrees a MESSAGE
 //!   may write at all. Unset (the default) means "no allowlist configured" and
 //!   every slot path stays writable — the operator's direct `@external` system
@@ -37,21 +41,63 @@
 //! identity at boot, then pin the message-writable surface to the slots that
 //! must stay live (e.g. `handover`, `tools`).
 
+use crate::content_budget::CARRIER_MAX_BYTES;
 use meclaw_core::serde_json::Value;
 
 /// Default cap on the number of distinct slots in the persistent `system` tree.
 ///
 /// Generous enough for a real tool menu (one slot per MCP tool) plus the
 /// identity/instruction/handover/memory families, tight enough that an unbounded
-/// writer hits a wall instead of growing the prompt forever.
+/// writer hits a wall instead of growing the prompt forever. A count of slots,
+/// not a size of content: it refuses a writer that keeps adding slots and
+/// never cuts what a slot says (GH #1085 leaves it standing).
 pub(crate) const DEFAULT_SYSTEM_MAX_SLOTS: usize = 256;
 
-/// Default cap on the serialized size of ONE system leaf, in bytes.
-///
-/// 64 KiB is far above every legitimate leaf in the reference templates (a
-/// handover summary, a tool schema, a persona) and far below a size that would
-/// blow up the prompt on its own.
-pub(crate) const DEFAULT_SYSTEM_MAX_LEAF_BYTES: usize = 65_536;
+/// Where the leaf bound of a gate came from -- named in the reject detail, so
+/// a refused writer reads which number it ran into and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeafBound {
+    /// The operator's `system_max_leaf_bytes`.
+    Param,
+    /// The catalog row's `input_hard`, at three bytes a token.
+    InputHard,
+    /// The catalog row's `context_window`, at three bytes a token.
+    ContextWindow,
+    /// No window known: the carrier ceiling
+    /// ([`crate::content_budget::CARRIER_MAX_BYTES`]).
+    Carrier,
+}
+
+impl LeafBound {
+    fn says(self) -> &'static str {
+        match self {
+            LeafBound::Param => "the `system_max_leaf_bytes` limit",
+            LeafBound::InputHard => "what the model's `input_hard` window can take at all",
+            LeafBound::ContextWindow => "what the model's `context_window` can take at all",
+            LeafBound::Carrier => "the carrier ceiling (no model window is stated)",
+        }
+    }
+}
+
+/// The leaf bound of a cell (GH #1085, R-IG-1): the operator's explicit
+/// `system_max_leaf_bytes`, else the largest leaf the model's window could
+/// take at all, else the carrier ceiling. A leaf is refused only when it
+/// alone could never reach the model -- what fits the window is the curator's
+/// call, not a fixed number here.
+pub(crate) fn leaf_bound(p: &crate::llm::params::LlmParams) -> (usize, LeafBound) {
+    if let Some(n) = p.system_max_leaf_bytes {
+        return (n, LeafBound::Param);
+    }
+    let (n, _) = p.window_bound_bytes();
+    let bound = if p.input_hard > 0 {
+        LeafBound::InputHard
+    } else if p.context_window > 0 {
+        LeafBound::ContextWindow
+    } else {
+        LeafBound::Carrier
+    };
+    (n, bound)
+}
 
 /// Why a write into the persistent `system` tree was refused (GH #118).
 ///
@@ -68,14 +114,16 @@ pub(crate) enum GateReject {
         /// The declared prefixes, for the reject detail.
         declared: Vec<String>,
     },
-    /// The serialized leaf is larger than `system_max_leaf_bytes`.
+    /// The serialized leaf is larger than the leaf bound.
     LeafTooLarge {
         /// Dotted slot path of the refused write.
         slot: String,
         /// Serialized size of the offered leaf, in bytes.
         bytes: usize,
-        /// The configured cap.
+        /// The bound it is over.
         max: usize,
+        /// Where that bound came from.
+        bound: LeafBound,
     },
     /// A GH #264 replace root is not under any declared prefix. Checked
     /// separately from the leaves because the root reaches paths this message
@@ -113,10 +161,16 @@ impl GateReject {
                      Nothing was written"
                 )
             }
-            GateReject::LeafTooLarge { slot, bytes, max } => format!(
-                "system slot '{slot}': leaf is {bytes} bytes, over the `system_max_leaf_bytes` \
-                 limit of {max} (GH #118). The write is refused whole — a system leaf is never \
-                 truncated, because a half prompt is worse than none. Nothing was written"
+            GateReject::LeafTooLarge {
+                slot,
+                bytes,
+                max,
+                bound,
+            } => format!(
+                "system slot '{slot}': leaf is {bytes} bytes, over {} of {max} bytes \
+                 (GH #118). The write is refused whole — a system leaf is never \
+                 truncated, because a half prompt is worse than none. Nothing was written",
+                bound.says()
             ),
             GateReject::RootNotWritable { root, declared } => {
                 let list = declared
@@ -173,6 +227,8 @@ pub(crate) struct SystemGate {
     max_slots: usize,
     /// Cap on the serialized size of one leaf.
     max_leaf_bytes: usize,
+    /// Where `max_leaf_bytes` came from.
+    leaf_bound: LeafBound,
     /// Declared writable prefixes. Empty = no allowlist configured.
     writable: Vec<String>,
 }
@@ -184,7 +240,8 @@ impl Default for SystemGate {
     fn default() -> Self {
         Self {
             max_slots: DEFAULT_SYSTEM_MAX_SLOTS,
-            max_leaf_bytes: DEFAULT_SYSTEM_MAX_LEAF_BYTES,
+            max_leaf_bytes: CARRIER_MAX_BYTES,
+            leaf_bound: LeafBound::Carrier,
             writable: Vec::new(),
         }
     }
@@ -193,9 +250,11 @@ impl Default for SystemGate {
 impl SystemGate {
     /// Build the gate from the cell's params.
     pub(crate) fn from_params(p: &crate::llm::params::LlmParams) -> Self {
+        let (max_leaf_bytes, leaf_bound) = leaf_bound(p);
         Self {
             max_slots: p.system_max_slots,
-            max_leaf_bytes: p.system_max_leaf_bytes,
+            max_leaf_bytes,
+            leaf_bound,
             writable: p.system_writable.clone(),
         }
     }
@@ -207,6 +266,7 @@ impl SystemGate {
         Self {
             max_slots,
             max_leaf_bytes,
+            leaf_bound: LeafBound::Param,
             writable: writable.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -249,6 +309,7 @@ impl SystemGate {
                     slot: slot.clone(),
                     bytes,
                     max: self.max_leaf_bytes,
+                    bound: self.leaf_bound,
                 });
             }
         }
@@ -311,6 +372,87 @@ mod tests {
             writable: writable.iter().map(|s| s.to_string()).collect(),
             ..SystemGate::default()
         }
+    }
+
+    fn params(extra: Value) -> crate::llm::params::LlmParams {
+        let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k"});
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            raw[k] = v;
+        }
+        crate::llm::params::LlmParams::parse(&raw).unwrap()
+    }
+
+    fn leaf_of(bytes: usize) -> Vec<(String, Value)> {
+        // `{"text":"…"}` serializes to the text plus 11 bytes.
+        vec![(
+            "handover".to_string(),
+            json!({"text": "h".repeat(bytes - 11)}),
+        )]
+    }
+
+    /// GH #1085 lock: the fixed 64 KiB leaf cap is gone -- a leaf over it is
+    /// written whole, with no window stated and with a window that takes it.
+    #[test]
+    fn a_leaf_over_the_old_fixed_cap_is_written_whole() {
+        let leaf = leaf_of(100 * 1024);
+        SystemGate::from_params(&params(json!({})))
+            .check_leaves(&leaf)
+            .unwrap();
+        SystemGate::from_params(&params(json!({"input_hard": 200_000})))
+            .check_leaves(&leaf)
+            .unwrap();
+        SystemGate::default().check_leaves(&leaf).unwrap();
+    }
+
+    /// GH #1085 lock: the bound is the catalog row -- a leaf the model's
+    /// window could never take is refused, naming its size, the bound and
+    /// where the bound came from.
+    #[test]
+    fn a_leaf_over_the_window_is_refused_with_its_numbers() {
+        let g = SystemGate::from_params(&params(json!({"input_hard": 1000})));
+        g.check_leaves(&leaf_of(3000)).unwrap();
+        let err = g.check_leaves(&leaf_of(3001)).unwrap_err();
+        assert_eq!(
+            err,
+            GateReject::LeafTooLarge {
+                slot: "handover".into(),
+                bytes: 3001,
+                max: 3000,
+                bound: LeafBound::InputHard,
+            }
+        );
+        let d = err.detail();
+        assert!(
+            d.contains("3001 bytes") && d.contains("of 3000 bytes"),
+            "{d}"
+        );
+        assert!(d.contains("input_hard"), "{d}");
+
+        let g = SystemGate::from_params(&params(json!({"context_window": 2000})));
+        let err = g.check_leaves(&leaf_of(6001)).unwrap_err();
+        assert!(err.detail().contains("context_window"), "{}", err.detail());
+    }
+
+    #[test]
+    fn the_leaf_bound_is_param_then_window_then_carrier() {
+        assert_eq!(
+            leaf_bound(&params(
+                json!({"system_max_leaf_bytes": 128, "input_hard": 1000})
+            )),
+            (128, LeafBound::Param)
+        );
+        assert_eq!(
+            leaf_bound(&params(json!({"input_hard": 1000, "context_window": 9000}))),
+            (3000, LeafBound::InputHard)
+        );
+        assert_eq!(
+            leaf_bound(&params(json!({"context_window": 9000}))),
+            (27_000, LeafBound::ContextWindow)
+        );
+        assert_eq!(
+            leaf_bound(&params(json!({}))),
+            (CARRIER_MAX_BYTES, LeafBound::Carrier)
+        );
     }
 
     /// The safe default is "bounded", not "closed": a cell that declares

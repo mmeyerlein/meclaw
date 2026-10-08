@@ -61,10 +61,9 @@ const KNOBS: &[(&str, &str)] = &[
     // contract at all. (Its partner `turn_write`, which minted the episode the
     // annotation is bound to, moved to the curator's writer with GH #889.)
     ("sidecar", "_str"),
-    // GH #606 -- the ceiling of that composed contract. It is the only bound
-    // this cell puts on words it did not write, which is why it lives here and
-    // not as a promise each offering template has to keep.
-    ("sidecar_max_chars", "_int"),
+    // GH #606 had a ceiling of that composed contract here,
+    // `sidecar_max_chars`; GH #1085 (R-IG-1) moved the decision to the curator,
+    // which knows the window, so the contract goes whole and the knob is gone.
     // GH #464 -- the DECLARATION. It is the only knob whose value is a list,
     // and the only one whose effect is a QUESTION rather than a number: the
     // names in it are what the menu tick asks a tools hive for. Empty is the

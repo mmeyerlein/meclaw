@@ -868,6 +868,8 @@ const PACKAGE_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    "chars_per_token",
+    "tokens_per_image",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins

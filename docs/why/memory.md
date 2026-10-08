@@ -6,7 +6,7 @@ for the turn that is running, out of that record, and thrown away again.
 
 ## Where the record lives
 
-[`memory-hive`](../../templates/memory-hive/) is a member's memory as a hive of fifteen cells of
+[`memory-hive`](../../templates/memory-hive/) is a member's memory as a hive of sixteen cells of
 existing types, with no new Rust in it. It hangs at the member level, so two assistants of one
 person read one record and a replaced assistant is born knowing it.
 
@@ -36,12 +36,15 @@ synthesise one answer over those candidates and refuses to pass it on without a 
 A close pass reads a finished session whole, and a nightly pass supersedes instead of deleting.
 The distillate points back, the original stays, and which fact is in force is decided when the
 question is asked, on the version chain. The same night decides which relation keys and which
-entity spellings mean one thing, and records those merges as revertible aliases.
+entity spellings mean one thing, and records those merges as revertible aliases. The entity graph
+the graph leg walks is derived from the facts without a model: every fact write adds what it
+evidences, and every night brings the graph to what the facts and the aliases say, closing what
+lost its evidence instead of removing it.
 
 ## What it does not do yet
 
-The graph leg matches entity names exactly, so the fuzzy index covers the fact axis and leaves the
-walk alone. The embedder is optional, and without one recall drops from five legs to three while
+The graph leg matches entity names and subject keys exactly, so the fuzzy index covers the fact
+axis and leaves the walk alone, and two spellings become one entity only through an alias. The embedder is optional, and without one recall drops from five legs to three while
 writes keep queueing. Skills and decay scoring are unbuilt.
 
 The level this hive hangs at, and the parts beside it, are on [meclaw-os](../meclaw-os.md).

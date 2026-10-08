@@ -113,10 +113,10 @@ fn a_large_package_grows_the_bundle_to_its_share() {
             json!({}),
             "L = package_limits(250000)\n\
              print(L['tier1_tokens'], L['tier1_topk'], L['tier1_leg_limit'], \
-             L['bundle_episode_budget'], L['tier1_item_chars'], L['query_safe_chars'], \
+             L['bundle_episode_budget'], L['query_safe_chars'], \
              L['query_max_chars'], L['query_tokens'], L['tier1_self_limit'])"
         ),
-        "12500 125 125 38 800 400 500 48 125"
+        "12500 125 125 38 400 500 48 125"
     );
 }
 
@@ -140,7 +140,7 @@ fn the_request_asks_the_store_as_deep_as_its_package_allows() {
 
 #[test]
 fn without_a_package_every_limit_keeps_its_old_value() {
-    let old = "2000 20 20 6 400 200 250 24 20";
+    let old = "2000 20 20 6 200 250 24 20";
     for soft in ["None", "''", "'x'", "0", "-5", "30000"] {
         assert_eq!(
             probe(
@@ -149,7 +149,7 @@ fn without_a_package_every_limit_keeps_its_old_value() {
                 &format!(
                     "L = package_limits({soft})\n\
                      print(L['tier1_tokens'], L['tier1_topk'], L['tier1_leg_limit'], \
-                     L['bundle_episode_budget'], L['tier1_item_chars'], \
+                     L['bundle_episode_budget'], \
                      L['query_safe_chars'], L['query_max_chars'], L['query_tokens'], \
                      L['tier1_self_limit'])"
                 )
@@ -158,15 +158,32 @@ fn without_a_package_every_limit_keeps_its_old_value() {
             "input_soft {soft}: an ask without a (large enough) package is sized as before"
         );
     }
-    // And the module itself, on a request that names no package.
+    // And the module itself, on a request that names no package and with no
+    // fallback window (`input_soft_fallback` 0).
+    let module = "print(T1_TOKENS, TOPK, LEG_LIMIT, EPISODE_BUDGET, SEM_FETCH, \
+                  QUERY_SAFE_CHARS, QUERY_MAX_CHARS, QUERY_TOKENS, SELF_LIMIT, TOKEN_BUDGET)";
+    assert_eq!(
+        probe(RECALL_CONFIG, json!({"input_soft_fallback": 0}), module),
+        "2000 20 20 6 40 200 250 24 20 1200"
+    );
+    // GH #1085 (R-IG-1): with a fallback window of 237500 tokens the two
+    // BUNDLES take their share of it (5 %: 11875, tier 0 by the same factor:
+    // 7125) instead of the fixed 2000 and 1200; what selects (the counts, the
+    // query guard the curator mirrors) keeps its old value.
     assert_eq!(
         probe(
             RECALL_CONFIG,
-            json!({}),
-            "print(T1_TOKENS, TOPK, LEG_LIMIT, EPISODE_BUDGET, T1_ITEM_CHARS, SEM_FETCH, \
-             QUERY_SAFE_CHARS, QUERY_MAX_CHARS, QUERY_TOKENS, SELF_LIMIT)"
+            json!({"input_soft_fallback": 237500}),
+            module
         ),
-        "2000 20 20 6 400 40 200 250 24 20"
+        "11875 20 20 6 40 200 250 24 20 7125"
+    );
+    // OR-IG-9: the shipped fallback is the smallest chat row (an ask without a
+    // window has no born model the memory knows); its 5 % is under the old
+    // floor, so the shipped module keeps the old sizes.
+    assert_eq!(
+        probe(RECALL_CONFIG, json!({}), module),
+        "2000 20 20 6 40 200 250 24 20 1200"
     );
 }
 
@@ -177,14 +194,14 @@ fn a_knob_set_to_a_number_wins_over_the_package() {
             RECALL_CONFIG,
             json!({"tier1_tokens": 3000, "tier1_topk": "40"}),
             "L = package_limits(250000)\nprint(L['tier1_tokens'], L['tier1_topk'], L['tier1_leg_limit'], \
-             L['tier1_item_chars'], L['query_safe_chars'])"
+             L['query_safe_chars'])"
         ),
         // Review N2: a bundle ceiling also bounds what is counted into it --
-        // the count and item limits grow by the ceiling's factor (3000 / 2000),
+        // the count limits grow by the ceiling's factor (3000 / 2000),
         // not by the package's. The query guard keeps the package's growth:
         // the curator's question is sized by the package alone (mirror lock
         // below), and a guard below it would only cut the person's words.
-        "3000 40 30 600 400"
+        "3000 40 30 400"
     );
     let fixed = fan_limits("250000", json!({"tier1_leg_limit": 20}));
     assert_eq!(fixed["r-fan-kw-ep"], 20, "{fixed}");

@@ -45,7 +45,7 @@ fn cell() -> BashCell {
         external_timeout: std::time::Duration::from_secs(30),
         max_concurrency: 4,
         sandbox: None,
-        max_bytes: 256 * 1024,
+        max_bytes: None,
     }
 }
 

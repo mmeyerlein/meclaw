@@ -189,7 +189,7 @@ fn rendered_diff() -> Value {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "install_app", "request": "…",
                                          "params": {"scope": "/alex", "app": "presenter",
-                                                    "template": "presenter@1.2.7",
+                                                    "template": "presenter@1.2.8",
                                                     "screen": "display-main",
                                                     "generation": GENERATION,
                                                     "declaration": declaration,

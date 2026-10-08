@@ -443,6 +443,10 @@ fn the_package_keys_are_the_contract() {
             "input_hard",
             "cost_in",
             "cost_cached_in",
+            // GH #1085: the rates the window estimate counts a prompt with --
+            // a contract change, made on purpose.
+            "chars_per_token",
+            "tokens_per_image",
         ]
     );
     // Every package key is a known, run-time-mutable param.
@@ -453,14 +457,25 @@ fn the_package_keys_are_the_contract() {
     assert!(p.model_prompt.is_none());
 }
 
+/// GH #1085 (R-IG-1): the fixed 8 KiB bound is gone. A model block over it
+/// is born whole; only a block the model's window could never take is
+/// refused at birth, naming its size and the bound.
 #[test]
-fn a_model_prompt_over_8_kib_is_refused_at_birth() {
-    let raw = json!({
+fn a_model_prompt_over_the_window_is_refused_at_birth() {
+    let mut raw = json!({
         "provider": "openai", "model": "m", "api_key": "k",
         "model_prompt": "x".repeat(8 * 1024 + 1),
     });
+    assert!(
+        LlmParams::parse(&raw).is_ok(),
+        "over the old 8 KiB is no refusal"
+    );
+    raw["input_hard"] = json!(2000);
     let err = LlmParams::parse(&raw).unwrap_err();
-    assert!(err.contains("model_prompt"), "{err}");
+    assert!(
+        err.contains("too_long: model_prompt 8193 > 6000 bytes"),
+        "{err}"
+    );
 }
 
 /// B-8: a brain that spends a grant for its bearer and holds none yet must not

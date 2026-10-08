@@ -52,7 +52,8 @@
           "condition": "has(hop.route) && hop.route == 'llm'",
           "modifier": {
             "set_context": {
-              "session_id": "hop.session_id"
+              "session_id": "hop.session_id",
+              "window_refit": "has(hop.window_refit) ? hop.window_refit : ''"
             }
           }
         },
@@ -83,13 +84,21 @@
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
-            }
+            },
+            "delete_context": [
+              "window_refit"
+            ]
           }
         },
         {
           "from": "./prep",
           "to": ".",
-          "condition": "has(hop.route) && !hop.route.startsWith('in_') && hop.route != 'llm'"
+          "condition": "has(hop.route) && !hop.route.startsWith('in_') && hop.route != 'llm'",
+          "modifier": {
+            "delete_context": [
+              "window_refit"
+            ]
+          }
         },
         {
           "from": "./writer",
@@ -117,7 +126,12 @@
         {
           "from": "./access",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "window_refit"
+            ]
+          }
         }
       ]
     }

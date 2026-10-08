@@ -34,15 +34,15 @@ use meclaw_core::serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// The retriever's own truncation for a LEVEL row. Mirrored, not imported — the
-/// point of the gate is to be red if the two ever disagree about what arrives
-/// whole.
+/// The size a LEVEL row of the corpus keeps to.
 ///
-/// It is the THIRD window `builder-librarian/retrieve` keeps, and it exists
-/// because of what this file asserts: a level row had lived inside the ordinary
-/// 1200 with fourteen characters to spare, which is a coincidence rather than a
-/// margin, and GH #543 spent it. The set is what must survive, so the window
-/// moved rather than the set (`params.level_chars` of `./retrieve`).
+/// It was the THIRD window `builder-librarian/retrieve` kept (`level_chars`),
+/// because a level row had lived inside the ordinary 1200 with fourteen
+/// characters to spare and GH #543 spent it. Since GH #1085 the retriever has no
+/// window of its own: a row travels whole while it fits a tenth of the reading
+/// model's window (1600 characters fit a tenth of any window from 5334 tokens
+/// up), so the corpus keeping a level set inside this size is what still makes
+/// it arrive whole.
 const RETRIEVED_CHARS: usize = 1600;
 
 fn repo_root() -> PathBuf {

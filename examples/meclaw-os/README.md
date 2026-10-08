@@ -63,7 +63,7 @@ a dead-letter queue is for (see `CHANGELOG.md`).
 | node | from template | what it brings |
 |---|---|---|
 | `/door` | [`door@1.0.2`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
-| `/firewall` | [`firewall@2.4.0`](../../templates/firewall/) | 4 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model -- plus a hardline layer no rule row can lift and the custody of a turn parked for a person. |
+| `/firewall` | [`firewall@2.4.1`](../../templates/firewall/) | 4 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model -- plus a hardline layer no rule row can lift and the custody of a turn parked for a person. |
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, answer splitter, and an `llm` brain, with every internal edge pre-wired. |
 | `/sink` | [`terminal@1.0.2`](../../templates/terminal/) | 1 cell. The stop for two lanes that have not been decided yet. |
 
@@ -394,7 +394,7 @@ its own recipe: [`templates/canvy/MIGRATION.md`](../../templates/canvy/MIGRATION
 
 ## Step five: the front door
 
-`grow-operator.json` adds [`operator@1.2.5`](../../templates/operator/) — a sealed hive that
+`grow-operator.json` adds [`operator@1.2.6`](../../templates/operator/) — a sealed hive that
 turns a request from outside into a message with a **sender**, and that since GH #556 carries
 the **submitter** as one of its occupants.
 
@@ -429,7 +429,7 @@ becomes a manifest, reaches the gate, asks, and stops there. The receipt an oper
 the one the front door renders; nothing is applied, and nothing is lost silently. A colony
 that wants the round to finish wires `ask` to a broker, `in_verdict` back, and `mutate` on to
 the mutation door — which is exactly the shape
-[`meclaw-os@2.2.34`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
+[`meclaw-os@2.2.40`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
 grow when you want an OS rather than an agent with a door.
 
 ```bash
@@ -460,7 +460,7 @@ A built colony arrives in two stages instead.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", ONE edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.34"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.40"}}
 ```
 
 ```bash
@@ -476,7 +476,7 @@ The third file is a **declaration, not a cell**. The first start resolves it aga
 template library and grows it — the capability broker, the control loop, the baumeister, the
 submitter, the front door, the empty `orgs` container and the seventy-three edges between them —
 through the very resolution and staging a mutation takes. Then the marker is **gone**: what stands at its
-address is [`meclaw-os@2.2.34`](../../templates/meclaw-os/). A second boot finds nothing to grow.
+address is [`meclaw-os@2.2.40`](../../templates/meclaw-os/). A second boot finds nothing to grow.
 
 **The one edge is the whole birth topology.** `./os -> /colony/mutations`, on the `mutate` lane
 and nothing else. It cannot be added by a mutation on any scope — an edge *is* a mutation — so it
@@ -515,7 +515,7 @@ change:
 curl -s -X POST http://127.0.0.1:7778/messages -H 'Content-Type: application/json' -d '{
   "target": "/os", "hop": {"route": "in_build"},
   "body": {"messages": [{"origin": "user", "type": "text", "id": "",
-    "text": "{\"request\": \"grow an org named acme from org@2.1.21 under /os\", \"scope\": \"/os\"}"}]}}'
+    "text": "{\"request\": \"grow an org named acme from org@2.1.26 under /os\", \"scope\": \"/os\"}"}]}}'
 
 # -> receipt, hop.draft_state 'draft_ready', hop.manifest_sha256 <digest>,
 #    hop.draft_path /os/operator/drafts, body.manifest the declarations verbatim.

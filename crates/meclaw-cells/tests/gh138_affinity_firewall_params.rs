@@ -97,9 +97,12 @@ const SCRIPTED: &[Scripted] = &[
         template: "firewall",
         cell: "screen",
         knobs: &[
-            ("firewall_max_chars", "_int", "MAX_CHARS"),
             ("firewall_rate_max", "_int", "RATE_MAX"),
             ("firewall_rate_window_ms", "_int", "RATE_WINDOW_MS"),
+            // GH #1085 (OR-IG-8): the window of the screened turns' model when
+            // none rides on the turn -- a catalogue row, held to it by
+            // `gh1085_fallback_windows_match_the_catalog`.
+            ("input_soft_fallback", "_int", "INPUT_SOFT_FALLBACK"),
         ],
     },
     Scripted {
@@ -111,6 +114,19 @@ const SCRIPTED: &[Scripted] = &[
         ],
     },
 ];
+
+/// GH #1085 (R-IG-1): settings a cell declares and ships UNSET (default null,
+/// no param): the size cap of the screen is a share of the receiving model's
+/// window, so `firewall_max_chars` is an owner's override only.
+const UNSET: &[(&str, &str, &[&str])] = &[("firewall", "screen", &["firewall_max_chars"])];
+
+fn unset_of(template: &str, cell: &str) -> &'static [&'static str] {
+    UNSET
+        .iter()
+        .find(|(t, c, _)| *t == template && *c == cell)
+        .map(|(_, _, k)| *k)
+        .unwrap_or(&[])
+}
 
 /// The `code` cell's own param surface (`CodeParams::parse`), kept complete on
 /// purpose: a substrate param this list forgets shows up below as a phantom
@@ -240,6 +256,16 @@ fn configs_under(template: &str) -> Vec<std::path::PathBuf> {
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
+/// GH #1085 (OR-IG-9): `<fallback>_row` beside a fallback window knob names
+/// the catalogue row the window is -- a label for the reader and for the drift
+/// lock `gh1085_fallback_windows_match_the_catalog`, which holds the two
+/// together. The script never reads it, so it is a param and a setting but no
+/// knob of the script.
+fn is_row_label(key: &str, knobs: &[&str]) -> bool {
+    key.strip_suffix("_row")
+        .is_some_and(|k| k.ends_with("input_soft_fallback") && knobs.contains(&k))
+}
+
 /// Claim 1. The old surface is not deprecated, it is absent -- and for these two
 /// templates the allowed remainder is EMPTY, because neither of them ever asked
 /// a provider anything: no model, no endpoint, no key. Both are deterministic
@@ -333,16 +359,33 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         }
 
         // No knob may hide: every non-substrate param is one of the declared ones.
+        let knob_names: Vec<&str> = group.knobs.iter().map(|(k, _, _)| *k).collect();
+        let labels = params
+            .keys()
+            .filter(|key| is_row_label(key, &knob_names))
+            .count();
         for key in params.keys() {
             assert!(
                 SUBSTRATE_CODE_PARAMS.contains(&key.as_str())
-                    || group.knobs.iter().any(|(k, _, _)| k == key),
+                    || group.knobs.iter().any(|(k, _, _)| k == key)
+                    || is_row_label(key, &knob_names),
                 "{cell}: params.{key} is neither a substrate param nor a declared knob"
+            );
+        }
+        let unset = unset_of(group.template, group.cell);
+        for knob in unset {
+            assert!(
+                params.get(*knob).is_none(),
+                "{cell}: {knob} ships unset, so it is no param"
+            );
+            assert!(
+                settings[*knob]["default"].is_null(),
+                "{cell}: contract.settings.{knob}.default is null -- unset as shipped"
             );
         }
         assert_eq!(
             settings.len(),
-            group.knobs.len(),
+            group.knobs.len() + unset.len() + labels,
             "{cell}: contract.settings and the knob inventory disagree in size"
         );
     }
@@ -350,7 +393,9 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         total, 12,
         "the scripted half of this migration is nine knobs plus the cap of the \
          `identity_short` slot (GH #935) and the two bounds of the `list` op \
-         (GH #965); the push tick has no script"
+         (GH #965), less the screen's size cap, which ships unset since GH #1085, \
+         plus the screen's fallback window (GH #1085, OR-IG-8); \
+         the push tick has no script"
     );
 }
 

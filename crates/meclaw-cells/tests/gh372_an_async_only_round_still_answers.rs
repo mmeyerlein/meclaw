@@ -272,8 +272,11 @@ fn main_config() -> Value {
         // assertions are what makes the "nothing was lost" claim mean anything.
         {"from": "./memory/writer", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'embed'"},
+        // GH #1057: after its inserts extract-glue hands the written fact ids to
+        // `./entity-glue` on `route: entity`; this island does not instantiate
+        // the entity producer either, so that leg ends here for the same reason.
         {"from": "./memory/extract-glue", "to": "./void",
-         "condition": "has(hop.route) && (hop.route == 'extract' || hop.route == 'embed')"}
+         "condition": "has(hop.route) && (hop.route == 'extract' || hop.route == 'embed' || hop.route == 'entity')"}
     ]}}})
 }
 

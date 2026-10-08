@@ -1,0 +1,14 @@
+{"test": "counter", "text": "Vergiss die Tabletten am Abend nicht."}
+{"test": "reminder", "text": "Vergiss die Tabletten am Abend nicht.", "words": "Tabletten Abend"}
+{"test": "reminder", "text": "Vergessen Sie die Tabletten am Abend nicht."}
+{"test": "reminder", "text": "Vergiss den Termin beim Zahnarzt am Dienstag nicht!"}
+{"test": "named", "text": "Vergiss das mit dem Termin beim Zahnarzt.", "want": "\"termin\" AND \"zahnarzt\""}
+{"test": "one-word", "text": "Ach, vergiss bitte, was ich über die Diagnose gesagt habe.", "want": "\"diagnose\""}
+{"test": "one-word", "text": "Kannst du bitte vergessen, was ich dir über meine Diagnose erzählt habe?", "want": "\"diagnose\""}
+{"test": "one-word", "text": "Vergiss das mit meinem Sohn.", "want": "\"sohn\""}
+{"test": "correction", "text": "Vergiss, was ich gesagt habe, der Termin ist am Mittwoch.", "new": ["termin", "mittwoch"]}
+{"test": "correction", "text": "Vergiss das mit Hamburg, Lisa wohnt jetzt in Bremen.", "new": ["lisa", "wohnt", "jetzt", "bremen"]}
+{"test": "later-round", "text": "Vergiss bitte, was ich dir über die Schulden bei der Bank erzählt habe.", "want": "\"schulden\" AND \"bank\""}
+{"test": "correction", "text": "Vergiss das, Dienstag passt.", "new": ["dienstag", "passt"]}
+{"test": "correction", "text": "Vergiss das mit Montag, Dienstag passt.", "new": ["dienstag", "passt"]}
+{"test": "list", "text": "Vergiss das mit Anna, Ben und Carl.", "words": "\"anna\" AND \"ben\" AND \"carl\""}

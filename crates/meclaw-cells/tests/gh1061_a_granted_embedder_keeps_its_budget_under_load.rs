@@ -42,7 +42,11 @@ fn repo_root() -> PathBuf {
 }
 
 /// The granted cells this wave ships (presence guard, GH #49): the sweep below
-/// must find at least these, so a sweep over a wrong root cannot pass empty.
+/// must find every one of these that is on disk, so a sweep over a wrong root
+/// cannot pass empty. Two of them (`_cell-types/web_search-min`,
+/// `research-assistant`) are private templates and do not travel with the
+/// export; in the public clone each entry is guarded per file by
+/// `.exists()`, and at least one must be there (the anti-vacuum floor).
 const KNOWN_GRANTED: &[&str] = &[
     "templates/file-space/embed/config.json",
     "templates/memory-hive/embed/config.json",
@@ -178,13 +182,23 @@ fn gh1061_every_shipped_granted_cell_fits_its_ticket_wait_into_its_message_timeo
         }
     }
 
+    let mut present = 0;
     for known in KNOWN_GRANTED {
+        if !root.join(known).exists() {
+            continue; // GH #49: a private template, absent from the public clone
+        }
+        present += 1;
         assert!(
             found.iter().any(|f| f == known),
             "presence guard (GH #49): the sweep did not find the granted cell {known} — \
              found {found:?}"
         );
     }
+    assert!(
+        present > 0,
+        "presence guard (GH #49): none of {KNOWN_GRANTED:?} is under {} -- the sweep root is wrong",
+        root.display()
+    );
     assert!(
         failures.is_empty(),
         "{} granted cell(s) break ceil((wait_max + 1) / mc) × T + T ≤ message_timeout (GH #1061):\n  {}",

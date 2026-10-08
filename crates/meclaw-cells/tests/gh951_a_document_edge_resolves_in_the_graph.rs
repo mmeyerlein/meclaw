@@ -77,7 +77,7 @@ fn message(hop: Value, ctx: Value, body: Value) -> Message {
         .build()
 }
 
-/// The object hive's announcement (objects@1.0.0 `source_changed`).
+/// The object hive's announcement (objects@1.0.1 `source_changed`).
 fn object_changed(nodes: u64, links: u64) -> Message {
     message(
         json!({"route": "source_changed"}),

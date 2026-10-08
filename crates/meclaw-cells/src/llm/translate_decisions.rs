@@ -35,11 +35,6 @@ pub(crate) const MIN_LEVELS: usize = 2;
 pub(crate) const MAX_LEVELS: usize = 10;
 /// A question key: `[a-z0-9_.-]`, 1..=64 characters.
 pub(crate) const KEY_MAX_CHARS: usize = 64;
-/// The serialized request is refused above this size. The service's context
-/// bound is 32k tokens for state plus questions behind the hosted gateway;
-/// 128 KiB is that bound at four bytes a token -- a request past it cannot
-/// fit, so it is refused before it is sent rather than paid for and failed.
-pub(crate) const MAX_REQUEST_BYTES: usize = 128 * 1024;
 
 /// What one question asks, as the cell needs it to read the answer back.
 #[derive(Debug, Clone, PartialEq)]
@@ -217,23 +212,16 @@ pub(crate) fn parse_decide(decide: Option<&Value>) -> Result<Asked, String> {
     Ok(Asked { state, wire, kinds })
 }
 
-/// The request body for `model`. `Err` (`decide_invalid`) when it is larger
-/// than [`MAX_REQUEST_BYTES`].
-pub(crate) fn build_request(model: &str, asked: &Asked) -> Result<Value, String> {
-    let body = json!({
+/// The request body for `model`, whole. Its size is no business of the
+/// translation: whether it fits is the model's window, read off the catalog
+/// row (`input_hard` / `context_window`) by `llm::window` before the call --
+/// GH #1085 removed the fixed 128 KiB bound that stood here.
+pub(crate) fn build_request(model: &str, asked: &Asked) -> Value {
+    json!({
         "model": model,
         "state": asked.state.clone(),
         "questions": Value::Object(asked.wire.clone()),
-    });
-    let size = meclaw_core::serde_json::to_vec(&body)
-        .map(|v| v.len())
-        .unwrap_or(usize::MAX);
-    if size > MAX_REQUEST_BYTES {
-        return Err(format!(
-            "the decisions request is {size} bytes; at most {MAX_REQUEST_BYTES} fit the service"
-        ));
-    }
-    Ok(body)
+    })
 }
 
 fn prob(v: &Value) -> Option<f64> {
@@ -376,7 +364,7 @@ mod tests {
     #[test]
     fn the_three_kinds_map_onto_the_wire() {
         let asked = parse_decide(Some(&three())).unwrap();
-        let body = build_request("vendor/decider", &asked).unwrap();
+        let body = build_request("vendor/decider", &asked);
         assert_eq!(body["model"], "vendor/decider");
         assert_eq!(body["questions"]["topic"]["type"], "choice");
         assert_eq!(body["questions"]["topic"]["criteria"]["weather"], "Weather");
@@ -432,12 +420,16 @@ mod tests {
         assert!(parse_decide(Some(&json!({"questions": {}}))).is_err());
     }
 
+    /// GH #1085 lock: a state over the old fixed 128 KiB is translated whole;
+    /// the window, not the translation, decides whether it may be sent.
     #[test]
-    fn a_request_past_the_context_bound_is_refused_before_it_is_sent() {
+    fn a_state_over_the_old_fixed_bound_is_built_whole() {
         let mut big = three();
-        big["state"] = json!("x".repeat(MAX_REQUEST_BYTES));
+        let state = "x".repeat(200 * 1024);
+        big["state"] = json!(state);
         let asked = parse_decide(Some(&big)).unwrap();
-        assert!(build_request("m", &asked).is_err());
+        let body = build_request("m", &asked);
+        assert_eq!(body["state"], json!(state));
     }
 
     #[test]

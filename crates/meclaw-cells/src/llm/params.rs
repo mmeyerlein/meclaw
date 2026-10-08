@@ -32,11 +32,6 @@ fn default_system_max_slots() -> usize {
     crate::llm::system_gate::DEFAULT_SYSTEM_MAX_SLOTS
 }
 
-/// GH #118: default cap on the serialized size of ONE system leaf, in bytes.
-fn default_system_max_leaf_bytes() -> usize {
-    crate::llm::system_gate::DEFAULT_SYSTEM_MAX_LEAF_BYTES
-}
-
 /// GH #87: A-timeout for one `attachments[]` blob read. A local filesystem read
 /// of a file the substrate itself committed — orders of magnitude faster than a
 /// provider round trip, so it gets a much tighter default than
@@ -246,10 +241,12 @@ pub struct LlmParams {
     /// past it is a loud reject, never a truncation.
     #[serde(default = "default_system_max_slots")]
     pub system_max_slots: usize,
-    /// GH #118: cap on the serialized size of ONE system leaf, in bytes;
-    /// default 65536. Same loud-reject rule.
-    #[serde(default = "default_system_max_leaf_bytes")]
-    pub system_max_leaf_bytes: usize,
+    /// GH #118: cap on the serialized size of ONE system leaf, in bytes. Same
+    /// loud-reject rule. Unset (the default since GH #1085, R-IG-1): no fixed
+    /// number -- a leaf is refused only when it alone is larger than the
+    /// model's window can take (`system_gate::SystemGate::from_params`).
+    #[serde(default)]
+    pub system_max_leaf_bytes: Option<usize>,
     /// GH #118: the subtrees a MESSAGE may write in the persistent `system`
     /// tree, as dotted slot-path prefixes (`"handover"`, `"tools"`, …).
     ///
@@ -326,8 +323,9 @@ pub struct LlmParams {
     /// the model-neutral persona. The cell puts it FIRST in the system part
     /// (`translate::compose_system_prompt`). A param, not a system slot: it
     /// travels with the overlay and returns with `$reset`, and the collector
-    /// stays the one writer on `system`. Empty = no block. At most
-    /// [`MODEL_PROMPT_MAX_BYTES`].
+    /// stays the one writer on `system`. Empty = no block. No fixed size
+    /// (GH #1085, R-IG-1): refused only when it alone is larger than the
+    /// model's window can take ([`LlmParams::window_bound_bytes`]).
     #[serde(default)]
     pub model_prompt: Option<String>,
     /// GH #853: the origins a RUN-TIME `base_url` may point at. Immutable —
@@ -341,8 +339,10 @@ pub struct LlmParams {
     /// what it may cost; never a model name. In meclaw-os the `llm-registry`
     /// translates it against its catalogue once per change. The cell itself
     /// never reads it on a call: it only shows in the params line. Immutable
-    /// (a statement of the template, not a knob), at most
-    /// [`REQUIREMENT_MAX_BYTES`].
+    /// (a statement of the template, not a knob). No fixed size (GH #1085):
+    /// this cell never sends it to its model, so no window of its own bounds
+    /// it -- only the carrier ceiling (`content_budget::CARRIER_MAX_BYTES`)
+    /// does; its reader (the registry's translator) budgets it.
     #[serde(default)]
     pub requirement: Option<String>,
     /// GH #890: how the cell marks the provider's prompt cache. Default `off`
@@ -414,6 +414,18 @@ pub struct LlmParams {
     /// 0). A package key.
     #[serde(default)]
     pub cost_cached_in: f64,
+    /// GH #1085 (audit of `llm::window`): the prompt bytes the window
+    /// estimate counts as one token of this model, as its catalogue row
+    /// states it -- English is about four, JSON, German and code fewer. 0
+    /// (the default) = not stated: the cell counts
+    /// [`crate::content_budget::CHARS_PER_TOKEN`]. A package key.
+    #[serde(default)]
+    pub chars_per_token: f64,
+    /// GH #1085: the tokens the window estimate counts for one inline image
+    /// of this model, as its catalogue row states it. 0 (the default) = not
+    /// stated: `llm::window::IMAGE_TOKENS` (1024). A package key.
+    #[serde(default)]
+    pub tokens_per_image: u64,
 }
 
 /// GH #890: the values `cache_mode` takes, as the refusal names them.
@@ -487,6 +499,7 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
             "max_output",
             "input_soft",
             "input_hard",
+            "tokens_per_image",
         ] {
             if let Some(v) = obj.get_mut(key) {
                 *v = Value::from(whole_number(key, v)?);
@@ -497,17 +510,17 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
                 *v = Value::from(price(key, v)?);
             }
         }
+        // GH #1085: a rate takes the form of a price (fractions, digit
+        // strings); its refusal names what it is.
+        if let Some(v) = obj.get_mut("chars_per_token") {
+            *v = Value::from(price("chars_per_token", v).map_err(|_| {
+                "chars_per_token must be a number of at least 0 (a JSON number or a string of digits)"
+                    .to_string()
+            })?);
+        }
     }
     Ok(raw)
 }
-
-/// GH #853: the upper bound of `model_prompt`, in bytes. A model's quirks are
-/// a paragraph; anything bigger is a persona in the wrong slot.
-pub const MODEL_PROMPT_MAX_BYTES: usize = 8 * 1024;
-
-/// GH #858: the upper bound of `requirement`, in bytes. Two to four sentences
-/// of need fit many times over; the registry's hand refuses the same bound.
-pub const REQUIREMENT_MAX_BYTES: usize = 2 * 1024;
 
 /// GH #853 / #854: the keys of a model package — what an operator (in
 /// meclaw-os: the `llm-registry`) sets when it moves a cell to another model.
@@ -521,7 +534,8 @@ pub const REQUIREMENT_MAX_BYTES: usize = 2 * 1024;
 /// does: how its provider caches, for how long, and how large its window is.
 /// GH #993 adds which sampling params the model takes at all.
 /// GH #1037 adds the output limit; R-HK-15/16 the input bounds and the two
-/// prompt prices the curator weighs a cached window with.
+/// prompt prices the curator weighs a cached window with; GH #1085 the two
+/// rates the window estimate counts a prompt with.
 pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "model",
     "base_url",
@@ -544,6 +558,8 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    "chars_per_token",
+    "tokens_per_image",
 ];
 
 /// GH #853: the absolute floor of the backstop margin, in ms.
@@ -623,6 +639,60 @@ pub(crate) fn endpoint_url(base: &str, path: &str) -> String {
 }
 
 impl LlmParams {
+    /// GH #1085: the prompt bytes one token counts -- the row's
+    /// `chars_per_token`, else `content_budget::CHARS_PER_TOKEN`.
+    pub fn bytes_per_token(&self) -> f64 {
+        if self.chars_per_token.is_finite() && self.chars_per_token > 0.0 {
+            self.chars_per_token
+        } else {
+            crate::content_budget::CHARS_PER_TOKEN as f64
+        }
+    }
+
+    /// GH #1085: the tokens one inline image counts -- the row's
+    /// `tokens_per_image`, else `llm::window::IMAGE_TOKENS`.
+    pub fn image_tokens(&self) -> u64 {
+        if self.tokens_per_image > 0 {
+            self.tokens_per_image
+        } else {
+            crate::llm::window::IMAGE_TOKENS
+        }
+    }
+
+    /// GH #1085 (R-IG-1): the most bytes the model's window can take at all,
+    /// and what that number is: the catalog row's `input_hard`, else its
+    /// `context_window`, at [`Self::bytes_per_token`] (the rate `llm::window`
+    /// estimates with), else -- no window stated -- the carrier ceiling. A
+    /// piece of prompt material larger than this can never reach the model
+    /// whole, so it is refused at the door instead of on every call.
+    pub fn window_bound_bytes(&self) -> (usize, &'static str) {
+        let rate = self.bytes_per_token();
+        let bytes = |tokens: u64| {
+            let b = (tokens as f64 * rate).floor();
+            if b >= usize::MAX as f64 {
+                usize::MAX
+            } else {
+                b as usize
+            }
+        };
+        if self.input_hard > 0 {
+            (
+                bytes(self.input_hard),
+                "what the model's input_hard window can take at all",
+            )
+        } else if self.context_window > 0 {
+            (
+                bytes(self.context_window),
+                "what the model's context_window can take at all",
+            )
+        } else {
+            (
+                crate::content_budget::CARRIER_MAX_BYTES,
+                "the carrier ceiling (no model window is stated)",
+            )
+        }
+    }
+
     /// Implementation detail — production entry point is `LlmCellFactory`;
     /// direct construction is `pub` only so tests/integration tests can
     /// drive the cell without the full Colony.
@@ -699,7 +769,7 @@ impl LlmParams {
         if p.system_max_slots == 0 {
             return Err("system_max_slots must be at least 1".to_string());
         }
-        if p.system_max_leaf_bytes == 0 {
+        if p.system_max_leaf_bytes == Some(0) {
             return Err("system_max_leaf_bytes must be at least 1".to_string());
         }
         if p.length_continuations > LENGTH_CONTINUATIONS_MAX {
@@ -710,20 +780,26 @@ impl LlmParams {
         }
         // GH #853: the model block and the allow list are checked at birth, so
         // a run-time update (which re-parses the merge) is checked the same way.
-        if let Some(mp) = &p.model_prompt
-            && mp.len() > MODEL_PROMPT_MAX_BYTES
-        {
-            return Err(format!(
-                "model_prompt is {} bytes; at most {MODEL_PROMPT_MAX_BYTES} are allowed",
-                mp.len()
-            ));
+        // GH #1085 (R-IG-1): no fixed sizes. The model block rides in every
+        // system prompt, so it is refused only when it alone is larger than
+        // the model's window can take; `requirement` never reaches this
+        // cell's model and is bounded by the carrier alone.
+        if let Some(mp) = &p.model_prompt {
+            let (max, bound) = p.window_bound_bytes();
+            if mp.len() > max {
+                return Err(format!(
+                    "too_long: model_prompt {} > {max} bytes ({bound})",
+                    mp.len()
+                ));
+            }
         }
         if let Some(req) = &p.requirement
-            && req.len() > REQUIREMENT_MAX_BYTES
+            && req.len() > crate::content_budget::CARRIER_MAX_BYTES
         {
             return Err(format!(
-                "requirement is {} bytes; at most {REQUIREMENT_MAX_BYTES} are allowed",
-                req.len()
+                "too_long: requirement {} > {} bytes (the carrier ceiling)",
+                req.len(),
+                crate::content_budget::CARRIER_MAX_BYTES
             ));
         }
         for entry in &p.base_url_allow {
@@ -1003,6 +1079,9 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    // GH #1085: the rates the window estimate counts with, package keys.
+    "chars_per_token",
+    "tokens_per_image",
     // P10 auth dimension.
     "auth",
     "auth_ref",
@@ -1148,7 +1227,10 @@ mod tests {
     fn system_gate_params_default_to_bounded_but_unpinned() {
         let p = LlmParams::parse(&api_key_raw()).unwrap();
         assert_eq!(p.system_max_slots, 256);
-        assert_eq!(p.system_max_leaf_bytes, 65_536);
+        assert_eq!(
+            p.system_max_leaf_bytes, None,
+            "no fixed leaf size: the window decides (GH #1085)"
+        );
         assert!(
             p.system_writable.is_empty(),
             "no allowlist unless a topology declares one"
@@ -1163,7 +1245,7 @@ mod tests {
         raw["system_writable"] = json!(["handover", "tools"]);
         let p = LlmParams::parse(&raw).unwrap();
         assert_eq!(p.system_max_slots, 8);
-        assert_eq!(p.system_max_leaf_bytes, 1024);
+        assert_eq!(p.system_max_leaf_bytes, Some(1024));
         assert_eq!(p.system_writable, vec!["handover", "tools"]);
     }
 
@@ -1765,14 +1847,74 @@ mod tests {
         assert!(LlmParams::parse(&raw).is_ok());
     }
 
+    /// GH #1085 lock: the fixed 8 KiB is gone -- a model block over it is
+    /// taken whole; over what the model's window can take at all it is
+    /// refused with its size and the bound.
     #[test]
-    fn model_prompt_has_an_upper_bound() {
+    fn model_prompt_is_bounded_by_the_window_not_a_fixed_size() {
         let mut raw = api_key_raw();
-        raw["model_prompt"] = json!("x".repeat(MODEL_PROMPT_MAX_BYTES));
-        assert!(LlmParams::parse(&raw).is_ok());
-        raw["model_prompt"] = json!("x".repeat(MODEL_PROMPT_MAX_BYTES + 1));
+        raw["model_prompt"] = json!("x".repeat(20 * 1024));
+        assert!(
+            LlmParams::parse(&raw).is_ok(),
+            "over the old 8 KiB, no window"
+        );
+        raw["input_hard"] = json!(100_000);
+        assert!(
+            LlmParams::parse(&raw).is_ok(),
+            "over the old 8 KiB, in the window"
+        );
+        raw["input_hard"] = json!(1000);
+        raw["model_prompt"] = json!("x".repeat(3000));
+        assert!(LlmParams::parse(&raw).is_ok(), "exactly the window");
+        raw["model_prompt"] = json!("x".repeat(3001));
         let err = LlmParams::parse(&raw).unwrap_err();
-        assert!(err.contains("model_prompt"), "{err}");
+        assert!(
+            err.contains("too_long: model_prompt 3001 > 3000 bytes") && err.contains("input_hard"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_window_bound_is_input_hard_then_context_window_then_the_carrier() {
+        let mut raw = api_key_raw();
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(
+            p.window_bound_bytes().0,
+            crate::content_budget::CARRIER_MAX_BYTES
+        );
+        raw["context_window"] = json!(9000);
+        assert_eq!(
+            LlmParams::parse(&raw).unwrap().window_bound_bytes().0,
+            27_000
+        );
+        raw["input_hard"] = json!(1000);
+        assert_eq!(LlmParams::parse(&raw).unwrap().window_bound_bytes().0, 3000);
+        // GH #1085: at the row's rate, not a fixed three.
+        raw["chars_per_token"] = json!(3.5);
+        assert_eq!(LlmParams::parse(&raw).unwrap().window_bound_bytes().0, 3500);
+    }
+
+    /// GH #1085: the two rates are package keys, parsed by name and refused
+    /// by name; unstated they are the cell's defaults.
+    #[test]
+    fn the_rates_of_the_window_are_package_keys() {
+        for key in ["chars_per_token", "tokens_per_image"] {
+            assert!(MODEL_PACKAGE_KEYS.contains(&key), "{key}");
+        }
+        let mut raw = api_key_raw();
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(
+            p.bytes_per_token(),
+            crate::content_budget::CHARS_PER_TOKEN as f64
+        );
+        assert_eq!(p.image_tokens(), crate::llm::window::IMAGE_TOKENS);
+        raw["chars_per_token"] = json!("4");
+        raw["tokens_per_image"] = json!("1600");
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!((p.bytes_per_token(), p.image_tokens()), (4.0, 1600));
+        raw["chars_per_token"] = json!("four");
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("chars_per_token"), "{err}");
     }
 
     // ───── GH #858: requirement ─────
@@ -1781,12 +1923,18 @@ mod tests {
     fn requirement_is_prose_with_an_upper_bound_and_no_effect_by_default() {
         let p = LlmParams::parse(&api_key_raw()).unwrap();
         assert_eq!(p.requirement, None, "no implicit requirement");
+        // GH #1085 lock: over the old fixed 2 KiB it is taken whole; only
+        // the carrier ceiling refuses, with the size.
         let mut raw = api_key_raw();
-        raw["requirement"] = json!("r".repeat(REQUIREMENT_MAX_BYTES));
+        raw["requirement"] = json!("r".repeat(8 * 1024));
         assert!(LlmParams::parse(&raw).is_ok());
-        raw["requirement"] = json!("r".repeat(REQUIREMENT_MAX_BYTES + 1));
+        let over = crate::content_budget::CARRIER_MAX_BYTES + 1;
+        raw["requirement"] = json!("r".repeat(over));
         let err = LlmParams::parse(&raw).unwrap_err();
-        assert!(err.contains("requirement"), "{err}");
+        assert!(
+            err.contains(&format!("too_long: requirement {over} > ")),
+            "{err}"
+        );
     }
 
     #[test]

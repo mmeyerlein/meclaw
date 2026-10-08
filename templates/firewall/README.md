@@ -1,4 +1,4 @@
-# `firewall@2.4.0`
+# `firewall@2.4.1`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -83,7 +83,7 @@ screen's own `hold` route and by `in_release` / `in_sweep`.
 | # | rule | driven by | `reject_reason` | `rule_id` |
 |---|---|---|---|---|
 | H | **the hardline** | this template's code | `hardline_blocked` | `hardline:<name>` |
-| 1 | **size cap** | `./screen`'s `firewall_max_chars` | `oversize` | `size-cap` |
+| 1 | **size cap** | a quarter of the receiving model's window (`input_soft` on the turn, else `./screen`'s `input_soft_fallback`), or `./screen`'s `firewall_max_chars` | `oversize` | `size-cap` |
 | 2 | **unreadable rule row** | the `rules` table itself | — (the row is skipped; a receipt names it) | the offending row |
 | 3 | **sender blocklist** | `kind=sender, action=reject` | `sender_denied` | that row |
 | 4 | **sender allowlist** | `kind=sender, action=allow` | `sender_not_allowed` | `allowlist:<field>` |
@@ -160,7 +160,7 @@ and this is not one.
 
 | `rule_id` | what it refuses | why no row may lift it |
 |---|---|---|
-| `hardline:body-ceiling` | a turn above 262 144 characters | `firewall_max_chars` is a knob, and a knob set to a billion turns the screen itself into the resource risk it stands in front of. The ceiling bounds the knob. |
+| `hardline:body-ceiling` | a turn above 4 194 304 bytes (UTF-8), the largest body any mount of a colony may be declared to take (the webhook proxy's `max_body_kb` bound of 4096 KiB); `hop.reject_detail` says `too_long: <n> > 4194304 bytes` | the carrier's ceiling, not a content size (GH #1085): a turn above it came through no mount. `firewall_max_chars` is a knob, and a knob set to a billion turns the screen itself into the resource risk it stands in front of. The ceiling bounds the knob. |
 | `hardline:invisible-format` | a turn carrying an invisible or direction-**overriding** codepoint, or a control character other than tab, newline and carriage return | one zero-width space inside a forbidden literal defeats *every* pattern row at once. A row that could switch this off would switch off the effectiveness of the whole table, which is the class this layer exists for. |
 | `hardline:hold-ceiling` | a turn that would push the hold pile past 1024 | `firewall_hold_max` may only **lower** that number. An unbounded pile is an outage of the channel wearing the mask of a queue. |
 
@@ -441,7 +441,9 @@ other.
 
 | param | default | effect |
 |---|---|---|
-| `firewall_max_chars` | `16000` | size cap of one inbound turn (total characters over `messages[].text`) |
+| `firewall_max_chars` | unset | an owner's size cap of one inbound turn (total characters over `messages[].text`); unset, the cap is a quarter of the receiving model's window -- `input_soft` on the turn, else the param below -- at three characters a token (GH #1085). A turn over it is refused with `reject_detail` `too_long: <n> > <max> chars`, never cut |
+| `input_soft_fallback` | catalogue row | the receiving model's window in tokens when none rides on the turn, the `input_soft` of the catalog row of the model talky's brain is born on (GH #1085, OR-IG-9): a birth token (`model_surface`), and the llm-registry's tier for a talky-class model is `light`, `openai/gpt-6-luna`. `0`: no window, no cap below the hardline |
+| `input_soft_fallback_row` | `openai/gpt-6-luna` | the catalog row `input_soft_fallback` is; the script does not read it, the drift lock `gh1085_fallback_windows_match_the_catalog` holds the two together. A screen in front of a voice born on another model sets both |
 | `firewall_rate_max` | `30` | turns one channel may pass per window; `0` closes the channel |
 | `firewall_rate_window_ms` | `60000` | width of the rate window in milliseconds |
 

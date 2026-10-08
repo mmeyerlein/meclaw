@@ -129,12 +129,10 @@ struct Scripted {
 const SCRIPTED: &[Scripted] = &[
     Scripted {
         cell: "builder-librarian/retrieve",
-        knobs: &[
-            ("row_chars", "_int"),
-            ("catalogue_chars", "_int"),
-            ("level_chars", "_int"),
-            ("topk", "_int"),
-        ],
+        // GH #1085 (R-IG-1): the three window knobs (`row_chars`,
+        // `catalogue_chars`, `level_chars`) are gone -- the briefing takes a
+        // share of the reading model's window, not a number of the cell's.
+        knobs: &[("topk", "_int")],
     },
     Scripted {
         cell: "archive-bridge",
@@ -403,9 +401,10 @@ fn every_scripted_knob_is_a_param_a_setting_and_a_script_literal_with_one_value(
         );
     }
     assert_eq!(
-        total, 5,
-        "the published scripted half of this strand is five knobs across two \
-         cells -- the other five are the twin's (GH #584)"
+        total, 2,
+        "the published scripted half of this strand is two knobs across two \
+         cells since GH #1085 took the librarian's three windows away -- the \
+         other five are the twin's (GH #584)"
     );
 }
 
@@ -456,15 +455,6 @@ fn two_instances_of_the_same_retrieve_script_are_tuned_apart() {
         ),
         "2",
         "an instance tuned to two did not get two"
-    );
-    // The other end of the same claim: a window knob, and a STRING one.
-    assert_eq!(
-        probe_with_params(
-            cell,
-            meclaw_core::serde_json::json!({"catalogue_chars": 99}),
-            "_real.write(str(CATALOGUE_CHARS))"
-        ),
-        "99"
     );
     assert_eq!(
         probe_with_params(

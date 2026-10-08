@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use crate::tool::{
-    ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_TIMEOUT, build_error_body, build_tool_result_body,
-    parse_tool_call_args, with_external_timeout,
+    ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_TIMEOUT, ERR_TOO_LONG, build_error_body,
+    build_tool_result_body, parse_tool_call_args, with_external_timeout,
 };
 use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{CellOutput, Message, OutputSink, Path};
@@ -17,13 +17,14 @@ pub struct WebFetchCell {
     pub external_timeout: Duration,
     /// Max number of workers running in parallel for this cell.
     pub max_concurrency: usize,
-    /// Size cap on the response body handed to the caller, in bytes (GH #83).
-    ///
-    /// A fetched body is a tool result, and inside a tool loop a tool result is
-    /// re-sent to the model on every subsequent round — one large fetch is not a
-    /// one-time cost, it is a per-round one. The cap is generous by default and
-    /// finite always; a trim is marked, never silent.
-    pub max_bytes: usize,
+    /// Explicit size cap on the response body handed to the caller, in bytes
+    /// (GH #83). `None` (the default since GH #1085, R-IG-1): the body is cut
+    /// to the tool-result share of the window the call names
+    /// (`content_budget::input_soft_of`), and delivered whole when the call
+    /// names none -- up to the carrier ceiling, above which it is refused
+    /// (`too_long`). Every cut carries the mark
+    /// `...[cut: <k> of <n> bytes shown; <hint>]`; none is silent.
+    pub max_bytes: Option<usize>,
     /// Opt-out of the private-network deny (GH #117). Default `false`.
     ///
     /// `true` disables the deny ENTIRELY — the cell may then reach loopback,
@@ -53,27 +54,6 @@ pub(crate) const ERR_TOO_MANY_REDIRECTS: &str = "too_many_redirects";
 
 /// `error_code` for a `Location` this cell refuses to follow (GH #117).
 pub(crate) const ERR_INVALID_REDIRECT: &str = "invalid_redirect";
-
-/// Cap `text` at `max_bytes`, cutting on a UTF-8 char boundary and appending an
-/// explicit marker with the original byte length (GH #83).
-///
-/// Same visible-truncation convention the `code` cell uses for stderr: a
-/// silently shortened payload is worse than a marked one, because the model
-/// cannot tell that it is reasoning about a prefix.
-pub(crate) fn truncate_body(text: String, max_bytes: usize) -> (String, bool) {
-    if text.len() <= max_bytes {
-        return (text, false);
-    }
-    let mut end = max_bytes;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    let full = text.len();
-    (
-        format!("{}… [truncated, {full} bytes total]", &text[..end]),
-        true,
-    )
-}
 
 #[derive(Debug)]
 pub(crate) struct WebFetchArgs {
@@ -624,7 +604,28 @@ impl meclaw_colony::StatelessCell for WebFetchCell {
                     // GH #83: `bytes` reports what the server sent, so a trimmed
                     // reply still says how big the document really was.
                     let bytes_len = text.len() as u64;
-                    let (text, truncated) = truncate_body(text, self.max_bytes);
+                    // GH #1085 (R-IG-1): no fixed cap -- the window's share,
+                    // marked, or whole; refused only over the carrier.
+                    let (text, truncated) = match crate::content_budget::tool_result_text(
+                        text,
+                        self.max_bytes,
+                        &msg.headers,
+                        "budget of the window",
+                    ) {
+                        Ok(v) => v,
+                        Err(refusal) => {
+                            self.emit_error(
+                                sink,
+                                reply_target,
+                                ERR_TOO_LONG,
+                                refusal.detail(),
+                                id,
+                                started,
+                            )
+                            .await;
+                            return;
+                        }
+                    };
                     let mut header = Map::new();
                     header.insert("operation".into(), Value::String("web_fetch".into()));
                     header.insert("http_status".into(), Value::from(status));
@@ -722,13 +723,6 @@ pub struct WebFetchCellFactory;
 
 const DEFAULT_WEB_FETCH_MAX_CONCURRENCY: usize = 32;
 const DEFAULT_WEB_FETCH_EXTERNAL_TIMEOUT_MS: u64 = 30_000;
-/// Default body cap: 256 KiB (GH #83).
-///
-/// Generous but finite. It clears an ordinary web page or specification
-/// document whole, and it stops a multi-megabyte payload from entering a tool
-/// loop, where every subsequent round would pay for it again. A cell inside an
-/// agent loop wants a much smaller value; that is what the knob is for.
-const DEFAULT_WEB_FETCH_MAX_BYTES: usize = 256 * 1024;
 /// Default redirect budget: 5 hops (GH #117).
 ///
 /// Enough for the ordinary shortener / canonical-host / trailing-slash chain,
@@ -739,7 +733,7 @@ const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 5;
 struct ParsedWebFetchParams {
     external_timeout: Duration,
     max_concurrency: usize,
-    max_bytes: usize,
+    max_bytes: Option<usize>,
     allow_private_networks: bool,
     max_redirects: usize,
 }
@@ -764,14 +758,16 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedWebFetchParam
     if ms == 0 {
         return Err("params.external_timeout_ms must be >= 1".into());
     }
+    // GH #1085 (R-IG-1): no fixed default -- absent, the window decides.
     let mb = match raw.get("max_bytes") {
-        None => DEFAULT_WEB_FETCH_MAX_BYTES,
-        Some(v) => v
-            .as_u64()
-            .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
-            as usize,
+        None => None,
+        Some(v) => Some(
+            v.as_u64()
+                .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
+                as usize,
+        ),
     };
-    if mb == 0 {
+    if mb == Some(0) {
         return Err("params.max_bytes must be >= 1".into());
     }
     // GH #117: the opt-out has to be WRITTEN to exist. A non-bool value is a
@@ -1172,7 +1168,7 @@ mod tests {
             client: build_web_fetch_client(false).unwrap(),
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
-            max_bytes: DEFAULT_WEB_FETCH_MAX_BYTES,
+            max_bytes: None,
             allow_private_networks: false,
             max_redirects: DEFAULT_WEB_FETCH_MAX_REDIRECTS,
         }
@@ -1316,7 +1312,7 @@ mod tests {
             client: build_web_fetch_client(true).unwrap(),
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
-            max_bytes: DEFAULT_WEB_FETCH_MAX_BYTES,
+            max_bytes: None,
             // GH #117: the mock server lives on 127.0.0.1, which the shipped
             // DEFAULT now refuses. The test takes the documented opt-out — the
             // default is not softened to keep it green.
@@ -1370,7 +1366,7 @@ mod tests {
             client: build_web_fetch_client(true).unwrap(),
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
-            max_bytes: DEFAULT_WEB_FETCH_MAX_BYTES,
+            max_bytes: None,
             // GH #117: local mock server — explicit opt-out, see above.
             allow_private_networks: true,
             max_redirects: DEFAULT_WEB_FETCH_MAX_REDIRECTS,
@@ -1418,7 +1414,7 @@ mod tests {
             client: build_web_fetch_client(true).unwrap(),
             external_timeout: std::time::Duration::from_secs(2),
             max_concurrency: 4,
-            max_bytes: DEFAULT_WEB_FETCH_MAX_BYTES,
+            max_bytes: None,
             // GH #117: 127.0.0.1 is the POINT of this test (connect refused on
             // a dead port). Without the opt-out it would become
             // `target_blocked` and stop proving anything about io_error.
@@ -1478,53 +1474,27 @@ mod tests {
         assert!(r.is_err());
     }
 
-    // ───── GH #83: the size cap ─────
+    // ───── GH #83 / GH #1085: the size of the result ─────
 
-    #[test]
-    fn truncate_body_leaves_a_body_under_the_cap_alone() {
-        let (out, cut) = truncate_body("small".to_string(), 1024);
-        assert_eq!(out, "small");
-        assert!(!cut);
-    }
-
-    #[test]
-    fn truncate_body_marks_the_cut_and_names_the_full_size() {
-        let (out, cut) = truncate_body("x".repeat(5000), 100);
-        assert!(cut);
-        assert!(
-            out.starts_with(&"x".repeat(100)),
-            "the prefix is the first max_bytes bytes"
-        );
-        assert!(
-            out.contains("[truncated, 5000 bytes total]"),
-            "the model must be able to see that it got a prefix: {}",
-            &out[out.len() - 40..]
-        );
-    }
-
-    #[test]
-    fn truncate_body_cuts_on_a_char_boundary() {
-        // 'ä' is two bytes; a cap of 3 lands inside the second one.
-        let (out, cut) = truncate_body("äää".to_string(), 3);
-        assert!(cut);
-        assert!(out.starts_with("ä"), "no broken code point: {out:?}");
-        assert!(out.contains("[truncated, 6 bytes total]"), "{out:?}");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_body_over_the_cap_arrives_trimmed_and_marked() {
+    /// One fetch of a `size`-byte body through the production path, with an
+    /// explicit `max_bytes` and the hop the call arrives with.
+    async fn fetch_sized(
+        size: usize,
+        max_bytes: Option<usize>,
+        hop: Value,
+    ) -> meclaw_core::serde_json::Value {
         use meclaw_colony::StatelessCell;
         use meclaw_core::{Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid};
         use meclaw_testing::mock_http::{MockResponse, start_mock_server};
         use tokio::sync::mpsc;
 
-        let huge = "y".repeat(20_000);
+        let huge = "y".repeat(size);
         let (addr, _join) = start_mock_server(MockResponse::ok(huge.as_bytes())).await;
         let cell = WebFetchCell {
             client: build_web_fetch_client(true).unwrap(),
-            external_timeout: std::time::Duration::from_secs(5),
+            external_timeout: std::time::Duration::from_secs(30),
             max_concurrency: 4,
-            max_bytes: 1000,
+            max_bytes,
             // GH #117: local mock server — explicit opt-out, see above.
             allow_private_networks: true,
             max_redirects: DEFAULT_WEB_FETCH_MAX_REDIRECTS,
@@ -1542,6 +1512,7 @@ mod tests {
         let url = format!("http://{addr}/big");
         let msg = MessageBuilder::new(Path::new("/web"))
             .reply_to(Path::new("/caller"))
+            .hop(hop.as_object().cloned().unwrap_or_default())
             .body(Body::Inline(json!({
                 "messages": [{
                     "origin": "assistant", "type": "tool_call",
@@ -1550,24 +1521,66 @@ mod tests {
             })))
             .build();
         cell.handle(msg, &sink).await;
-        let em = out_rx.recv().await.unwrap();
-        let text = em.content["messages"][0]["text"].as_str().unwrap();
+        out_rx.recv().await.unwrap().content
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_explicit_max_bytes_cuts_with_the_mark() {
+        let c = fetch_sized(20_000, Some(1000), json!({})).await;
+        let text = c["messages"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with(&"y".repeat(1000)));
         assert!(
-            text.len() < 20_000,
-            "the cap must bite: {} bytes arrived",
-            text.len()
+            text.ends_with("...[cut: 1000 of 20000 bytes shown; budget of the window]"),
+            "cut marked: {}",
+            &text[text.len() - 70..]
         );
+        assert_eq!(c["header"]["truncated"], true);
+        assert_eq!(
+            c["header"]["bytes"], 20_000,
+            "`bytes` reports what the server sent, not what survived the cut"
+        );
+    }
+
+    /// GH #1085 lock: the old 256 KiB default is gone -- a body over it
+    /// arrives whole when the call names no window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_body_over_the_old_cap_arrives_whole_without_a_budget() {
+        let c = fetch_sized(300 * 1024, None, json!({})).await;
+        let text = c["messages"][0]["text"].as_str().unwrap();
+        assert_eq!(text.len(), 300 * 1024, "whole");
+        assert!(c["header"].get("truncated").is_none(), "{}", c["header"]);
+    }
+
+    /// GH #1085 lock: over the window's tool-result share (10 % of
+    /// input_soft at 3 bytes a token) the body arrives cut and marked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_body_over_the_budget_arrives_marked_with_its_total() {
+        let c = fetch_sized(20_000, None, json!({"input_soft": 10_000})).await;
+        let text = c["messages"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with(&"y".repeat(3000)));
         assert!(
-            text.contains("[truncated, 20000 bytes total]"),
-            "cut marked"
+            text.ends_with("...[cut: 3000 of 20000 bytes shown; budget of the window]"),
+            "{}",
+            &text[text.len() - 70..]
         );
-        assert_eq!(
-            em.content["header"]["truncated"], true,
-            "the declared `truncated` header finally has a producer"
-        );
-        assert_eq!(
-            em.content["header"]["bytes"], 20_000,
-            "`bytes` reports what the server sent, not what survived the cap"
+        assert_eq!(c["header"]["truncated"], true);
+        assert_eq!(c["header"]["bytes"], 20_000);
+    }
+
+    /// GH #1085 lock: over the carrier ceiling, with no window to cut to,
+    /// the body is refused with its size -- never cut in silence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_body_over_the_carrier_is_refused_with_its_size() {
+        let size = crate::content_budget::CARRIER_MAX_BYTES + 1;
+        let c = fetch_sized(size, None, json!({})).await;
+        assert_eq!(c["header"]["error_code"], "too_long", "{}", c["header"]);
+        let text = c["messages"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            text.contains(&format!(
+                "too_long: {size} > {} bytes",
+                crate::content_budget::CARRIER_MAX_BYTES
+            )),
+            "{text}"
         );
     }
 
@@ -1582,10 +1595,11 @@ mod tests {
     }
 
     #[test]
-    fn factory_defaults_max_bytes_to_a_generous_but_finite_cap() {
+    fn factory_defaults_max_bytes_to_the_window_budget() {
         let p = parse_params_pure(&meclaw_core::serde_json::json!({})).unwrap();
-        assert_eq!(p.max_bytes, DEFAULT_WEB_FETCH_MAX_BYTES);
-        assert!(p.max_bytes > 0, "finite means non-zero, not unbounded");
+        assert_eq!(p.max_bytes, None, "no fixed default (GH #1085)");
+        let p = parse_params_pure(&meclaw_core::serde_json::json!({"max_bytes": 32768})).unwrap();
+        assert_eq!(p.max_bytes, Some(32768));
     }
 
     // ───── GH #117: which hops the cell will follow ─────

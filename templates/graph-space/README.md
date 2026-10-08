@@ -1,4 +1,4 @@
-# `graph-space@1.1.0`
+# `graph-space@1.1.1`
 
 The graph of one knowledge space ([#945](https://github.com/mmeyerlein/meclaw/issues/945), [#951](https://github.com/mmeyerlein/meclaw/issues/951)): the nodes every source of the space holds -- a file space's files, an object hive's objects -- and the edges between them, resolved once and kept current, so that a question across files is answered from one store and wakes no file. The hive is sealed (`params.ports: []`). Cells: `index` (code: announcement, pull, write, resolve), `query` (code: the questions), `store` (store, `write_surface: internal`). No model, no embedding request, no network.
 

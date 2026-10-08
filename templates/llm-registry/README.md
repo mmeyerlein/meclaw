@@ -1,4 +1,4 @@
-# `llm-registry@2.8.1`
+# `llm-registry@2.8.3`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -115,6 +115,7 @@ it is born with.
 | `input_hard` | the column of the same name -- the largest prompt in tokens the brain sends this model; above it the call is refused without a model call (`invalid_input`, kind `input_over_hard`). 0 = no bound |
 | `cost_in` | the column of the same name -- list price of a million prompt tokens in cents, stamped as `hop.cost_in` |
 | `cost_cached_in` | the column of the same name -- the price of a million prompt tokens read from the provider's cache, in cents and with fractions (`pricing.input_cache_read` of the listing), stamped as `hop.cost_cached_in`. The row's `cost_cache_write` (cache write price) stays in the catalogue and is not pushed |
+| `chars_per_token`, `tokens_per_image` | `package` -- the rates the brain's window estimate counts a prompt with against `input_hard` and `context_window`: bytes of text a token (fractions allowed) and tokens an inline image. Every shipped row states them and its note names the source; a row without them leaves the brain its cautious defaults, three bytes and 1024 tokens (GH #1085) |
 | `reasoning_effort`, `reasoning_wire`, `reasoning`, `thinking_budget`, `max_tokens`, `temperature`, `external_timeout_ms`, `provider_extra` | `package`, a json object; any other key in it is dropped and never reaches a cell |
 
 The key list is the llm cell's own (`MODEL_PACKAGE_KEYS`, GH #853), and a template test holds
@@ -304,10 +305,15 @@ retired model (`unknown_model`), a targeted `match` that covers no subscriber
 (`no_subscriber`), an empty `match` or an unknown `scope` (`incomplete_command`), a clear of an id
 nobody set (`unknown_override`), a reset of a path that is no subscriber (`no_subscriber`), a
 catalogue column that does not exist (`unknown_model_field`) or has the wrong type or size
-(`invalid_model_field`: a `prompt` over 8 KiB -- what every llm cell refuses as
-`model_prompt` --, `strengths` over 2 KiB, a `model_id` that is not one token of
+(`invalid_model_field`: a `prompt` the row's model could never take -- over its `input_hard`
+window at three bytes a token, else over its `context_window`, else over the 4 MiB carrier
+ceiling, the rule every llm cell refuses a pushed `model_prompt` by since
+[#1085](https://github.com/mmeyerlein/meclaw/issues/1085), the ack naming
+`too_long: model_prompt <n> > <max> bytes` --, `strengths` over the 4 MiB carrier ceiling (`too_long: strengths <n> > <max> bytes`; strengths ride in every question to the translator, so they have no size of their own below the carrier since #1085), a `model_id` that is not one token of
 `[A-Za-z0-9._:/@+-]` of at most 128 characters; refused, never cut), a retirement of a model that is not active (`unknown_model`), and a
-requirement over 2 KiB (`requirement_too_long`).
+requirement over the 4 MiB carrier ceiling, the llm cell's own bound for `params.requirement`
+since [#1085](https://github.com/mmeyerlein/meclaw/issues/1085) (`requirement_too_long`, the ack
+naming `too_long: requirement <n> > <max> bytes`).
 
 ## Prose in, a model out -- once per change
 
@@ -403,7 +409,7 @@ empty model key is still served by its translation). An empty start value in an 
 says nothing about the start value, like a missing requirement: it makes a new row with none,
 and it never clears one the row holds -- `meclaw-os` announces its own judge that way, since the
 shell substitutes nothing, and a start value an operator stated with `subscribe` survives every
-later receipt. A requirement over 2 KiB leaves its entry out, journalled
+later receipt. A requirement over the carrier ceiling (4 MiB) leaves its entry out, journalled
 `hand_requirement_too_long`.
 
 **An announcement is never a command, and it speaks for one generation.** Whatever arrives with
@@ -581,7 +587,9 @@ OpenAI-compatible gateway endpoint (`https://openrouter.ai/api/v1`, `chat_comple
 with a sentence of `strengths` for the translator and how its provider caches (`cache_mode`,
 `cache_ttl_s`, the source in its `note`) -- plus one row retired on purpose and, since GH #957,
 one typed decisions model behind the same gateway (`https://openrouter.ai/api`, `decisions`),
-read 2026-10-02:
+read 2026-10-02, and one local row (`provider` `local`, read 2026-10-07): a model an
+OpenAI-compatible server runs on the operator's own hardware, its window the `max_model_len` the
+server reports, no endpoint (the cell keeps the `base_url` its set gives it) and no price:
 
 | model | context | in / out (cents per million) | status |
 |---|---|---|---|
@@ -594,6 +602,20 @@ read 2026-10-02:
 | `openai/gpt-5.6-luna` | 1 050 000 | 20 / 120 | retired |
 | `typesafe/jev-1.13` (decisions) | 32 000 | 4 / 0 | active |
 | `qwen/qwen3.7-flash` | 1 000 000 | 3 / 13 | explicit |
+| `qwen3.8-27b` (local) | 150 000 | 0 / 0 | explicit |
+| `google/gemini-embedding-2` (embeddings) | 8 192 | 20 / 0 | explicit |
+| `openai/gpt-4o-mini` | 128 000 | 15 / 60 | explicit |
+
+Since GH #1085 the seed carries one embeddings row, read 2026-10-07: `google/gemini-embedding-2`,
+the model the embed cells of the memory hive and the file space call. `wire_dialect` `embeddings`
+names its protocol and `explicit` keeps it out of every translation and ranked select; it is in
+the catalogue for its window, the number a producer sizes what it embeds by, not to be handed to
+a brain.
+
+Since GH #1085 the seed also carries `openai/gpt-4o-mini`, read 2026-10-07: the model
+`coder-pipeline`'s planner, coder and reviewer are born on. A producer sizes what it hands a
+model by the window of that model's row, so a template born on a model without a row would size
+by a number of its own; `explicit` keeps it out of every translation and ranked select.
 
 `tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5`)
 and `strong` (`anthropic/claude-opus-5.5`). Prices and listings move; every row says in its

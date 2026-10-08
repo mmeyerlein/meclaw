@@ -70,14 +70,19 @@ const SCRIPTED: &[Scripted] = &[
             ("tier0_max_episodes", "_int"),
             ("tier0_max_beliefs", "_int"),
             ("tier0_max_foresight", "_int"),
-            ("tier0_episode_chars", "_int"),
-            ("tier0_tokens", "_int"),
+            // GH #1085: grows with the asker's window like tier 1 (null).
+            ("tier0_tokens", "_grown"),
             ("tier1_leg_limit", "_pkg"),
             ("tier1_axis_limit", "_int"),
             ("tier1_graph_depth", "_int"),
             ("tier1_graph_nodes", "_int"),
             ("tier1_graph_fact_nodes", "_int"),
             ("tier1_graph_fact_limit", "_int"),
+            ("tier1_graph_node_facts", "_int"),
+            ("tier1_graph_fact_pages", "_int"),
+            ("tier1_graph_node_page", "_int"),
+            ("tier1_graph_anchors", "_int"),
+            ("tier1_graph_start", "_int"),
             ("tier1_self_limit", "_pkg"),
             ("tier1_self_budget", "_int"),
             ("self_legacy_subject", "_str"),
@@ -86,8 +91,9 @@ const SCRIPTED: &[Scripted] = &[
             ("kw_min_score_ratio", "_float"),
             ("bundle_episode_budget", "_pkg"),
             ("tier1_tokens", "_pkg"),
-            ("tier1_item_chars", "_pkg"),
             ("bundle_share", "_float"),
+            // GH #1085: the window of an asker no request names one for.
+            ("input_soft_fallback", "_int"),
             ("rrf_k", "_int"),
             ("rrf_w_keyword", "_float"),
             ("rrf_w_semantic", "_float"),
@@ -121,7 +127,16 @@ const SCRIPTED: &[Scripted] = &[
     },
     Scripted {
         cell: "close-glue",
-        knobs: &[("close_turn_rows", "_int"), ("close_fact_rows", "_int")],
+        // GH #1074 (kf89 review): the grammar of a forget request is language
+        // DATA (`_data`, an object with no literal copy in the script). R-TR-25:
+        // whether a request the closer did not cite is searched -- a switch,
+        // shipped off until the mute semantics replace forgetting.
+        knobs: &[
+            ("close_turn_rows", "_int"),
+            ("close_fact_rows", "_int"),
+            ("forget_lang", "_data"),
+            ("forget_fallback", "_flag"),
+        ],
         documented: &[],
     },
     // GH #1042 fix round 1: the room bind's reach, the session keeper's idle
@@ -131,6 +146,19 @@ const SCRIPTED: &[Scripted] = &[
     Scripted {
         cell: "extract-glue",
         knobs: &[("generation_idle_ms", "_int"), ("require_quote", "_flag")],
+        documented: &[],
+    },
+    // GH #1057: the entity producer's thresholds -- what makes a subject an
+    // entity, and from how many neighbours on an entity is a hub.
+    Scripted {
+        cell: "entity-glue",
+        knobs: &[
+            ("min_facts", "_int"),
+            ("min_episodes", "_int"),
+            ("hub_degree", "_int"),
+            ("count_page", "_int"),
+            ("newborn_hits", "_int"),
+        ],
         documented: &[],
     },
 ];
@@ -262,6 +290,16 @@ fn substitutions(value: &Value, out: &mut Vec<String>) {
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
+/// GH #1085 (OR-IG-9): `<fallback>_row` beside a fallback window knob names
+/// the catalogue row the window is -- a label for the reader and for the drift
+/// lock `gh1085_fallback_windows_match_the_catalog`, which holds the two
+/// together. The script never reads it, so it is a param and a setting but no
+/// knob of the script.
+fn is_row_label(key: &str, knobs: &[&str]) -> bool {
+    key.strip_suffix("_row")
+        .is_some_and(|k| k.ends_with("input_soft_fallback") && knobs.contains(&k))
+}
+
 /// Claim 1. The old surface is not deprecated, it is absent: every token left
 /// in the hive is one of the twelve provider-lane names, and the sweep is over
 /// the whole subtree so a cell nobody was thinking about cannot keep one.
@@ -364,7 +402,14 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
             let lit: Value = meclaw_core::serde_json::from_str(lit).unwrap_or_else(|e| {
                 panic!("{cell}/{knob}: script literal {lit:?} is not json ({e})")
             });
-            if *kind == "_pkg" {
+            if *kind == "_data" {
+                // A data block has one home, the params: the script's fallback
+                // is None (fail closed), never a second copy of the data.
+                assert!(param.is_object(), "{cell}: params.{knob} is a data block");
+                assert!(lit.is_null(), "{cell}: {knob} carries no literal copy");
+                continue;
+            }
+            if *kind == "_pkg" || *kind == "_grown" {
                 // GH #1040: a knob the model package sizes ships as null (derived
                 // per request); its literal is the value WITHOUT a package.
                 assert!(
@@ -384,25 +429,36 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         }
 
         // No knob may hide: every non-substrate param is one of the declared ones.
+        let knob_names: Vec<&str> = group.knobs.iter().map(|(k, _)| *k).collect();
+        let labels = params
+            .keys()
+            .filter(|key| is_row_label(key, &knob_names))
+            .count();
         for key in params.keys() {
             assert!(
                 SUBSTRATE_CODE_PARAMS.contains(&key.as_str())
-                    || group.knobs.iter().any(|(k, _)| k == key),
+                    || group.knobs.iter().any(|(k, _)| k == key)
+                    || is_row_label(key, &knob_names),
                 "{}: params.{key} is neither a substrate param nor a declared knob",
                 group.cell
             );
         }
         assert_eq!(
             settings.len(),
-            group.knobs.len() + group.documented.len(),
+            group.knobs.len() + group.documented.len() + labels,
             "{}: contract.settings and the knob inventory disagree in size",
             group.cell
         );
     }
     assert_eq!(
-        total, 47,
+        total, 58,
         "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040), \
-         `generation_idle_ms` (GH #1042) and `require_quote` (GH #1079)"
+         `generation_idle_ms` (GH #1042), `require_quote` (GH #1079), `tier1_graph_node_facts` \
+         and the four graph page sizes of `recall`, the three thresholds and two page sizes of \
+         `entity-glue` (GH #1057), the language data `forget_lang` of `close-glue` (GH #1074) and \
+         its switch `forget_fallback` (R-TR-25), less `tier0_episode_chars` and \
+         `tier1_item_chars` (GH #1085: an item has no length of its own), plus \
+         `input_soft_fallback` (GH #1085)"
     );
 }
 

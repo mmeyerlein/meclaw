@@ -15,19 +15,26 @@ pub struct WebSearchCell {
     pub external_timeout: Duration,
     /// Max number of workers running in parallel for this cell.
     pub max_concurrency: usize,
-    /// Cap on the number of results handed to the caller (GH #83).
+    /// The page size of the result list when the call names none (GH #83).
     ///
     /// A search result is a tool result, and inside a tool loop a tool result
     /// is re-sent to the model on every subsequent round. A conforming provider
-    /// list longer than this is trimmed in place; the JSON stays valid and
-    /// carries the cut visibly (`"truncated": true`, `"total_results": N`),
-    /// because the hop header does not travel into the thread row the model
-    /// reads. `header.result_count` keeps the full provider count.
+    /// list longer than the page is trimmed in place; the JSON stays valid and
+    /// carries the cut visibly (`"truncated": true`, `"total_results": N`,
+    /// `"cut": "<k> of <n> results shown; ..."`), because the hop header does
+    /// not travel into the thread row the model reads. `header.result_count`
+    /// keeps the full provider count. Since GH #1085 (OR-IG-6) the page size
+    /// is the model's to choose: a call's `max_results` argument overrides
+    /// this default, so the list is a page the model asked for, never a fixed
+    /// cut it cannot see past.
     pub max_results: usize,
-    /// Byte backstop on the outgoing `text` (GH #83) — same convention as
-    /// `web_fetch`. It catches what the list cap cannot: a non-conforming
-    /// pass-through body, or a conforming list with absurdly large snippets.
-    pub max_bytes: usize,
+    /// Explicit byte cap on the outgoing `text` (GH #83). `None` (the default
+    /// since GH #1085, R-IG-1): the text is cut to the tool-result share of the
+    /// window the call names (`content_budget::input_soft_of`) and delivered
+    /// whole when it names none -- up to the carrier ceiling, above which it
+    /// is refused (`too_long`). Every cut carries the mark
+    /// `...[cut: <k> of <n> bytes shown; <hint>]`.
+    pub max_bytes: Option<usize>,
     /// GH #1060: the credential slot when `params.credential_grant_id` is set.
     /// `None` = no grant: the cell runs anonymously or on its transition
     /// literal (`api_key`), exactly as before.
@@ -41,6 +48,9 @@ const ERR_CREDENTIAL_PENDING: &str = "credential_pending";
 #[derive(Debug)]
 pub(crate) struct WebSearchArgs {
     pub query: String,
+    /// The page size the call asks for (GH #1085, OR-IG-6); `None`: the
+    /// cell's `max_results` param.
+    pub max_results: Option<usize>,
 }
 
 use meclaw_core::JsonValue;
@@ -54,14 +64,30 @@ pub(crate) fn parse_web_search_args(args: &JsonValue) -> Result<WebSearchArgs, S
     if query.is_empty() {
         return Err("args.query is empty".into());
     }
+    // GH #1085 (OR-IG-6): how many hits the model wants to see is the model's
+    // call, not a fixed number in the cell. A positive integer, or one written
+    // as a string (models write numbers either way); absent or null keeps the
+    // cell's default page. Anything else is refused by name, never guessed.
+    let max_results = match args.get("max_results") {
+        None | Some(JsonValue::Null) => None,
+        Some(v) => {
+            let n = v
+                .as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+                .filter(|n| *n >= 1)
+                .ok_or_else(|| "args.max_results must be a positive integer".to_string())?;
+            Some(usize::try_from(n).unwrap_or(usize::MAX))
+        }
+    };
     Ok(WebSearchArgs {
         query: query.to_string(),
+        max_results,
     })
 }
 
 use crate::tool::{
-    ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_TIMEOUT, build_error_body, build_tool_result_body,
-    parse_tool_call_args, with_external_timeout,
+    ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_TIMEOUT, ERR_TOO_LONG, build_error_body,
+    build_tool_result_body, parse_tool_call_args, with_external_timeout,
 };
 use meclaw_core::serde_json::{self, Map, Value};
 use meclaw_core::{CellOutput, Message, OutputSink, Path};
@@ -171,30 +197,58 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
                     let mut result_count = 0u64;
                     let mut text = text;
                     let mut truncated = false;
+                    let page = parsed.max_results.unwrap_or(self.max_results);
                     if let Ok(mut v) = serde_json::from_str::<Value>(&text) {
                         let full_len = v.get("results").and_then(|r| r.as_array()).map(|a| a.len());
                         if let Some(n) = full_len {
                             result_count = n as u64;
-                            if n > self.max_results {
+                            if n > page {
                                 // GH #83: trim the list in place; the JSON stays
-                                // valid and names the cut where the model reads.
+                                // valid and names the cut where the model reads
+                                // -- with the way to the rest (GH #1085, OR-IG-6).
                                 if let Some(arr) =
                                     v.get_mut("results").and_then(|r| r.as_array_mut())
                                 {
-                                    arr.truncate(self.max_results);
+                                    arr.truncate(page);
                                 }
                                 if let Some(obj) = v.as_object_mut() {
                                     obj.insert("truncated".into(), Value::Bool(true));
                                     obj.insert("total_results".into(), Value::from(n as u64));
+                                    obj.insert(
+                                        "cut".into(),
+                                        Value::String(format!(
+                                            "{page} of {n} results shown; call again with a \
+                                             higher max_results to see more"
+                                        )),
+                                    );
                                 }
                                 text = v.to_string();
                                 truncated = true;
                             }
                         }
                     }
-                    // GH #83 byte backstop, same convention as web_fetch:
-                    // catches the non-conforming pass-through body too.
-                    let (text, byte_cut) = crate::web_fetch::truncate_body(text, self.max_bytes);
+                    // GH #1085 (R-IG-1): no fixed byte cap -- the window's
+                    // share, marked, or whole; refused only over the carrier.
+                    let (text, byte_cut) = match crate::content_budget::tool_result_text(
+                        text,
+                        self.max_bytes,
+                        &msg.headers,
+                        "narrow the query or lower max_results",
+                    ) {
+                        Ok(v) => v,
+                        Err(refusal) => {
+                            self.emit_error(
+                                sink,
+                                reply_target,
+                                ERR_TOO_LONG,
+                                refusal.detail(),
+                                id,
+                                started,
+                            )
+                            .await;
+                            return;
+                        }
+                    };
                     let truncated = truncated || byte_cut;
                     let mut header = Map::new();
                     header.insert("operation".into(), Value::String("web_search".into()));
@@ -289,9 +343,6 @@ const DEFAULT_WEB_SEARCH_EXTERNAL_TIMEOUT_MS: u64 = 15_000;
 /// rarely return more by default, and title+url+snippet keeps the tool result
 /// at a few KB per search, which an agent loop can afford on every round.
 const DEFAULT_WEB_SEARCH_MAX_RESULTS: usize = 10;
-/// Default byte backstop: 256 KiB (GH #83) — the same generous-but-finite
-/// value `web_fetch` and `bash` use, so the tool cells share one default.
-const DEFAULT_WEB_SEARCH_MAX_BYTES: usize = 256 * 1024;
 
 struct ParsedWebSearchParams {
     endpoint: String,
@@ -302,7 +353,7 @@ struct ParsedWebSearchParams {
     external_timeout: Duration,
     max_concurrency: usize,
     max_results: usize,
-    max_bytes: usize,
+    max_bytes: Option<usize>,
 }
 
 /// Parses and validates `spawn_cell` / `validate_params` params for `WebSearchCellFactory`.
@@ -360,14 +411,16 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedWebSearchPara
     if mr == 0 {
         return Err("params.max_results must be >= 1".into());
     }
+    // GH #1085 (R-IG-1): no fixed default -- absent, the window decides.
     let mb = match raw.get("max_bytes") {
-        None => DEFAULT_WEB_SEARCH_MAX_BYTES,
-        Some(v) => v
-            .as_u64()
-            .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
-            as usize,
+        None => None,
+        Some(v) => Some(
+            v.as_u64()
+                .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
+                as usize,
+        ),
     };
-    if mb == 0 {
+    if mb == Some(0) {
         return Err("params.max_bytes must be >= 1".into());
     }
     let credential = crate::grant_slot::parse_credential_params(raw)?;
@@ -576,6 +629,31 @@ mod tests {
         assert!(parse_web_search_args(&json!({"query": ""})).is_err());
     }
 
+    /// GH #1085 (OR-IG-6): the page size is an argument of the call. A
+    /// positive integer or its string form; absent or null leaves the cell's
+    /// default; anything else is refused by name.
+    #[test]
+    fn max_results_is_an_argument_of_the_call() {
+        let page = |v: Value| parse_web_search_args(&v).map(|a| a.max_results);
+        assert_eq!(page(json!({"query": "q"})).unwrap(), None);
+        assert_eq!(
+            page(json!({"query": "q", "max_results": null})).unwrap(),
+            None
+        );
+        assert_eq!(
+            page(json!({"query": "q", "max_results": 25})).unwrap(),
+            Some(25)
+        );
+        assert_eq!(
+            page(json!({"query": "q", "max_results": "40"})).unwrap(),
+            Some(40)
+        );
+        for bad in [json!(0), json!(-3), json!(2.5), json!("many"), json!(true)] {
+            let err = page(json!({"query": "q", "max_results": bad})).unwrap_err();
+            assert!(err.contains("max_results"), "{bad}: {err}");
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn handle_search_with_results_emits_result_count() {
         use meclaw_colony::StatelessCell;
@@ -595,7 +673,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
-            max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            max_bytes: None,
             grant: None,
         };
 
@@ -644,7 +722,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
-            max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            max_bytes: None,
             grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -696,7 +774,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(2),
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
-            max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            max_bytes: None,
             grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -852,7 +930,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             max_results: 2,
-            max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            max_bytes: None,
             grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -889,12 +967,99 @@ mod tests {
         );
         assert_eq!(v["total_results"], 5, "and the full count is named there");
         assert_eq!(
+            v["cut"], "2 of 5 results shown; call again with a higher max_results to see more",
+            "the mark says how many of how many, and how to get the rest (OR-IG-6)"
+        );
+        assert_eq!(
             em.content["header"]["truncated"], true,
             "the hop header says it too"
         );
         assert_eq!(
             em.content["header"]["result_count"], 5,
             "`result_count` reports what the provider sent, not what survived"
+        );
+    }
+
+    /// GH #1085 (OR-IG-6): the call chooses its page. Five hits behind a
+    /// default page of two: a call asking four sees four of five, marked; one
+    /// asking ten sees all five, unmarked and byte-identical; a call that asks
+    /// nonsense is refused by name and searches nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_call_chooses_how_many_results_it_sees() {
+        use meclaw_colony::StatelessCell;
+        use meclaw_core::{
+            Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid, serde_json::json,
+        };
+        use meclaw_testing::mock_http::{MockResponse, start_mock_server};
+        use tokio::sync::mpsc;
+
+        let results: Vec<Value> = (0..5)
+            .map(|i| json!({"title": format!("t{i}"), "url": format!("u{i}"), "snippet": "s"}))
+            .collect();
+        let body = serde_json::to_vec(&json!({"results": results})).unwrap();
+        let (addr, _join) = start_mock_server(MockResponse::ok_json(&body)).await;
+        let run = |args: &'static str| {
+            let endpoint = format!("http://{addr}/search");
+            async move {
+                let cell = WebSearchCell {
+                    client: reqwest::Client::builder().build().unwrap(),
+                    endpoint,
+                    api_key: None,
+                    external_timeout: std::time::Duration::from_secs(5),
+                    max_concurrency: 4,
+                    max_results: 2,
+                    max_bytes: None,
+                    grant: None,
+                };
+                let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+                let sink = OutputSink::new(
+                    out_tx,
+                    Path::new("/search"),
+                    Uuid::now_v7(),
+                    Uuid::now_v7(),
+                    10,
+                    meclaw_core::Headers::new(),
+                    None,
+                );
+                let msg = MessageBuilder::new(Path::new("/search"))
+                    .reply_to(Path::new("/caller"))
+                    .body(Body::Inline(json!({
+                        "messages": [{
+                            "origin": "assistant", "type": "tool_call",
+                            "text": args, "id": "call-page"
+                        }]
+                    })))
+                    .build();
+                cell.handle(msg, &sink).await;
+                out_rx.recv().await.unwrap().content
+            }
+        };
+
+        let four = run(r#"{"query":"x","max_results":4}"#).await;
+        let v: Value = serde_json::from_str(four["messages"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(v["results"].as_array().unwrap().len(), 4, "{v}");
+        assert_eq!(v["total_results"], 5);
+        assert_eq!(
+            v["cut"],
+            "4 of 5 results shown; call again with a higher max_results to see more"
+        );
+
+        let all = run(r#"{"query":"x","max_results":10}"#).await;
+        assert_eq!(
+            all["messages"][0]["text"].as_str().unwrap().as_bytes(),
+            &body[..],
+            "a page above the list passes the provider body through byte-identical"
+        );
+        assert!(all["header"]["truncated"].is_null(), "{all}");
+
+        let bad = run(r#"{"query":"x","max_results":0}"#).await;
+        assert_eq!(bad["header"]["error_code"], "invalid_input", "{bad}");
+        assert!(
+            bad["messages"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("max_results"),
+            "{bad}"
         );
     }
 
@@ -916,7 +1081,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
-            max_bytes: DEFAULT_WEB_SEARCH_MAX_BYTES,
+            max_bytes: None,
             grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -971,7 +1136,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
-            max_bytes: 1000,
+            max_bytes: Some(1000),
             grant: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -1002,14 +1167,86 @@ mod tests {
             text.len()
         );
         assert!(
-            text.contains("[truncated, 20000 bytes total]"),
-            "cut marked"
+            text.ends_with(
+                "...[cut: 1000 of 20000 bytes shown; narrow the query or lower max_results]"
+            ),
+            "cut marked: {}",
+            &text[text.len().saturating_sub(90)..]
         );
         assert_eq!(em.content["header"]["truncated"], true);
         assert_eq!(
             em.content["header"]["bytes"], 20_000,
             "`bytes` reports what the provider sent"
         );
+    }
+
+    /// GH #1085 lock: the old 256 KiB byte default is gone. A body over it
+    /// arrives whole when the call names no window, and cut to the window's
+    /// tool-result share (marked, total named) when it does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_body_over_the_old_cap_is_whole_without_a_budget_and_marked_with_one() {
+        use meclaw_colony::StatelessCell;
+        use meclaw_core::{
+            Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid, serde_json::json,
+        };
+        use meclaw_testing::mock_http::{MockResponse, start_mock_server};
+        use tokio::sync::mpsc;
+
+        let size = 300 * 1024;
+        let run = |hop: Value| async move {
+            let huge = "z".repeat(size);
+            let (addr, _join) = start_mock_server(MockResponse::ok(huge.as_bytes())).await;
+            let cell = WebSearchCell {
+                client: reqwest::Client::builder().build().unwrap(),
+                endpoint: format!("http://{addr}/search"),
+                api_key: None,
+                external_timeout: std::time::Duration::from_secs(30),
+                max_concurrency: 4,
+                max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
+                max_bytes: None,
+                grant: None,
+            };
+            let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+            let sink = OutputSink::new(
+                out_tx,
+                Path::new("/search"),
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                10,
+                meclaw_core::Headers::new(),
+                None,
+            );
+            let msg = MessageBuilder::new(Path::new("/search"))
+                .reply_to(Path::new("/caller"))
+                .hop(hop.as_object().cloned().unwrap_or_default())
+                .body(Body::Inline(json!({
+                    "messages": [{
+                        "origin": "assistant", "type": "tool_call",
+                        "text": r#"{"query":"x"}"#, "id": "call-w"
+                    }]
+                })))
+                .build();
+            cell.handle(msg, &sink).await;
+            out_rx.recv().await.unwrap().content
+        };
+        let whole = run(json!({})).await;
+        assert_eq!(
+            whole["messages"][0]["text"].as_str().unwrap().len(),
+            size,
+            "whole"
+        );
+        assert!(whole["header"].get("truncated").is_none());
+
+        let cut = run(json!({"input_soft": 10_000})).await;
+        let text = cut["messages"][0]["text"].as_str().unwrap();
+        assert!(
+            text.ends_with(&format!(
+                "...[cut: 3000 of {size} bytes shown; narrow the query or lower max_results]"
+            )),
+            "...{}",
+            &text[text.len().saturating_sub(90)..]
+        );
+        assert_eq!(cut["header"]["truncated"], true);
     }
 
     #[test]
@@ -1041,12 +1278,7 @@ mod tests {
         let p =
             parse_params_pure(&meclaw_core::serde_json::json!({"endpoint": "http://x/s"})).unwrap();
         assert_eq!(p.max_results, DEFAULT_WEB_SEARCH_MAX_RESULTS);
-        assert_eq!(p.max_bytes, DEFAULT_WEB_SEARCH_MAX_BYTES);
-        assert_eq!(
-            DEFAULT_WEB_SEARCH_MAX_BYTES,
-            256 * 1024,
-            "one consistent byte default across the tool cells"
-        );
+        assert_eq!(p.max_bytes, None, "no fixed byte default (GH #1085)");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

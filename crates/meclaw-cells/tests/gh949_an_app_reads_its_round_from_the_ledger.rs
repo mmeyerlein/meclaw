@@ -838,9 +838,11 @@ fn rows_first_at(second: i64) -> String {
     stamp(second).format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
-/// A page holds `read_budget` characters of text: rows go whole while it
-/// lasts, the first row always goes (cut and marked `cut` when it alone is
-/// larger), so a reader always moves on and never loops on one row.
+/// A page holds a tenth of the reading model's window (R-IG-1, GH #1085:
+/// `hop.input_soft` 34 tokens, 10 characters): rows go whole while it lasts,
+/// the first row always goes (cut with the mark that names its length, and
+/// flagged `cut`, when it alone is larger), so a reader always moves on and
+/// never loops on one row.
 #[test]
 fn a_page_holds_its_budget_and_always_moves_on() {
     if !shipped() {
@@ -857,13 +859,13 @@ fn a_page_holds_its_budget_and_always_moves_on() {
     .into_iter()
     .map(|(s, t)| (s, Some(CANON_EA), "s1", "t1", "user", user(t), 0))
     .collect();
-    let mut w = World::hive(&wall, &[("read_budget", json!(10))]);
+    let mut w = World::hive(&wall, &[]);
     let mut got = Vec::new();
     let mut since = String::new();
     for _ in 0..10 {
         let (hop, body) = w.ask(
             json!(EA),
-            tag("t-budget"),
+            json!({"read_tag": "t-budget", "input_soft": 34}),
             json!({"messages": [], "what": "turns", "since": since}),
         );
         assert_eq!(code(&hop), "");
@@ -888,10 +890,37 @@ fn a_page_holds_its_budget_and_always_moves_on() {
         vec![
             vec![("abcd".to_string(), None), ("efgh".to_string(), None)],
             vec![("ijkl".to_string(), None)],
-            vec![("0123456789".to_string(), Some(json!(true)))],
+            vec![(
+                "0123456789...[cut: 10 of 16 chars shown; budget of the window]".to_string(),
+                Some(json!(true))
+            )],
             vec![("z".to_string(), None)],
         ]
     );
+}
+
+/// R-IG-1 (GH #1085): a row far over the 40000 characters a page held until
+/// curator 1.11.0 comes whole while no window is known -- neither the read's
+/// `hop.input_soft` nor the state's.
+#[test]
+fn a_page_goes_whole_without_a_window() {
+    if !shipped() {
+        return;
+    }
+    the_reader_ships();
+    let long = "w".repeat(50_000);
+    let wall: Vec<Row> = vec![(1, Some(CANON_EA), "s1", "t1", "user", user(&long), 0)];
+    let mut w = World::hive(&wall, &[]);
+    let (hop, body) = w.ask(
+        json!(EA),
+        tag("t-whole"),
+        json!({"messages": [], "what": "turns"}),
+    );
+    assert_eq!(code(&hop), "");
+    let rows = rows_of(&body);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["text"], json!(long));
+    assert!(rows[0].get("cut").is_none(), "{:?}", rows[0].get("cut"));
 }
 
 /// The question is checked before anything is read, in the order `read_tag`,
@@ -1025,7 +1054,7 @@ fn every_emission_keeps_the_cells_contract() {
         return;
     }
     the_reader_ships();
-    let mut w = World::hive(&standard_wall(), &[("read_budget", json!(12))]);
+    let mut w = World::hive(&standard_wall(), &[]);
     let questions = [
         (json!(EA), tag("c1"), turns()),
         (json!(EA), tag("c2"), json!({"what": "turns", "limit": 1})),

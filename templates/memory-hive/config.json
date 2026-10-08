@@ -662,6 +662,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -695,6 +696,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -725,6 +727,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -755,6 +758,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -785,6 +789,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -848,6 +853,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -878,6 +884,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -908,6 +915,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -938,6 +946,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -991,6 +1000,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1021,6 +1031,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1051,6 +1062,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1089,6 +1101,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1152,6 +1165,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1185,6 +1199,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1218,6 +1233,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1251,6 +1267,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_tier",
               "port_run",
@@ -1307,6 +1324,7 @@
               "dream_from",
               "dream_run",
               "dream_to",
+              "ent_clock",
               "mem_phase",
               "memory_call_id",
               "memory_tier",
@@ -1321,6 +1339,64 @@
               "recall_input_soft",
               "store_origin"
             ]
+          }
+        },
+        {
+          "from": "./extract-glue",
+          "to": "./entity-glue",
+          "condition": "has(hop.route) && hop.route == 'entity'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'entity-new'",
+              "ent_clock": "''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./dream-glue",
+          "to": "./entity-glue",
+          "condition": "has(hop.route) && hop.route == 'entity'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'entity-night'",
+              "ent_clock": "hop.ent_clock"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./entity-glue",
+          "to": "./entity-glue",
+          "condition": "has(hop.route) && hop.route == 'entity' && has(hop.ent_step) && int(hop.ent_step) < 1024",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "hop.phase",
+              "ent_clock": "hop.ent_clock"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./entity-glue",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'gstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'entity'",
+              "mem_phase": "hop.phase",
+              "ent_clock": "hop.ent_clock"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./entity-glue",
+          "condition": "context.store_origin == 'entity'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "context.mem_phase"
+            }
           }
         }
       ]

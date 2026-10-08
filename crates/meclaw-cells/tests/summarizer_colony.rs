@@ -41,7 +41,10 @@ fn template_dir() -> std::path::PathBuf {
 /// OpenRouter base URL. A test colony bootstraps from disk, so both are
 /// patched to literals: the model to a name the mock echoes, the URL to the
 /// mock server. Nothing else of the shipped config changes.
-fn patch_writer(root: &std::path::Path, base_url: &str) {
+///
+/// `input_hard`: the writer's own window bound, as a model package names it
+/// -- above it the llm cell refuses the prompt without a model call.
+fn patch_writer_window(root: &std::path::Path, base_url: &str, input_hard: Option<u64>) {
     let p = root.join("main/sum/writer/config.json");
     let txt = std::fs::read_to_string(&p).unwrap();
     let mut v: Value = meclaw_core::serde_json::from_str(&txt).unwrap();
@@ -51,6 +54,9 @@ fn patch_writer(root: &std::path::Path, base_url: &str) {
     // own broker. The mock wants no key, so this tree takes the broker out
     // (its ref has no library here) and the writer goes anonymous.
     v["params"]["credential_grant_id"] = json!("");
+    if let Some(hard) = input_hard {
+        v["params"]["input_hard"] = json!(hard);
+    }
     std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let _ = std::fs::remove_dir_all(root.join("main/sum/access"));
     let hp = root.join("main/sum/config.json");
@@ -87,10 +93,35 @@ batch = {
 sys.stdout.write(json.dumps(batch))
 "#;
 
-fn probe_config() -> Value {
+/// A LONG day in the same form, with no window on it anywhere: `OLD` older
+/// turns of `SIZE` characters each (tail `OLD-<nn>-TAIL`), then twelve short
+/// recent turns (the last one ends in `RECENT-11-TAIL`).
+const LONG_DAY: &str = r#"
+import sys, json
+json.load(sys.stdin)
+turns = []
+for i in range(OLD):
+    turns.append({"origin": "user" if i % 2 == 0 else "assistant", "type": "text",
+                  "text": "x" * SIZE + "OLD-%02d-TAIL" % i})
+for i in range(12):
+    turns.append({"origin": "user" if i % 2 == 0 else "assistant", "type": "text",
+                  "text": "recent turn RECENT-%02d-TAIL" % i})
+batch = {"header": {"route": "write", "session_id": "s1",
+                    "turn_count": str(len(turns)), "round_count": "0"},
+         "messages": turns, "rounds": []}
+sys.stdout.write(json.dumps(batch))
+"#;
+
+fn long_day(old: usize, size: usize) -> String {
+    LONG_DAY
+        .replace("OLD)", &format!("{old})"))
+        .replace("SIZE +", &format!("{size} +"))
+}
+
+fn probe_config_with(script: &str) -> Value {
     json!({
         "cell": {"type": "code"},
-        "params": {"runner": "python3", "script_inline": CLOSED_DAY,
+        "params": {"runner": "python3", "script_inline": script,
                    "external_timeout_ms": 10000},
         "contract": {
             "version": "1.0.0",
@@ -133,6 +164,15 @@ fn main_config() -> Value {
 }
 
 fn build_tree(td: &tempfile::TempDir, base_url: &str) {
+    build_tree_with(td, base_url, CLOSED_DAY, None);
+}
+
+fn build_tree_with(
+    td: &tempfile::TempDir,
+    base_url: &str,
+    day: &str,
+    writer_input_hard: Option<u64>,
+) {
     let root = td.path();
     std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     let main = json!(main_config());
@@ -144,11 +184,11 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     .unwrap();
     std::fs::write(
         root.join("main/probe/config.json"),
-        meclaw_core::serde_json::to_string_pretty(&probe_config()).unwrap(),
+        meclaw_core::serde_json::to_string_pretty(&probe_config_with(day)).unwrap(),
     )
     .unwrap();
     copy_cells(&template_dir(), &root.join("main/sum"));
-    patch_writer(root, base_url);
+    patch_writer_window(root, base_url, writer_input_hard);
 }
 
 fn close_request() -> Message {
@@ -275,5 +315,99 @@ async fn a_failing_provider_leaves_on_summary_error() {
         "an error is one report, not a report and a summary"
     );
 
+    h.shutdown().await;
+}
+
+/// The user document the writer was asked with, request `i`.
+async fn asked(mock: &MockOpenAI, i: usize) -> String {
+    let reqs = mock.recorded_requests().await;
+    let msgs = reqs[i].messages().expect("wire messages");
+    msgs.iter()
+        .find(|m| m["role"] == "user")
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// GH #1085 (R-IG-1), the real road: the collector's close batch carries no
+/// window -- no curator asks a summarizer -- and the shipped `./prep` sizes
+/// the day by its writer's window, `input_soft_fallback` (the row the writer is
+/// born on, openai/gpt-6-luna, 250 000 tokens -- OR-IG-9), half of it for the
+/// prompt. Before
+/// the fix round the prompt went whole on this road: a long day was refused
+/// by the writer's `input_hard` and left no handover.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_long_day_without_a_window_is_sized_by_the_writers_catalog_row() {
+    let mock = MockOpenAI::start(vec![canned_chat_completion("A long day.", "stop")]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    // 40 older turns of 10 000 characters: 400 000 characters, over the
+    // 375 000 half of 250 000 tokens holds at three characters a token.
+    build_tree_with(&td, &mock.base_url, &long_day(40, 10_000), None);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    h.send(close_request()).await;
+    let got = recv_bounded(&mut sink_rx).await.expect("the summary");
+    assert_eq!(hop_of(&got, "route"), "summary");
+
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 1, "one close, one provider call");
+    let user = asked(&mock, 0).await;
+    assert!(
+        user.chars().count() <= 375_000,
+        "the prompt keeps to half of the writer's window: {} chars",
+        user.chars().count()
+    );
+    assert!(
+        user.contains("recent turn RECENT-11-TAIL"),
+        "the recent turns go first and whole"
+    );
+    assert!(
+        user.contains(" of 10011 chars shown; budget of the window]"),
+        "an older turn says what was shown of how much"
+    );
+    assert!(!user.contains("OLD-00-TAIL"), "and is cut, never silently");
+    h.shutdown().await;
+}
+
+/// GH #1085 (OR-IG-4 step 4), the real road: a writer on a smaller window than
+/// the catalog row refuses the prompt as over its `input_hard` -- no model
+/// call -- and names the number. `./prep` reads the day back from the refused
+/// prompt and sizes it ONCE more at half of that number: exactly one provider
+/// call, one handover.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_prompt_is_sized_once_more_by_the_refusals_number() {
+    let mock = MockOpenAI::start(vec![canned_chat_completion("A day, sized twice.", "stop")]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    // 20 older turns of 5000 characters: about 100 000 characters, about
+    // 34 000 tokens -- over an input_hard of 20 000. Half of 20 000 tokens is
+    // 30 000 characters.
+    build_tree_with(&td, &mock.base_url, &long_day(20, 5000), Some(20_000));
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    h.send(close_request()).await;
+    let got = recv_bounded(&mut sink_rx).await.expect("the summary");
+    assert_eq!(hop_of(&got, "route"), "summary", "{got:?}");
+    assert_eq!(
+        body_of(&got)["system"]["handover"]["text"],
+        "A day, sized twice."
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), sink_rx.recv())
+            .await
+            .is_err(),
+        "one batch, one emission"
+    );
+
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 1, "the refusal cost no model call");
+    let user = asked(&mock, 0).await;
+    assert!(
+        user.chars().count() <= 30_000,
+        "half of the refusal's number: {} chars",
+        user.chars().count()
+    );
+    assert!(user.contains("recent turn RECENT-11-TAIL"), "{user}");
+    assert!(user.contains(" of 5011 chars shown; budget of the window]"));
+    assert!(user.starts_with("Session s1 closed with 32 turns."));
     h.shutdown().await;
 }

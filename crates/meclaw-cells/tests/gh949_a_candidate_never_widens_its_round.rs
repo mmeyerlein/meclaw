@@ -350,7 +350,6 @@ fn the_bounds_refuse_a_candidate_or_the_whole_body() {
             bad(""),
             bad("empty"),
             bad("blank"),
-            bad("text-601"),
             bad("no-text"),
             bad("trig-17"),
             bad("trig-65"),
@@ -367,12 +366,15 @@ fn the_bounds_refuse_a_candidate_or_the_whole_body() {
             bad("")
         ]
     );
-    assert_eq!(ack.body["stored"], json!(6));
+    // A text has no bound of its own since curator 1.11.1 (R-IG-1, GH #1085):
+    // the push says the candidates within their share and marks what it left.
+    assert_eq!(ack.body["stored"], json!(7));
     let mut want = vec![
         id64.clone(),
         "prio-0".to_string(),
         "prio-9".to_string(),
         "text-600".to_string(),
+        "text-601".to_string(),
         "trig-16".to_string(),
         "trig-64".to_string(),
     ];

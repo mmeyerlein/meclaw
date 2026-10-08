@@ -141,7 +141,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -160,7 +161,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -177,18 +179,33 @@
         {
           "from": "./dispatcher",
           "to": "./lib",
-          "condition": "has(hop.tool_name) && (hop.tool_name == 'librarian_search' || hop.tool_name == 'catalogue_lookup')"
+          "condition": "has(hop.tool_name) && (hop.tool_name == 'librarian_search' || hop.tool_name == 'catalogue_lookup')",
+          "modifier": {
+            "set_context": {
+              "input_soft": "has(hop.input_soft) ? hop.input_soft : ''"
+            }
+          }
         },
         {
           "from": "./dispatcher",
           "to": "./eyes",
-          "condition": "has(hop.tool_name) && (hop.tool_name == 'graph_read' || hop.tool_name == 'registry_read')"
+          "condition": "has(hop.tool_name) && (hop.tool_name == 'graph_read' || hop.tool_name == 'registry_read')",
+          "modifier": {
+            "set_context": {
+              "input_soft": "has(hop.input_soft) ? hop.input_soft : ''"
+            }
+          }
         },
         {
           "from": "./dispatcher",
           "to": "./unknown",
           "default": true,
-          "condition": "has(hop.route) && hop.route == 'tool'"
+          "condition": "has(hop.route) && hop.route == 'tool'",
+          "modifier": {
+            "set_context": {
+              "input_soft": "has(hop.input_soft) ? hop.input_soft : ''"
+            }
+          }
         },
         {
           "from": "./dispatcher",
@@ -230,7 +247,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -362,7 +380,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -381,7 +400,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -400,7 +420,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -419,7 +440,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -438,7 +460,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },
@@ -457,7 +480,8 @@
               "build_scope",
               "lib_call_id",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "input_soft"
             ]
           }
         },

@@ -41,7 +41,7 @@
 //!
 //! THE BOOT FORM. Runs 1 and 2 boot the root as the member reduced to what this
 //! road touches: the shipped assistant level as a node named `assistants`, and
-//! the member's own `./file-space` node beside it (the `file-space@1.4.5` ref,
+//! the member's own `./file-space` node beside it (the `file-space@1.4.6` ref,
 //! resolved). The node is named `assistants` so the member's four `./file-space`
 //! edges can be read off `templates/member/config.json` and drawn VERBATIM --
 //! nothing in them is retyped or re-pointed. What this leaves out is the
@@ -951,12 +951,22 @@ async fn next_matching(
 /// Seed the file through the space's own door and wait until `./derive` has
 /// written what it derives at birth. Returns the file's `fh-` id.
 async fn seed(h: &ColonyHandle, ports: &mut Ports, root: &std::path::Path) -> String {
+    seed_text(h, ports, root, TEXT).await
+}
+
+/// `seed` with a text of the test's own at the same address.
+async fn seed_text(
+    h: &ColonyHandle,
+    ports: &mut Ports,
+    root: &std::path::Path,
+    text: &str,
+) -> String {
     h.send(space_request(
         "in_write",
         "create",
         SEED_ID,
         None,
-        json!({"path": PATH, "text": TEXT, "notify": "1"}),
+        json!({"path": PATH, "text": text, "notify": "1"}),
     ))
     .await;
     let mut seen = Vec::new();
@@ -978,7 +988,7 @@ async fn seed(h: &ColonyHandle, ports: &mut Ports, root: &std::path::Path) -> St
     );
     assert_eq!(
         text_of(a, "version"),
-        token(TEXT),
+        token(text),
         "the token the stubs pass back is sha256 of the bytes, first 12 hex: {a}"
     );
     // `derived` may have overtaken the answer; it is in `seen` then.
@@ -1005,7 +1015,7 @@ async fn seed(h: &ColonyHandle, ports: &mut Ports, root: &std::path::Path) -> St
         json!(true),
         "`./derive` wrote the seed's summary and embeddings: {d}"
     );
-    assert_eq!(text_of(d, "version"), token(TEXT), "{d}");
+    assert_eq!(text_of(d, "version"), token(text), "{d}");
     assert_eq!(
         text_of(d, "oneline"),
         BACKGROUND_REPLY,
@@ -1094,6 +1104,92 @@ fn parked_errors(rx: &mut mpsc::Receiver<Message>) -> Vec<Value> {
 // ═════════════════════════════════════════════════════════════════════════ pins
 
 /// Run 1: a voice reads a seeded file through `file_summary` and `file_read`.
+/// GH #1085 (fix review G2 I-3): on the road a member really runs -- the
+/// talky's brain, its splitter and dispatcher, the composite's tool exit, the
+/// assistant level, the member's door, the space's `./tools` and `./read` --
+/// a `file_read` takes a tenth of the window of the brain that reads it (its
+/// `input_soft` stamp, here 50 000 tokens: 15 000 characters) and names where
+/// the rest starts; without the stamp the same file comes back whole. Before
+/// this lock only the cells and a road the test drew itself were held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_talky_read_takes_a_tenth_of_its_brains_window() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let big: String = (0..1000).map(|i| format!("{i:04} {LINE}\n")).collect();
+    let cut = talky_reads(&big, Some(50_000)).await;
+    assert!(
+        cut.contains("\"ok\": true")
+            && cut.contains("...[cut: ")
+            && cut.contains("read with from="),
+        "the read is cut to the brain's window and says where the rest starts: {}",
+        &cut[cut.len().saturating_sub(400)..]
+    );
+    assert!(
+        cut.contains("0000 ") && !cut.contains("0999 "),
+        "the head of the file, not its tail"
+    );
+    let whole = talky_reads(&big, None).await;
+    assert!(
+        whole.contains("0999 ") && !whole.contains("...[cut: "),
+        "without a window the same road delivers the file whole: {}",
+        &whole[whole.len().saturating_sub(400)..]
+    );
+}
+
+/// One talky turn whose brain calls `file_read` on a file seeded with
+/// `text`; the brain's catalogue window is `window` (None: no stamp). Hands
+/// back the read's result as the next request carried it.
+async fn talky_reads(text: &str, window: Option<u64>) -> String {
+    let file_arg = json!({"file": PATH}).to_string();
+    let voice = MockOpenAI::start(vec![
+        canned_tool_calls(vec![(READ_ID, "file_read", file_arg.as_str())]),
+        canned_chat_completion(ANSWER_A, "stop"),
+    ])
+    .await;
+    let core = MockOpenAI::start(vec![canned_chat_completion(CORE_DONE, "stop")]).await;
+    let background =
+        MockOpenAI::start(vec![canned_chat_completion(BACKGROUND_REPLY, "stop")]).await;
+    let embed = embed_stub();
+    let stubs = Stubs {
+        surface: voice.base_url.clone(),
+        core: core.base_url.clone(),
+        background: background.base_url.clone(),
+        embed: embed.url.clone(),
+    };
+    let td = tempfile::TempDir::new().expect("tempdir");
+    build_member(&td, &stubs);
+    let brain = td.path().join("main/assistants/talky/brain/config.json");
+    let mut cfg = read_json(&brain);
+    let params = cfg["params"].as_object_mut().expect("the brain's params");
+    params.remove("input_soft");
+    if let Some(w) = window {
+        params.insert("input_soft".into(), json!(w));
+    }
+    write_json(&brain, &cfg);
+    let root = td.path().to_path_buf();
+    let (h, mut ports) = boot(&td).await;
+    h.send(menu_tick()).await;
+    seed_text(&h, &mut ports, &root, text).await;
+    wait_for_menus(&root, &[("talky", "file_read")]).await;
+    h.send(person("t-1", SAID_A)).await;
+    let mut seen = Vec::new();
+    next_matching(
+        &mut ports.sink,
+        &root,
+        "the talky's answer",
+        DEADLINE,
+        |m| said(m).contains(ANSWER_A),
+        &mut seen,
+    )
+    .await;
+    let reqs = voice.recorded_requests().await;
+    h.shutdown().await;
+    assert_eq!(reqs.len(), 2, "ask, then answer");
+    tool_content(&reqs[1], READ_ID)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_talky_reads_a_seeded_file_through_its_tools() {
     if !shipped() {

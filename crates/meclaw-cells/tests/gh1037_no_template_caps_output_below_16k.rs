@@ -141,7 +141,13 @@ fn gh1037_every_reachable_chat_row_states_its_max_output() {
     for line in lines {
         let row: Value = serde_json::from_str(line).unwrap();
         let reachable = matches!(row["status"].as_str(), Some("active" | "explicit"));
-        if !reachable || row["wire_dialect"] == "decisions" {
+        // GH #1085: an embeddings row answers vectors, no completion either.
+        if !reachable
+            || matches!(
+                row["wire_dialect"].as_str(),
+                Some("decisions" | "embeddings")
+            )
+        {
             continue;
         }
         seen += 1;
@@ -233,7 +239,27 @@ fn gh1037_every_reachable_row_states_its_input_bounds_and_cache_price() {
             note.contains("input_soft") && note.contains("input_hard"),
             "{id}: note"
         );
-        if row["wire_dialect"] == "decisions" {
+        // GH #1085: an embeddings row lists no cache price, as a decisions row.
+        if matches!(
+            row["wire_dialect"].as_str(),
+            Some("decisions" | "embeddings")
+        ) {
+            continue;
+        }
+        // GH #1085: a `local` row is a model a server on the operator's own
+        // hardware runs. It bills nothing, so it has no prices to weigh, and
+        // its window is shared by prompt and answer -- the hard bound leaves
+        // exactly the room the row promises for an answer.
+        if row["provider"] == "local" {
+            for key in ["cost_in", "cost_out", "cost_cached_in", "cost_cache_write"] {
+                assert_eq!(row[key].as_f64(), Some(0.0), "{id}: {key} of a local row");
+            }
+            assert!(note.contains("bills nothing"), "{id}: the note says why 0");
+            assert_eq!(
+                hard + row["max_output"].as_u64().unwrap_or(0),
+                window,
+                "{id}: input_hard and max_output share the local window"
+            );
             continue;
         }
         let cached = row["cost_cached_in"].as_f64().unwrap_or(0.0);
@@ -308,4 +334,43 @@ fn gh1037_the_closer_asks_confidence_on_0_to_100() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "[90, 1, 100, 85, 72, 70, 70, 100, 0]"
     );
+}
+
+/// GH #1085 (audit of `llm::window`): the rates the brain's window estimate
+/// counts a prompt with come from the row, not from a constant of the cell
+/// -- a flat three bytes a token refused English a quarter before the real
+/// window. Every reachable row states `chars_per_token` in its package, every
+/// row that takes images `tokens_per_image`, and the note says where each
+/// figure comes from. The defaults of the cell are left for a cell no row
+/// has reached.
+#[test]
+fn gh1085_every_reachable_row_states_how_its_window_counts() {
+    let root = templates_root().join("llm-registry");
+    if !root.join("store/seed/models.jsonl").is_file() {
+        return;
+    }
+    let text = std::fs::read_to_string(root.join("store/seed/models.jsonl")).unwrap();
+    let mut seen = 0;
+    for line in text.lines().skip(1) {
+        let row: Value = serde_json::from_str(line).unwrap();
+        if !matches!(row["status"].as_str(), Some("active" | "explicit")) {
+            continue;
+        }
+        seen += 1;
+        let id = row["model_id"].as_str().unwrap_or("?");
+        let pkg = &row["package"];
+        let rate = pkg["chars_per_token"].as_f64().unwrap_or(0.0);
+        assert!((1.0..=8.0).contains(&rate), "{id}: chars_per_token {rate}");
+        let note = row["note"].as_str().unwrap_or("");
+        assert!(
+            note.contains("chars_per_token"),
+            "{id}: the note names the rate's source"
+        );
+        if row["caps"]["vision"] == true {
+            let n = pkg["tokens_per_image"].as_u64().unwrap_or(0);
+            assert!(n > 0, "{id}: a vision row states tokens_per_image");
+            assert!(note.contains("tokens_per_image"), "{id}: note");
+        }
+    }
+    assert!(seen > 0, "the catalogue has rows");
 }

@@ -4,11 +4,11 @@
   },
   "params": {
     "runner": "python3",
-    "script_inline": "\nimport sys, json\n\nd = json.load(sys.stdin)[\"body\"]\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    # Echo guard: error replies / non-tool input end here (terminal empty multi-send).\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nout = [{\"header\": {\"route\": \"c_asst\"}, \"messages\": calls}]\nfor i, c in enumerate(calls):\n    wrapper = json.loads(c.get(\"text\", \"{}\"))\n    name = wrapper.get(\"name\", \"unknown\")\n    args = wrapper.get(\"arguments\", \"{}\")\n    if not isinstance(args, str):\n        args = json.dumps(args)\n    out.append({\n        \"header\": {\"tool_name\": name},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": c.get(\"id\", \"call-%d\" % i), \"text\": args}]\n    })\nsys.stdout.write(json.dumps(out))\n",
+    "script_inline": "\nimport sys, json\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\n# GH #1085 (R-IG-1): the planner stamps its window (`input_soft`, from its\n# catalogue row) on the answer that asks for the tools, and a tool cuts its\n# result to a share of the window of the model that reads it. A hop lives for\n# one emission and this cell emits anew, so the planner's window rides on with\n# each call -- without it every tool behind this cell answered whole.\nsoft = (((doc.get(\"envelope\") or {}).get(\"header\") or {}).get(\"hop\") or {}).get(\"input_soft\")\nwindow = soft if isinstance(soft, (int, float)) and not isinstance(soft, bool) and soft > 0 else None\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    # Echo guard: error replies / non-tool input end here (terminal empty multi-send).\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nout = [{\"header\": {\"route\": \"c_asst\"}, \"messages\": calls}]\nfor i, c in enumerate(calls):\n    wrapper = json.loads(c.get(\"text\", \"{}\"))\n    name = wrapper.get(\"name\", \"unknown\")\n    args = wrapper.get(\"arguments\", \"{}\")\n    if not isinstance(args, str):\n        args = json.dumps(args)\n    header = {\"tool_name\": name}\n    if window is not None:\n        header[\"input_soft\"] = window\n    out.append({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": c.get(\"id\", \"call-%d\" % i), \"text\": args}]\n    })\nsys.stdout.write(json.dumps(out))\n",
     "external_timeout_ms": 10000
   },
   "contract": {
-    "version": "1.0.0",
+    "version": "1.0.1",
     "settings": {},
     "multi_send_capable": true,
     "emits": {
@@ -29,6 +29,10 @@
         "tool_name": {
           "type": "string",
           "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
         }
       }
     },
@@ -48,7 +52,7 @@
     "purpose": "M4 dispatcher, multi-send: unwraps ALL of the planner's OpenAI-form tool_calls ({name, arguments}) \u2014 one routed message per call (raw args, hop.tool_name) plus the assistant turn to the collector (c_asst lane) as the fan-in expectation set.",
     "use_when": "Between the loop llm and the tool cells; the run-4 'first tool_call wins' drop is gone (v2).",
     "not_in_scope": "No arg validation; unknown tool names route to the dead-letter drain edge.",
-    "emits_meaning": "c_asst: the verbatim tool_call turns (thread row + expected-id set). Per call: one tool_call turn with raw args, hop.tool_name as routing discriminator. No tool_calls in input (e.g. substrate error reply echo) -> NOTHING (empty multi-send, terminal).",
+    "emits_meaning": "c_asst: the verbatim tool_call turns (thread row + expected-id set). Per call: one tool_call turn with raw args, hop.tool_name as routing discriminator, and the planner's hop.input_soft when it stamped one (GH #1085: the window the result is read in; the tool cuts to its share of it). No tool_calls in input (e.g. substrate error reply echo) -> NOTHING (empty multi-send, terminal).",
     "consumes_meaning": "messages[]: the planner's assistant tool_call turns in OpenAI function-call form.",
     "examples": [
       "3 tool_calls -> 4 emissions: 1x c_asst (3 turns) + 3x {tool_name: web_search, args {query}}"

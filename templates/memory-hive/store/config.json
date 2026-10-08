@@ -60,7 +60,11 @@
         "id": "text",
         "canonical_name": "text",
         "kind": "text",
-        "aliases": "json"
+        "aliases": "json",
+        "subject_key": "text",
+        "valid_until": "text",
+        "merged_into": "text",
+        "valid_from": "text"
       },
       "entity_edges": {
         "id": "text",
@@ -72,7 +76,10 @@
         "channel": "text",
         "audience_set": "text",
         "valid_from": "text",
-        "valid_until": "text"
+        "valid_until": "text",
+        "relation": "text",
+        "evidence": "json",
+        "relation_at": "text"
       },
       "beliefs": {
         "id": "text",
@@ -201,6 +208,40 @@
     "query_timeout_ms": 5000,
     "transfer": {
       "base_path": "/tmp/meclaw-member-export"
+    },
+    "indexes": {
+      "entities_id": {
+        "table": "entities",
+        "on": [
+          "id"
+        ],
+        "unique": true
+      },
+      "entities_subject_key": {
+        "table": "entities",
+        "on": [
+          "subject_key"
+        ]
+      },
+      "entity_edges_id": {
+        "table": "entity_edges",
+        "on": [
+          "id"
+        ],
+        "unique": true
+      },
+      "entity_edges_src": {
+        "table": "entity_edges",
+        "on": [
+          "src_entity"
+        ]
+      },
+      "entity_edges_dst": {
+        "table": "entity_edges",
+        "on": [
+          "dst_entity"
+        ]
+      }
     }
   },
   "contract": {

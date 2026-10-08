@@ -1205,6 +1205,24 @@ class TestCiMode(GateShTestCase):
         self.assertEqual("0", rows["tests"]["secs"])
         self.assertEqual(0, res.returncode)
 
+    def test_ci_skips_the_slow_lock_with_the_tests(self):
+        # The public CI of 0.62.0 went RED here: `ci` skipped `tests` but ran
+        # `slow-tests`, which found no JUnit file (exit 2 = broken lock). The
+        # station below exits 2 the same way when it runs -- it must not run.
+        plan = PLAN_WITH_TESTS + "slow-tests\t1/3 of terminate-after\t1\texit 2\t\n"
+        res = run_gate(self.repo, "ci", "--base", "0" * 40,
+                       plan=self.plan_file(plan), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("SKIP", rows["slow-tests"]["verdict"], res.stdout)
+        self.assertEqual("no-tests-station-in-ci", rows["slow-tests"]["reason"])
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        # ... and outside `ci` the same station still runs and is RED.
+        res = run_gate(self.repo, "integration", "--base", "0" * 40,
+                       plan=self.plan_file("slow-tests\t1/3 of terminate-after\t0\texit 2\t\n"),
+                       dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["slow-tests"]["verdict"], res.stdout)
+
     def test_ci_plan_only_still_reports_tests_true(self):
         res = run_gate(self.repo, "ci", "--base", "0" * 40, "--plan-only",
                        plan=self.plan_file(PLAN_WITH_TESTS))

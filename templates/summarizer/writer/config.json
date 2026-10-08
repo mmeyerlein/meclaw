@@ -6,7 +6,7 @@
   "params": {
     "provider": "openai",
     "model": "${ctx.model}",
-    "requirement": "Condenses a batch of closed conversation into a short prose summary. It needs faithful summarising that adds nothing, clear plain language and a context of a few thousand tokens. Nobody waits on it and it runs once per batch, so a small, inexpensive model is enough.",
+    "requirement": "Condenses one closed session - the whole day, every turn and tool round of it - into a short prose summary. It needs faithful summarising that adds nothing, clear plain language and a context window that holds the day: the prompt takes up to half of it. Nobody waits on it and it runs once per batch, so an inexpensive model is enough.",
     "api_key": "",
     "credential_grant_id": "grant:openrouter@template-summarizer/writer",
     "base_url": "https://openrouter.ai/api/v1",

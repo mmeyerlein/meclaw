@@ -374,9 +374,17 @@ fn apply_round(verdict: Value, turns: Vec<Value>) -> Vec<Value> {
         {"key": "close:s-1", "kind": "verdict", "created_at": "2026-01-01T00:00:00Z",
          "payload": v.to_string()}
     ]);
+    // The cell's own params ride along: the grammar of a forget request is
+    // language data there (`forget_lang`, GH #1074 kf89 review), not script text.
+    let cfg: Value = serde_json::from_str(
+        &std::fs::read_to_string(format!("{}/{}", env!("CARGO_MANIFEST_DIR"), CLOSE))
+            .expect("config"),
+    )
+    .expect("json");
     emit_all(
         &shipped_script(CLOSE),
         &json!({
+            "params": cfg["params"].clone(),
             "header": {"context": {"mem_phase": "close-apply", "session_id": "s-1",
                                    "close_group": "0"},
                        "hop": {"operation": "select"}},
@@ -458,9 +466,12 @@ fn a_forget_request_marks_and_never_deletes() {
         .into_iter()
         .filter(|(_, o)| o["operation"] == "search")
         .collect();
+    // GH #1074 review K2-R8: facts of other sessions (`forget-f`), of this one
+    // up to the request (`forget-s`), of the request's own turn (`forget-o`),
+    // and episodes (`forget-e`)
     assert_eq!(
         searches.len(),
-        2,
+        4,
         "facts and episodes of the round are searched, once: {searches:?}"
     );
     for (phase, op) in &searches {
@@ -484,8 +495,9 @@ fn a_forget_request_marks_and_never_deletes() {
         fact_search["match"],
         "claim : \"kolja\" AND claim : \"owes\""
     );
+    // GH #1074: the fact's own time, the clock `happened_at` is on (not the write clock)
     assert_eq!(
-        fact_search["where"]["recorded_at"],
+        fact_search["where"]["valid_from"],
         json!({"lte": "2026-01-01T10:02:00Z"})
     );
     assert_eq!(

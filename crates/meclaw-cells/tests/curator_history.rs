@@ -548,6 +548,17 @@ impl Hive {
         self.history_in("s-now", "t-now", name, args)
     }
 
+    /// The served model's window as `./policy` keeps it (state `input_soft`,
+    /// tokens): what a read is measured by (GH #1085).
+    fn window(&mut self, soft: u64) {
+        self.db
+            .execute(
+                "INSERT INTO state (key, value) VALUES ('input_soft', ?1)",
+                rusqlite::params![soft.to_string()],
+            )
+            .expect("the window");
+    }
+
     fn history_in(&mut self, session: &str, turn: &str, name: &str, args: Value) -> (Msg, Value) {
         self.out.clear();
         // GH #925: the round the call is served in (`self.round`, null = none).
@@ -1271,7 +1282,11 @@ fn read_over_budget_is_too_large_never_cut() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("history", "read_budget", json!(50))]);
+    // A tenth of 167 tokens at 3 characters a token: a budget of 50
+    // characters (R-IG-1, OR-IG-5: the read is a tool result to the served
+    // model, whose window `./policy` keeps in state `input_soft`).
+    let mut h = Hive::new();
+    h.window(167);
     let w = sown(&mut h);
     let body = canonical(&user("The lighthouse keeper is called Ada Quill."));
     assert!(
@@ -1297,11 +1312,27 @@ fn read_over_budget_is_too_large_never_cut() {
         "the range names how many blocks it holds: {p}"
     );
     // Within the budget the same read is whole.
-    let mut h = Hive::with(&[("history", "read_budget", json!(body.len()))]);
+    let mut h = Hive::new();
+    h.window((body.len() as u64 * 10).div_ceil(3) + 1);
     let w = sown(&mut h);
     let (m, p) = h.history("history_read", json!({"id": short(&w.ada)}));
     assert_eq!(error_of(&m), "", "{p}");
     assert_eq!(canonical(&p["blocks"][0]["block"]), body);
+}
+
+/// R-IG-1 (GH #1085): a read far over the 40000 characters it was refused at
+/// until curator 1.11.0 comes whole while no window is known.
+#[test]
+fn a_read_goes_whole_without_a_window() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::new();
+    let long = user(&"l".repeat(50_000));
+    let hash = h.sow(1, "s1", "t1", "user", &long, &at(20, 1));
+    let (m, p) = h.history("history_read", json!({"id": short(&hash)}));
+    assert_eq!(error_of(&m), "", "{p}");
+    assert_eq!(canonical(&p["blocks"][0]["block"]), canonical(&long));
 }
 
 #[test]
@@ -1374,8 +1405,10 @@ fn a_range_and_an_outline_read_a_bounded_wall() {
     assert_eq!(p["sessions"][0]["first_turn"], "t36", "{p}");
     assert_eq!(p["sessions"][0]["turns"], 5, "{p}");
     assert!(h.read_of("wall") <= 6, "{:?}", h.reads);
-    // Raw text over ten read budgets is refused before the bodies are read.
-    let mut h = Hive::with(&[("history", "read_budget", json!(10))]);
+    // Raw text over ten read budgets is refused before the bodies are read
+    // (a tenth of 34 tokens: 10 characters).
+    let mut h = Hive::new();
+    h.window(34);
     sown(&mut h);
     let (m, p) = h.history("history_read", json!({"from_turn": "t2"}));
     assert_eq!(error_of(&m), "too_large", "{p}");
@@ -1775,8 +1808,10 @@ fn the_hive_takes_the_call_and_hands_back_the_result() {
     );
     let cell = cell_config("history");
     assert_eq!(cell["cell"]["type"], "code");
+    // GH #1085 (OR-IG-5): no read budget of its own -- a tenth of the window.
+    assert!(cell["params"].get("read_budget").is_none());
+    assert!(script_of("history").contains("READ_SHARE = 0.10\n"));
     for (knob, default) in [
-        ("read_budget", 40_000),
         ("scan_budget", 5_000),
         ("time_budget_ms", 3_000),
         // 400 since OR-BD-78: the longest search inside the GH #929 reserve.

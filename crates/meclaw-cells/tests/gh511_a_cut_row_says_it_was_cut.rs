@@ -40,17 +40,24 @@
 //! the identical cut row, so the corpus correctly read as having nothing further
 //! to give, while more than half of it had simply not been sent.
 //!
+//! GH #1085 (R-IG-1) took the retriever's own numbers away: the per-kind
+//! windows of #511 (1200, 4000, 1600) knew nothing of the model reading the
+//! briefing. The briefing is one tool result now and takes a tool result's
+//! share (10 %) of that model's window; without a known window every row
+//! travels whole.
+//!
 //! What is pinned here:
 //!
-//! 1. a CATALOGUE row travels whole — and the shipped corpus is such that this
-//!    is a fact about the tree, not a hope;
-//! 2. the measured row itself: `clock`'s params reach the model;
-//! 3. every other kind keeps the recall window, cuts on a WORD BOUNDARY, and
-//!    says so with a marker that counts what it dropped;
-//! 4. a row that fits is not touched and carries no marker;
-//! 5. the drift lock of `docs/development-rules.md` § 2d, both halves: the two
-//!    knobs and their defaults are grepped on the public surfaces AND derived
-//!    from the shipped script, so the prose cannot outlive the mechanism.
+//! 1. without a window every row travels whole -- a catalogue row, the measured
+//!    `clock` row, and an ordinary row three times the old 1200;
+//! 2. with a window, rows travel whole while they fit; the first that does not
+//!    travels as a PREFIX with the one mark, which counts what it showed and
+//!    the total and names the retrieval to ask, and every row after it is
+//!    named as dropped with its size;
+//! 3. a row that fits is not touched and carries no mark;
+//! 4. the drift lock of `docs/development-rules.md` § 2d: the README and the
+//!    descriptor publish the mark the cell writes, and the retriever carries
+//!    no window knob of its own any more.
 //!
 //! **R2b guard.** Every read is guarded by [`shipped`]: where the template does
 //! not ship, these tests skip rather than fail on a dead reference.
@@ -61,10 +68,6 @@ use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/builder-librarian")
-}
-
-fn builder_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/builder")
 }
 
 /// The files this suite reads. The list is the guard AND the inventory.
@@ -79,41 +82,25 @@ fn retrieve_script(r: &Path) -> String {
     shipped_script(r.join("retrieve/config.json").to_str().expect("path"))
 }
 
-/// The value of one window knob, read out of the SHIPPED script rather than
-/// written down here. Since `builder-librarian@2.2.0` (GH #138) the script says
-/// `ROW_CHARS = _int("row_chars", 1200)`, so the number is the LITERAL the
-/// accessor falls back to -- which is exactly what an operator who sets nothing
-/// gets, the same claim the old `${NAME:-1200}` form made.
-fn knob(r: &Path, upper: &str, key: &str) -> usize {
-    let script = retrieve_script(r);
-    let needle = format!("{upper} = _int(\"{key}\", ");
-    let at = script
-        .find(&needle)
-        .unwrap_or_else(|| panic!("the shipped retriever has no `{upper}` — GH #511 named it"));
-    let rest = &script[at + needle.len()..];
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits
-        .parse()
-        .unwrap_or_else(|_| panic!("`{upper}` is not a literal number: {rest:.40}"))
-}
-
-fn row_chars(r: &Path) -> usize {
-    knob(r, "ROW_CHARS", "row_chars")
-}
-
-fn catalogue_chars(r: &Path) -> usize {
-    knob(r, "CATALOGUE_CHARS", "catalogue_chars")
-}
-
 /// Phase B, driven the way the store's return edge drives it: one `tool_result`
 /// turn keyed `lib1` carrying the slate, and the per-leg metadata beside it.
 fn briefed(r: &Path, request: &str, hits: Vec<Value>) -> Value {
+    briefed_in(r, request, hits, None)
+}
+
+/// The same, for a reader whose window is `input_soft` tokens (in the context,
+/// where the curator puts it).
+fn briefed_in(r: &Path, request: &str, hits: Vec<Value>, input_soft: Option<u64>) -> Value {
+    let mut context = json!({"orig_request": request});
+    if let Some(w) = input_soft {
+        context["input_soft"] = json!(w);
+    }
     let mut out = emit_all(
         &retrieve_script(r),
         &json!({
             "header": {
                 "hop": {"operation": "search", "rows_affected": hits.len()},
-                "context": {"orig_request": request},
+                "context": context,
             },
             "params": {},
             "messages": [{
@@ -152,8 +139,12 @@ fn body(len: usize) -> String {
 }
 
 fn a_row(kind: &str, text: &str) -> Value {
+    a_row_id("d0001", kind, text)
+}
+
+fn a_row_id(id: &str, kind: &str, text: &str) -> Value {
     json!({
-        "id": "d0001",
+        "id": id,
         "source": "templates/clock/template.json",
         "section": "clock",
         "kind": kind,
@@ -161,7 +152,7 @@ fn a_row(kind: &str, text: &str) -> Value {
     })
 }
 
-const MARKER: &str = "[TRUNCATED:";
+const MARK: &str = "...[cut: ";
 
 /// Every `kind: "template"` row of the shipped corpus, longest first.
 fn catalogue_rows(r: &Path) -> Vec<(usize, String, String)> {
@@ -181,46 +172,29 @@ fn catalogue_rows(r: &Path) -> Vec<(usize, String, String)> {
     rows
 }
 
-// --------------------------------------------------------------- the catalogue
+// --------------------------------------------------------- no window: whole
 
 #[test]
-fn a_catalogue_row_travels_whole() {
+fn without_a_window_every_row_travels_whole() {
     let Some(r) = shipped() else { return };
-    let text = body(catalogue_chars(&r) - 1);
-    let brief = briefed(&r, "clock", vec![a_row("template", &text)]);
-    let out = said(&brief);
+    let catalogue = body(10_000);
+    let spec = body(3600).replace("word", "spec");
+    let out = said(&briefed(
+        &r,
+        "clock",
+        vec![a_row("template", &catalogue), a_row("spec", &spec)],
+    ));
     assert!(
-        !out.contains(MARKER),
-        "a catalogue row inside the window must not be marked as cut: {out:.200}"
+        out.contains(&catalogue),
+        "a catalogue row over the old 4000 travels whole"
     );
     assert!(
-        out.contains(&text),
-        "a catalogue row IS the template's interface — half an interface is a \
-         wrong answer, not a shorter one"
+        out.contains(&spec),
+        "an ordinary row three times the old 1200 travels whole"
     );
-}
-
-/// The claim *"a catalogue row is never cut"* is a claim about the TREE, so it
-/// is checked against the tree: the corpus chunker caps a row at 4000
-/// characters (`workshop/tools/build_librarian_seed.py`, `MAX_CHARS`) and the
-/// catalogue window has to clear that, or the sentence is a wish.
-#[test]
-fn the_catalogue_window_clears_the_longest_row_the_corpus_holds() {
-    let Some(r) = shipped() else { return };
-    let rows = catalogue_rows(&r);
     assert!(
-        rows.len() > 20,
-        "{} catalogue rows is not the shipped corpus — the check would pass \
-         vacuously",
-        rows.len()
-    );
-    let (len, section, _) = &rows[0];
-    assert!(
-        *len <= catalogue_chars(&r),
-        "the longest catalogue row (`{section}`, {len} characters) does not fit \
-         the {} the retriever gives it, so the corpus DOES cut a catalogue row \
-         and the README says it does not",
-        catalogue_chars(&r)
+        !out.contains(MARK) && !out.contains("[dropped:") && !out.contains("TRUNCATED"),
+        "nothing was cut, so nothing may say it was: {out:.200}"
     );
 }
 
@@ -237,225 +211,156 @@ fn the_clock_row_reaches_the_model_with_its_params_on_it() {
         eprintln!("skipped: the corpus carries no catalogue row for `clock`");
         return;
     };
-    let out = said(&briefed(
-        &r,
-        "a clock that ticks the firewall's in_sweep every five minutes",
-        vec![a_row("template", &text)],
-    ));
-    for name in ["schedules", "emit_to"] {
+    // No window, and the window of a 32k-token reader: both carry it whole.
+    for window in [None, Some(32_000)] {
+        let out = said(&briefed_in(
+            &r,
+            "a clock that ticks the firewall's in_sweep every five minutes",
+            vec![a_row("template", &text)],
+            window,
+        ));
+        for name in ["schedules", "emit_to"] {
+            assert!(
+                out.contains(name),
+                "`{name}` counted 0 in the measured tool result and is what three \
+                 repair rounds were spent guessing; it must reach the model"
+            );
+        }
         assert!(
-            out.contains(name),
-            "`{name}` counted 0 in the measured tool result and is what three \
-             repair rounds were spent guessing; it stands in the row and must \
-             reach the model"
+            !out.contains(MARK) && out.contains(&text),
+            "{window:?}: the catalogue row must arrive whole -- the examples are its \
+             last key: {out:.300}"
         );
     }
-    // The two names above are answered by the `PARAMS —` demand line of GH
-    // #505, which is budgeted to sit inside the OLD window. What #511 adds is
-    // the rest of the row: the whole `template.json`, whose LAST key is
-    // `description.examples` — the worked `override_params` block the composer
-    // was guessing at, and the half that never travelled.
-    assert!(
-        !out.contains(MARKER),
-        "the `clock` row is still being cut, so its worked example still does \
-         not reach the model: {out:.300}"
-    );
-    assert!(
-        out.contains(&text),
-        "the catalogue row must arrive whole — the examples are its last key"
-    );
 }
 
-// ------------------------------------------------------------- everything else
+// ------------------------------------------------------- with a window: budget
 
 #[test]
 fn a_row_that_fits_is_not_touched() {
     let Some(r) = shipped() else { return };
-    let text = body(row_chars(&r) / 2);
-    let out = said(&briefed(&r, "a spec question", vec![a_row("spec", &text)]));
+    let text = body(600);
+    // 20 000 tokens: a tenth of it, at three characters a token, is 6000.
+    let out = said(&briefed_in(
+        &r,
+        "a spec question",
+        vec![a_row("spec", &text)],
+        Some(20_000),
+    ));
     assert!(out.contains(&text), "a short row travels verbatim");
     assert!(
-        !out.contains(MARKER),
+        !out.contains(MARK),
         "a row that was not cut must not claim it was: {out:.200}"
     );
 }
 
 #[test]
-fn a_row_that_does_not_fit_is_cut_on_a_word_boundary_and_says_so() {
+fn rows_fill_the_budget_then_one_is_cut_with_the_mark_and_the_rest_are_named() {
     let Some(r) = shipped() else { return };
-    let cap = row_chars(&r);
-    let text = body(cap * 3);
-    let out = said(&briefed(&r, "a spec question", vec![a_row("spec", &text)]));
-
-    assert!(
-        out.contains(MARKER),
-        "the cut has to be legible — a fragment a reader cannot recognise as a \
-         fragment is a different object from one it can (GH #344): {out:.300}"
+    let first = body(3000);
+    let second = body(5000);
+    let third = body(2000).replace("word", "third");
+    let out = said(&briefed_in(
+        &r,
+        "a spec question",
+        vec![
+            a_row_id("d0001", "spec", &first),
+            a_row_id("d0002", "spec", &second),
+            a_row_id("d0003", "spec", &third),
+        ],
+        Some(20_000),
+    ));
+    assert!(out.contains(&first), "the best row fits and travels whole");
+    assert_eq!(
+        out.matches(MARK).count(),
+        1,
+        "exactly one row is cut: {out:.300}"
     );
 
-    // What survived, between the row heading and the marker.
-    let head = out
-        .split_once('\n')
-        .expect("the row carries its heading first")
-        .1
-        .split(MARKER)
-        .next()
-        .expect("text before the marker")
-        .trim_end_matches(['\n', '\u{2026}', ' ']);
+    // The cut row: a PREFIX of its rendered form and nothing invented, then
+    // the mark with what it showed and the total.
+    let cut = out
+        .split("### ")
+        .find(|s| s.contains("[d0002]"))
+        .expect("the second row");
+    let (shown, after) = cut.split_once(MARK).expect("the mark");
+    let shown = format!("### {shown}");
+    let rendered = format!("{}\n{second}", shown.split_once('\n').expect("a heading").0);
     assert!(
-        !head.is_empty() && text.starts_with(head),
-        "what travels must be a PREFIX of the row and nothing invented"
+        rendered.starts_with(&shown),
+        "what travels is a prefix of the row"
     );
-    assert!(
-        head.len() <= cap,
-        "the window is {cap}; {} characters travelled",
-        head.len()
-    );
-    assert!(
-        head.len() > cap / 2,
-        "a seam is worth having only while it costs a word, not half the window"
-    );
-    assert!(
-        text[head.len()..].starts_with(' '),
-        "the cut landed MID-WORD — that is the defect, and it is what made the \
-         last token of every catalogue row unreadable: {:?}",
-        &text[head.len().saturating_sub(20)..head.len() + 10]
-    );
-
-    // The marker counts what it dropped, and the two numbers agree with the row.
-    let after = out.split(MARKER).nth(1).expect("the marker's body");
     let nums: Vec<usize> = after
         .split(|c: char| !c.is_ascii_digit())
         .filter(|s| !s.is_empty())
         .take(2)
         .map(|s| s.parse().expect("a count"))
         .collect();
-    assert_eq!(nums.len(), 2, "the marker says <n> of <m>: {after:.120}");
     assert_eq!(
-        nums[1],
-        text.len(),
-        "the marker's second number is the row's whole length"
-    );
-    assert_eq!(
-        nums[0],
-        text.len() - head.len(),
-        "the marker's first number is what did NOT travel — a count that does \
-         not add up is worse than none"
-    );
-    assert!(
-        after.contains("FRAGMENT"),
-        "the marker has to say what the row now IS, not only that it is short"
+        nums,
+        vec![shown.chars().count(), rendered.chars().count()],
+        "{after:.120}"
     );
     assert!(
         after.contains("catalogue_lookup"),
-        "and it names the one retrieval that is never cut, so the reader has a \
-         move rather than a regret"
+        "the mark names the retrieval that asks for one row by name"
     );
-}
-
-/// Two rows, two windows, in ONE briefing — the kind decides per row, not per
-/// call, so a `librarian_search` that happens to surface a catalogue row still
-/// hands it over whole.
-#[test]
-fn the_window_is_decided_per_row_and_not_per_call() {
-    let Some(r) = shipped() else { return };
-    let long = body(catalogue_chars(&r) - 1);
-    let out = said(&briefed(
-        &r,
-        "clock",
-        vec![a_row("template", &long), a_row("spec", &long)],
-    ));
-    assert_eq!(
-        out.matches(MARKER).count(),
-        1,
-        "exactly one of the two rows is cut — the template row is not: {out:.300}"
-    );
+    // The third row did not travel, and the briefing says so with its size.
+    assert!(!out.contains(&third), "{out:.300}");
+    assert!(out.contains("...[dropped: d0003 ("), "{out:.300}");
 }
 
 // ------------------------------------------------------------------ drift lock
 
-/// § 2d, both halves. The knob names and their defaults are published on two
-/// public template surfaces; here they are grepped there AND derived from the
-/// script, so neither can move without the other.
+/// § 2d, both halves: what the cell writes is what the README and the
+/// descriptor publish, and the retriever holds no window number any more.
 #[test]
-fn the_two_windows_are_published_with_the_numbers_the_script_uses() {
+fn the_mark_is_published_as_the_cell_writes_it() {
     let Some(r) = shipped() else { return };
     let readme = std::fs::read_to_string(r.join("README.md")).expect("the librarian README");
     let cfg: Value = meclaw_core::serde_json::from_str(
         &std::fs::read_to_string(r.join("retrieve/config.json")).expect("the retriever"),
     )
     .expect("the retriever config parses");
-    for (knob, value) in [
-        ("row_chars", row_chars(&r)),
-        ("catalogue_chars", catalogue_chars(&r)),
-    ] {
-        assert!(
-            readme.contains(knob),
-            "`{knob}` is a knob of this template and its README does not name it"
-        );
-        assert!(
-            readme.contains(&format!("`{knob}` | `{value}`")),
-            "the README publishes `{knob}` with a default the script does not \
-             use — the script says {value}"
-        );
-        // Since GH #138 the knob is a PARAM, so the second surface is
-        // `params` + `contract.settings` rather than a `${...}` token, and the
-        // number stands in the config exactly as the script falls back to it.
-        assert_eq!(
-            cfg["params"][knob].as_u64(),
-            Some(value as u64),
-            "params.{knob} is not the number the script falls back to, so an \
-             instance that sets nothing runs on a different value than the \
-             config publishes"
-        );
-        assert_eq!(
-            cfg["contract"]["settings"][knob]["default"].as_u64(),
-            Some(value as u64),
-            "contract.settings.{knob}.default disagrees with the shipped param"
-        );
-    }
-    let builder = builder_root().join("README.md");
-    if builder.exists() {
-        let builder = std::fs::read_to_string(builder).expect("the builder README");
-        for knob in ["row_chars", "catalogue_chars"] {
-            assert!(
-                builder.contains(knob),
-                "the builder publishes the librarian's knobs beside its own and \
-                 `{knob}` is missing"
-            );
-        }
-    }
-}
-
-/// The mechanism half of the same lock, on the descriptor: `retrieve`'s own
-/// `description` claims the marker's wording, so the claim is driven through
-/// the cell.
-#[test]
-fn the_descriptor_publishes_the_marker_the_cell_actually_writes() {
-    let Some(r) = shipped() else { return };
-    let raw = std::fs::read_to_string(r.join("retrieve/config.json")).expect("retrieve config");
-    let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("parses");
     let says = cfg["description"]["emits_meaning"]
         .as_str()
         .expect("the retriever describes what it emits");
-    assert!(
-        says.contains("TRUNCATED"),
-        "the descriptor does not mention the marker at all"
-    );
-    let text = body(row_chars(&r) * 2);
-    let out = said(&briefed(&r, "a spec question", vec![a_row("spec", &text)]));
-    let marker_tail = out
-        .split(MARKER)
+    let out = said(&briefed_in(
+        &r,
+        "a spec question",
+        vec![
+            a_row_id("d0001", "spec", &body(9000)),
+            a_row_id("d0002", "spec", &body(10)),
+        ],
+        Some(20_000),
+    ));
+    let mark_tail = out
+        .split(MARK)
         .nth(1)
-        .expect("the marker")
+        .expect("the mark")
         .split(']')
         .next()
-        .expect("the marker closes");
-    for sentence in ["FRAGMENT", "catalogue_lookup"] {
+        .expect("the mark closes");
+    for sentence in ["chars shown; budget of the window", "catalogue_lookup"] {
         assert!(
-            says.contains(sentence) && marker_tail.contains(sentence),
-            "`{sentence}` is published on one side and written on the other — \
-             that is the drift the lock exists to catch"
+            mark_tail.contains(sentence) && says.contains(sentence) && readme.contains(sentence),
+            "`{sentence}` is written by the cell and must stand on both surfaces"
+        );
+    }
+    for surface in [says, readme.as_str()] {
+        assert!(
+            surface.contains("...[dropped: "),
+            "the dropped mark is published"
+        );
+        assert!(
+            !surface.contains("TRUNCATED"),
+            "the old marker is gone from the prose"
+        );
+    }
+    for knob in ["row_chars", "catalogue_chars", "level_chars"] {
+        assert!(
+            cfg["params"].get(knob).is_none() && cfg["contract"]["settings"].get(knob).is_none(),
+            "`{knob}` is a number of the retriever's own, and R-IG-1 took it away"
         );
     }
 }

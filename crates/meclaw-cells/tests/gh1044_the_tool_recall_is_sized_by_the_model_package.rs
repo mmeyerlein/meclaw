@@ -3,8 +3,9 @@
 //!
 //! Since GH #1040 the memory hive sizes its tier-1 bundle by the asker's
 //! usable window (`recall_input_soft`): the curator's `./policy` keeps the
-//! answering model's `input_soft`, cut to its window and the role's
-//! `quality_cap`, and `./push` hands it over on the ask it enriches. Two roads
+//! answering model's `input_soft` -- the catalog row, cut to the model's
+//! window alone since GH #1085 (no role's `quality_cap` any more) -- and
+//! `./push` hands it over on the ask it enriches. Two roads
 //! still arrived without it and got the old sizes (2000 tokens, 20 items, 20
 //! per leg): the model's own `memory_recall` tool call -- roughly a fifth of
 //! all brain calls in a measured benchmark run -- and the collector's ask of a
@@ -14,7 +15,7 @@
 //!   * a tool call of the model walks the shipped edges (curator -> brain ->
 //!     dispatcher -> assistant -> member -> memory hive -> tool -> recall) with
 //!     the curator's value, and the recall cell's fan asks the store as deep as
-//!     that value allows (talky under luna: 60 per leg, 6000 tokens);
+//!     that value allows (talky under luna: 125 per leg, 12 500 tokens);
 //!   * without a package every road keeps the old sizes (20 per leg);
 //!   * the composite that sets the key clears it on every exit, so it never
 //!     leaves the member beside the tool call (GH #494/#823);
@@ -209,20 +210,22 @@ fn soft(h: &Headers) -> String {
 #[test]
 fn a_tool_recall_of_talky_under_luna_asks_as_deep_as_the_push() {
     let (h, limits) = tool_recall("talky", "talky", Some(sj::from_str(LUNA).unwrap()));
-    // talky's quality_cap 120 000 under luna's input_soft 250 000; 5 % of it is
-    // 6000 tokens, three times the old 2000 -- 60 per leg instead of 20.
-    assert_eq!(soft(&h), "120000", "{h:?}");
-    assert_eq!(limits["r-fan-kw-ep"], 60, "{limits}");
-    assert_eq!(limits["r-fan-kw-fact"], 60, "{limits}");
-    assert_eq!(limits["r-fan-self"], 60, "{limits}");
+    // luna's catalog row, input_soft 250 000 (GH #1085: no role cuts it);
+    // 5 % of it is 12 500 tokens, 6.25 times the old 2000 -- 125 per leg
+    // instead of 20.
+    assert_eq!(soft(&h), "250000", "{h:?}");
+    assert_eq!(limits["r-fan-kw-ep"], 125, "{limits}");
+    assert_eq!(limits["r-fan-kw-fact"], 125, "{limits}");
+    assert_eq!(limits["r-fan-self"], 125, "{limits}");
 }
 
 #[test]
-fn a_tool_recall_of_cogny_is_cut_to_its_roles_window() {
-    // consult: quality_cap 80 000 -- 4000 tokens, 40 per leg.
+fn a_tool_recall_of_cogny_is_sized_by_the_same_row() {
+    // consult under luna: the same row, no role's window of its own
+    // (GH #1085; `quality_cap` 80 000 made it 40 per leg before).
     let (h, limits) = tool_recall("cogny", "consult", Some(sj::from_str(LUNA).unwrap()));
-    assert_eq!(soft(&h), "80000", "{h:?}");
-    assert_eq!(limits["r-fan-kw-ep"], 40, "{limits}");
+    assert_eq!(soft(&h), "250000", "{h:?}");
+    assert_eq!(limits["r-fan-kw-ep"], 125, "{limits}");
 }
 
 #[test]
@@ -261,7 +264,7 @@ fn every_exit_of_a_core_clears_the_key() {
 #[test]
 fn another_tool_call_carries_no_package() {
     for core in ["talky", "cogny"] {
-        let ctx = map(json!({"recall_input_soft": "120000", "curator_call": "c"}));
+        let ctx = map(json!({"recall_input_soft": "250000", "curator_call": "c"}));
         let h = Headers::from_parts(
             ctx,
             map(json!({"route": "tool", "tool_name": "file_read", "tool_call_id": "x"})),
@@ -306,7 +309,7 @@ fn an_ask_handed_on_untouched_carries_the_package_too() {
     let asks = ask(&mut h, "t2", "And what does he do?");
     assert_eq!(asks.len(), 1, "{:?}", h.stderr);
     assert_eq!(
-        asks[0].hop["recall_input_soft"], "80000",
+        asks[0].hop["recall_input_soft"], "250000",
         "{:?}",
         asks[0].hop
     );

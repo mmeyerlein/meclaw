@@ -19,7 +19,9 @@
 //! 4. the gate lets that manifest through for an agent and for the operator
 //!    and asks the broker about it; a push edge two segments deep, one onto
 //!    somebody else's memory, an announced key it does not know and a need
-//!    over the bound are refused by name.
+//!    over the bound are refused by name. The bound is the llm cell's own for
+//!    `params.requirement`, the carrier ceiling since GH #1085: a need over
+//!    the old fixed 2 KiB passes and reaches the broker.
 
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::code_wire::{code_stdin, emit_all, run_shipped_script, shipped_script};
@@ -262,6 +264,28 @@ fn the_gate_takes_the_members_road_and_asks_about_it() {
     }
 }
 
+/// GH #1085 (R-IG-1): a stated need over the old fixed 2 KiB is prose the
+/// llm cell takes whole, so the gate takes it too and asks about it.
+#[test]
+fn a_need_over_the_old_two_kib_reaches_the_broker() {
+    if !shipped() {
+        return;
+    }
+    let manifest = with_road(|edges| {
+        rewrite_announced(edges, |entries| {
+            entries[0]["requirement"] = json!("x".repeat(64 * 1024));
+        })
+    });
+    for requester in [AGENT, OPERATOR] {
+        let out = submit(&manifest, requester);
+        assert!(
+            parked_and_asked(&out),
+            "a 64 KiB need is under the carrier ceiling, by {requester}: {:?}",
+            refused(&out)
+        );
+    }
+}
+
 /// Mutate the rendered road, keep everything else as rendered.
 fn with_road(f: impl FnOnce(&mut Vec<Value>)) -> Value {
     let (mut decls, _) = render(json!({"model_registry_scope": SCOPE}));
@@ -331,10 +355,11 @@ fn what_is_not_the_members_road_is_refused_by_name() {
             "model_announcement_form",
         ),
         (
-            "a need over the bound",
+            "a need over the bound (the carrier ceiling, GH #1085)",
             with_road(|edges| {
                 rewrite_announced(edges, |entries| {
-                    entries[0]["requirement"] = json!("x".repeat(2049));
+                    entries[0]["requirement"] =
+                        json!("x".repeat(meclaw_cells::content_budget::CARRIER_MAX_BYTES + 1));
                 })
             }),
             "model_announcement_form",

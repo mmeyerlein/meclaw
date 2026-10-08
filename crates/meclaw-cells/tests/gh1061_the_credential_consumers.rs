@@ -401,21 +401,54 @@ fn assert_granted(dir: &Path, pick: impl Fn(&str, &Value) -> bool) -> usize {
     checked
 }
 
+/// Every template that seeds its own broker, with the number of granted
+/// consumers the walk checks in it at least -- the inventory AND the
+/// anti-vacuum floor. Four of them (`coder-pipeline`, `egon`,
+/// `research-assistant`, `slack-agent`) are private and do not travel with the
+/// export: each row is guarded per template by `is_file()` on its seed, so the
+/// public clone checks its own subset against the sum of the rows it has. A
+/// count is the floor of that template, not an exact pin -- a template that
+/// grows a consumer stays green; one whose walk breaks does not.
+const BROKERED: &[(&str, usize)] = &[
+    ("coder-pipeline", 3),
+    ("daily-digest", 1),
+    ("egon", 2),
+    ("freeswitch", 2),
+    ("meclaw-os", 2),
+    ("research-assistant", 2),
+    ("slack-agent", 3),
+    ("steward", 1),
+    ("summarizer", 1),
+];
+
 #[test]
 fn gh1061_every_colony_and_standalone_consumer_is_granted() {
     if !shipped() {
         return; // GH #49
     }
     let mut checked = 0;
+    let mut floor = 0;
     for dir in template_dirs() {
         if !dir.join("access/store/seed/grants.jsonl").is_file() {
             continue;
         }
-        checked += assert_granted(&dir, |_, _| true);
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let Some(&(_, min)) = BROKERED.iter().find(|(t, _)| *t == name) else {
+            panic!(
+                "templates/{name} seeds a broker but is not in BROKERED -- add it with its count"
+            );
+        };
+        let n = assert_granted(&dir, |_, _| true);
+        assert!(
+            n >= min,
+            "templates/{name}: only {n} granted consumers checked, BROKERED expects {min}"
+        );
+        checked += n;
+        floor += min;
     }
     assert!(
-        checked >= 10,
-        "only {checked} granted consumers checked -- the walk found nothing"
+        floor > 0 && checked >= floor,
+        "only {checked} granted consumers checked against a floor of {floor} -- the walk found nothing"
     );
 }
 

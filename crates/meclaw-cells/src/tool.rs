@@ -42,6 +42,10 @@ pub const ERR_PATTERN_NOT_FOUND: &str = "pattern_not_found";
 /// every neighbour: the pattern is THERE, it is just not the site the caller
 /// had in mind — narrow it, do not retry it.
 pub const ERR_UNEXPECTED_MATCH_COUNT: &str = "unexpected_match_count";
+/// GH #1085 (R-IG-1): a tool result over the carrier ceiling
+/// (`content_budget::CARRIER_MAX_BYTES`) with no window budget to cut it to.
+/// Refused whole, with its size and the ceiling -- never cut in silence.
+pub const ERR_TOO_LONG: &str = "too_long";
 
 // ---- tool_call parser ----
 

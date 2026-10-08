@@ -43,6 +43,7 @@ mod mock_openai;
 mod road;
 
 use meclaw_cells::WebCellFactory;
+use meclaw_cells::vault::VaultCellFactory;
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, MutationDoorOutcome, bootstrap_from_filesystem,
 };
@@ -109,12 +110,20 @@ fn shipped() -> bool {
 /// The library's cells plus the display channel's `web` cell, which the
 /// assistant stage grows with the member (a fixture table of its own; the
 /// display binds nothing since 2.0.0).
-fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
+fn factories(vault: bool) -> Vec<(String, Arc<dyn CellFactory>)> {
     let mut f = road::factories();
     f.push((
         "web".to_string(),
         Arc::new(WebCellFactory::default()) as Arc<dyn CellFactory>,
     ));
+    // GH #1092: the shell's broker with its vault, as a colony runs it. A
+    // vault with no deposit answers every spend `vault_locked`.
+    if vault {
+        f.push((
+            "vault".to_string(),
+            Arc::new(VaultCellFactory) as Arc<dyn CellFactory>,
+        ));
+    }
     f
 }
 
@@ -276,6 +285,11 @@ struct Lab {
 
 impl Lab {
     async fn boot() -> Self {
+        Self::boot_with(false).await
+    }
+
+    /// The lab, with the `vault` cell type registered or not.
+    async fn boot_with(vault: bool) -> Self {
         let stub = MockOpenAI::start(vec![canned_chat_completion(road::REPLY, "stop")]).await;
         // The closer answers the shape it is asked for (an empty verdict): the
         // background stub's prose would fail the verdict (`closer_failed`) and
@@ -319,7 +333,7 @@ impl Lab {
             &json!({"cell": {"type": "hive"}}),
         );
 
-        let h = ColonyHandle::new_with_factories_at(&td, factories());
+        let h = ColonyHandle::new_with_factories_at(&td, factories(vault));
         let (ack_tx, ack_rx) = oneshot::channel();
         h.inbox_tx
             .send(ColonyMsg::RescanTemplates {
@@ -333,7 +347,7 @@ impl Lab {
             .expect("rescan ack")
             .expect("GH #440: the rescan must not have aborted");
         let mut registry = CellFactoryRegistry::new();
-        for (name, f) in factories() {
+        for (name, f) in factories(vault) {
             registry.insert(name, f);
         }
         bootstrap_from_filesystem(root, &registry, &h.runtime())
@@ -528,6 +542,82 @@ impl Lab {
         }
     }
 
+    /// GH #1092: wait until a delivery after `mark` satisfies `pred` on its
+    /// target and its whole hop (a receipt's `error_code` rides there).
+    async fn wait_hop(&self, mark: i64, what: &str, pred: impl Fn(&str, &Value) -> bool) {
+        let end = std::time::Instant::now() + DEADLINE;
+        loop {
+            let conn =
+                rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
+            let hit = conn
+                .prepare("SELECT to_path, headers FROM message_log WHERE rowid > ?1")
+                .and_then(|mut st| {
+                    st.query_map([mark], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })
+                    .map(|rows| {
+                        rows.filter_map(Result::ok).any(|(to, headers)| {
+                            let h: Value =
+                                meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
+                            pred(&to, &h["hop"])
+                        })
+                    })
+                })
+                .unwrap_or(false);
+            if hit {
+                return;
+            }
+            if std::time::Instant::now() > end {
+                let dead: Vec<String> = self.drain().await.iter().map(Dead::say).collect();
+                panic!("{what} never arrived; dead letters so far: {dead:#?}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// GH #1092: the deliveries after `mark` from or to these subtrees --
+    /// `from -> to route [error_code] context keys` -- for a failure message.
+    fn round_of(&self, mark: i64, under: &[&str]) -> Vec<String> {
+        let conn = rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
+        let Ok(mut st) = conn.prepare(
+            "SELECT from_path, to_path, headers FROM message_log WHERE rowid > ?1 ORDER BY rowid",
+        ) else {
+            return Vec::new();
+        };
+        st.query_map([mark], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map(|rows| {
+            rows.filter_map(Result::ok)
+                .filter(|(from, to, _)| {
+                    under
+                        .iter()
+                        .any(|u| from.starts_with(u) || to.starts_with(u))
+                })
+                .map(|(from, to, headers)| {
+                    let h: Value =
+                        meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
+                    let keys: Vec<String> = h["context"]
+                        .as_object()
+                        .map(|c| c.keys().cloned().collect())
+                        .unwrap_or_default();
+                    format!(
+                        "{from} -> {to} {} [{}] grant={} op={} ctx={keys:?}",
+                        h["hop"]["route"].as_str().unwrap_or_default(),
+                        h["hop"]["error_code"].as_str().unwrap_or_default(),
+                        h["hop"]["grant_id"].as_str().unwrap_or_default(),
+                        h["hop"]["operation"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
     /// Wait until at least `n` deliveries after `mark` satisfy `pred`.
     async fn wait_count(
         &self,
@@ -594,16 +684,21 @@ impl Lab {
 
     /// The shell, as the lab adds it: one node at `/`, no edge.
     async fn shell(&self) {
+        // GH #1061 (#801): the translator asks the shell's broker for its
+        // key, and this lab deposits none. Anonymous, it speaks to the lab's
+        // stub as it did when the key came out of `.env`; the shipped shell
+        // with its grant and no deposit is GH #1092's own test below.
+        self.shell_as(json!({"llm-registry/translate": {"credential_grant_id": ""}}))
+            .await;
+    }
+
+    /// The shell with these `override_params` (`{}` = as shipped).
+    async fn shell_as(&self, override_params: Value) {
         let mark = self.mark();
         let out = self
             .apply(json!({"manifest": [{"scope": "/", "diff": {
                 "add_nodes": [{"name": "os", "template": pin("meclaw-os"),
-                    // GH #1061 (#801): the translator asks the shell's broker
-                    // for its key, and this lab deposits none -- the refusal
-                    // would dead-letter at `./hand` on every subscription.
-                    // Anonymous, it speaks to the lab's stub as it did when
-                    // the key came out of `.env`.
-                    "override_params": {"llm-registry/translate": {"credential_grant_id": ""}}}],
+                    "override_params": override_params}],
                 "add_edges": []}}]}))
             .await;
         assert!(out.is_committed(), "the shell must commit; got {out:?}");
@@ -913,5 +1008,41 @@ async fn a_real_misroute_still_dead_letters() {
         say(&hits)
     );
     assert_eq!(hits[0].route, "in_turn", "the sentinel is the turn itself");
+    lab.h.shutdown().await;
+}
+
+/// GH #1092 — the shipped shell in a colony with no vault deposit leaves only
+/// declared dead letters. Its translator spends a grant (#801), the broker
+/// denies the round `vault_locked`, and in 0.62.0 that denial died at
+/// `/os/access` (`hive_no_route`, sender `/os/access/invoke`; 8 of 150 orga
+/// lab runs red on exactly this). The translator's turn is answered either
+/// way -- by the denial when it comes home, by the round's deadline when it
+/// does not -- so the receipt is the event every absence is read after, and
+/// the discriminator is the dead-letter queue, not the clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shell_with_no_vault_deposit_leaves_only_declared_dead_letters() {
+    if !shipped() {
+        return;
+    }
+    let lab = Lab::boot_with(true).await;
+    let mut dead = lab.drain().await;
+    let mark = lab.mark();
+    lab.shell_as(json!({})).await;
+    lab.wait_hop(
+        mark,
+        "the translator's credential_pending receipt",
+        |to, hop| to.starts_with("/os/llm-registry/") && hop["error_code"] == "credential_pending",
+    )
+    .await;
+    let hits = lab.sentinel(&mut dead).await;
+    assert_eq!(hits.len(), 1, "the sentinel: {:#?}", say(&hits));
+    report("no vault deposit", &dead);
+    let bad = undeclared(&dead);
+    assert!(
+        bad.is_empty(),
+        "a shell with no vault deposit left dead letters no class declares \
+         (fixtures/gh974_dead_letter_classes.json): {bad:#?}\nthe round: {:#?}",
+        lab.round_of(mark, &["/os/access", "/os/llm-registry"])
+    );
     lab.h.shutdown().await;
 }

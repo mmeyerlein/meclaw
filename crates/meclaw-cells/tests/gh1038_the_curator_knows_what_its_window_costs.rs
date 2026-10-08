@@ -1,16 +1,17 @@
 //! GH #1038 -- the curator knows what its window costs.
 //!
 //! Before, `./policy` ordered a rebuild by its own numbers: `compress_at` of
-//! the usable window (the model's, at most the role's `quality_cap`). The
-//! limits of a model differ per model (GH #1037 stamps them on every answer of
-//! the llm cell: `hop.input_soft`, `hop.input_hard`, `hop.cost_in`,
-//! `hop.cost_cached_in`, cents per million like the catalogue), and a cached
-//! window is not free: at a cached price of 10 % of the input price a 500k
-//! window costs on every turn what 50k fresh tokens cost. What is pinned:
+//! the usable window (the model's, until GH #1085 at most a role's
+//! `quality_cap`). The limits of a model differ per model (GH #1037 stamps
+//! them on every answer of the llm cell: `hop.input_soft`, `hop.input_hard`,
+//! `hop.cost_in`, `hop.cost_cached_in`, cents per million like the
+//! catalogue), and a cached window is not free: at a cached price of 10 % of
+//! the input price a 500k window costs on every turn what 50k fresh tokens
+//! cost. What is pinned:
 //!
 //! 1. over `input_soft` the window is compressed (`curate_mark` `soft`), over
 //!    `input_hard` hard (`hard`); a package's limits replace the role's own
-//!    numbers -- `quality_cap` orders nothing any more;
+//!    numbers (and since GH #1085 no role types a window of its own);
 //! 2. under soft, a window whose cached rest costs more over `amortise_turns`
 //!    turns than one rebuild is compressed (`cost`); the worked example
 //!    amortises after three turns;
@@ -231,9 +232,10 @@ fn a_package_replaces_the_roles_own_numbers() {
     if !shipped() {
         return;
     }
-    // 70 000 measured is over talky's `compress_at` of its `quality_cap`
-    // (0.5 * 120 000) -- the role's own number, which ordered a rebuild
-    // before. The model's soft limit is 250 000: nothing to do.
+    // 70 000 measured was over talky's `compress_at` of the role's own
+    // window of before (0.5 * `quality_cap` 120 000, gone since GH #1085),
+    // which ordered a rebuild. The model's soft limit is 250 000: nothing to
+    // do.
     let mut h = talky(&[]);
     turn_of(
         &mut h,
@@ -391,7 +393,7 @@ fn the_worked_example_amortises_after_three_turns() {
 fn under_package_pressure(soft: i64) -> (Hive, String) {
     let mut h = talky(&[
         ("policy", "keep_recent", json!(2)),
-        ("policy", "quality_cap", json!(1_000_000)),
+        ("policy", "context_window", json!(1_000_000)),
         ("policy", "keep_rounds", json!(1)),
     ]);
     let base = backdated(PACKAGE_BACKDATE_S);
@@ -441,8 +443,8 @@ fn a_package_rebuild_aims_at_the_share_of_input_soft() {
     ));
     // A soft limit of 2 000 tokens: talky's 0.35 / 0.5 of it is an aim of
     // 1 400 tokens (5 600 characters), and the two tool results alone are
-    // ~6 000 -- the older one has to shrink. The usable window (a cap of a
-    // million) would have aimed at 350 000 and shrunk nothing.
+    // ~6 000 -- the older one has to shrink. The usable window (a model window
+    // of a million) would have aimed at 350 000 and shrunk nothing.
     let (h, _) = under_package_pressure(2000);
     assert_eq!(h.plan()["shrunk"], json!([r1]));
     // A soft limit of 100 000: an aim of 70 000, room enough.
@@ -499,9 +501,9 @@ fn without_the_packages_values_nothing_changes() {
         "t1",
         "q",
         "a",
-        json!({"tokens_prompt": 70000, "tokens_cached": 1000, "context_window": 1000000}),
+        json!({"tokens_prompt": 70000, "tokens_cached": 1000, "context_window": 100000}),
     );
-    // The rule of before: compress_at of the usable window.
+    // The rule of before: compress_at of the model's window.
     assert_eq!(last_add(&h).body["emit_body"]["reason"], "compress");
     let s = stamp(&h);
     assert_eq!(s["curate_mark"], "none");

@@ -56,6 +56,18 @@ fn slug(model_id: &str) -> String {
     model_id.replace('/', "__")
 }
 
+/// GH #1085: the file name the conformance tool expects for a row (its
+/// `slug_of`, K8): a `local` row -- a server on the operator's own hardware --
+/// under `local__<slug>`, every other row under its slug.
+fn record_slug(row: &Map<String, Value>) -> String {
+    let s = slug(row["model_id"].as_str().unwrap_or_default());
+    if row.get("provider").and_then(|v| v.as_str()) == Some("local") {
+        format!("local__{s}")
+    } else {
+        s
+    }
+}
+
 /// The params a registry push sets from one row -- the same rule as
 /// `package_of`: empty strings and zero counts are unset, `prompt` becomes
 /// `model_prompt`, the `package` json carries the rest.
@@ -149,7 +161,7 @@ async fn h5_the_cell_request_per_catalogue_row() {
         .await;
         assert_eq!(t.requests.len(), 1, "{model_id}: one provider call");
         assert_eq!(t.hop["finish_reason"], "stop", "{model_id}: {:?}", t.body);
-        let file = dir.join(format!("{}.json", slug(&model_id)));
+        let file = dir.join(format!("{}.json", record_slug(&row)));
         let record = json!({
             "model_id": model_id,
             "endpoint_class": row.get("provider").cloned().unwrap_or(Value::Null),
@@ -174,7 +186,7 @@ async fn h5_the_cell_request_per_catalogue_row() {
         {
             eprintln!(
                 "CONFORMANCE-RECORD requests/{}.json {record}",
-                slug(&model_id)
+                record_slug(&row)
             );
         }
         match std::fs::read_to_string(&file) {

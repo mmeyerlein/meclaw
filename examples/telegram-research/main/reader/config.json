@@ -4,8 +4,7 @@
   },
   "params": {
     "external_timeout_ms": 30000,
-    "max_concurrency": 4,
-    "max_bytes": 32768
+    "max_concurrency": 4
   },
   "contract": {
     "version": "1.0.0",

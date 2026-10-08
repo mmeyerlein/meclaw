@@ -622,7 +622,7 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.11.1");
+    assert_eq!(t["version"], "1.11.3");
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -1347,21 +1347,34 @@ fn collector_slot_wins_at_its_leaf() {
     );
 }
 
+/// GH #871, R-IG-1 (GH #1085): an earlier answer keeps its block up to its
+/// share of the usable window -- a tenth of `input_soft` (100 tokens here, 30
+/// characters) -- and over it shows the mark where the block stood, with the
+/// block's length; the call's hop names the cut.
 #[test]
-fn earlier_answer_keeps_its_block_up_to_the_cap() {
+fn earlier_answer_keeps_its_block_up_to_its_share() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "sidecar_max_chars", json!(40))]);
+    let mut h = Hive::new();
     let small = "short.\n\n```sidecar\n{\"a\": 1}\n```";
     let big = format!(
         "long.\n\n```sidecar\n{{\"a\": \"{}\"}}\n```",
         "x".repeat(60)
     );
-    turn(&mut h, "s1", "t1", "q1", small, json!({}));
-    turn(&mut h, "s1", "t2", "q2", &big, json!({}));
+    let size = big.len() - big.find("```sidecar").expect("a block");
+    turn(&mut h, "s1", "t1", "q1", small, json!({"input_soft": 100}));
+    turn(&mut h, "s1", "t2", "q2", &big, json!({"input_soft": 100}));
     let call = h.curate("s1", "t3", 0, json!([user("q3")]), mode("Be brief."));
-    assert_eq!(texts(&call), vec!["q1", small, "q2", "long.", "q3"]);
+    let dropped = format!("long.\n\n...[dropped: sidecar ({size} chars) over budget]");
+    assert_eq!(
+        texts(&call),
+        vec!["q1", small, "q2", dropped.as_str(), "q3"]
+    );
+    let cuts = call.hop["cuts"].as_array().expect("hop.cuts names the cut");
+    assert_eq!(cuts.len(), 1, "{cuts:?}");
+    assert_eq!(cuts[0]["what"], "sidecar");
+    assert_eq!(cuts[0]["total"], json!(size));
     // What the call record names, the ledger holds -- the bare answer too.
     let missing = h.rows(
         "SELECT cb.hash FROM call_blocks cb LEFT JOIN blocks b ON b.hash = cb.hash \
@@ -1458,11 +1471,12 @@ rows = [
     {"seq": 2, "session_id": "s", "turn_id": "t1", "kind": "assistant", "final": 1,
      "body": json.dumps({"origin": "assistant", "type": "text", "text": big})},
 ]
-a = scope["history_window"](rows, {"sidecar_max_chars": 20})
-b = scope["history_window"](list(reversed(rows)), {"sidecar_max_chars": 20})
-print(json.dumps({"a": a, "same": a == b,
+a = scope["history_window"](rows, {"input_soft": 60})
+b = scope["history_window"](list(reversed(rows)), {"input_soft": 60})
+whole = scope["history_window"](rows, {})
+print(json.dumps({"a": a, "same": a == b, "whole": whole,
                   "knobs": [scope[k] for k in ("KEEP_RECENT", "COMPRESS_AT",
-                                               "SUMMARY_CHARS", "SIDECAR_MAX_CHARS")]}))
+                                               "LEAF_MAX_BYTES", "SIDECAR_SHARE")]}))
 "#;
 
 #[test]
@@ -1483,13 +1497,20 @@ fn history_window_is_pure_and_ast_loadable() {
     assert_eq!(
         got["a"],
         json!([{"origin": "user", "type": "text", "text": "q"},
-               {"origin": "assistant", "type": "text", "text": "done."}]),
-        "wall order, the orphan call out, the over-cap block cut (#871)"
+               {"origin": "assistant", "type": "text",
+                "text": "done.\n\n...[dropped: sidecar (95 chars) over budget]"}]),
+        "wall order, the orphan call out, the block over its share said (#871, R-IG-1)"
     );
     assert_eq!(got["same"], json!(true), "the input order does not matter");
     assert_eq!(
+        got["whole"][1]["text"].as_str().map(|t| t.ends_with("```")),
+        Some(true),
+        "without a window the block goes whole (R-IG-1): {}",
+        got["whole"]
+    );
+    assert_eq!(
         got["knobs"],
-        json!([12, 0.5, 4000, 6000]),
+        json!([12, 0.5, 4194304, 0.1]),
         "the shipped defaults"
     );
 }
@@ -1962,11 +1983,10 @@ fn a_failed_summary_keeps_the_old_window() {
             h.stderr
         );
     }
-    // Longer than summary_chars is refused hard (review focus K-5).
-    let mut h = Hive::with(&[
-        ("policy", "keep_recent", json!(1)),
-        ("policy", "summary_chars", json!(10)),
-    ]);
+    // A summary has no typed length (OR-IG-5, GH #1085); only one whose leaf
+    // would not fit the carrier -- one system leaf, 4 MiB -- is refused,
+    // with its size and the bound (review focus K-5, R-IG-2).
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]);
     turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
     turn(
         &mut h,
@@ -1977,14 +1997,18 @@ fn a_failed_summary_keeps_the_old_window() {
         json!({"cache_expires_at": "2099-01-01T00:00:00Z"}),
     );
     h.fire(&last_add(&h));
-    let req = h.answer("far more than ten characters", "stop");
-    assert!(
-        req.body["system"]["instructions"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("at most 10 characters")
+    h.answer(
+        &"x".repeat(meclaw_cells::content_budget::CARRIER_MAX_BYTES),
+        "stop",
     );
     assert_eq!(h.rows("SELECT COUNT(*) FROM summaries")[0][0], json!(0));
+    assert!(
+        h.stderr
+            .iter()
+            .any(|l| l.contains("too_long: ") && l.contains("> 4194304 bytes")),
+        "{:?}",
+        h.stderr
+    );
 }
 
 // ============================================================= 6. the writer

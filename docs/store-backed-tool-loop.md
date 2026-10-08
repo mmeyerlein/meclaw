@@ -70,7 +70,10 @@ When `planner` finishes with `tool_calls`, the edge routes its output to `dispat
 `dispatch` emits:
 
 - one `c_asst` message containing both original tool-call turns, and
-- one message for each tool, selected by `hop.tool_name`.
+- one message for each tool, selected by `hop.tool_name`, carrying the planner's
+  `hop.input_soft` on with it when the planner stamped one (GH #1085): the window the result
+  will be read in. A hop expires with the next emission, so a dispatcher that dropped it would
+  leave every tool behind it without a window.
 
 The lane edges guard the key they discriminate on:
 
@@ -197,13 +200,13 @@ five times.
 
 Two places bound that, and they are different decisions.
 
-At the tool, `web_fetch` takes `params.max_bytes` (default 256 KiB, GH #83) and marks a trim
-in the payload (`… [truncated, N bytes total]`, `header.truncated: true`, `header.bytes` = the
-full size). `bash` shares the same knob and default for runaway stdout, and `web_search` trims
-its result list at `params.max_results` (default 10, visible inside the JSON) with the same byte
-backstop. Inside a loop those values belong much lower:
-[`examples/telegram-research`](../examples/telegram-research/) sets 32 KiB on its `reader`. A cap
-bounds the worst case; it does not express a policy.
+At the tool, `web_fetch` cuts to `params.max_bytes` when it is set and otherwise to the
+tool-result share of the window the call names (GH #83, GH #1085) -- `input_soft` in its `context`, or on its hop where `dispatch` handed the planner's stamp on -- and marks a cut in the payload
+(`...[cut: <k> of <n> bytes shown; <hint>]`, `header.truncated: true`, `header.bytes` = the full
+size). `bash` follows the same rule for runaway stdout, and `web_search` trims its result list to the
+page the call asks for (`max_results`, default 10, the cut visible inside the JSON as
+`<k> of <n> results shown`) with the same byte bound. A cap bounds
+the worst case; it does not express a policy.
 
 At the collector, what leaves the assembled context again is its decision, and that decision
 is the one that turns a large result from a per-round cost back into a one-time cost. The shape

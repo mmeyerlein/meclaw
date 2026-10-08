@@ -157,7 +157,8 @@ fn an_invisible_codepoint_is_refused_with_every_row_gone() {
 fn the_body_ceiling_outranks_the_knob_that_was_supposed_to_bound_it() {
     // `firewall_max_chars` is a knob, and a knob set to a billion turns the
     // screen itself into the resource risk it stands in front of.
-    let huge = "a".repeat(262_145);
+    // GH #1085: the ceiling is the carrier's, 4 MiB in UTF-8 bytes.
+    let huge = "a".repeat(4_194_305);
     let out = emit_from(
         "screen",
         json!({"firewall_max_chars": 1_000_000_000i64}),
@@ -166,7 +167,7 @@ fn the_body_ceiling_outranks_the_knob_that_was_supposed_to_bound_it() {
     assert_hardline(&out, "hardline:body-ceiling");
 
     // One character below it, the knob is back in charge and the turn travels.
-    let ok = "a".repeat(262_144);
+    let ok = "a".repeat(4_194_304);
     let out = emit_from(
         "screen",
         json!({"firewall_max_chars": 1_000_000_000i64}),
@@ -226,7 +227,7 @@ fn no_row_of_any_kind_is_read_before_the_hardline_decides() {
 fn the_hardline_runs_ahead_of_the_size_cap_it_bounds() {
     // Both would fire; the hardline is the one that is named, because the
     // ceiling is what the cap can never be configured above.
-    let huge = format!("{}\u{200b}", "a".repeat(262_200));
+    let huge = format!("{}\u{200b}", "a".repeat(4_194_400));
     let out = emit_from("screen", json!({"firewall_max_chars": 10}), inbound(&huge));
     assert_hardline(&out, "hardline:body-ceiling");
 }
@@ -310,16 +311,21 @@ fn the_two_numbers_in_the_prose_come_out_of_the_code() {
     // § 2d: a number in template prose is either derived from the code inside
     // the test, or it appears exactly once. These two appear in the README and
     // in `template.json`, so they are derived.
-    let ceiling = constant_of(&script_of("screen"), "HARDLINE_MAX_CHARS");
+    let ceiling = constant_of(&script_of("screen"), "HARDLINE_MAX_BYTES");
     let pile = constant_of(&script_of("warden"), "HARDLINE_HOLD_CEILING");
-    assert_eq!(ceiling, 262_144, "the shipped body ceiling");
+    assert_eq!(
+        ceiling as usize,
+        meclaw_cells::content_budget::CARRIER_MAX_BYTES,
+        "the shipped body ceiling: the carrier's, MAX_BODY_KB_LIMIT (4096 KiB) of \
+         the webhook proxy (GH #1085)"
+    );
     assert_eq!(pile, 1024, "the shipped pile ceiling");
 
     let readme = std::fs::read_to_string(format!("{TEMPLATE}/README.md")).expect("README");
     let template = std::fs::read_to_string(format!("{TEMPLATE}/template.json")).expect("template");
     // The README writes the big one with a thin space, the way a table reads.
     assert!(
-        readme.contains("262 144"),
+        readme.contains("4 194 304"),
         "README must name the body ceiling"
     );
     assert!(

@@ -474,16 +474,22 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // `builder-librarian@2.2.44` (GH #1036); 1.26.24 re-pins it at
         // `builder-librarian@2.2.45` (GH #1076); 1.26.25 re-pins it at
         // `builder-librarian@2.2.46` with `curator@1.11.0` (GH #1079); 1.26.26 re-pins it
-        // at `builder-librarian@2.2.47` with `display@2.10.6` and `curator@1.11.1` (GH #801).
-        "builder@1.26.26"
+        // at `builder-librarian@2.2.47` with `display@2.10.6` and `curator@1.11.1` (GH #801);
+        // 1.26.27 re-pins it at `builder-librarian@2.2.48` (GH #1057, #1074); 1.26.28
+        // re-pins it at `builder-librarian@2.2.49` (GH #1057, #1074); 1.26.29
+        // re-pins it at `builder-librarian@2.2.50` (GH #1087); 1.26.30 re-pins it
+        // at `builder-librarian@2.2.51` (GH #1092); 1.26.31 re-pins it at
+        // `builder-librarian@2.2.53` (GH #1085).
+        "builder@1.26.32"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],
-        "operator@1.2.5"
+        "operator@1.2.6"
     );
     assert_eq!(
         read("templates/operator/submit/config.json")["cell"]["template"],
-        "submit@2.4.0"
+        // 2.4.1 holds an announced requirement to the carrier ceiling (GH #1085).
+        "submit@2.4.1"
     );
 }
 

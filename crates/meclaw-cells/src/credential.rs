@@ -261,6 +261,18 @@ pub struct Accepted<T> {
     pub released: Vec<T>,
 }
 
+/// GH #1092: the broker denied a round ([`CredentialSlots::accept_denial`]).
+pub struct Denied<T> {
+    /// The slot the denial names.
+    pub grant: String,
+    /// The broker's `reason_code` (`vault_locked`, `grant_expired`, …), for
+    /// the cell's log line.
+    pub reason_code: String,
+    /// The items the denied round was holding, in arrival order -- the cell
+    /// answers each with its receipt now instead of after `wait_ms`.
+    pub refused: Vec<T>,
+}
+
 /// Why a delivery was not taken. Every variant that can hold items holds the
 /// ones the cell now has to answer with their receipt.
 pub enum Refusal<T> {
@@ -670,6 +682,56 @@ impl<T: Send + 'static> CredentialSlots<T> {
         }
     }
 
+    /// GH #1092: take the broker's DENIAL of a request this cell made.
+    ///
+    /// The access hive answers a refused spend in the same `ack` a delivery
+    /// travels in -- one `tool_result` whose `id` is the request's call id and
+    /// whose text is `{"outcome": "denied", "reason_code", "grant_id"}` -- only
+    /// with no `sealed` slot. Measured in 0.62.0 (orga lab, 8 of 150 runs red):
+    /// every colony without a vault deposit answers the shell translator's
+    /// round `vault_locked`; with no edge to carry the denial home it
+    /// dead-lettered (`hive_no_route` at `/os/access`) while the parked turn
+    /// waited out its `wait_ms`.
+    ///
+    /// `None`: the content is no denial of a slot of THIS cell -- no `sealed`
+    /// slot, exactly one `tool_result`, outcome `denied`, a `grant_id` this
+    /// cell holds -- and the caller handles it like any other message. `Some`:
+    /// the denial was taken. When it answers the request in flight, that
+    /// request's key is dropped and the round's items come back in `refused`
+    /// (empty when the warden had already answered them); the next item parks
+    /// and asks again. A denial of a superseded or unknown request refuses
+    /// nothing: the round in flight still has its own answer coming.
+    pub async fn accept_denial(&mut self, content: &Value) -> Option<Denied<T>> {
+        let (grant, reason_code, call_id) = denial_of(content)?;
+        let slot = self.slots.get_mut(&grant)?;
+        let current = slot
+            .recipient
+            .as_ref()
+            .is_some_and(|(_, id)| call_id.as_deref().is_none_or(|c| c == id));
+        if !current {
+            return Some(Denied {
+                grant,
+                reason_code,
+                refused: Vec::new(),
+            });
+        }
+        // The denied request's id joins the superseded ones, so a box that
+        // still came for it would read as late, not as a bad box.
+        if let Some((_, old)) = slot.recipient.take() {
+            slot.stale.push_back(old);
+            while slot.stale.len() > STALE_ROUNDS {
+                slot.stale.pop_front();
+            }
+        }
+        slot.start_ask = false;
+        let refused = self.reclaim(&grant).await.unwrap_or_default();
+        Some(Denied {
+            grant,
+            reason_code,
+            refused,
+        })
+    }
+
     /// Which slot a delivery addresses (see [`Self::accept_sealed`]).
     fn slot_for(&self, grant_hint: Option<&str>, call_id: Option<&str>) -> Option<String> {
         if let Some(g) = grant_hint
@@ -732,12 +794,40 @@ fn ack_of(content: &Value) -> (Option<String>, Option<String>) {
     (grant, call_id)
 }
 
+/// GH #1092: the grant, reason code and call id of a broker DENIAL -- content
+/// with no `sealed` slot whose one message is a `tool_result` reading
+/// `{"outcome": "denied", "grant_id": …}` (the `refuse` form of the access
+/// hive's `invoke` cell).
+fn denial_of(content: &Value) -> Option<(String, String, Option<String>)> {
+    if content.get("sealed").is_some() {
+        return None;
+    }
+    let [ack] = content.get("messages")?.as_array()?.as_slice() else {
+        return None;
+    };
+    if ack["type"] != "tool_result" {
+        return None;
+    }
+    let text: Value = meclaw_core::serde_json::from_str(ack["text"].as_str()?).ok()?;
+    if text["outcome"] != "denied" {
+        return None;
+    }
+    let grant = text["grant_id"].as_str().filter(|s| !s.is_empty())?;
+    let reason = text["reason_code"].as_str().unwrap_or_default();
+    let call_id = ack["id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some((grant.to_string(), reason.to_string(), call_id))
+}
+
 /// GH #457: the warden task of one round.
 ///
 /// A task rather than a check on the next message, because there may not BE a
-/// next message: a broker refusal is routed to the topology's error lane, never
-/// back to the asking cell, so a cell that only looked at its own inbox would
-/// hold the parked items forever — the silence GH #457 is about. And a task
+/// next message: a broker refusal reaches the asking cell only where the
+/// topology routes the denial home ([`CredentialSlots::accept_denial`],
+/// GH #1092), so a cell that only looked at its own inbox would hold the
+/// parked items forever — the silence GH #457 is about. And a task
 /// that OWNS the items rather than a lock over them, because `AGENTS.md`
 /// forbids `Mutex`/`RwLock`/atomics in cell state; this is the same answer
 /// `llm::token_broker` gives to "two timelines, one piece of state".

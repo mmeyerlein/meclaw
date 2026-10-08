@@ -4,11 +4,11 @@
   },
   "params": {
     "runner": "python3",
-    "script_inline": "\nimport sys, json\nd = json.load(sys.stdin)[\"body\"]\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    sys.stdout.write(\"[]\"); sys.exit(0)\nc = calls[0]\nname = json.loads(c.get(\"text\", \"{}\")).get(\"name\", \"unknown\")\nsys.stdout.write(json.dumps([{\"header\": {\"tool_name\": name}, \"messages\": [c]}]))\n",
+    "script_inline": "\nimport sys, json\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    sys.stdout.write(\"[]\"); sys.exit(0)\nc = calls[0]\nname = json.loads(c.get(\"text\", \"{}\")).get(\"name\", \"unknown\")\nheader = {\"tool_name\": name}\n# GH #1085 (R-IG-1): the llm's window (`input_soft`, its catalogue row) rides on\n# with the call -- a hop lives for one emission, and a tool cuts its result to\n# a share of the window of the model that reads it.\nsoft = (((doc.get(\"envelope\") or {}).get(\"header\") or {}).get(\"hop\") or {}).get(\"input_soft\")\nif isinstance(soft, (int, float)) and not isinstance(soft, bool) and soft > 0:\n    header[\"input_soft\"] = soft\nsys.stdout.write(json.dumps([{\"header\": header, \"messages\": [c]}]))\n",
     "external_timeout_ms": 10000
   },
   "contract": {
-    "version": "1.0.0",
+    "version": "1.0.1",
     "settings": {},
     "consumes": {
       "body": {

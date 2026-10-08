@@ -235,7 +235,11 @@ fn the_screen_passes_the_turn_id_on() {
 fn the_screen_refuses_with_the_turn_id_on_it() {
     // The size cap fires AHEAD of the first store hop, so this exit reads the id off the
     // inbound hop and not off a promoted context — both halves of the fallback matter.
-    let out = emit(SCREEN, screening_doc(&"x".repeat(17_000)));
+    // Since GH #1085 the cap is a quarter of the receiving model's window: 20 000 tokens
+    // make it 15 000 characters, under the 17 000 of the fixture.
+    let mut doc = screening_doc(&"x".repeat(17_000));
+    doc["header"]["hop"]["input_soft"] = serde_json::json!(20_000);
+    let out = emit(SCREEN, doc);
     let m = on_route(&out, "reject", "firewall/screen");
     assert_eq!(
         m["header"]["reject_reason"].as_str(),

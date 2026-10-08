@@ -7,6 +7,7 @@ pub mod bash;
 pub mod boundary;
 pub mod browser;
 pub mod code;
+pub mod content_budget;
 pub mod credential;
 pub mod credential_rounds;
 pub mod edit;

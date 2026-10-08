@@ -12,6 +12,7 @@
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.3,
+    "reasoning_effort": null,
     "external_timeout_ms": 120000,
     "system_order": [
       "identity",
@@ -49,6 +50,12 @@
         "secret": false,
         "default": 30000,
         "description": "GH #457: how long one sealed credential round may take before every parked turn gets its `credential_pending` receipt. The substrate default is 10 s, which was measured against a broker standing beside the consumer; a member's broker is three python cells and two store round trips away from a brain four levels down, so this template ships the longer one. It bounds nothing but the WAIT -- no provider is called and nothing is billed while it runs."
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": null,
+        "description": "GH #1087: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`; passed through, not checked against a list). It ships UNSET (null): the request then carries no reasoning field and is byte for byte the one sent before this declaration. Set it through `override_params` -- an assistant addresses it as `talky/brain` and `talky-chat/brain` -- and it reaches the provider as `\"reasoning\": {\"effort\": ...}` (under the default `reasoning_wire`); a `reasoning` object, where one is set, outranks it. A spoken turn waits for hidden reasoning before its first token, so a low effort shortens the time to the first word."
       }
     },
     "emits": {

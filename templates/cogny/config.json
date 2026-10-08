@@ -84,7 +84,7 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. One name is reserved again since GH #894: `ask_requester`, held by the ordinary edge `./dispatcher -> ./ask`, leaves on the `ask` lane and never here. None was reserved between cogny@5.2.0 (GH #889) and then. `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) was reserved until then; since GH #552 the member's memory hive declares and answers it, so it is an ORDINARY tool name and leaves on this default edge like any other. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has six out-edges (calls, result and answer into ./collector, the `history_*` family into ./curator since GH #893, `ask_requester` into ./ask since GH #894, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: eight senders (., ./collector, ./curator, ./brain, ./splitter, ./dispatcher, ./schemas, ./ask) over 38 edges since GH #894, six of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. One name is reserved again since GH #894: `ask_requester`, held by the ordinary edge `./dispatcher -> ./ask`, leaves on the `ask` lane and never here. None was reserved between cogny@5.2.0 (GH #889) and then. `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) was reserved until then; since GH #552 the member's memory hive declares and answers it, so it is an ORDINARY tool name and leaves on this default edge like any other. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has six out-edges (calls, result and answer into ./collector, the `history_*` family into ./curator since GH #893, `ask_requester` into ./ask since GH #894, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: eight senders (., ./collector, ./curator, ./brain, ./splitter, ./dispatcher, ./schemas, ./ask) over 38 edges since GH #894, six of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too Since GH #1085 (OR-IG-8) this exit also sets `context.input_soft` to the window the brain stamped on the answer that asked (`hop.input_soft`, which `dispatcher@1.2.3` hands on to each call), so a tool behind any number of cells still knows the window its result is read in and cuts to its share of it; without a stamp the key is empty and the tool delivers whole."
         },
         {
           "route": "recall",
@@ -281,7 +281,8 @@
               "col_phase",
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -344,7 +345,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -356,6 +358,9 @@
           "modifier": {
             "set_hop": {
               "recall_input_soft": "has(hop.tool_name) && hop.tool_name == 'memory_recall' && has(context.recall_input_soft) ? context.recall_input_soft : ''"
+            },
+            "set_context": {
+              "input_soft": "has(hop.input_soft) ? hop.input_soft : ''"
             },
             "delete_context": [
               "col_phase",
@@ -385,7 +390,8 @@
               "curator_call",
               "tool_answerer",
               "gap_ask",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -404,7 +410,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -417,7 +424,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -433,7 +441,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -446,7 +455,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -461,7 +471,8 @@
             "delete_context": [
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -477,7 +488,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -493,7 +505,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -560,7 +573,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -578,7 +592,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -591,7 +606,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         },
@@ -604,7 +620,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "input_soft"
             ]
           }
         }

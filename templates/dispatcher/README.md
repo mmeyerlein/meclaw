@@ -1,4 +1,4 @@
-# `dispatcher@1.2.2`
+# `dispatcher@1.2.3`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -13,9 +13,16 @@ messages a graph can route.
 ## What it delivers
 
 - **One message per call, addressed by NAME.** A call leaves carrying `hop.tool_name`
-  and `hop.tool_call_id` and nothing else. Which cell answers to `web_search` is a
+  and `hop.tool_call_id`. Which cell answers to `web_search` is a
   question for an edge condition, never for this cell: no tool list, no map of the tree,
   nothing to update when a tool is added.
+- **The window the result is read in.** Since `1.2.3` a call also carries the brain's
+  `hop.input_soft` when the brain stamped one on the answer that asked for it
+  ([#1085](https://github.com/mmeyerlein/meclaw/issues/1085)): the window of the model that
+  reads the result, in tokens, from its catalogue row. A tool cuts its result to its share
+  of that window and marks the cut. A hop lives for one emission, and this cell emits anew,
+  so until `1.2.3` the stamp ended here and every tool behind a dispatcher answered whole.
+  Nothing else of the brain's hop rides on.
 - **The expectation set first.** The assistant turn goes to the fan-in *before* any tool
   message leaves (PLAIN order). A tool that answers in a millisecond can otherwise report
   a result for a round the collector has not been told about yet.
@@ -98,7 +105,7 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 | route | to | what travels |
 |---|---|---|
 | `calls` | the collector's `in_calls` port | the assistant turn **verbatim** (all of it, a text turn next to the calls included) -- the expectation set of the round. `hop.call_count` sizes it (the number of `tool_call` turns in the bundle, as a string), `hop.async_calls` names the ids the fan-in must not wait for |
-| `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments**; `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result |
+| `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments**; `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result, `hop.input_soft` (since `1.2.3`, when the brain stamped one) is the window the result is read in |
 | `result` | the collector's `in_tool` port | a synthetic error `tool_result` for a call that will never run; `hop.error_code` says which kind |
 | `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle. Since `1.2.2` the body slot `sidecar_raw` travels with a final answer when the answer arrived with one: the block a sidecar splitter cut out of it, passed through untouched so the collector can keep it for the window ([#871](https://github.com/mmeyerlein/meclaw/issues/871)) -- and with the sentence next to a bundle, when the round carried one. This cell reads none of it |
 

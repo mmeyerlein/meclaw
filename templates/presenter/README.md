@@ -1,4 +1,4 @@
-# `presenter@1.2.7`
+# `presenter@1.2.8`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the

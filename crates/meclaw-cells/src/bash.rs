@@ -8,14 +8,15 @@ pub struct BashCell {
     /// Optional process sandbox for the shell (S4, GH #35). `None` means the
     /// legacy unsandboxed behaviour: the shell keeps the daemon's rights.
     pub sandbox: Option<crate::sandbox::SandboxProfile>,
-    /// Size cap on the combined output handed to the caller, in bytes (GH #83).
-    ///
-    /// A command with runaway stdout has the same multiplying effect inside a
-    /// tool loop as an uncapped `web_fetch` body: the tool result becomes a
-    /// thread row and is re-sent on every subsequent round. The cap applies to
-    /// the combined `text` (stdout plus the stderr sentinel block); a trim is
-    /// marked, never silent, and `header.bytes` keeps the full pre-cut size.
-    pub max_bytes: usize,
+    /// Explicit size cap on the combined output handed to the caller, in
+    /// bytes (GH #83). `None` (the default since GH #1085, R-IG-1): the output
+    /// (stdout plus the stderr sentinel block) is cut to the tool-result share
+    /// of the window the call names (`content_budget::input_soft_of`) and
+    /// delivered whole when it names none -- up to the carrier ceiling, above
+    /// which it is refused (`too_long`). Every cut carries the mark
+    /// `...[cut: <k> of <n> bytes shown; <hint>]`, and `header.bytes` keeps
+    /// the full pre-cut size.
+    pub max_bytes: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -73,8 +74,8 @@ use crate::process::{KillingTimeoutErr, with_killing_timeout};
 // ---- StatelessCell implementation ----
 
 use crate::tool::{
-    ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_TIMEOUT, build_error_body, build_tool_result_body,
-    parse_tool_call_args,
+    ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_TIMEOUT, ERR_TOO_LONG, build_error_body,
+    build_tool_result_body, parse_tool_call_args,
 };
 use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{CellOutput, Message, OutputSink, Path};
@@ -203,7 +204,28 @@ impl meclaw_colony::StatelessCell for BashCell {
                     // GH #83: `bytes` reports the full combined output, so a
                     // trimmed reply still says how big the run really was.
                     let bytes = text.len() as u64;
-                    let (text, truncated) = crate::web_fetch::truncate_body(text, self.max_bytes);
+                    // GH #1085 (R-IG-1): no fixed cap -- the window's share,
+                    // marked, or whole; refused only over the carrier.
+                    let (text, truncated) = match crate::content_budget::tool_result_text(
+                        text,
+                        self.max_bytes,
+                        &msg.headers,
+                        BASH_CUT_HINT,
+                    ) {
+                        Ok(v) => v,
+                        Err(refusal) => {
+                            self.emit_error(
+                                sink,
+                                reply_target,
+                                ERR_TOO_LONG,
+                                refusal.detail(),
+                                id,
+                                started,
+                            )
+                            .await;
+                            return;
+                        }
+                    };
                     let mut header = Map::new();
                     header.insert("operation".into(), Value::String("bash".into()));
                     header.insert("exit_code".into(), Value::from(out.exit_code));
@@ -325,17 +347,15 @@ pub struct BashCellFactory;
 
 const DEFAULT_BASH_MAX_CONCURRENCY: usize = 4;
 const DEFAULT_BASH_EXTERNAL_TIMEOUT_MS: u64 = 60_000;
-/// Default output cap: 256 KiB (GH #83) — the same generous-but-finite value
-/// `web_fetch` uses, so the tool cells share one consistent default. It passes
-/// a full compiler log or test run whole and stops a runaway `yes`-style
-/// stdout from entering a tool loop, where every round would pay for it again.
-const DEFAULT_BASH_MAX_BYTES: usize = 256 * 1024;
+/// What the cut mark tells the model to do for the rest of a cut output
+/// (GH #1085): run the command again on a narrower slice.
+const BASH_CUT_HINT: &str = "narrow the command's output, e.g. with head, tail or grep";
 
 struct ParsedBashParams {
     external_timeout: Duration,
     max_concurrency: usize,
     sandbox: Option<crate::sandbox::SandboxProfile>,
-    max_bytes: usize,
+    max_bytes: Option<usize>,
 }
 
 fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, String> {
@@ -358,14 +378,16 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, S
     if ms == 0 {
         return Err("params.external_timeout_ms must be >= 1".into());
     }
+    // GH #1085 (R-IG-1): no fixed default -- absent, the window decides.
     let mb = match raw.get("max_bytes") {
-        None => DEFAULT_BASH_MAX_BYTES,
-        Some(v) => v
-            .as_u64()
-            .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
-            as usize,
+        None => None,
+        Some(v) => Some(
+            v.as_u64()
+                .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
+                as usize,
+        ),
     };
-    if mb == 0 {
+    if mb == Some(0) {
         return Err("params.max_bytes must be >= 1".into());
     }
     let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
@@ -617,7 +639,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
-            max_bytes: DEFAULT_BASH_MAX_BYTES,
+            max_bytes: None,
         };
 
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -665,7 +687,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
-            max_bytes: DEFAULT_BASH_MAX_BYTES,
+            max_bytes: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -706,7 +728,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
-            max_bytes: DEFAULT_BASH_MAX_BYTES,
+            max_bytes: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -749,7 +771,7 @@ mod tests {
             external_timeout: std::time::Duration::from_millis(100),
             max_concurrency: 4,
             sandbox: None,
-            max_bytes: DEFAULT_BASH_MAX_BYTES,
+            max_bytes: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -942,7 +964,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
-            max_bytes: 1000,
+            max_bytes: Some(1000),
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -973,9 +995,11 @@ mod tests {
             text.len()
         );
         assert!(
-            text.contains("[truncated, 20000 bytes total]"),
+            text.ends_with(&format!(
+                "...[cut: 1000 of 20000 bytes shown; {BASH_CUT_HINT}]"
+            )),
             "cut marked, full size named: ...{}",
-            &text[text.len().saturating_sub(60)..]
+            &text[text.len().saturating_sub(90)..]
         );
         assert_eq!(
             em.content["header"]["truncated"], true,
@@ -1000,7 +1024,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
-            max_bytes: DEFAULT_BASH_MAX_BYTES,
+            max_bytes: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -1042,14 +1066,75 @@ mod tests {
     }
 
     #[test]
-    fn factory_defaults_max_bytes_to_the_web_fetch_cap() {
+    fn factory_defaults_max_bytes_to_the_window_budget() {
         let p = parse_params_pure(&meclaw_core::serde_json::json!({})).unwrap();
-        assert_eq!(p.max_bytes, DEFAULT_BASH_MAX_BYTES);
+        assert_eq!(p.max_bytes, None, "no fixed default (GH #1085)");
+    }
+
+    /// GH #1085 lock: the old 256 KiB default is gone -- an output over it
+    /// arrives whole when the call names no window, and cut to the window's
+    /// tool-result share (marked, total named) when it does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_output_over_the_old_cap_is_whole_without_a_budget_and_marked_with_one() {
+        use meclaw_colony::StatelessCell;
+        use meclaw_core::{
+            Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid, serde_json::json,
+        };
+        use tokio::sync::mpsc;
+
+        // 300 KiB of stdout: 30 720 lines of "xxxxxxxxx\n".
+        let run = |hop: Value| async move {
+            let cell = BashCell {
+                external_timeout: std::time::Duration::from_secs(30),
+                max_concurrency: 4,
+                sandbox: None,
+                max_bytes: None,
+            };
+            let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+            let sink = OutputSink::new(
+                out_tx,
+                Path::new("/bash"),
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                10,
+                meclaw_core::Headers::new(),
+                None,
+            );
+            let msg = MessageBuilder::new(Path::new("/bash"))
+                .reply_to(Path::new("/caller"))
+                .hop(hop.as_object().cloned().unwrap_or_default())
+                .body(Body::Inline(json!({
+                    "messages": [{
+                        "origin": "assistant", "type": "tool_call",
+                        "text": r#"{"command": "yes xxxxxxxxx | head -n 30720"}"#, "id": "c"
+                    }]
+                })))
+                .build();
+            cell.handle(msg, &sink).await;
+            out_rx.recv().await.unwrap().content
+        };
+        let whole = run(json!({})).await;
+        assert_eq!(whole["header"]["exit_code"], 0, "{}", whole["header"]);
         assert_eq!(
-            DEFAULT_BASH_MAX_BYTES,
-            256 * 1024,
-            "one consistent default across the tool cells"
+            whole["messages"][0]["text"].as_str().unwrap().len(),
+            300 * 1024,
+            "whole"
         );
+        assert!(whole["header"].get("truncated").is_none());
+
+        // input_soft 10 000 tokens -> 10 % at 3 bytes a token = 3 000 bytes.
+        let cut = run(json!({"input_soft": 10_000})).await;
+        let text = cut["messages"][0]["text"].as_str().unwrap();
+        assert!(
+            text.ends_with(&format!(
+                "...[cut: 3000 of {} bytes shown; {BASH_CUT_HINT}]",
+                300 * 1024
+            )),
+            "...{}",
+            &text[text.len().saturating_sub(90)..]
+        );
+        assert_eq!(cut["header"]["truncated"], true);
+        assert_eq!(cut["header"]["bytes"], 300 * 1024);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -13,11 +13,15 @@
 //!   prompt estimate. A local server refuses a larger budget with a 400 (KF1
 //!   finding 4); a clamp is said on the same target.
 //!
-//! The estimate is deliberately high: a token is about four bytes of English,
-//! and THREE counts JSON, German and code too, so the clamp never asks past
-//! the window. An inline image (a `data:` URL) counts as [`IMAGE_TOKENS`], not
-//! as its base64 bytes. Without `input_hard` and `context_window` (both 0, the
-//! defaults) nothing here changes the request.
+//! The estimate counts the bytes of a token and the tokens of an inline image
+//! (a `data:` URL, never its base64 bytes) as the model's catalogue row states
+//! them -- the package keys `chars_per_token` and `tokens_per_image` (GH
+//! #1085: a flat three refused English, about four bytes a token, a quarter
+//! before the real window). A cell no row has reached counts the defaults:
+//! [`crate::content_budget::CHARS_PER_TOKEN`] bytes, high on purpose so the
+//! clamp never asks past the window, and [`IMAGE_TOKENS`]. Without
+//! `input_hard` and `context_window` (both 0, the defaults) nothing here
+//! changes the request.
 
 use crate::llm::params::LlmParams;
 use meclaw_core::serde_json::{Map, Value};
@@ -26,14 +30,12 @@ use meclaw_core::serde_json::{Map, Value};
 /// R-HK-15 (OR-HK.KF1.3: a log line, no hop key).
 pub(crate) const WINDOW_TARGET: &str = "meclaw::llm::window";
 
-/// Bytes counted as one token. High on purpose (see the module doc).
-const BYTES_PER_TOKEN: u64 = 3;
-
-/// Tokens counted for one inline image.
-const IMAGE_TOKENS: u64 = 1024;
+/// Tokens counted for one inline image when no catalogue row states
+/// `tokens_per_image`.
+pub(crate) const IMAGE_TOKENS: u64 = 1024;
 
 /// A refused request: what was estimated, against which bound.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Refusal {
     /// `meta.error.kind`: `input_over_hard` or `input_over_window`.
     pub(crate) kind: &'static str,
@@ -41,6 +43,8 @@ pub(crate) struct Refusal {
     pub(crate) bound_key: &'static str,
     pub(crate) bound: u64,
     pub(crate) estimate: u64,
+    /// The bytes a token counted in `estimate` (the row's, else the default).
+    pub(crate) chars_per_token: f64,
 }
 
 impl Refusal {
@@ -51,22 +55,26 @@ impl Refusal {
         m.insert("kind".into(), Value::from(self.kind));
         m.insert("input_estimate".into(), Value::from(self.estimate));
         m.insert(self.bound_key.into(), Value::from(self.bound));
+        m.insert("chars_per_token".into(), Value::from(self.chars_per_token));
         m
     }
 
     pub(crate) fn detail(&self) -> String {
         format!(
-            "window: prompt of about {} tokens over {}={}; no model call",
-            self.estimate, self.bound_key, self.bound
+            "window: prompt of about {} tokens (chars_per_token={}) over {}={}; no model call",
+            self.estimate, self.chars_per_token, self.bound_key, self.bound
         )
     }
 }
 
-/// The estimated prompt tokens of a request body.
-pub(crate) fn estimate_prompt_tokens(body: &Value) -> u64 {
+/// The estimated prompt tokens of a request body, at the rates of the
+/// model's package ([`LlmParams::bytes_per_token`],
+/// [`LlmParams::image_tokens`]).
+pub(crate) fn estimate_prompt_tokens(body: &Value, params: &LlmParams) -> u64 {
     let (mut bytes, mut images) = (0u64, 0u64);
     walk(body, &mut bytes, &mut images);
-    bytes.div_ceil(BYTES_PER_TOKEN) + images * IMAGE_TOKENS
+    (bytes as f64 / params.bytes_per_token()).ceil() as u64
+        + images.saturating_mul(params.image_tokens())
 }
 
 fn walk(v: &Value, bytes: &mut u64, images: &mut u64) {
@@ -98,13 +106,15 @@ pub(crate) fn apply(
     if params.input_hard == 0 && params.context_window == 0 {
         return Ok(None);
     }
-    let estimate = estimate_prompt_tokens(body);
+    let estimate = estimate_prompt_tokens(body, params);
+    let chars_per_token = params.bytes_per_token();
     let refusal = if params.input_hard > 0 && estimate > params.input_hard {
         Some(Refusal {
             kind: "input_over_hard",
             bound_key: "input_hard",
             bound: params.input_hard,
             estimate,
+            chars_per_token,
         })
     } else if params.context_window > 0 && estimate >= params.context_window {
         Some(Refusal {
@@ -112,6 +122,7 @@ pub(crate) fn apply(
             bound_key: "context_window",
             bound: params.context_window,
             estimate,
+            chars_per_token,
         })
     } else {
         None
@@ -119,8 +130,9 @@ pub(crate) fn apply(
     if let Some(r) = refusal {
         tracing::warn!(
             target: WINDOW_TARGET,
-            "{path} refused: prompt of about {} tokens over {}={} -- no model call",
+            "{path} refused: prompt of about {} tokens (chars_per_token={}) over {}={} -- no model call",
             r.estimate,
+            r.chars_per_token,
             r.bound_key,
             r.bound
         );
@@ -175,10 +187,12 @@ mod tests {
 
     #[test]
     fn the_estimate_is_high_and_images_count_flat() {
-        let plain = estimate_prompt_tokens(&json!({"t": "x".repeat(3000)}));
+        let p = params(json!({}));
+        let plain = estimate_prompt_tokens(&json!({"t": "x".repeat(3000)}), &p);
         assert!(plain >= 1000, "{plain}");
         let image = estimate_prompt_tokens(
             &json!({"u": format!("data:image/png;base64,{}", "A".repeat(900_000))}),
+            &p,
         );
         assert!(image < 2 * IMAGE_TOKENS, "{image}");
     }
@@ -212,10 +226,76 @@ mod tests {
         assert_eq!(r.kind, "input_over_window");
     }
 
+    /// The shipped catalogue row of `model_id` as the registry hand pushes
+    /// it (`package_of`): the window columns plus the row's `package` json.
+    /// `None` outside a tree that ships the templates.
+    fn shipped_row(model_id: &str) -> Option<Value> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../templates/llm-registry/store/seed/models.jsonl");
+        let text = std::fs::read_to_string(path).ok()?;
+        let row: Value = text
+            .lines()
+            .filter_map(|l| meclaw_core::serde_json::from_str::<Value>(l).ok())
+            .find(|r| r["model_id"] == model_id)?;
+        let mut pushed = json!({});
+        for key in ["context_window", "input_soft", "input_hard", "max_output"] {
+            pushed[key] = row[key].clone();
+        }
+        for (k, v) in row["package"].as_object().cloned().unwrap_or_default() {
+            pushed[k] = v;
+        }
+        Some(pushed)
+    }
+
+    /// GH #1085 (audit of this file): the bytes a token counts are the
+    /// catalogue row's, not a constant of the cell. At a flat three, English
+    /// (about four bytes a token) was refused a quarter before the real
+    /// window: 3.8 MB of it is about 950 000 tokens, inside luna's
+    /// input_hard of 1 000 000, and was estimated at 1 266 667.
+    #[test]
+    fn the_row_says_how_many_bytes_a_token_counts() {
+        let Some(luna) = shipped_row("openai/gpt-6-luna") else {
+            return;
+        };
+        let p = params(luna);
+        assert!(p.chars_per_token > 0.0, "luna's row states its rate");
+        // The owner's lock: a million characters at luna are never refused.
+        let mut b = body(&"x".repeat(1_000_000));
+        assert!(apply(&p, &mut b, "max_tokens", "/p").is_ok());
+        let english = "a".repeat(3_800_000);
+        let mut b = body(&english);
+        assert!(apply(&p, &mut b, "max_tokens", "/p").is_ok());
+        // Past the row's rate the refusal names the number and the rate.
+        let mut b = body(&"a".repeat(4_100_000));
+        let r = apply(&p, &mut b, "max_tokens", "/p").unwrap_err();
+        assert_eq!(r.kind, "input_over_hard");
+        assert_eq!(r.meta()["chars_per_token"], p.chars_per_token);
+        assert!(r.detail().contains("chars_per_token"), "{}", r.detail());
+        // Without a row the cell counts its own three -- the same text is
+        // refused there.
+        let mut b = body(&english);
+        let bare = params(json!({"input_hard": 1_000_000, "context_window": 1_050_000}));
+        assert_eq!(
+            apply(&bare, &mut b, "max_tokens", "/p").unwrap_err().kind,
+            "input_over_hard"
+        );
+    }
+
+    #[test]
+    fn an_image_counts_what_the_row_says() {
+        let image = json!({"u": format!("data:image/png;base64,{}", "A".repeat(9))});
+        let p = params(json!({"tokens_per_image": 1600}));
+        assert_eq!(estimate_prompt_tokens(&image, &p), 1 + 1600);
+        assert_eq!(
+            estimate_prompt_tokens(&image, &params(json!({}))),
+            1 + IMAGE_TOKENS
+        );
+    }
+
     #[test]
     fn the_budget_is_clamped_to_what_the_window_leaves() {
         let mut b = body("hello");
-        let est = estimate_prompt_tokens(&b);
+        let est = estimate_prompt_tokens(&b, &params(json!({})));
         let got = apply(
             &params(json!({"context_window": 8000})),
             &mut b,

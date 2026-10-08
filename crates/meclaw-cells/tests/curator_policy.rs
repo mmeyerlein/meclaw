@@ -71,9 +71,8 @@ fn released(i: &str) -> String {
 
 // ================================================ 1. the knobs and the roles
 
-const KNOBS: &str = "[KEEP_RECENT, COMPRESS_AT, REBUILD_TO, QUALITY_CAP, HORIZON, TIERS, \
-                     SUMMARY_BUDGET, KEEP_ROUNDS, STUB_TOOLS_AFTER, BROADCAST_MODE, RECALL_PUSH, \
-                     RECALL_BUDGET, SHORT_IDS]";
+const KNOBS: &str = "[KEEP_RECENT, COMPRESS_AT, REBUILD_TO, HORIZON, TIERS, KEEP_ROUNDS, \
+                     STUB_TOOLS_AFTER, BROADCAST_MODE, RECALL_PUSH, RECALL_BUDGET, SHORT_IDS]";
 
 #[test]
 fn each_role_has_its_presets() {
@@ -88,10 +87,8 @@ fn each_role_has_its_presets() {
                 12,
                 0.5,
                 0.0,
-                0,
                 "all",
                 ["raw", "summary"],
-                4000,
                 0,
                 0,
                 "tail",
@@ -106,10 +103,8 @@ fn each_role_has_its_presets() {
                 40,
                 0.5,
                 0.35,
-                120000,
                 "day",
                 ["raw", "summary", "none"],
-                4000,
                 2,
                 20,
                 "tail",
@@ -124,10 +119,8 @@ fn each_role_has_its_presets() {
                 10,
                 0.5,
                 0.35,
-                80000,
                 "task",
                 ["raw", "summary"],
-                3000,
                 2,
                 10,
                 "tail",
@@ -142,10 +135,8 @@ fn each_role_has_its_presets() {
                 20,
                 0.4,
                 0.25,
-                70000,
                 "task",
                 ["raw", "summary"],
-                3000,
                 3,
                 20,
                 "tail",
@@ -160,10 +151,8 @@ fn each_role_has_its_presets() {
                 10,
                 0.4,
                 0.25,
-                80000,
                 "task",
                 ["raw", "none"],
-                2000,
                 1,
                 10,
                 "tail",
@@ -197,6 +186,29 @@ fn each_role_has_its_presets() {
     let (got, err) = policy_scope(json!({"role": "nobody"}), KNOBS, Value::Null);
     assert_eq!(got[0], json!(12));
     assert!(err.contains("unknown role 'nobody'"), "{err}");
+    // GH #1085 (R-IG-1): no role types a window of its own. The usable
+    // window is the catalog row of the answering model (`input_soft`, the
+    // llm cell's stamp, GH #1037); `quality_cap` (talky 120000, consult
+    // 80000, coding 70000, research 80000 tokens, GH #892) is gone from the
+    // presets, the params and the contract's settings.
+    let (keys, _) = policy_scope(
+        json!({}),
+        "sorted(set(k for r in ROLES.values() for k in r))",
+        Value::Null,
+    );
+    assert!(
+        !keys
+            .as_array()
+            .expect("the preset keys")
+            .contains(&json!("quality_cap")),
+        "{keys}"
+    );
+    let cfg = cell_config("policy");
+    assert!(cfg["params"].get("quality_cap").is_none(), "params");
+    assert!(
+        cfg["contract"]["settings"].get("quality_cap").is_none(),
+        "contract.settings"
+    );
 }
 
 #[test]
@@ -212,10 +224,10 @@ fn a_set_knob_beats_the_preset() {
     );
     assert_eq!(got[0], json!(5), "a set number wins");
     assert_eq!(got[1], json!(0.6), "a numeric string is a number");
-    assert_eq!(got[5], json!(["raw", "none"]), "a set tier list wins");
-    assert_eq!(got[12], json!(false), "\"0\" switches a flag off");
-    assert_eq!(got[4], json!("day"), "empty is not set: the preset stands");
-    assert_eq!(got[3], json!(120000), "what is not set is the role's");
+    assert_eq!(got[4], json!(["raw", "none"]), "a set tier list wins");
+    assert_eq!(got[10], json!(false), "\"0\" switches a flag off");
+    assert_eq!(got[3], json!("day"), "empty is not set: the preset stands");
+    assert_eq!(got[5], json!(2), "what is not set is the role's");
     // A form nobody knows keeps the preset, and says so.
     let (got, err) = policy_scope(
         json!({"role": "consult", "tiers": "raw,shredded"}),
@@ -226,31 +238,24 @@ fn a_set_knob_beats_the_preset() {
     assert!(err.contains("not understood"), "{err}");
 }
 
+/// OR-IG-5 (GH #1085): the summary is the summarizer's words. No role types
+/// a length for it any more (`summary_budget` 4000/3000/2000 and its 1.0.0
+/// name `summary_chars` are gone), the prompt carries the efficiency rule,
+/// and a summary far over the 2000 characters of before is kept whole.
 #[test]
-fn summary_chars_reads_as_summary_budget() {
+fn a_summary_has_no_typed_length() {
     if !shipped() {
         return;
     }
-    let probe = "[SUMMARY_BUDGET, SUMMARY_CHARS]";
-    let (got, _) = policy_scope(json!({"summary_chars": 1234}), probe, Value::Null);
-    assert_eq!(
-        got,
-        json!([1234, 1234]),
-        "the 1.0.0 name is read (OR-KY-T1)"
-    );
-    let (got, _) = policy_scope(
-        json!({"summary_budget": 900, "summary_chars": 1234}),
-        probe,
-        Value::Null,
-    );
-    assert_eq!(got, json!([900, 900]), "the new name wins");
-    let (got, _) = policy_scope(json!({"role": "research"}), probe, Value::Null);
-    assert_eq!(got, json!([2000, 2000]), "neither set: the role's");
-    // And it is the bound a summary is held to.
-    let mut h = Hive::with(&[
-        ("policy", "keep_recent", json!(1)),
-        ("policy", "summary_chars", json!(10)),
-    ]);
+    let cfg = cell_config("policy");
+    for knob in ["summary_budget", "summary_chars"] {
+        assert!(cfg["params"].get(knob).is_none(), "{knob} is gone");
+        assert!(
+            cfg["contract"]["settings"].get(knob).is_none(),
+            "{knob} is gone"
+        );
+    }
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]);
     turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
     turn(
         &mut h,
@@ -261,14 +266,20 @@ fn summary_chars_reads_as_summary_budget() {
         json!({"cache_expires_at": "2099-01-01T00:00:00Z"}),
     );
     h.fire(&last_add(&h));
-    let req = h.answer("far more than ten characters", "stop");
+    let long = "s".repeat(5_000);
+    let req = h.answer(&long, "stop");
+    let prompt = req.body["system"]["instructions"]["text"].as_str().unwrap();
     assert!(
-        req.body["system"]["instructions"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("at most 10 characters")
+        prompt.contains("Keep it as short as useful and as long as needed."),
+        "{prompt}"
     );
-    assert_eq!(h.rows("SELECT COUNT(*) FROM summaries")[0][0], json!(0));
+    assert!(!prompt.contains("at most"), "{prompt}");
+    assert_eq!(
+        h.rows("SELECT COUNT(*) FROM summaries")[0][0],
+        json!(1),
+        "{:?}",
+        h.stderr
+    );
 }
 
 // ============================================== 2. the rebuild per role
@@ -566,12 +577,14 @@ fn consult_keeps_the_task_raw() {
 }
 
 #[test]
-fn quality_cap_bounds_below_the_model_window() {
+fn the_models_window_bounds_the_compress_line() {
     if !shipped() {
         return;
     }
-    // 70 000 of a million is nothing for the model, and more than half of
-    // what a talky may use (R-27-2: vague from ~200-300 k on).
+    // GH #1085 (R-IG-1): without the package's limits on an answer, the line
+    // is `compress_at` of the model's own window -- no role cuts it (before:
+    // talky's `quality_cap` 120 000, so 70 000 of a million ordered a
+    // rebuild at 60 000).
     let mut h = hive_of("talky", &[]);
     turn(
         &mut h,
@@ -581,7 +594,7 @@ fn quality_cap_bounds_below_the_model_window() {
         "a",
         json!({"tokens_prompt": 70000, "context_window": 1000000}),
     );
-    assert_eq!(last_add(&h).body["emit_body"]["reason"], "compress");
+    assert!(h.clock.is_empty(), "70 000 of a million: nothing ordered");
     let mut h = hive_of("talky", &[]);
     turn(
         &mut h,
@@ -589,10 +602,10 @@ fn quality_cap_bounds_below_the_model_window() {
         "t1",
         "q",
         "a",
-        json!({"tokens_prompt": 50000, "context_window": 1000000}),
+        json!({"tokens_prompt": 500000, "context_window": 1000000}),
     );
-    assert!(h.clock.is_empty(), "under the line: nothing ordered");
-    // A cap above the model's own window: the model's wins (review focus 4).
+    assert_eq!(last_add(&h).body["emit_body"]["reason"], "compress");
+    // A small model window is the model's own, and it counts.
     let mut h = hive_of("talky", &[]);
     turn(
         &mut h,
@@ -608,13 +621,14 @@ fn quality_cap_bounds_below_the_model_window() {
 }
 
 /// A talky over its aim: first the old tool results shrink, and only when
-/// that is not enough does the summary go.
-fn under_pressure(cap: i64) -> (Hive, String) {
+/// that is not enough does the summary go. `window` is the model's window
+/// (`context_window`, the tap reports none here), the aim `rebuild_to` of it.
+fn under_pressure(window: i64) -> (Hive, String) {
     let mut h = hive_of(
         "talky",
         &[
             ("policy", "keep_recent", json!(2)),
-            ("policy", "quality_cap", json!(cap)),
+            ("policy", "context_window", json!(window)),
             ("policy", "keep_rounds", json!(1)),
         ],
     );
@@ -667,13 +681,18 @@ fn old_tool_results_shrink_before_segments() {
     let (h, _) = under_pressure(100_000);
     assert_eq!(h.plan()["shrunk"], json!([]));
     // Over the aim by one tool result: the older one shrinks, the summary stays.
-    let (mut h, first) = under_pressure(5800);
+    // GH #1085 (fix review G1 M4): a summary still to be made has no estimate
+    // of its own any more (4000 characters for talky before), so the window at
+    // which this happens is the old 5800 less 4000 characters' worth of aim
+    // (1000 tokens / rebuild_to 0.35): 2943.
+    let (mut h, first) = under_pressure(2943);
     assert_eq!(h.plan()["shrunk"], json!([r1.clone()]));
     assert_ne!(h.plan()["summary"], json!(""), "the summary is kept");
     let call = h.curate("s", "r4", 0, json!([user("next")]), mode("x"));
     let shown = texts(&call);
+    // The form names how much of the whole it shows (R-IG-1, GH #1085).
     let one = format!(
-        "[#{r1}] {} ... [shortened \u{2014} history_read(\"#{r1}\")]",
+        "[#{r1}] {} [shortened, 120 of 3012 chars \u{2014} history_read(\"#{r1}\")]",
         "A".repeat(120)
     );
     assert!(shown.contains(&one), "{shown:?}");
@@ -690,8 +709,15 @@ fn old_tool_results_shrink_before_segments() {
         "the block itself is untouched"
     );
     assert_eq!(listed_messages(&h, &call), call.messages());
-    // Still over after that: the summary is given up, and said.
-    let (h, _) = under_pressure(3000);
+    // Still over after that: the summary is given up, and said. The first
+    // window below the one above at which that happens (the old 3000 less the
+    // same 2857 would be 143 -- searched, not guessed, since a window that small moves
+    // other marks too).
+    let h = [2400, 2000, 1600, 1200, 800, 400, 143]
+        .into_iter()
+        .map(|window| under_pressure(window).0)
+        .find(|h| h.plan()["summary"] == json!(""))
+        .expect("some window below the aim gives the summary up");
     assert_eq!(h.plan()["shrunk"], json!([r1]));
     assert_eq!(h.plan()["summary"], json!(""));
     assert!(
@@ -719,7 +745,7 @@ fn unused_tools_become_stubs_with_an_empty_schema() {
         &[
             ("policy", "keep_recent", json!(1)),
             ("policy", "stub_tools_after", json!(2)),
-            ("policy", "quality_cap", json!(1000)),
+            ("policy", "context_window", json!(1000)),
         ],
     );
     h.lane(
@@ -759,8 +785,8 @@ fn unused_tools_become_stubs_with_an_empty_schema() {
     let described = stub["function"]["description"].as_str().unwrap();
     assert!(
         described.starts_with("Never called. zzz")
-            && described.ends_with(" ...")
-            && described.len() < 130,
+            && described.contains("...[cut: 120 of 3014 chars shown; ")
+            && described.len() < 240,
         "{described}"
     );
     assert_eq!(

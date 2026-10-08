@@ -79,6 +79,7 @@ const COGNY: &str = "cogny/config.json";
 const BUILDER: &str = "builder/config.json";
 const FILE_SPACE: &str = "file-space/config.json";
 const MEMBER: &str = "member/config.json";
+const MEMORY_HIVE: &str = "memory-hive/config.json";
 
 /// The seam table of the shipped templates.
 const SEAMS: &[Row] = &[
@@ -346,6 +347,42 @@ const SEAMS: &[Row] = &[
         "source_changed",
         None,
         Seam::Door,
+    ),
+    // An entity job (GH #1057): after its inserts extract-glue hands the
+    // written fact ids to `./entity-glue` once per fact write, and the dream
+    // lane hands it one consolidation per booked `close_run`. A tick is at
+    // most four store bundles (the new facts, the counts, the edges by id,
+    // the write), bounded by the entity-glue script, and nothing in it routes
+    // back to the sender; the night goes on over its own round below. Behind
+    // the close pass it hung on the tail of the extraction rounds: gh933 (f)
+    // measured 50 of 48 decisions there, 47 before the producer existed.
+    row(
+        MEMORY_HIVE,
+        "./extract-glue",
+        "./entity-glue",
+        "entity",
+        None,
+        Seam::Door,
+    ),
+    row(
+        MEMORY_HIVE,
+        "./dream-glue",
+        "./entity-glue",
+        "entity",
+        None,
+        Seam::Door,
+    ),
+    // The entity night's own round (GH #1057 review, finding 6): a backfill
+    // pages through the facts and a delta writes in bundles of at most 500
+    // ops, every page and every write a step of its own. The step restores
+    // the budget its store bundles spend, and `hop.ent_step` bounds the loop.
+    row(
+        MEMORY_HIVE,
+        "./entity-glue",
+        "./entity-glue",
+        "entity",
+        None,
+        Seam::Round,
     ),
 ];
 

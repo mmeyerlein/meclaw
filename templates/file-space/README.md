@@ -1,4 +1,4 @@
-# `file-space@1.4.5`
+# `file-space@1.4.6`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -48,7 +48,7 @@ A version is the sha256 of the raw bytes; every answer names it by its first 12 
 | request hop | `op`, `op_id` (required), `ws?`, `mode?` (`search` only), `caller?` (internal callers only; empty from outside) |
 | answer body | `{ok: true, op, op_id, file, version, …}` plus `messages: []` (transport) |
 | refusal body | `{ok: false, op, op_id, error: {code, message, candidates?, current?}}` |
-| write | every op that moves content (all but `create` and `snapshot`) carries `args.base` (the version read), `force` optional (it skips the hook, nothing else); answer `version` (new), `base`, `diff` (unified, 3 lines context, ≤ 400 lines; `truncated: true` when cut), `hook` (`ok`/`none`/`forced`; `hook_note` carries the guard's `note` when it passed without checking: `too_large_to_check`, `too_deep_to_check`, `no_text`); `stage` on `replace`; `rebased: true` when moved; `hint: use_replace` on an `overwrite` that changes at most 5 % of the lines |
+| write | every op that moves content (all but `create` and `snapshot`) carries `args.base` (the version read), `force` optional (it skips the hook, nothing else); answer `version` (new), `base`, `diff` (unified, 3 lines context, ≤ 400 lines; `truncated: true` and `cut`, the mark `...[cut: <shown> of <total> chars shown; read the two versions for the rest]`, when cut), `hook` (`ok`/`none`/`forced`; `hook_note` carries the guard's `note` when it passed without checking: `too_large_to_check`, `too_deep_to_check`, `no_text`); `stage` on `replace`; `rebased: true` when moved; `hint: use_replace` on an `overwrite` that changes at most 5 % of the lines |
 
 A line reads as `<n>:<h4>|<text>`, `h4` the first 4 hex digits of the sha256 of the line without `\n` or `\r\n`; `replace_lines` checks exactly these. A version with `derived` pages reads as them, each headed `--- page <n> ---` -- also when its bytes happen to be UTF-8, as a pure-ASCII PDF's are; a version without reads as its own text.
 
@@ -118,11 +118,11 @@ A directory is a path without a trailing `/` and one row of `dirs`, unique on `p
 |---|---|---|---|
 | `in_read` | `info` | – | `version`, `path`, `kind`, `mime`, `bytes`, `lines`, `pages`, `oneline`, `workspaces[]`, `snapshots[{name, version}]`, `tomb?` (the only op on a removed file's head) |
 | `in_read` | `read` | `from`/`to` (1-based, inclusive, negative from the end) or `page` (a paged document only: on a version without pages `page` 0 or 1 is ignored and the range or the whole file is read, [#994](https://github.com/mmeyerlein/meclaw/issues/994)); `at?` | `version`, `lines` (total), `from`, `to`, `text`; `page`, `pages` for a page; `ignored: ["page"]` when it was ignored; `more{from, to}` when cut |
-| `in_read` | `search` | `pattern` (≤ 500 chars), `mode` `exact`\|`regex`, `context` ≤ 2, `limit` | `version`, `hits[{line, h4, text, before?, after?, long_line?}]`, `total` |
+| `in_read` | `search` | `pattern` (≤ 500 chars), `mode` `exact`\|`regex`, `context` ≤ 2, `limit` | `version`, `hits[{line, h4, text, before?, after?}]`, `total`; `more` and `cut` (the mark: hits shown of `total`) when the budget stopped the hits |
 | `in_read` | `summary` | `level` `oneline`\|`short` | `version`, `level`, `text`, `model`, `at`; `pending: true` while none is written |
 | `in_read` | `history` | `limit` (20, ≤ 200) | `version`, `entries[{at, version, op, prev?, note?, ws?, commit?}]`, newest first |
 | `in_read` | `show` | `version?` | `version`, `bytes`, `lines`, `at`, `made_by`, `head` (first 40 lines), `parent?`, `force?` |
-| `in_read` | `diff` | `a`, `b?` (else the addressed state) | `version`, `a`, `b`, `diff` (unified), `truncated?` |
+| `in_read` | `diff` | `a`, `b?` (else the addressed state) | `version`, `a`, `b`, `diff` (unified); `truncated` and `cut` (the mark: characters shown of the whole diff) when cut |
 | `in_read` | `list` | `prefix` (`/`), `depth` (1) | `prefix`, `depth`, `entries[{path, file, bytes, lines}` or `{path, dir, files}]`, `more?` |
 | `in_read` | `find` | `glob`, `limit` (100, ≤ 500) | `glob`, `files[{file, path}]`, `more?` |
 | `in_read` | `raw` | `version?` | `version`, `mime`, `bytes`, `b64` |
@@ -166,6 +166,7 @@ The three projection tools ([#980](https://github.com/mmeyerlein/meclaw/issues/9
 | `not_indexed` | `ask` or `search` `semantic` on a version without embeddings (not derived yet, `derive.embed` "0", or a working version); `error.current` names the version |
 | `embed_failed` / `model_failed` | the embedding endpoint / the summarizer failed on `ask` or `search` `semantic` |
 | `bad_pattern` / `bad_range` / `page_unknown` | a pattern of the wrong size or no regex / a range with no line / no such page (on a version without pages: a `page` other than 0 or 1) |
+| `too_long` | a `regex` search over a file with a line longer than the budget of the window (a tenth of the reading model's `input_soft`): the expression is not run over it, its backtracking has no bound; the message names the line, its length and the budget, and mode `exact` searches it whole (GH #1085) |
 | `store_error` | the store refused a read (or, in `./derive`, a write) |
 | `base_moved` | a write overlaps what moved since `base`; with the current lines (`lines`, read form) and the new token (`current`). `use_replace` is no refusal: it is the `hint` of an `overwrite` that landed |
 | `base_required` / `not_text` / `out_of_range` | a write without `args.base` / a line op on a binary file / a line number outside the base (`lines` = its count; `insert` at the count + 1, `before` or `after`, appends instead, [#996](https://github.com/mmeyerlein/meclaw/issues/996)) |
@@ -188,10 +189,12 @@ The three projection tools ([#980](https://github.com/mmeyerlein/meclaw/issues/9
 
 | Cell | Knob | Default | Meaning |
 |---|---|---|---|
-| `read` | `max_lines`, `max_chars`, `search_limit`, `diff_lines` | 2000, 25000, 20, 400 | the most lines / characters one `read` carries (`more` names the next range), hits one `search` lists, lines one `diff` carries |
+| `read` | `max_lines`, `search_limit`, `diff_lines` | 2000, 20, 400 | the most lines one `read` carries (`more` names the next range), hits one `search` lists, lines one `diff` carries |
+| `read` | `max_chars` | unset | the characters one `read`, `search` or `diff` carries are a tool result's share (10 %) of the reading model's window, `input_soft` on the request (`./tools` hands on the one the tool edge stamped) or in its context, at three characters a token; a cut read says `cut`, the mark with what it shows, the total and the read that gets the rest; a single line over the budget, in a read or a search hit, is cut with the mark in its text; no window, no character bound -- lines are searched and shown whole ([#1085](https://github.com/mmeyerlein/meclaw/issues/1085)). A number is an owner's override |
 | `write` | `max_bytes` | 25 MiB | set by its cell |
 | `guard` | `max_check_bytes` | 1 MiB | the largest text the syntax hook parses; a larger one answers `none` with `note` `too_large_to_check` |
 | `derive` | `summary_on_commit`, `embed`, `ask_sections`, `section_lines` | "1", "1", 4, 60 | a summary on every main-line head move (birth always gets one); embeddings per section; sections one `ask` hands the model; lines per window where a file has no headings |
+| `derive` | `input_soft_fallback`, `embed_input_soft_fallback` (rows in `input_soft_fallback_row`, `embed_input_soft_fallback_row`) | catalogue rows | the summarizer's and the embedder's window in tokens, the `input_soft` of the catalog rows of the models they are born on ([#1085](https://github.com/mmeyerlein/meclaw/issues/1085), OR-IG-9): the summarizer's model is a birth token (`MODEL_FILE_SPACE`), so its row is the llm-registry's `light` tier, `openai/gpt-6-luna`; the embedder's is the embedding row of its default model, `google/gemini-embedding-2`. The `_row` params are labels the drift lock `gh1085_fallback_windows_match_the_catalog` reads, not the script. A summary reads half the window (a longer file is cut with the mark naming the sections left out), a section over the embedding window is embedded as several pieces at line borders. 0: whole; a summary the summarizer refuses as too long is asked once more with half of the window the refusal names |
 | `derive`, `read` | `nodes_max`, `links_max`, `extract_max_bytes`, `key_depth` | 2000, 5000, 2 MiB, 3 | the most nodes / links one version keeps (`truncated` above), the largest text extracted (`too_large` above), the depth of `key:` nodes |
 | `read` | `near_scan_max` | 5000 | the most files one `near` compares |
 | `extract` | `extract_cmd`, `extract_max_pages`, `extract_timeout_ms` | `pdftotext`, 500, 30000 | the program that turns a PDF into pages (a name found in `/usr/bin:/bin`, the only `PATH` it runs with, or an absolute path), the most pages one `create` carries as `derived`, the time one extraction may take |

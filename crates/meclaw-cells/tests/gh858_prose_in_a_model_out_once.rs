@@ -1389,14 +1389,22 @@ async fn the_fallback_skips_a_retired_answer_and_the_journal_stays_short() {
 }
 
 /// 8. `model_upsert` refuses what no cell could take or the translator should
-///    read (review of the strand, m-3): a prompt block over 8 KiB (the llm
-///    cell's `MODEL_PROMPT_MAX_BYTES`), strengths over 2 KiB, an id that is
-///    not one short token. Refused by name, never cut.
+///    not read (review of the strand, m-3), by name and never cut: a prompt
+///    block the row's model could never take -- since GH #1085 the llm cell's
+///    own rule (`LlmParams::window_bound_bytes`: `input_hard` x 3 bytes, else
+///    `context_window` x 3, else the carrier ceiling), with its size and bound
+///    on the ack --, strengths over the carrier ceiling (OR-IG-12: content to
+///    the translator, whole up to it, the number on the ack), an id that is
+///    not one short token.
+///    A block over the old fixed 8 KiB that the window takes is taken, and a
+///    block pushed alone is held to the window the stored row states.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn model_upsert_refuses_oversized_fields() {
     let Some(root) = shipped_registry() else {
         return;
     };
+    // The carrier ceiling the hand mirrors (`content_budget::CARRIER_MAX_BYTES`).
+    const CARRIER: usize = meclaw_cells::content_budget::CARRIER_MAX_BYTES;
     let subs = MockOpenAI::start(subscribers_mock_answers()).await;
     let translator = MockOpenAI::start(vec![]).await;
     let td = tempfile::TempDir::new().unwrap();
@@ -1409,8 +1417,9 @@ async fn model_upsert_refuses_oversized_fields() {
     let (h, mut rx) = boot(&td).await;
     let long_id = format!("vendor/{}", "m".repeat(200));
     for model in [
-        json!({"model_id": "test/big", "prompt": "p".repeat(8 * 1024 + 1)}),
-        json!({"model_id": "test/big", "strengths": "s".repeat(2 * 1024 + 1)}),
+        json!({"model_id": "test/big", "input_hard": 1000, "prompt": "p".repeat(3001)}),
+        json!({"model_id": "test/big", "context_window": 1000, "prompt": "p".repeat(3001)}),
+        json!({"model_id": "test/big", "strengths": "s".repeat(CARRIER + 1)}),
         json!({"model_id": "test/two words"}),
         json!({"model_id": "test/line\nbreak"}),
         json!({"model_id": long_id}),
@@ -1419,14 +1428,66 @@ async fn model_upsert_refuses_oversized_fields() {
         assert_eq!(ack["outcome"], "rejected", "{ack}");
         assert_eq!(ack["reason_code"], "invalid_model_field", "{ack}");
     }
+    // The refusal names its numbers, in the llm cell's own words.
+    let (_, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "model_upsert", "model": {"model_id": "test/big", "input_hard": 1000,
+               "prompt": "p".repeat(3001)}}),
+    )
+    .await;
+    assert_eq!(
+        ack["detail"],
+        "too_long: model_prompt 3001 > 3000 bytes (what the model's input_hard window can take \
+         at all)",
+        "{ack}"
+    );
+    // Strengths over the carrier name their size and the ceiling (OR-IG-12).
+    let (_, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "model_upsert", "model": {"model_id": "test/big",
+               "strengths": "s".repeat(CARRIER + 1)}}),
+    )
+    .await;
+    assert_eq!(
+        ack["detail"],
+        format!(
+            "too_long: strengths {} > {CARRIER} bytes (the carrier ceiling)",
+            CARRIER + 1
+        ),
+        "{ack}"
+    );
+    // Inside the window: taken, the old fixed 8 KiB (and 2 KiB of strengths)
+    // no longer counts.
+    let (_, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "model_upsert", "model": {"model_id": "test/ok:free", "input_hard": 1000,
+               "prompt": "p".repeat(3000), "strengths": "s".repeat(64 * 1024)}}),
+    )
+    .await;
+    assert_eq!(ack["reason_code"], "model_upserted", "{ack}");
+    let (_, ack) = command(
+        &h,
+        &mut rx,
+        json!({"op": "model_upsert", "model": {"model_id": "test/wide",
+               "prompt": "p".repeat(64 * 1024)}}),
+    )
+    .await;
+    assert_eq!(
+        ack["reason_code"], "model_upserted",
+        "no window stated: the carrier ceiling, not 8 KiB: {ack}"
+    );
+    // A block pushed alone is held to the window the stored row states.
     let (_, ack) = command(
         &h,
         &mut rx,
         json!({"op": "model_upsert", "model": {"model_id": "test/ok:free",
-               "prompt": "p".repeat(8 * 1024), "strengths": "s".repeat(2 * 1024)}}),
+               "prompt": "p".repeat(3001)}}),
     )
     .await;
-    assert_eq!(ack["reason_code"], "model_upserted", "{ack}");
+    assert_eq!(ack["reason_code"], "invalid_model_field", "{ack}");
     let rows = admin(
         &h,
         &mut rx,
@@ -1434,16 +1495,27 @@ async fn model_upsert_refuses_oversized_fields() {
                "limit": 10}),
     )
     .await;
-    assert_eq!(rows, json!([{"model_id": "test/ok:free"}]), "{rows}");
+    let mut ids: Vec<String> = rows
+        .as_array()
+        .unwrap_or_else(|| panic!("{rows}"))
+        .iter()
+        .map(|r| r["model_id"].as_str().unwrap_or_default().to_string())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, ["test/ok:free", "test/wide"], "{rows}");
 
     h.shutdown().await;
 }
 
-/// The literals the hand bounds itself with, against what they mirror: an
-/// open question outlives the translator's backstop (review I-1), and the
-/// prompt block `model_upsert` takes is exactly what an llm cell accepts as
-/// `model_prompt` (m-3). A literal that drifts from its neighbour fails here,
-/// not in a colony.
+/// The literals the hand and the submit gate bound themselves with, against
+/// what they mirror: an open question outlives the translator's backstop
+/// (review I-1), and since GH #1085 the two size literals ARE the crate's --
+/// the carrier ceiling the llm cell bounds `params.requirement` by, and the
+/// bytes per token its window bound counts (`LlmParams::window_bound_bytes`,
+/// which the hand's `prompt_bound` restates over a catalogue row). The gate
+/// holds an announced requirement to the same ceiling. A literal that drifts
+/// from its neighbour fails here, not in a colony (review I-3 of strand G2b:
+/// the 8 KiB / 2 KiB the hand and gate kept after the cell dropped them).
 #[test]
 fn the_hands_bounds_match_what_they_mirror() {
     let Some(root) = shipped_registry() else {
@@ -1453,13 +1525,11 @@ fn the_hands_bounds_match_what_they_mirror() {
         meclaw_core::serde_json::from_str(&std::fs::read_to_string(root.join(rel)).unwrap())
             .unwrap()
     };
-    let hand = read("hand/config.json");
-    let script = hand["params"]["script_inline"].as_str().unwrap_or_default();
-    let literal = |name: &str| -> u64 {
+    let literal_in = |script: &str, name: &str| -> u64 {
         let line = script
             .lines()
             .find(|l| l.starts_with(&format!("{name} = ")))
-            .unwrap_or_else(|| panic!("{name} is not a literal of the hand"));
+            .unwrap_or_else(|| panic!("{name} is not a literal of the script"));
         line.split('=')
             .nth(1)
             .unwrap_or_default()
@@ -1467,6 +1537,9 @@ fn the_hands_bounds_match_what_they_mirror() {
             .map(|f| f.trim().parse::<u64>().unwrap_or_else(|_| panic!("{line}")))
             .product()
     };
+    let hand = read("hand/config.json");
+    let script = hand["params"]["script_inline"].as_str().unwrap_or_default();
+    let literal = |name: &str| literal_in(script, name);
     let backstop = read("translate/config.json")["cell"]["message_timeout"]
         .as_u64()
         .unwrap_or(0);
@@ -1476,12 +1549,65 @@ fn the_hands_bounds_match_what_they_mirror() {
         "an open question must outlive the translator's backstop ({backstop} ms)"
     );
     assert_eq!(
-        literal("MODEL_PROMPT_MAX_BYTES") as usize,
-        meclaw_cells::llm::params::MODEL_PROMPT_MAX_BYTES
+        literal("CARRIER_MAX_BYTES") as usize,
+        meclaw_cells::content_budget::CARRIER_MAX_BYTES,
+        "the hand's requirement bound is the llm cell's: the carrier ceiling"
     );
     assert_eq!(
-        literal("REQUIREMENT_MAX_BYTES") as usize,
-        meclaw_cells::llm::params::REQUIREMENT_MAX_BYTES
+        literal("WINDOW_BYTES_PER_TOKEN"),
+        meclaw_cells::content_budget::CHARS_PER_TOKEN,
+        "the hand's prompt bound counts a token as the llm cell's window bound does"
+    );
+    // OR-IG-12: strengths are content to the translator, bounded only by the
+    // carrier like a requirement.
+    for gone in [
+        "MODEL_PROMPT_MAX_BYTES",
+        "REQUIREMENT_MAX_BYTES",
+        "STRENGTHS_MAX_BYTES",
+    ] {
+        assert!(
+            !script.contains(gone),
+            "{gone}: a fixed content size the llm cell no longer has (GH #1085)"
+        );
+    }
+    // The rule itself, against the cell: the three sources of
+    // `window_bound_bytes` are the three branches of `prompt_bound`, in order.
+    for (row, words) in [
+        (
+            json!({"input_hard": 1000}),
+            "what the model's input_hard window can take at all",
+        ),
+        (
+            json!({"context_window": 1000}),
+            "what the model's context_window can take at all",
+        ),
+        (json!({}), "the carrier ceiling (no model window is stated)"),
+    ] {
+        let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k"});
+        for (k, v) in row.as_object().unwrap() {
+            raw[k] = v.clone();
+        }
+        let p = meclaw_cells::llm::params::LlmParams::parse(&raw).expect("params");
+        let (_, source) = p.window_bound_bytes();
+        assert_eq!(source, words, "{row}");
+        assert!(
+            script.contains(&format!("\"{words}\"")),
+            "the hand names the cell's bound in the cell's words: {words}"
+        );
+    }
+    let gate: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(templates_root().join("submit/gate/config.json")).unwrap(),
+    )
+    .unwrap();
+    let gate_script = gate["params"]["script_inline"].as_str().unwrap_or_default();
+    assert_eq!(
+        literal_in(gate_script, "CARRIER_MAX_BYTES") as usize,
+        meclaw_cells::content_budget::CARRIER_MAX_BYTES,
+        "the gate's bound on an announced requirement is the llm cell's"
+    );
+    assert!(
+        !gate_script.contains("REQUIREMENT_MAX_BYTES"),
+        "a fixed 2 KiB requirement the llm cell no longer has (GH #1085)"
     );
 }
 
@@ -1509,7 +1635,22 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
     let mut active = Vec::new();
     for m in &models {
         let id = m["model_id"].as_str().unwrap_or_default();
-        assert!(id.contains('/'), "a provider id: {m}");
+        // GH #1085: a `local` row names the model as the operator's own server
+        // serves it (no vendor prefix) and no endpoint -- the address is
+        // private to the host, so the cell keeps the `base_url` its set gives
+        // it -- and it is reached by name only, never by prose or a ranked
+        // select, where its price of 0 would win.
+        if m["provider"] == "local" {
+            assert!(!id.is_empty(), "{m}");
+            assert_eq!(m["wire_dialect"], "chat_completions", "{m}");
+            assert_eq!(m["base_url"], "", "a local row names no endpoint: {m}");
+            assert_eq!(
+                m["status"], "explicit",
+                "a local row is reached by name: {m}"
+            );
+        } else {
+            assert!(id.contains('/'), "a provider id: {m}");
+        }
         assert!(m["cost_in"].as_i64().is_some_and(|c| c >= 0), "{m}");
         assert!(m["cost_out"].as_i64().is_some_and(|c| c >= 0), "{m}");
         assert!(m["context_window"].as_i64().is_some_and(|c| c > 0), "{m}");
@@ -1526,7 +1667,7 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
         // push never moves it outside its (empty) `base_url_allow`.
         assert_eq!(
             m["base_url"].as_str().unwrap_or_default().is_empty(),
-            m["wire_dialect"] == "decisions",
+            m["wire_dialect"] == "decisions" || m["provider"] == "local",
             "{m}"
         );
         // GH #1025: `explicit` is reachable like `active` (override, tier,

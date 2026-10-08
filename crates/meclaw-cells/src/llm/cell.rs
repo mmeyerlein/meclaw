@@ -698,24 +698,32 @@ impl LlmCell {
             .await;
             return;
         }
-        let request_json = match translate_decisions::build_request(&self.params.model, &asked) {
-            Ok(r) => r,
-            Err(detail) => {
-                decisions_error(
-                    sink,
-                    reply_target,
-                    &request,
-                    "decide_invalid",
-                    &detail,
-                    "translate",
-                    started_at_unix_ms,
-                    0,
-                    None,
-                )
-                .await;
-                return;
-            }
-        };
+        let mut request_json = translate_decisions::build_request(&self.params.model, &asked);
+        // GH #1085 (R-IG-1): the bound is the catalog row of the model asked
+        // -- `input_hard` (else `context_window`), the same window rule the
+        // chat path applies -- not a fixed size. A request over it is refused
+        // with its estimate and the bound before any provider is paid; without
+        // a stated window it goes out whole and the service answers for itself.
+        if let Err(r) = window::apply(
+            &self.params,
+            &mut request_json,
+            "max_tokens",
+            sink.sender_path().as_str(),
+        ) {
+            decisions_error(
+                sink,
+                reply_target,
+                &request,
+                "decide_invalid",
+                &r.detail(),
+                "window",
+                started_at_unix_ms,
+                0,
+                Some(r.meta()),
+            )
+            .await;
+            return;
+        }
         let Some((_msg, reply_target)) = self
             .park_without_credential(msg, sink, reply_target, started_at_unix_ms, &clock)
             .await
@@ -1624,6 +1632,26 @@ impl LlmCell {
                             emit_credential_pending(&turn).await;
                         }
                     }
+                }
+                return;
+            }
+
+            // Step 1d (GH #1092): the broker's DENIAL of this cell's credential
+            // request, carried home on the same lane a box takes. Without this
+            // step it would read as a turn and park behind the round it
+            // answers. Measured in 0.62.0: a colony with no vault deposit
+            // answered the shell translator's round `vault_locked`, the denial
+            // dead-lettered and the parked turn waited out `wait_ms`. The
+            // round has failed, so its turns get their receipt now; the denial
+            // itself is answered with silence like a delivery, because it is
+            // the broker's answer and not a malformed message.
+            if let Some(denied) = self.credentials.accept_denial(&content).await {
+                tracing::warn!(
+                    reason_code = %denied.reason_code,
+                    "llm: the access hive denied the bearer credential"
+                );
+                for turn in denied.refused {
+                    emit_credential_pending(&turn).await;
                 }
                 return;
             }

@@ -5,7 +5,6 @@
   "params": {
     "external_timeout_ms": 30000,
     "max_concurrency": 4,
-    "max_bytes": 262144,
     "allow_private_networks": false,
     "max_redirects": 5
   },
@@ -77,7 +76,7 @@
     "purpose": "A GET a manifest can name: one web_fetch cell as a whole template, so a running colony can be given the ability to read a document off the network by a declaration instead of by a hand-built subtree. It fetches what it is ASKED for -- the URL rides in the tool_call args, not in this config.",
     "use_when": "Wherever a colony has to read something over HTTP: a feed, an API endpoint, a page. Instantiate it under a name that says what it fetches, and draw both edges in the same mutation -- one in from whoever composes the tool_call, one out to whoever reads the answer.",
     "not_in_scope": "GET only; method, request headers and a request body are a core roadmap defer of the cell type and cannot be shipped by a template. No retries, no caching, no parsing of the answer, and no URL of its own -- a fetcher with a target baked in would be a fetcher for one caller.",
-    "emits_meaning": "messages[]: one tool_result turn whose text is the response body, truncated visibly at max_bytes. hop.operation is always 'web_fetch'; hop.http_status carries the answer's status, and a non-2xx is a NORMAL result an edge decides about; error_code is set only for io_error, timeout, invalid_input, target_blocked, too_many_redirects and invalid_redirect.",
+    "emits_meaning": "messages[]: one tool_result turn whose text is the response body as the web_fetch cell delivers it: sized by the calling model's window (a tenth of `input_soft` on the call), a longer body cut with `...[cut: <k> of <n> bytes shown; <hint>]` and `hop.truncated`, never by a number of this template's (GH #1085; `max_bytes` stays an owner's override of the cell). hop.operation is always 'web_fetch'; hop.http_status carries the answer's status, and a non-2xx is a NORMAL result an edge decides about; error_code is set only for io_error, timeout, invalid_input, target_blocked, too_many_redirects, invalid_redirect and too_long (a body over the carrier's 4 MiB ceiling with no window to cut it to, refused with its size, never cut).",
     "consumes_meaning": "messages[]: a tool_call turn whose text is the JSON args {url}. A missing, non-string, empty, syntactically broken or non-http(s) URL is invalid_input, and the answer quotes the URL back.",
     "examples": [
       "{\"url\": \"https://example.com/feed.xml\"} -> tool_result with the document, hop { operation: 'web_fetch', http_status: 200, bytes: 4211 }",

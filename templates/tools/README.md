@@ -1,4 +1,4 @@
-# `tools@1.4.6`
+# `tools@1.4.7`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -404,7 +404,8 @@ The occupant is `schemas/`, a `code` cell on a lane of its own.
 { "schemas": [ { "name": "web_search",
                  "description": "Query the configured search endpoint ...",
                  "parameters": { "type": "object",
-                                 "properties": { "query": { "type": "string" } },
+                                 "properties": { "query": { "type": "string" },
+                                                 "max_results": { "type": "integer" } },
                                  "required": ["query"] } } ],
   "unknown": ["telepathy"] }
 ```

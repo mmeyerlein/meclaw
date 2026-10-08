@@ -132,6 +132,13 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             "cost_cached_in" => {
                 (params.cost_cached_in > 0.0).then(|| params.cost_cached_in.to_string())
             }
+            // GH #1085: shown only when the row states them.
+            "chars_per_token" => {
+                (params.chars_per_token > 0.0).then(|| params.chars_per_token.to_string())
+            }
+            "tokens_per_image" => {
+                (params.tokens_per_image > 0).then(|| params.tokens_per_image.to_string())
+            }
             _ => None,
         };
         if let Some(v) = value {

@@ -1,4 +1,4 @@
-# `objects@1.0.0`
+# `objects@1.0.1`
 
 The objects of one member ([#951](https://github.com/mmeyerlein/meclaw/issues/951)): a thing its conversations keep naming becomes a row -- a type, its aliases, six slots and references -- learned in a round and visible only to the rounds that round covers. The hive is sealed (`params.ports: []`). Cells: `gate` (code, the one writer), `brief` (code, renders), `push` (code, events out), `source` (code, node source for the graph space), `tools` and `schemas` (code, a model's tools), `store` (store, `write_surface: internal`). No model, no network, no clock.
 
@@ -31,7 +31,7 @@ Only the owner sets `why`, changes the state and confirms a candidate. The owner
 
 ## Pushes
 
-Events only. A new version of an active row -- a promotion, a tool write, a sighting -- is announced on `source_changed` and memory is asked on `facts`; memory's answer renders the brief (`<type>: <main name>`, the filled slots in a fixed order, `who` as `<n> people`, at most three facts as `<predicate>: <text>` in memory's order, at most 600 characters by whole parts; a refusal keeps the facts last stored) and pushes it as a `candidate` when its hash changed, and the aliases as `alias` when theirs did. Two rows with the same alias (two rounds): memory keeps the alias on the oldest active one, and `alias_taken` for the younger is expected.
+Events only. A new version of an active row -- a promotion, a tool write, a sighting -- is announced on `source_changed` and memory is asked on `facts`; memory's answer renders the brief (`<type>: <main name>`, the filled slots in a fixed order, `who` as `<n> people`, every fact of memory's page as `<predicate>: <text>` in memory's order, each whole -- no length and no count of its own since 1.0.1 (GH #1085); a request that names a window (context `input_soft`) gets the brief cut to a tenth of it with a mark, a brief for the curator is whole; a refusal keeps the facts last stored) and pushes it as a `candidate` when its hash changed, and the aliases as `alias` when theirs did. Two rows with the same alias (two rounds): memory keeps the alias on the oldest active one, and `alias_taken` for the younger is expected.
 
 ## Knobs
 

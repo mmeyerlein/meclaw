@@ -1,0 +1,39 @@
+{
+  "cues": [
+    "\\bvergiss\\b",
+    "\\bvergessen\\b",
+    "\\bvergesst\\b",
+    "\\bnicht\\s+merken\\b",
+    "\\bmerk\\s+dir\\s+das\\s+nicht\\b",
+    "\\blösch",
+    "\\bloesch"
+  ],
+  "reminds": [
+    "\\b(?:nicht|nie|niemals)\\s+vergessen\\b",
+    "\\b(?:vergiss|vergesst|vergessen\\s+sie)\\b[^,]*\\b(?:nicht|nie|niemals|keinesfalls|keineswegs)\\b",
+    "\\b(?:vergiss|vergesst|vergessen\\s+sie)\\b.*\\b(?:nicht|nie|niemals|keinesfalls|keineswegs)\\W*$"
+  ],
+  "thing": "(?:was|das|dass|alles|die|den|der|mein\\w*|unser\\w*)\\b",
+  "asks": [
+    {
+      "pattern": "(?:bitte\\s+)?(?P<verb>vergiss|vergesst|vergessen\\s+sie)\\b(?:\\s+(?:bitte|einfach))*[\\s,]+{thing}",
+      "reminder": true
+    },
+    {
+      "pattern": "(?:kannst\\s+du|k(?:ö|oe)nntest\\s+du|k(?:ö|oe)nn(?:en|ten)\\s+sie)(?:\\s+(?:bitte|einfach|mal))*\\s+(?P<verb>vergessen)[\\s,]+{thing}",
+      "reminder": true
+    },
+    {
+      "pattern": "(?:bitte\\s+)?(?P<verb>l(?:ö|oe)sche?)\\b(?:\\s+bitte)?[\\s,]+(?:was|alles)\\b",
+      "reminder": true
+    },
+    {
+      "pattern": "(?:bitte\\s+)?merk\\s+dir\\s+das\\s+nicht\\b",
+      "reminder": false
+    }
+  ],
+  "negation": "\\b(?:nicht|nie|niemals|keinesfalls|keineswegs)\\b",
+  "told": "\\b(?:gesagt|erz(?:ä|ae)hlt|erw(?:ä|ae)hnt)\\b|\\bdas\\s+mit\\b",
+  "conjunction": "\\b(?:und|oder|sowie)\\b",
+  "stopwords": "der die das dem den des ein eine einen einem einer und oder mit von vom zum zur bei für fuer über ueber was ich mir mich mein meine meinen meinem meiner dir dich dein deine sie ihr ihm ihn ist sind war hat habe hab nicht bitte vergiss vergessen gesagt sache auch noch dass wie wir uns erzählt erzaehlt erwähnt erwaehnt behalten sagte hatte weißt weisst alles einfach beim gestern heute vorhin neulich gesprochen geredet geschrieben lösch lösche loesch loesche"
+}

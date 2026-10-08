@@ -243,11 +243,22 @@ fn the_pure_reading_functions_of_read_hold_their_table() {
         json!([1, 2000, {"from": 2001, "to": 2500}]),
         "max_lines"
     );
+    // GH #1085: no character bound of the cell's own -- without a window the
+    // range is whole (up to `max_lines`); with one (here 25 000 characters, a
+    // tenth of a 83 334-token window) it stops there and `more` names the rest.
     let wide: Vec<String> = (1..=100).map(|_| "w".repeat(1000)).collect();
     let got = pure("read", "list(window(ARGS, 1, len(ARGS)))[1:]", json!(wide));
+    assert_eq!(got, json!([1, 100, null]), "no window: whole");
+    let got = pure(
+        "read",
+        "(globals().update(MAX_CHARS=25000), list(window(ARGS, 1, len(ARGS)))[1:])[1]",
+        json!(wide),
+    );
     assert_eq!(got, json!([1, 24, {"from": 25, "to": 100}]), "max_chars");
 
-    // search: exact and regex, context, limit against total, long lines cut.
+    // search: exact and regex, context, limit against total; a long line is
+    // searched and shown whole (GH #1085: cut at 4000 in silence before, the
+    // budget cuts it now, with the mark -- gh1085_the_templates_deliver_*).
     let long = format!("{}needle", "x".repeat(5000));
     let got = pure(
         "read",
@@ -267,16 +278,16 @@ fn the_pure_reading_functions_of_read_hold_their_table() {
     );
     assert_eq!(
         got[2],
-        json!([[], 0, false]),
-        "a needle past 4000 characters is not searched"
+        json!([[{"line": 4, "h4": h4(&long), "text": long}], 1, false]),
+        "a needle past 4000 characters is found"
     );
     assert_eq!(got[3][1], 1);
-    assert_eq!(got[3][0][0]["long_line"], true);
-    assert_eq!(got[3][0][0]["text"].as_str().unwrap().len(), 4000);
+    assert!(got[3][0][0].get("long_line").is_none());
+    assert_eq!(got[3][0][0]["text"], json!(long));
 
-    // search under `max_chars` (review S M-1): a context line is cut at 4000
-    // characters (its h4 is of the whole line), and the hits stop before they
-    // pass 25 000 characters -- `cut` says so; `total` still counts them all.
+    // search under `max_chars` (review S M-1): a context line comes whole
+    // without a window (its h4 is of the whole line), and the hits stop before
+    // they pass 25 000 characters -- `cut` says so; `total` still counts them.
     let got = pure(
         "read",
         "list(search_lines(ARGS, 'hit', 'exact', 1, 20))",
@@ -284,7 +295,7 @@ fn the_pure_reading_functions_of_read_hold_their_table() {
     );
     assert_eq!(
         got[0][0]["after"],
-        json!([format!("2:{}|{}", h4(&long), &long[..4000])])
+        json!([format!("2:{}|{}", h4(&long), long)])
     );
     let wide: Vec<String> = (0..20)
         .map(|i| format!("hit{i}{}", "y".repeat(3990)))
@@ -294,12 +305,30 @@ fn the_pure_reading_functions_of_read_hold_their_table() {
         "(lambda r: [len(r[0]), r[1], r[2]])(search_lines(ARGS, 'hit', 'exact', 0, 20))",
         json!(wide),
     );
+    assert_eq!(got, json!([20, 20, false]), "no window: every hit");
+    let got = pure(
+        "read",
+        "(globals().update(MAX_CHARS=25000), \
+          (lambda r: [len(r[0]), r[1], r[2]])(search_lines(ARGS, 'hit', 'exact', 0, 20)))[1]",
+        json!(wide),
+    );
     assert_eq!(got, json!([6, 20, true]), "max_chars across hits");
 
     // unified under `max_chars` as well (review S M-1).
     let got = pure(
         "read",
-        "(lambda r: [len(r[0]) <= 25000, r[1]])(unified([], ARGS, 'a', 'b'))",
+        "(lambda r: [len(r[0]) > 40000, r[1]])(unified([], ARGS, 'a', 'b'))",
+        json!(vec!["z".repeat(4000); 10]),
+    );
+    assert_eq!(
+        got,
+        json!([true, null]),
+        "no window: the diff whole, no mark"
+    );
+    let got = pure(
+        "read",
+        "(globals().update(MAX_CHARS=25000), \
+          (lambda r: [len(r[0]) <= 25000, r[1] is not None])(unified([], ARGS, 'a', 'b')))[1]",
         json!(vec!["z".repeat(4000); 10]),
     );
     assert_eq!(got, json!([true, true]), "a diff stops at max_chars");

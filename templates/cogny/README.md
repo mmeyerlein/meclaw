@@ -1,4 +1,4 @@
-# `cogny@5.9.1`
+# `cogny@5.9.3`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -97,12 +97,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.1.0"},
+{"cell": {"type": "ref", "template": "collector@5.1.1"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.11.1"},
+{"cell": {"type": "ref", "template": "curator@1.11.3"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.9.1` above it in its provenance chain.
+`cogny@5.9.3` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -671,7 +671,7 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `turn_write` | param | `"0"` | curator/writer -- per-turn episodes, **off at this template since `5.2.0`** (GH #889): the write belongs at the **talky**, and at an unwired core it dead-lettered one message per consult turn. The curator's own default is `"1"` (GH #298) |
 | `tools` | param | `["*"]` | collector -- the tool names this core **declares** it uses (GH #464). Set at this template since `4.3.0`, and set to EVERYTHING on purpose: a reasoning core should reach whatever its surface can, and a list typed here would be a second copy of a catalogue that drifts on the first tool added to the hive. The declarations are asked for on the `schemas` lane and written into the brain as durable `system.tools`. `memory_recall` reaches this list the ordinary way since 5.0.0: `["*"]` asks every answerer the level wired, the member's memory among them ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `defer_turns` | param | `"0"` (#894) | collector -- a turn that lands in another errand's open tool round opens a round of its own instead of waiting for the next one: this core's session is the conversation that consults it, so a second errand or the asker's `reply_to_consult` would otherwise wait for a round nobody opens and come back under the other errand's `consult_id`. The collector's own default, `"1"`, is the telephone model of a channel voice |
-| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `quality_cap`, `horizon`, `tiers`, `summary_budget`, `keep_rounds`, `stub_tools_after`, `context_window`, `sidecar_max_chars` | param | `role` `"consult"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889), by the consult role's presets since GH #892; the full table is in the curator's README |
+| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `context_window` | param | `role` `"consult"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889), by the consult role's presets since GH #892; the full table is in the curator's README |
 | `max_calls` | param | `16` | cogny/dispatcher -- per-answer call budget |
 | `sidecar_verify` | param | `{}` | splitter -- the talky's word-for-word check of quoted fields ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)), and it stays **empty** at this core: the splitter and its edges are the talky's, so a section named here goes to `./curator` and is checked there, but this core has no `./errors` and draws neither the curator's `reject` nor a checked section out of its curator -- both would dead-letter `no_route`, loud and classified, and the answer text never leaves the core |
 | `async_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
@@ -698,7 +698,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.9.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.9.3", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

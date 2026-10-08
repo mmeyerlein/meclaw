@@ -1,4 +1,4 @@
-# `assistant@3.7.10`
+# `assistant@3.7.13`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and ninety-seven edges.
@@ -246,7 +246,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.7.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.7.4` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out -- three since [#895](https://github.com/mmeyerlein/meclaw/issues/895), when the recipe drew the typed surface's road too |
 | `brief` | the brief of a turn about its counterpart, for the member's `affinity`: raised by a surface's collector when its `brief_slots` is set and the turn carries `context.counterpart`, leaving on a v-lane with `context.brief_surface` stamped. The member stamps the asker. Since 2.9.0 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `error` | a normalised failure from anything inside this generation — the surface or the reasoning core. A **channel's** failure is no longer among them: since #454 the connector stands in the member's `channels` container and its failures leave beside this lane, one level up |
@@ -788,7 +788,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.10",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.13",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
@@ -883,6 +883,15 @@ and `talky/collector`; addressed from outside the mutation they are
 `<assistant>/talky/brain` and `<assistant>/talky/collector`. Nothing else of
 the generation is configured this way: everything below the surface is `talky`'s
 own.
+
+**How long the brain deliberates is the same kind of key**
+([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)). `reasoning_effort` on
+`talky/brain` and `talky-chat/brain` ships unset, and unset changes nothing: the request
+carries no reasoning field and is byte for byte the one sent before the key was declared.
+Set it (`{"talky/brain": {"reasoning_effort": "low"}}`, and the same on `talky-chat/brain`)
+and the provider receives `"reasoning": {"effort": "low"}` (under the default `reasoning_wire`). A spoken turn waits for hidden
+reasoning before its first token; measured on one long brain request, a low effort brought
+the time to the first token from about 6.3 s to about 2.0 s at the median.
 
 The member's own edges already carry `in_turn`, `in_bundle`, `in_export` and
 `in_import` down into the container and take `answer`, `recall`, `sidecar`,

@@ -12,8 +12,10 @@
 //!
 //! 1. PROMPT -- the batch becomes exactly one prompt for the writer, and the
 //!    recency weighting is structure, not hope: the newest turns travel
-//!    verbatim, older turns are cut to a phase-out preview and counted, tool
-//!    rounds enter as capped context, bookkeeping rows do not enter at all.
+//!    verbatim and last, older turns come first and are counted, tool rounds
+//!    enter as context, bookkeeping rows do not enter at all. Nothing has a
+//!    length of its own (GH #1085): the cut to a window is pinned in
+//!    `gh1085_the_producers_deliver_whole_or_by_budget.rs`.
 //! 2. UPDATE -- the writer's answer becomes exactly one emission on route
 //!    `summary`, whose body is nothing but the `system.handover` update an
 //!    llm cell consumes without a provider call. The summarizer is the ONLY
@@ -178,9 +180,9 @@ fn a_write_batch_becomes_one_prompt_for_the_writer() {
 }
 
 #[test]
-fn the_prompt_keeps_recent_turns_verbatim_and_condenses_older_ones() {
+fn the_prompt_keeps_recent_turns_verbatim_and_counts_older_ones() {
     let out = emit_with(
-        serde_json::json!({"recent_turns": 2, "phaseout_chars": 10}),
+        serde_json::json!({"recent_turns": 2}),
         batch_doc(
             vec![
                 turn("user", "alpha-0123456789-ALPHA-TAIL"),
@@ -197,19 +199,16 @@ fn the_prompt_keeps_recent_turns_verbatim_and_condenses_older_ones() {
     // wake up remembering best (R-OS-3).
     assert!(prompt.contains("gamma-recent"), "{prompt}");
     assert!(prompt.contains("delta-recent"), "{prompt}");
-    // Older turns phase out: a bounded preview, counted, never the full text.
+    // Older turns phase out by PLACE, not by length (GH #1085): counted,
+    // first, and whole -- no window was named, so nothing is cut.
     assert!(
-        prompt.contains("alpha-0123"),
-        "the preview survives: {prompt}"
+        prompt.contains("alpha-0123456789-ALPHA-TAIL"),
+        "an older turn travels whole: {prompt}"
     );
-    assert!(
-        !prompt.contains("ALPHA-TAIL"),
-        "the tail of an old turn is cut: {prompt}"
-    );
-    assert!(!prompt.contains("BETA-TAIL"), "{prompt}");
+    assert!(prompt.contains("beta-0123456789-BETA-TAIL"), "{prompt}");
     assert!(
         prompt.contains("2 older turn"),
-        "what was condensed is counted, not hidden: {prompt}"
+        "what phased out is counted, not hidden: {prompt}"
     );
     // And the weighting is an ORDER: old material first, recent material last,
     // closest to where the model starts writing.
@@ -251,7 +250,7 @@ fn the_instructions_demand_honesty_instead_of_invention() {
 }
 
 #[test]
-fn tool_rounds_enter_the_prompt_capped_and_bookkeeping_rows_do_not() {
+fn tool_rounds_enter_the_prompt_whole_and_bookkeeping_rows_do_not() {
     let rounds = serde_json::json!([
         {"turn_id": "t1", "iter": 0, "role": "leg-window",
          "turn": {"turns": [{"role": "user", "text": "EVICTION-MARKER"}]}, "fired": 1},
@@ -262,21 +261,14 @@ fn tool_rounds_enter_the_prompt_capped_and_bookkeeping_rows_do_not() {
          "turn": {"origin": "tool", "type": "tool_result", "id": "c1",
                   "text": "result-0123456789-RESULT-TAIL"}, "fired": 1}
     ]);
-    let out = emit_with(
-        serde_json::json!({"tool_chars": 15}),
-        batch_doc(vec![turn("user", "look it up")], rounds),
-    );
+    let out = emit(batch_doc(vec![turn("user", "look it up")], rounds));
     assert_eq!(out.len(), 1);
     let prompt = prompt_of(&out[0]);
     assert!(prompt.contains("call c1"), "the round's question: {prompt}");
     assert!(prompt.contains("result c1"), "the round's answer: {prompt}");
     assert!(
-        prompt.contains("result-01234567"),
-        "a capped preview of the result: {prompt}"
-    );
-    assert!(
-        !prompt.contains("RESULT-TAIL"),
-        "the cap holds on tool texts: {prompt}"
+        prompt.contains("result-0123456789-RESULT-TAIL"),
+        "the result travels whole -- no window named, no cut (GH #1085): {prompt}"
     );
     assert!(
         !prompt.contains("EVICTION-MARKER"),

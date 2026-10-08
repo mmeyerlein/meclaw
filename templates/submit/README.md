@@ -1,4 +1,4 @@
-# `submit@2.4.0`
+# `submit@2.4.1`
 
 Two occupants behind one door, and the only reach onto the mutation door in the
 whole tree. It asks who may submit — and, when the diff itself asks for it, whether
@@ -411,7 +411,9 @@ be one of the three forms the builder renders, byte for byte:
   brains -- every one inside that generation, every path and start value a plain
   literal -- on `context.model_announced`. An announced brain carries
   `cell_path` and `start_model`, and since 2.3.3 may carry `requirement` -- the
-  prose its template cell states, a non-empty string of at most 2 KiB -- and, since
+  prose its template cell states, a non-empty string of at most 4 MiB, the carrier ceiling the
+  llm cell holds its own `requirement` to since
+  [#1085](https://github.com/mmeyerlein/meclaw/issues/1085) -- and, since
   [#957](https://github.com/mmeyerlein/meclaw/issues/957), may carry `protocol`:
   `""` (the chat wire) or `"decisions"` (an llm cell born with `provider:
   "decisions"`), the registry's own list. Only a `decisions` brain may be announced

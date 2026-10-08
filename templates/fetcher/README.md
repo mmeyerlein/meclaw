@@ -1,4 +1,4 @@
-# `fetcher@1.0.0`
+# `fetcher@1.0.1`
 
 An outbound HTTP GET, as one `web_fetch` cell. It exists because of a gap the
 library had rather than the substrate: three shipped templates carry a
@@ -23,9 +23,15 @@ That is the whole template: one cell, five knobs, and no target.
   process, so `sandbox.network` can never cover it; the cell enforces its own
   private-network deny, re-checks every redirect hop before connecting, and
   keeps link-local shut in **both** steps of the opt-out.
-- **A size cap that cuts visibly.** `max_bytes` ends the fetched body with
-  `… [truncated, <N> bytes total]`, sets `hop.truncated` and reports the FULL
-  size on `hop.bytes` -- a silently shortened payload is worse than a marked one.
+- **No size of its own, and no silent cut** ([#1085](https://github.com/mmeyerlein/meclaw/issues/1085)).
+  The body is a tool result for the calling model, so the cell sizes it by that
+  model's window (`input_soft` on the call's hop or context, a tenth of it): a
+  longer body ends in `...[cut: <k> of <n> bytes shown; <hint>]`, sets
+  `hop.truncated` and reports the FULL size on `hop.bytes` -- a silently
+  shortened payload is worse than a marked one. Without a window the body comes
+  whole up to the carrier's ceiling (4 MiB, the largest body a mount may take);
+  above it the fetch is refused with `error_code` `too_long` and the size, never
+  cut. `max_bytes` is an owner's override and unset as shipped.
 
 ## The cell
 
@@ -54,9 +60,9 @@ Two edges, drawn in the mutation that instantiates it:
 | `hop.operation` | always `'web_fetch'`, on the error surface too |
 | `hop.http_status` | the answer's status. **A non-2xx is a normal result**, not an error -- routing decides |
 | `hop.content_type` / `hop.bytes` | what came back and how much of it (the full size, even when cut) |
-| `hop.truncated` | present and `true` when `max_bytes` cut the body |
+| `hop.truncated` | present and `true` when the window's share (or an owner's `max_bytes`) cut the body |
 | `hop.redirects` / `hop.final_url` | only after at least one hop: a body that came from somewhere other than the address asked for says so |
-| `hop.error_code` | `io_error`, `timeout`, `invalid_input`, `target_blocked`, `too_many_redirects`, `invalid_redirect` |
+| `hop.error_code` | `io_error`, `timeout`, `invalid_input`, `target_blocked`, `too_many_redirects`, `invalid_redirect`, `too_long` (over the carrier's 4 MiB with no window to cut it to) |
 
 The condition on the outbound edge is worth drawing: without it a 404 page and a
 document take the same lane, and whatever is downstream parses an error page.
@@ -71,15 +77,15 @@ single-cell template has no inner cell to address, and the path-keyed form
 (`{"": …}`) is refused with `schema`:
 
 ```json
-{"name": "feed", "template": "fetcher@1.0.0",
- "override_params": {"max_bytes": 65536, "external_timeout_ms": 15000}}
+{"name": "feed", "template": "fetcher@1.0.1",
+ "override_params": {"external_timeout_ms": 15000}}
 ```
 
 | param | default | effect |
 |---|---|---|
 | `external_timeout_ms` | `30000` | operation timeout over the WHOLE call, redirect chain included -- a redirect budget is not a time budget |
 | `max_concurrency` | `4` | how many fetches this cell runs at once |
-| `max_bytes` | `262144` | size cap on the body handed to the caller. **Inside a tool loop a fetched body is re-sent every round**, so a fetch costs per remaining round, not once; in an agent loop set it far lower |
+| `max_bytes` | unset | an owner's size cap on the body handed to the caller; unset, a tenth of the calling model's window decides ([#1085](https://github.com/mmeyerlein/meclaw/issues/1085)). **Inside a tool loop a fetched body is re-sent every round**, so a fetch costs per remaining round, not once |
 | `allow_private_networks` | `false` | opens loopback, RFC 1918, ULA, CGNAT and site-local for a mock server or a service on the same host. **Link-local stays shut either way** -- that is where the cloud metadata endpoint lives |
 | `max_redirects` | `5` | how many hops the cell follows. Every one of them, the first included, passes the deny again |
 

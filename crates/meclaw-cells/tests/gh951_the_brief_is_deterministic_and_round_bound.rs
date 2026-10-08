@@ -6,7 +6,9 @@
 //! 1. **The same row and the same facts give the same bytes**, whatever the
 //!    key order of the stored JSON.
 //! 2. **`who` is a count, never a name or a reference.**
-//! 3. **At most 600 characters, by whole parts.**
+//! 3. **No length and no count of its own** (GH #1085, R-IG-1): every part
+//!    and every fact handed in, whole; a limit the request names cuts the
+//!    brief with a mark (`gh1085_the_producers_deliver_whole_or_by_budget.rs`).
 //! 4. **A round the row does not cover** gets no brief from the tools and no
 //!    hint that the object exists; the push carries the row's round.
 //! 5. **The push follows events, once per news**: a promotion announces the
@@ -83,9 +85,9 @@ fn the_same_row_and_facts_render_the_same_bytes() {
         "thing: Blue Bike\nwhat: a red city bike\nwhere: in the shed\nwho: 2 people\n\
          why: for the commute\nfact: it has a bell\nfact: it was bought in May"
     );
-    // At most three facts.
+    // Every fact handed in -- the count is memory's page, not the brief's.
     let four = json!(["one", "two", "three", "four"]);
-    assert!(!render(&row, four).contains("four"));
+    assert!(render(&row, four).ends_with("fact: four"));
 }
 
 #[test]
@@ -106,7 +108,7 @@ fn who_is_a_count_never_a_name() {
 }
 
 #[test]
-fn a_brief_holds_at_most_600_characters_of_whole_parts() {
+fn a_brief_is_every_part_whole_and_cut_only_to_a_named_limit() {
     if !shipped() {
         return;
     }
@@ -115,7 +117,6 @@ fn a_brief_holds_at_most_600_characters_of_whole_parts() {
                             "why": long, "how": long}));
     let facts = json!(["a fact"]);
     let text = render(&row, facts.clone());
-    assert!(text.chars().count() <= 600, "{}", text.len());
     let parts = pure("brief", "parts_of(ARGS[0], ARGS[1])", json!([row, facts]));
     let parts: Vec<&str> = parts
         .as_array()
@@ -125,11 +126,28 @@ fn a_brief_holds_at_most_600_characters_of_whole_parts() {
         .collect();
     let lines: Vec<&str> = text.split('\n').collect();
     assert_eq!(
-        lines,
-        parts[..lines.len()].to_vec(),
-        "whole parts, in order"
+        lines, parts,
+        "every part, whole, in order (the old 600 are gone)"
     );
-    assert_eq!(lines.len(), 2, "the type line and one slot fit: {text}");
+    assert_eq!(
+        lines.len(),
+        7,
+        "the type line, five slots and the fact: {text}"
+    );
+    let cut = pure(
+        "brief",
+        "render(ARGS[0], ARGS[1], 600)",
+        json!([row, ["a fact"]]),
+    );
+    let cut = cut.as_str().expect("a text");
+    assert!(
+        cut.starts_with(&text[..600])
+            && cut.ends_with(&format!(
+                "...[cut: 600 of {} chars shown; budget of the window]",
+                text.len()
+            )),
+        "a named limit cuts with a mark: {cut}"
+    );
 }
 
 #[test]
@@ -218,7 +236,8 @@ fn a_promotion_pushes_the_brief_once() {
         Value::Object(fa[0].hop.clone()),
         json!({"route": "facts", "audience_now": R, "subject": id, "recall_caller": "objects"})
     );
-    assert_eq!(fa[0].fields(), json!({"subject": id, "limit": 3}));
+    // No `limit` (GH #1085): memory's own page decides how many facts come back.
+    assert_eq!(fa[0].fields(), json!({"subject": id}));
     // GH #948: memory's `in_query {subject}` takes `messages: []` in its body.
     assert_eq!(fa[0].body["messages"], json!([]), "{:?}", fa[0].body);
 
@@ -313,7 +332,7 @@ fn the_facts_are_read_from_the_memory_bundle() {
     // GH #948: memory answers `in_query {subject}` with a JSON text in
     // `system.memory.bundle.text`; its `candidates[]` are the facts, newest
     // first. Only facts count, a predicate stands in front of its text, a
-    // repeat counts once, three at most, in the order memory gave them.
+    // repeat counts once, every fact of the page, in the order memory gave them.
     let id = "ob-0123456789ab";
     let bundle = json!({"subject": id, "as_of": "2026-10-02T10:00:00.000000Z",
                         "answers": "direct", "complete": false,
@@ -330,7 +349,7 @@ fn the_facts_are_read_from_the_memory_bundle() {
                                     "text": "- ob-0123456789ab color: green"}]});
     assert_eq!(
         pure("push", "facts_of(bundle_of(ARGS))", body),
-        json!(["color: blue", "it has a bell", "bought_in: May"])
+        json!(["color: blue", "it has a bell", "bought_in: May", "a fourth"])
     );
     // No bundle -- a refusal, or a body of another shape -- is no answer:
     // never the text turn's lines, never a `facts[]` of the body.

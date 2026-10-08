@@ -1,4 +1,4 @@
-# `talky@6.7.1`
+# `talky@6.7.4`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -65,13 +65,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.1.0"}}
+{"cell": {"type": "ref", "template": "collector@5.1.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.7.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.7.4` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -692,7 +692,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.7.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.7.4",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1004,8 +1004,8 @@ block as its own body slot, `sidecar_raw`: the block exactly as the model wrote 
 included, and only when it was readable -- a malformed block is cut and dropped. The
 dispatcher passes the slot on with the answer (since dispatcher 1.2.2), and the collector kept
 it beside the answer and showed it with that answer in every later window
-(collector 4.4.1, "An earlier answer keeps its block"); since `6.0.0` `./curator` does, up to
-its knob `sidecar_max_chars` (GH #889). Before, the window held each
+(collector 4.4.1, "An earlier answer keeps its block"); since `6.0.0` `./curator` does, within
+a tenth of the window (GH #889; the knob `sidecar_max_chars` is gone since GH #1085). Before, the window held each
 earlier answer without its block, and a model that saw its own answers without one stopped
 writing it: measured on a running colony's turns, 38 % of the turns with an earlier answer
 in view carried the block, and 98 % once the window showed it. No channel ever receives the
@@ -1325,9 +1325,10 @@ below names the CELL the knob belongs to, because that is what an
 | `memory_tier` | param | `""` | collector -- empty = no memory leg at all |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `turn_write` | param | `"1"` | curator/writer (the collector's until `6.0.0`, GH #889) -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
-| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `quality_cap`, `horizon`, `tiers`, `summary_budget`, `keep_rounds`, `stub_tools_after`, `short_ids`, `context_window`, `sidecar_max_chars` | param | `role` `"talky"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889), by the talky role's presets since GH #892; the full table is in the curator's README |
+| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `short_ids`, `context_window` | param | `role` `"talky"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889), by the talky role's presets since GH #892; the full table is in the curator's README |
 | `tools` | param | `["web_search", "web_fetch", "history_search", "history_read", "history_outline"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two search tools and not `["*"]`, plus the model's own wall, which `./curator` answers inside (since `6.1.0`, GH #893). The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
 | `sidecar_verify` | param | `{}` | splitter -- the word-for-word check of quoted fields, per section (GH #1079): `{"<section>": {"<field>": "turn" | "turn+recall" | "answer", "mode"?, "items"?}}`; a section named here goes through `./curator`, which drops (or marks) every item whose quote does not stand in its source and reports each on `error`. Empty checks nothing. See [Quotes are checked word for word](#the-sidecar-inline-extraction) |
+| `reasoning_effort` | param | `null` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)). Unset sends no reasoning field, so the request is byte for byte the one from before the declaration; set, it reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
 | `max_calls` | param | `16` | dispatcher -- per-answer call budget |
 | `async_tools` | param | `""` | dispatcher -- tools that answer on their own lane instead of inside the round, as a JSON array or one comma-separated string. Since `dispatcher@1.2.0` it is a param of THIS composite's own dispatcher (GH #138), so the surface's list and a sibling core's list are two statements and not one. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |
 | `handoff_tools` | param | `""` | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny` -- and since GH #530 that is the whole list: `ask_memory` was retired, not replaced). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` did not belong here while it existed (GH #372) |

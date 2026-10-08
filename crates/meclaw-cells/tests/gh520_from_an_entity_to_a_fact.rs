@@ -188,9 +188,10 @@ fn legs_row() -> Value {
 /// `facts.canonical_subject` holds the lower-cased ones.
 fn walk() -> Value {
     json!({"paths": [
-        {"node": "Marcus", "depth": 1, "weight_sum": 9,
+        {"node": "Marcus", "depth": 1, "weight_sum": 9, "path": ["Alex", "Marcus"],
          "edge": tagged(json!({"episode_id": "ep-1"}))},
         {"node": "acme.example", "depth": 2, "weight_sum": 3,
+         "path": ["Alex", "Marcus", "acme.example"],
          "edge": tagged(json!({"episode_id": "ep-2"}))}],
         "truncated": false})
 }
@@ -247,15 +248,25 @@ fn the_walk_asks_the_fact_table_for_the_nodes_it_reached() {
     assert_eq!(out.len(), 1, "one store message: {out:#?}");
     assert_eq!(out[0]["header"]["phase"], "t1-graph");
     let calls = calls_of(&out[0]);
-    let fact = calls
-        .iter()
-        .find(|a| a["table"] == "facts")
-        .expect("the join select");
+    // GH #1057: one page per walked node, newest first -- a single page over
+    // all nodes came back in store order, oldest first, and cut the current
+    // value before any ranking saw it.
+    let pages: Vec<&Value> = calls.iter().filter(|a| a["table"] == "facts").collect();
+    assert!(!pages.is_empty(), "the join select");
+    let fact = pages[0];
     assert_eq!(fact["operation"], "select");
+    let wheres: Vec<Value> = pages.iter().map(|a| a["where"].clone()).collect();
     assert_eq!(
-        fact["where"],
-        json!({"canonical_subject": {"in": ["marcus", "acme.example"]}}),
+        wheres,
+        vec![
+            json!({"canonical_subject": "marcus"}),
+            json!({"canonical_subject": "acme.example"})
+        ],
         "folded, deduplicated, in walk order: {fact}"
+    );
+    assert_eq!(
+        fact["order_by"],
+        json!([{"col": "valid_from", "dir": "desc"}])
     );
     // R1: the version chain is the truth and the cache columns are not
     // consulted. A superseded hit is projected onto its successor in `t1-emit`,
@@ -504,4 +515,396 @@ fn the_readme_says_what_the_graph_leg_yields() {
             "the join's cap `{knob}` is an undocumented knob"
         );
     }
+}
+
+// ═════════════════════ 4. the current first-hand value first (GH #1057, K2-M)
+//
+// Measured on a six-month boundary test (120 probes, five of them turned red by
+// the graph leg): a graph hit ranked an older value or a rumour before the
+// current value the person stated themselves. Three mechanisms, one per case
+// family below: the stems of a NAME counted as question words (a rumour and an
+// old user statement spell the name, the person's own statement says "they"),
+// a node the question never named seated its facts over an edge that added no
+// question word (a rumour edge "Leo drives an orange Citroen" seated Leo's cars
+// for a question about somebody else's car), and the replaced value of an axis
+// kept its seat beside the current one. The fixtures carry the shapes of the
+// measured rows; names and references are invented.
+
+/// Run one fixture through `t1-legs` and `t1-graph` and return the graph leg's
+/// candidates in rank order. The fan legs are empty, so the fusion order IS the
+/// graph leg's order. Every path edge and every fact is tagged with the
+/// asker's round, so the gate never decides a case here.
+fn graph_case(fixture: &str) -> Vec<String> {
+    let case: Value = meclaw_core::serde_json::from_str(fixture).expect("fixture json");
+    let query = case["query"].as_str().expect("query").to_string();
+    let reply = |phase: &str, legs: Vec<(&str, Value)>| {
+        json!({
+            "header": {"context": {"mem_phase": phase, "recall_id": RID, "memory_tier": "1",
+                                   "recall_query": query, "audience_now": AUDIENCE,
+                                   "channel": CHANNEL},
+                       "hop": {"operation": "bundle", "rows_affected": 1, "bundle_errors": 0}},
+            "messages": legs.iter().map(|(id, rows)| json!(
+                {"origin": "tool", "type": "tool_result", "id": id, "text": rows.to_string()}))
+                .collect::<Vec<_>>(),
+            "results": legs.iter().map(|(id, _)| json!(
+                {"tool_call_id": id, "operation": "select", "rows_affected": 1,
+                 "duration_ms": 0})).collect::<Vec<_>>()
+        })
+    };
+    let legs = json!({"kw-ep": [], "kw-fact": [], "temporal": [], "beliefs": [],
+                      "anchors": [], "anchor_rank": case["anchor_rank"], "axis": {},
+                      "model": {"model_id": "m-1", "dim": 1024}});
+    let paths: Vec<Value> = case["paths"]
+        .as_array()
+        .expect("paths")
+        .iter()
+        .map(|p| {
+            let mut p = p.clone();
+            p["edge"] = tagged(p["edge"].clone());
+            p
+        })
+        .collect();
+    let facts: Vec<Value> = case["facts"]
+        .as_array()
+        .expect("facts")
+        .iter()
+        .cloned()
+        .map(tagged)
+        .collect();
+    let join = run(reply(
+        "t1-legs",
+        vec![
+            ("r-legs-graph", json!({"paths": paths, "truncated": false})),
+            ("r-legs-sem-aud", json!([])),
+            (
+                "r-legs-read",
+                json!([scratch("legs", &legs), scratch("sem", &json!([]))]),
+            ),
+        ],
+    ));
+    assert_eq!(join[0]["header"]["phase"], "t1-graph", "{join:#?}");
+    let mut page = vec![scratch("legs", &legs), scratch("sem", &json!([]))];
+    for a in calls_of(&join[0]) {
+        if a["table"] == "recall_scratch" && a["operation"] == "insert" {
+            page.push(json!({"request_id": RID, "leg": a["row"]["leg"],
+                             "payload": a["row"]["payload"], "fired": 0}));
+        }
+    }
+    let out = run(reply(
+        "t1-graph",
+        vec![
+            ("r-graph-fact", json!(facts)),
+            ("r-graph-read", json!(page)),
+        ],
+    ));
+    fused_of(&out)["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .filter(|c| c["legs"].as_array().unwrap().iter().any(|l| l == "graph"))
+        .map(|c| c["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn seat(leg: &[String], id: &str) -> Option<usize> {
+    leg.iter().position(|x| x == id)
+}
+
+/// Probe shape stale_vs_current-73: "In which city does Rufus live now?" -- the
+/// old user statement (Lyon) and two rumours spell the name and ranked first,
+/// the person's own current statement (Krakow, "they still live") was cut off
+/// the node page.
+const CURRENT_RESIDENCE: &str = r#"{
+  "query": "In which city does Ruth Rainer live now?",
+  "anchor_rank": {"ruth rainer": 0, "cora cole": 1},
+  "paths": [
+    {"node": "ruth rainer", "depth": 1, "weight_sum": 1, "path": ["cora cole", "ruth rainer"],
+     "edge": {"episode_id": "ep-flat",
+              "relation": "The member stated that Cora Cole and Ruth Rainer are each other's flatmates."}}],
+  "facts": [
+    {"id": "f-lyon", "canonical_subject": "ruth rainer", "subject": "Ruth Rainer", "source": "",
+     "predicate": "lives_in", "canonical_predicate": "lives_in",
+     "claim": "Ruth Rainer lives in Lyon.", "valid_from": "2025-04-04T11:02:00Z"},
+    {"id": "f-saab", "canonical_subject": "ruth rainer", "subject": "Ruth Rainer", "source": "bb11cc22",
+     "predicate": "reported_car", "canonical_predicate": "reported_car",
+     "claim": "Peer bb11cc22 said they think Ruth Rainer drives a black Saab, based on what Carl heard.",
+     "valid_from": "2025-05-27T09:00:00Z"},
+    {"id": "f-rostock", "canonical_subject": "ruth rainer", "subject": "Ruth Rainer", "source": "bb11cc22",
+     "predicate": "reported_move", "canonical_predicate": "reported_move",
+     "claim": "Peer bb11cc22 said they heard Ruth Rainer moved to Rostock, attributing the report to what Carl heard.",
+     "valid_from": "2025-06-16T09:48:00Z"},
+    {"id": "f-moved", "canonical_subject": "ruth rainer", "subject": "peer aa11bb22", "source": "aa11bb22",
+     "predicate": "relocation", "canonical_predicate": "relocation",
+     "claim": "Peer aa11bb22 stated that they moved from Lyon to Krakow.", "valid_from": "2025-06-13T13:09:00Z"},
+    {"id": "f-krakow", "canonical_subject": "ruth rainer", "subject": "peer aa11bb22", "source": "aa11bb22",
+     "predicate": "residence", "canonical_predicate": "lives_in",
+     "claim": "Peer aa11bb22 stated that they still live in Krakow and denied having moved to Rostock.",
+     "valid_from": "2025-06-20T17:34:00Z"}]
+}"#;
+
+#[test]
+fn the_current_first_hand_value_leads_and_the_replaced_one_and_rumours_get_no_seat() {
+    let leg = graph_case(CURRENT_RESIDENCE);
+    assert_eq!(
+        leg.first().map(String::as_str),
+        Some("f-krakow"),
+        "the person's own current statement leads the graph leg: {leg:?}"
+    );
+    for gone in ["f-lyon", "f-rostock", "f-saab"] {
+        assert_eq!(
+            seat(&leg, gone),
+            None,
+            "{gone}: a value the current one replaced, or a rumour where the person \
+             answered, takes no seat for a question about now: {leg:?}"
+        );
+    }
+    assert_eq!(
+        seat(&leg, "f-moved"),
+        Some(1),
+        "the statement that changed the value follows it: {leg:?}"
+    );
+    assert_eq!(
+        seat(&leg, "ep-flat"),
+        None,
+        "an edge that shares only the name with the question brings no episode: {leg:?}"
+    );
+}
+
+/// Probe shape stale_vs_current-74 (same question): the rumour edge "x heard
+/// Rufus moved to Rostock" spelled the asked name, ranked first in the walk and
+/// put the rumour episode and the reporter's own residence into the leg.
+const RUMOUR_EDGE: &str = r#"{
+  "query": "In which city does Ruth Rainer live now?",
+  "anchor_rank": {"ruth rainer": 0},
+  "paths": [
+    {"node": "carl holm", "depth": 1, "weight_sum": 1, "path": ["ruth rainer", "carl holm"],
+     "edge": {"episode_id": "ep-rumour",
+              "relation": "Peer bb11cc22 said they heard Ruth Rainer moved to Rostock, attributing the report to what Carl heard."}}],
+  "facts": [
+    {"id": "f-ghent", "canonical_subject": "carl holm", "subject": "peer bb11cc22", "source": "bb11cc22",
+     "predicate": "residence", "canonical_predicate": "lives_in",
+     "claim": "Peer bb11cc22 says they still live in Ghent and denies having moved to Tromso.",
+     "valid_from": "2025-06-16T10:00:00Z"}]
+}"#;
+
+#[test]
+fn an_edge_that_only_spells_the_asked_name_seats_nothing() {
+    let leg = graph_case(RUMOUR_EDGE);
+    assert!(
+        leg.is_empty(),
+        "neither the rumour episode nor the reporter's residence answers the question: {leg:?}"
+    );
+}
+
+/// Probe shape stale_vs_current-62: "What car does Henrik drive now?" -- the
+/// rumour (red Fiat) led the person's own word (orange Citroen, not a red Fiat),
+/// and a rumour edge about a neighbour's car seated the neighbour's cars.
+const OWN_WORD_OVER_RUMOUR: &str = r#"{
+  "query": "What car does Hank Fallow drive now?",
+  "anchor_rank": {"hank fallow": 0, "jo ahl": 2},
+  "paths": [
+    {"node": "hank fallow", "depth": 1, "weight_sum": 1, "path": ["jo ahl", "hank fallow"],
+     "edge": {"episode_id": "ep-neighbours",
+              "relation": "The member stated that Jo Ahl and Hank Fallow are neighbours."}},
+    {"node": "leo varn", "depth": 1, "weight_sum": 1, "path": ["jo ahl", "leo varn"],
+     "edge": {"episode_id": "ep-citroen",
+              "relation": "Peer jj33kk44 said they thought Leo Varn drives an orange Citroen, adding that this was what Jo heard."}}],
+  "facts": [
+    {"id": "f-fiat", "canonical_subject": "hank fallow", "subject": "Hank Fallow", "source": "nn55oo66",
+     "predicate": "car", "canonical_predicate": "car",
+     "claim": "Peer nn55oo66 said they think Hank Fallow drives a red Fiat, based on what Nina heard.",
+     "valid_from": "2025-04-21T10:19:00Z"},
+    {"id": "f-not-fiat", "canonical_subject": "hank fallow", "subject": "peer hh77ii88", "source": "hh77ii88",
+     "predicate": "car", "canonical_predicate": "car",
+     "claim": "Peer hh77ii88 stated that they drive an orange Citroen, not a red Fiat.",
+     "valid_from": "2025-04-21T18:00:00Z"},
+    {"id": "f-citroen", "canonical_subject": "hank fallow", "subject": "peer hh77ii88", "source": "hh77ii88",
+     "predicate": "drives", "canonical_predicate": "drives",
+     "claim": "Peer hh77ii88 stated that they drive an orange Citroen.", "valid_from": "2025-02-24T09:00:00Z"},
+    {"id": "f-volvo", "canonical_subject": "leo varn", "subject": "peer ll99mm00", "source": "ll99mm00",
+     "predicate": "car", "canonical_predicate": "car",
+     "claim": "Peer ll99mm00 said they drive a blue Volvo, not an orange Citroen, and that people confuse them.",
+     "valid_from": "2025-06-25T09:00:00Z"}]
+}"#;
+
+#[test]
+fn a_rumour_never_leads_the_persons_own_word_and_a_neighbours_car_gets_no_seat() {
+    let leg = graph_case(OWN_WORD_OVER_RUMOUR);
+    assert_eq!(
+        leg.first().map(String::as_str),
+        Some("f-not-fiat"),
+        "the person's own current word leads: {leg:?}"
+    );
+    assert_eq!(
+        seat(&leg, "f-fiat"),
+        None,
+        "where the person answered, the rumour takes no graph seat: {leg:?}"
+    );
+    assert_eq!(
+        seat(&leg, "f-volvo"),
+        None,
+        "a node the question never named, reached over an edge that adds no \
+         question word, seats nothing: {leg:?}"
+    );
+    if let Some(ep) = seat(&leg, "ep-citroen") {
+        assert!(
+            ep > seat(&leg, "f-not-fiat").unwrap(),
+            "a path episode (here a rumour about somebody else) rides behind every \
+             seated fact: {leg:?}"
+        );
+    }
+}
+
+/// Probe shape multihop-25: "In which city does the flatmate of my grandson
+/// live now?" -- the target's replaced value (Bremen) kept its seat beside the
+/// current one (Salzburg) and out-voted it in the fusion.
+const REPLACED_VALUE_OF_THE_TARGET: &str = r#"{
+  "query": "In which city does the flatmate of my grandson live now?",
+  "anchor_rank": {"gina grimm": 1},
+  "paths": [
+    {"node": "fay quast", "depth": 1, "weight_sum": 1, "path": ["gina grimm", "fay quast"],
+     "edge": {"episode_id": "ep-flatmates",
+              "relation": "Fay Quast and Gina Grimm are each other's flatmates."}}],
+  "facts": [
+    {"id": "f-bremen", "canonical_subject": "fay quast", "subject": "Fay Quast", "source": "",
+     "predicate": "lives_in", "canonical_predicate": "lives_in",
+     "claim": "Fay Quast lives in Bremen.", "valid_from": "2025-03-18T10:00:00Z"},
+    {"id": "f-relocated", "canonical_subject": "fay quast", "subject": "Fay Quast", "source": "",
+     "predicate": "relocated", "canonical_predicate": "relocated",
+     "claim": "Fay Quast moved from Bremen to Salzburg.", "valid_from": "2025-04-25T10:00:00Z"},
+    {"id": "f-bergen", "canonical_subject": "fay quast", "subject": "Fay Quast", "source": "mm11nn22",
+     "predicate": "reported_move", "canonical_predicate": "reported_move",
+     "claim": "Peer mm11nn22 said they had heard Fay Quast moved to Bergen, adding that this was what Mia heard.",
+     "valid_from": "2025-04-28T09:00:00Z"},
+    {"id": "f-salzburg", "canonical_subject": "fay quast", "subject": "peer ff33gg44", "source": "ff33gg44",
+     "predicate": "residence", "canonical_predicate": "lives_in",
+     "claim": "Peer ff33gg44 stated that they still live in Salzburg and denied having moved to Bergen.",
+     "valid_from": "2025-04-28T12:00:00Z"}]
+}"#;
+
+#[test]
+fn the_replaced_value_of_a_walked_node_gets_no_seat_for_a_question_about_now() {
+    let leg = graph_case(REPLACED_VALUE_OF_THE_TARGET);
+    let facts: Vec<&str> = leg
+        .iter()
+        .map(String::as_str)
+        .filter(|x| x.starts_with("f-"))
+        .collect();
+    assert_eq!(
+        facts,
+        vec!["f-salzburg", "f-relocated"],
+        "the current value, then the change that led to it; neither the replaced \
+         value nor the rumour the person denied: {leg:?}"
+    );
+    assert_eq!(
+        seat(&leg, "ep-flatmates"),
+        Some(2),
+        "the hop's episode (the question's 'flatmate') rides behind the facts: {leg:?}"
+    );
+}
+
+/// Probe shape multihop-34: "What does the business partner of my family
+/// doctor work as now?" -- the walk reached nodes over a flatmate edge and over
+/// a rumour edge "x heard Val works as a midwife", and their jobs took every
+/// seat of the leg; the hop the question asks for is the business partner one.
+const THE_HOP_THE_QUESTION_ASKS_FOR: &str = r#"{
+  "query": "What does the business partner of my family doctor work as now?",
+  "anchor_rank": {"ola ubbel": 1, "gus rasch": 2},
+  "paths": [
+    {"node": "sue ost", "depth": 1, "weight_sum": 1, "path": ["ola ubbel", "sue ost"],
+     "edge": {"episode_id": "ep-partners",
+              "relation": "The member stated that Ola Ubbel and Sue Ost are each other's business partners."}},
+    {"node": "eda dorn", "depth": 1, "weight_sum": 1, "path": ["gus rasch", "eda dorn"],
+     "edge": {"episode_id": "ep-mates",
+              "relation": "The member stated that Gus Rasch and Eda Dorn are each other's flatmates."}},
+    {"node": "val mert", "depth": 1, "weight_sum": 1, "path": ["ola ubbel", "val mert"],
+     "edge": {"episode_id": "ep-midwife",
+              "relation": "Peer pp11qq22 said Mara had heard that Val Mert works as a midwife; this was relayed as hearsay."}}],
+  "facts": [
+    {"id": "f-sue-job", "canonical_subject": "sue ost", "subject": "Sue Ost", "source": "",
+     "predicate": "occupation", "canonical_predicate": "occupation",
+     "claim": "Sue Ost works as a nurse.", "valid_from": "2025-06-13T10:00:00Z"},
+    {"id": "f-eda-job", "canonical_subject": "eda dorn", "subject": "Eda Dorn", "source": "",
+     "predicate": "occupation", "canonical_predicate": "occupation",
+     "claim": "The member stated that Eda Dorn works as an architect.", "valid_from": "2025-03-13T10:00:00Z"},
+    {"id": "f-val-job", "canonical_subject": "val mert", "subject": "Val Mert", "source": "",
+     "predicate": "occupation", "canonical_predicate": "occupation",
+     "claim": "Val Mert works as a beekeeper.", "valid_from": "2025-04-28T10:00:00Z"}]
+}"#;
+
+#[test]
+fn only_the_hop_the_question_asks_for_seats_the_answer() {
+    let leg = graph_case(THE_HOP_THE_QUESTION_ASKS_FOR);
+    let facts: Vec<&str> = leg
+        .iter()
+        .map(String::as_str)
+        .filter(|x| x.starts_with("f-"))
+        .collect();
+    assert_eq!(
+        facts,
+        vec!["f-sue-job"],
+        "the partner's job; not the job of a node reached over a flatmate edge, \
+         nor of one reached over a rumour that already names the job: {leg:?}"
+    );
+}
+
+/// Deep review of kf89 (N4): the question names no rank-0 anchor ("the
+/// flatmate of my grandson"), and the extractor wrote the edge as "lives with"
+/// -- the same question word as the answer. The strict `via` rule (a fact
+/// takes a seat only where the edge adds a question word) left the hop
+/// without an answer; without a rank-0 anchor a first-hand fact with a
+/// question word of its own keeps its seat.
+const FLATMATE_LIVES_WITH: &str = r#"{
+  "query": "In which city does the flatmate of my grandson live now?",
+  "anchor_rank": {"jonas kraft": 1},
+  "paths": [
+    {"node": "lena salz", "depth": 1, "weight_sum": 1, "path": ["jonas kraft", "lena salz"],
+     "edge": {"episode_id": "ep-flat", "relation": "Lena Salz lives with Jonas Kraft."}}],
+  "facts": [
+    {"id": "f-salz", "canonical_subject": "lena salz", "subject": "Lena Salz", "source": "",
+     "predicate": "lives_in", "canonical_predicate": "lives_in",
+     "claim": "Lena Salz lives in Salzburg now.", "valid_from": "2025-06-01T09:00:00Z"},
+    {"id": "f-nurse", "canonical_subject": "lena salz", "subject": "Lena Salz", "source": "",
+     "predicate": "works_as", "canonical_predicate": "works_as",
+     "claim": "Lena Salz works as a nurse.", "valid_from": "2025-05-01T09:00:00Z"}]
+}"#;
+
+#[test]
+fn without_a_named_anchor_a_fact_with_its_own_question_word_keeps_its_seat() {
+    let leg = graph_case(FLATMATE_LIVES_WITH);
+    assert!(
+        seat(&leg, "f-salz").is_some(),
+        "the answer lost its seat: {leg:?}"
+    );
+    assert!(
+        seat(&leg, "f-nurse").is_none(),
+        "no question word, no seat: {leg:?}"
+    );
+}
+
+/// Review T3: a fact without `valid_from` has an UNKNOWN time, not the oldest
+/// one -- a question about now never drops it behind an older value.
+const NOW_WITHOUT_A_TIME: &str = r#"{
+  "query": "In which city does Ruth Rainer live now?",
+  "anchor_rank": {"ruth rainer": 0, "cora cole": 1},
+  "paths": [
+    {"node": "ruth rainer", "depth": 1, "weight_sum": 1, "path": ["cora cole", "ruth rainer"],
+     "edge": {"episode_id": "ep-flat",
+              "relation": "The member stated that Cora Cole and Ruth Rainer are each other's flatmates."}}],
+  "facts": [
+    {"id": "f-old", "canonical_subject": "ruth rainer", "subject": "Ruth Rainer", "source": "",
+     "predicate": "lives_in", "canonical_predicate": "lives_in",
+     "claim": "Ruth Rainer lives in Lyon.", "valid_from": "2025-03-01T09:00:00Z"},
+    {"id": "f-new", "canonical_subject": "ruth rainer", "subject": "Ruth Rainer", "source": "",
+     "predicate": "lives_in", "canonical_predicate": "lives_in",
+     "claim": "Ruth Rainer lives in Krakow.", "valid_from": ""}]
+}"#;
+
+#[test]
+fn a_fact_without_a_time_is_never_taken_for_the_oldest() {
+    let leg = graph_case(NOW_WITHOUT_A_TIME);
+    assert!(
+        seat(&leg, "f-new").is_some(),
+        "the timeless value was dropped: {leg:?}"
+    );
 }

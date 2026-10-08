@@ -1,0 +1,21 @@
+{"test": "counter", "text": "I just forget my pills sometimes"}
+{"test": "counter", "text": "I go to the garden and forget the time completely."}
+{"test": "counter", "text": "Will you forget my birthday again?"}
+{"test": "statement", "text": "my grandson visited and we played cards and I just forget the rules every time"}
+{"test": "statement", "text": "Will you forget my birthday again this year?"}
+{"test": "statement", "text": "So I just forget about the dentist bill."}
+{"test": "statement", "text": "Forget the bus."}
+{"test": "statement", "text": "Delete the reminder."}
+{"test": "named", "text": "Just forget what I told you about the bank loan.", "want": "\"bank\" AND \"loan\""}
+{"test": "named", "text": "Could you forget about the bet with my brother?", "want": "\"bet\" AND \"brother\""}
+{"test": "named", "text": "Would you please forget what I said about the bank loan?", "want": "\"bank\" AND \"loan\""}
+{"test": "named", "text": "Hey Lumo, please forget what I told you about the bank debt.", "want": "\"bank\" AND \"debt\""}
+{"test": "named", "text": "Please forget what I just told you about the money I owe the bank", "want": "\"money\" AND \"owe\" AND \"bank\""}
+{"test": "named", "text": "Forget what I told you about the bank debt, Lumo.", "want": "\"bank\" AND \"debt\""}
+{"test": "one-word", "text": "Please forget what I told you about my diagnosis.", "want": "\"diagnosis\""}
+{"test": "one-word", "text": "Lumo, forget what I said about the diagnosis.", "want": "\"diagnosis\""}
+{"test": "one-word", "text": "Forget that about my son.", "want": "\"son\""}
+{"test": "correction", "text": "Forget what I said, the appointment is on Tuesday.", "new": ["appointment", "tuesday"]}
+{"test": "correction", "text": "Delete that, the dentist moved to Bremen.", "new": ["dentist", "moved", "bremen"]}
+{"test": "correction", "text": "Forget that, Tuesday works.", "new": ["tuesday", "works"]}
+{"test": "list", "text": "Forget what I told you about Anna, Ben, and Carl.", "words": "\"anna\" AND \"ben\" AND \"carl\""}

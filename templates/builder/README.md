@@ -1,4 +1,4 @@
-# `builder@1.26.26`
+# `builder@1.26.32`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -57,7 +57,7 @@ address them.
 | `brief` | `code` | Assembles the authoring prompt: the retrieved sections become instructions, the request stays a user turn. It emits twice — the prompt to the composer, and the same question and the same instruction tree into the round table, because round 1 onwards is briefed by the loop and not by this cell. |
 | `compose` | `llm` | The model call of the design lane — asked once per round, not once per build. |
 | `dispatcher` | `ref dispatcher` | Which tools did that answer ask for, and is the bundle within budget? Fans one answer out into one call per tool, referenced rather than copied. |
-| `lib` | `code` | What does the corpus say? Adapts `librarian_search` and `catalogue_lookup` onto the referenced librarian and its briefing back into a `tool_result`. |
+| `lib` | `code` | What does the corpus say? Adapts `librarian_search` and `catalogue_lookup` onto the referenced librarian and its briefing back into a `tool_result`. The edge in from `./dispatcher` (like those to `./eyes` and `./unknown`) sets `context.input_soft` from the composer's stamp, so the briefing takes its 10 % of the composer's window (GH #1085); every exit to `.` deletes it again. |
 | `eyes` | `code` | What does the colony actually look like right now? Turns `graph_read` and `registry_read` into a `/colony` question and the answer back into a `tool_result`. |
 | `unknown` | `code` | A tool that is not one of the four — answered, by name, with `unknown_tool`, so a round never waits for a call that will never run. |
 | `weave` | `code` | Is this round complete, and what happens next? The fan-in: it counts, it adopts a refusal, and it decides between another round, a draft and a named stop. |
@@ -204,7 +204,7 @@ instantiated, and points at where that demand is legible: every row of the
 librarian's template catalogue now opens with a contract line naming the `ctx`
 keys an instantiation owes, refs included. That line exists because the catalogue
 did not publish what it enforced — a `template.json` is serialised
-description-first, the retrieving cell hands the model the first 1200 characters
+description-first, the retrieving cell handed the model the first 1200 characters
 of a row, and for a large composite the `requires` block was not in that row at
 all. Measured the same way: with the grammar in place and the contract still
 invisible, the same model encoded every entry correctly and was refused one level
@@ -1734,9 +1734,10 @@ in one colony brief at different widths:
 | param of `builder-librarian/retrieve` | What it is |
 |---|---|
 | `topk` | how many corpus chunks the briefing carries |
-| `row_chars` | how much of one corpus chunk the briefing carries; a chunk that does not fit is cut on a word boundary and says so |
-| `catalogue_chars` | the same window for a CATALOGUE row, which is wide enough that a template's row -- its contract, its params and its worked example -- travels whole |
-| `level_chars` | the same window for a LEVEL row -- the complete transit edge set of one level, which is the one chunk that has to arrive whole or not at all |
+
+The briefing's width is no knob any more ([#1085](https://github.com/mmeyerlein/meclaw/issues/1085)):
+it is a tool result's share of the reading model's window, rows whole while they fit, the
+first one over it cut with the mark and the rest named as dropped.
 
 ## One walk of the whole lane, with a real model
 

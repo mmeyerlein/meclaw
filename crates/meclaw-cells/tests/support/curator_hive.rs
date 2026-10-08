@@ -558,11 +558,48 @@ impl Hive {
 
     /// The summarizer's answer to the oldest request it holds.
     pub fn answer(&mut self, text: &str, finish: &str) -> Msg {
+        self.answer_with(text, finish, json!({}))
+    }
+
+    /// The summarizer's answer with `extra` hop keys -- the llm cell's stamp
+    /// of its own package (`input_soft`, GH #1037) among them.
+    pub fn answer_with(&mut self, text: &str, finish: &str, extra: Value) -> Msg {
         let req = self.summ.pop_front().expect("a summarizer request");
+        let mut hop = obj(json!({"finish_reason": finish, "model": "summary-model"}));
+        for (k, v) in obj(extra) {
+            hop.insert(k, v);
+        }
         let msg = Msg {
             context: req.context.clone(),
-            hop: obj(json!({"finish_reason": finish, "model": "summary-model"})),
+            hop,
             body: obj(json!({"messages": [{"origin": "assistant", "type": "text", "text": text}]})),
+            reply_to: String::new(),
+        };
+        self.pump("./summarizer", msg);
+        req
+    }
+
+    /// The summarizer's refusal of the oldest request it holds as over its
+    /// window, in the llm cell's own form (`llm/window.rs`, R-HK-15/16): no
+    /// model call, `invalid_input`, `meta.error.kind` `input_over_hard` with
+    /// the bound it refused at, the request's messages handed back.
+    pub fn refuse_window(&mut self, input_hard: u64) -> Msg {
+        let req = self.summ.pop_front().expect("a summarizer request");
+        let hop = obj(
+            json!({"finish_reason": "error", "error_code": "invalid_input",
+                             "latency_ms": 0}),
+        );
+        let msg = Msg {
+            context: req.context.clone(),
+            hop,
+            body: obj(json!({
+                "messages": req.messages(),
+                "meta": {"provider": "openai", "latency_ms": 0, "started_at": 0,
+                         "error": {"source": "window",
+                                   "detail": "window: prompt over input_hard; no model call",
+                                   "kind": "input_over_hard",
+                                   "input_estimate": input_hard + 1,
+                                   "input_hard": input_hard}}})),
             reply_to: String::new(),
         };
         self.pump("./summarizer", msg);

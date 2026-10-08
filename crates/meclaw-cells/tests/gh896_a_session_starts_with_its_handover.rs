@@ -31,9 +31,11 @@
 //! 3. `without_a_close_the_block_needs_no_model`: no close, the first request
 //!    of session B still carries a block (the topic still open, OR-KY-71) and
 //!    the provider was asked exactly once per turn -- never by the summarizer.
-//! 4. `the_block_respects_handover_chars`: a note longer than `handover_chars`
-//!    is cut when it is kept, and the leaf cuts it again behind the topic,
-//!    which stays whole.
+//! 4. `the_block_goes_whole_without_a_window` (R-IG-1, GH #1085): a note far
+//!    over the 3000 characters `handover_chars` cut at until curator 1.11.0 is
+//!    kept whole, and the leaf carries it whole behind the topic -- no model
+//!    named a window, so nothing is cut (the share of a known window is
+//!    locked in `gh1085_the_curator_alone_cuts.rs`).
 //! 5. `the_pack_handover_family_is_untouched`: an identity pack's `handover`
 //!    slot stays the pack's, and the curator's leaf is `history.handover`
 //!    (OR-KY-U4); B's first request carries both.
@@ -232,8 +234,6 @@ fn lane_edge(route: &str, lane: &str) -> Value {
 /// The knobs a test sets on the copied hive.
 #[derive(Default)]
 struct Knobs {
-    /// `./handover` `handover_chars`.
-    handover_chars: Option<u64>,
     /// `./policy` `keep_recent`.
     keep_recent: Option<u64>,
 }
@@ -284,11 +284,6 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, knobs: Knobs) {
         v["params"]["model"] = json!("gpt-4o-mock");
         v["params"]["api_key"] = json!("sk-test");
     });
-    if let Some(n) = knobs.handover_chars {
-        patch(root, "main/curator/handover/config.json", |v| {
-            v["params"]["handover_chars"] = json!(n);
-        });
-    }
     if let Some(n) = knobs.keep_recent {
         patch(root, "main/curator/policy/config.json", |v| {
             v["params"]["keep_recent"] = json!(n);
@@ -789,13 +784,13 @@ async fn without_a_close_the_block_needs_no_model() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_block_respects_handover_chars() {
+async fn the_block_goes_whole_without_a_window() {
     if !shipped() {
         eprintln!("the curator template did not travel into this tree -- skipped (GH #49)");
         return;
     }
-    const LIMIT: usize = 200;
-    let long = "x".repeat(2_000);
+    // Over the 3000 characters `handover_chars` cut at until curator 1.11.0.
+    let long = "x".repeat(5_000);
     let mock = MockOpenAI::start(vec![
         canned_chat_completion("Once upon a time.", "stop"),
         canned_chat_completion(&long, "stop"),
@@ -803,14 +798,7 @@ async fn the_block_respects_handover_chars() {
     ])
     .await;
     let td = tempfile::tempdir().expect("tempdir");
-    build_tree(
-        &td,
-        &mock.base_url,
-        Knobs {
-            handover_chars: Some(LIMIT as u64),
-            ..Knobs::default()
-        },
-    );
+    build_tree(&td, &mock.base_url, Knobs::default());
     let (h, _sink) = boot(&td).await;
 
     turn(&h, &td, &mock, 1, "s-a", "a1", "Tell me a story.").await;
@@ -821,26 +809,25 @@ async fn the_block_respects_handover_chars() {
     until_count(&td, PREPARED, 1).await;
     let (_, body) = prepared_block(&td);
     let el: Value = meclaw_core::serde_json::from_str(&body).expect("a block");
-    let text = el["text"].as_str().expect("text");
-    assert!(
-        text.chars().count() <= LIMIT && text.ends_with('…'),
-        "the kept note is cut at handover_chars {LIMIT}: {} characters",
-        text.chars().count()
+    assert_eq!(
+        el["text"].as_str().expect("text"),
+        long,
+        "the note is the model's words, kept whole"
     );
 
     turn(&h, &td, &mock, 3, "s-b", "b1", "Again.").await;
     let leaf = leaf_text(&td);
     let (_, block) = leaf.split_once('\n').expect("a head line and the block");
     assert!(
-        block.chars().count() <= LIMIT,
-        "{} characters over handover_chars {LIMIT}: {block}",
-        block.chars().count()
+        block.contains(&format!("{TOPIC_HEAD}A story about a fox")),
+        "the topic stands in the block: {block}"
     );
     assert!(
-        block.contains(&format!("{TOPIC_HEAD}A story about a fox")),
-        "the topic outranks the note and stays whole: {block}"
+        block.ends_with(&long),
+        "without a window the note goes whole: {} characters",
+        block.chars().count()
     );
-    assert!(block.ends_with('…'), "the note is cut at its end: {block}");
+    assert!(!block.contains("...[cut:"), "nothing cut: {block}");
     h.shutdown().await;
 }
 
@@ -937,7 +924,6 @@ async fn the_first_request_of_a_new_session_is_the_plans_window() {
         &mock.base_url,
         Knobs {
             keep_recent: Some(1),
-            ..Knobs::default()
         },
     );
     let (h, _sink) = boot(&td).await;

@@ -58,11 +58,24 @@ async fn one_call(
     timeout_ms: u64,
     body: Value,
 ) -> (usize, Vec<CellEmission>) {
+    one_call_with(json!({}), responses, timeout_ms, body).await
+}
+
+/// [`one_call`] with extra params (a package key such as `input_hard`).
+async fn one_call_with(
+    extra: Value,
+    responses: Vec<MockResponse>,
+    timeout_ms: u64,
+    body: Value,
+) -> (usize, Vec<CellEmission>) {
     let mock = MockOpenAI::start(responses).await;
-    let raw = json!({
+    let mut raw = json!({
         "provider": "decisions", "model": "vendor/decider", "api_key": "k",
         "base_url": format!("{}/api", mock.base_url), "external_timeout_ms": timeout_ms,
     });
+    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+        raw[k] = v;
+    }
     let mut cell = LlmCell::new(
         LlmParams::parse(&raw).unwrap(),
         reqwest::Client::builder().build().unwrap(),
@@ -157,6 +170,49 @@ async fn a_body_without_a_valid_decide_sends_nothing() {
         assert_eq!(sent, 0, "no request for {body}");
         assert_eq!(the_one_error(&ems), "decide_invalid", "{body}");
     }
+}
+
+fn a_whole_answer() -> MockResponse {
+    answer(json!({"answers": {
+        "topic": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
+        "wants": {"noul": 0.8}}}))
+}
+
+/// GH #1085 lock: the fixed 128 KiB request bound is gone -- a state over it
+/// reaches the service whole when the model's catalog row states no window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_state_over_the_old_fixed_bound_reaches_the_service_whole() {
+    let mut body = decide_body();
+    body["decide"]["state"] = json!("x".repeat(200 * 1024));
+    let (sent, ems) = one_call(vec![a_whole_answer()], 30_000, body).await;
+    assert_eq!(sent, 1, "sent, not refused");
+    assert_eq!(ems.len(), 1);
+    assert_eq!(
+        ems[0].content["header"]["finish_reason"], "stop",
+        "{}",
+        ems[0].content["header"]
+    );
+}
+
+/// GH #1085 lock: the bound is the catalog row -- a request over `input_hard`
+/// is refused before any request is sent, naming the estimate and the bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_over_input_hard_is_refused_with_its_numbers() {
+    let mut body = decide_body();
+    body["decide"]["state"] = json!("x".repeat(30_000));
+    let (sent, ems) = one_call_with(
+        json!({"input_hard": 1000}),
+        vec![a_whole_answer()],
+        30_000,
+        body,
+    )
+    .await;
+    assert_eq!(sent, 0, "refused before the call");
+    assert_eq!(the_one_error(&ems), "decide_invalid");
+    let c = &ems[0].content;
+    let detail = c.to_string();
+    assert!(detail.contains("input_hard=1000"), "{detail}");
+    assert!(detail.contains("input_over_hard"), "{detail}");
 }
 
 /// Review I-1 / OR-DP-59: the error path is failover-ready. A failed call

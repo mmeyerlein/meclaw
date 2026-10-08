@@ -1375,8 +1375,16 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
         *)         log_rel="$log" ;;
     esac
 
+    # `ci` has no `tests` station (the shards run the suite), so `slow-tests`
+    # has no JUnit file to read either: the plan marks both `run: false`, and
+    # the TSV this loop reads does not carry that mark -- so both by name. The
+    # public CI of 0.62.0 went RED on exactly this ("no JUnit file").
     if [ "$mode" = ci ] && [ "$name" = "tests" ]; then
         report "$name" "$scope" 0 SKIP "" "planned-for-shards"
+        continue
+    fi
+    if [ "$mode" = ci ] && [ "$name" = "slow-tests" ]; then
+        report "$name" "$scope" 0 SKIP "" "no-tests-station-in-ci"
         continue
     fi
 
