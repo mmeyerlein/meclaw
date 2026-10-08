@@ -58,7 +58,6 @@ const CANVY_FILES: &[&str] = &[
     "config.json",
     "template.json",
     "README.md",
-    "clock/config.json",
     "probe/config.json",
     "probe/probe.py",
     "layout/config.json",
@@ -336,12 +335,9 @@ fn the_shipped_bytes_match_their_sources() {
 /// boot with `env_var_missing`. The client is written with concatenation
 /// instead, and this is what keeps it that way.
 ///
-/// The `clock` timer is the counter-example that proves the check is not a
-/// blanket ban: it carries ONE token on purpose, the instance-class
-/// `${uuid7:...}` its schedule key is minted from, which is resolved once at
-/// instantiation and written to disk. Its cadence was the second one until
-/// GH #138 (ruling R-0904-6) made it the literal it declares -- so the check
-/// below asks for a plannable cron rather than for a token.
+/// Until 2.4.0 a `clock` timer was the counter-example that kept the check
+/// from being a blanket ban; it left with GH #1096 (R-AG-1), and the hive
+/// carries no dollar-brace form anywhere now.
 #[test]
 fn a_shipped_script_carries_no_environment_token() {
     let Some(root) = shipped_canvy() else { return };
@@ -354,26 +350,13 @@ fn a_shipped_script_carries_no_environment_token() {
              an env token and refuses the cell at boot"
         );
     }
-    let clock = read_json(&root.join("clock/config.json"));
-    let cron = clock["params"]["schedules"][0]["cron"]
-        .as_str()
-        .expect("cron");
-    assert_eq!(
-        cron, "0 * * * * *",
-        "the one knob this template has is a LITERAL since GH #138, not a \
-         `${{CANVY_REFRESH_CRON}}` token an environment fills colony-wide"
-    );
-    let key = clock["params"]["schedules"][0]["schedule_id"]
-        .as_str()
-        .expect("schedule_id");
     assert!(
-        key.starts_with("${uuid7:"),
-        "the instance class is the counter-example that keeps this check from \
-         being a blanket ban, and it is still here: {key}"
+        !root.join("clock").exists(),
+        "canvy ticks again: the minute clock left with GH #1096"
     );
 }
 
-/// The hive is sealed, states two lanes, and both of them have a door.
+/// The hive is sealed, states its lanes, and every one of them has a door.
 #[test]
 fn the_hive_is_sealed_and_states_two_lanes() {
     let Some(root) = shipped_canvy() else { return };
@@ -396,14 +379,19 @@ fn the_hive_is_sealed_and_states_two_lanes() {
         .iter()
         .map(|l| l["route"].as_str().unwrap())
         .collect();
-    assert_eq!(accepts, ["in_refresh"]);
+    // GH #1096 (R-AG-1): the receipt is the redraw, not a minute tick.
+    assert_eq!(accepts, ["mutation_committed", "in_refresh"]);
     assert_eq!(emits, ["event"]);
 
     let edges = cfg["params"]["graph"]["edges"].as_array().expect("edges");
     // Every lane the contract names has a door, and no door names a lane the
     // contract does not. The colony-side gate asks the real router; this one
     // keeps the file itself honest at the two ends that touch `.`.
-    for (dir, want) in [("from", "in_refresh"), ("to", "event")] {
+    for (dir, want) in [
+        ("from", "mutation_committed"),
+        ("from", "in_refresh"),
+        ("to", "event"),
+    ] {
         assert!(
             edges.iter().any(|e| e[dir] == "."
                 && e["condition"]
@@ -412,6 +400,24 @@ fn the_hive_is_sealed_and_states_two_lanes() {
             "no door for {want}"
         );
     }
+
+    // The receipt's door hands the probe an ordinary `in_refresh`, and no
+    // edge leaves a clock any more (GH #1096).
+    let receipt = edges
+        .iter()
+        .find(|e| {
+            e["from"] == "."
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("'mutation_committed'"))
+        })
+        .expect("the receipt door");
+    assert_eq!(receipt["to"], "./probe");
+    assert_eq!(receipt["modifier"]["set_hop"]["route"], "'in_refresh'");
+    assert!(
+        edges.iter().all(|e| e["from"] != "./clock"),
+        "an edge still leaves the retired clock"
+    );
 
     // The one absolute lane, and the condition that keeps it from swallowing
     // every other emission of the probe (GH #161: unconditional, a snapshot

@@ -1,9 +1,9 @@
-# `affinity@3.10.1`
+# `affinity@3.10.2`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
-comparison, so a brief costs nothing and a push tick over unchanged data costs two
-selects.
+comparison, so a brief costs nothing, and since 3.10.2 there is no push tick at all:
+a write is the event that runs the push (R-AG-1).
 
 Six cells:
 
@@ -13,7 +13,7 @@ Six cells:
 | `brief` | `code` | the only reader of the domain -- audience filter and pack rendering. Appends its own `audit` row per brief. Runs `warm` since 3.10.1 (#1021): one brief request is six runs in series (the request, then one per store phase), and it keeps no state between messages and reads stdin as text only |
 | `gate` | `code` | the only writer of the domain -- AIeOS validation, minting, audit. Runs `warm` since 3.6.0 (#852): it sits under every member door, keeps no state between messages and reads stdin as text only |
 | `push` | `code` | push-on-change: hashes what a subscriber would get, and stays silent when it did not move. Writes that hash and `sent_at` back onto the subscriber row only when the pack's receipt comes back clean on `in_pack_ack` (GH #877); until then it resends on the next tick and then after a wait that doubles up to six hours, and a refused receipt parks the pack until it changes (`subscribers.retry`). Plus an `audit` row per tick |
-| `clock` | `timer` | the push tick (6-field Quartz cron, **UTC**) |
+| `clock` | `timer` | the resend watchdog of `push`: one one-shot for the earliest unconfirmed pack, re-armed by `push` (R-AG-1, no tick) |
 | `porter` | `code` | the transfer lane: walks the record out as a versioned document, takes one part back into a running hive. It transfers and decides nothing (§ Taking the record out) |
 
 **This is the first hive with a domain of its own.** Memory produces the raw material
@@ -153,7 +153,7 @@ affinity/                     hive  -- scope marker, ten internal edges
   brief/                      code  -- read port: who -> trust -> disclosure -> traverse -> entity
   gate/                       code  -- write port: validate -> store ops -> audit -> ack
   push/                       code  -- change detector, renders nothing itself
-  clock/                      timer -- the tick
+  clock/                      timer -- the resend watchdog
   porter/                     code  -- transfer port: the record out as a document, one part back in
   aieos.schema.json           the VENDORED AIeOS 1.1.0 skeleton (see below)
 ```
@@ -312,7 +312,7 @@ opposite -- accepted, written and **silently undeliverable**, which is exactly t
 order is chosen so that the half-finished state is the harmless one. Since 3.6.2
 ([#877](https://github.com/mmeyerlein/meclaw/issues/877)) the wrong order no longer loses the pack
 either: a row counts as served only when a clean receipt comes back. Until then the pack goes
-again on the next tick and after that on a wait that doubles each time, capped at six hours
+again after five minutes and after that on a wait that doubles each time, capped at six hours
 (`subscribers.retry`); a receipt that refuses the pack parks it until it changes.
 
 **Nobody mints the token.** `hop.subscriber` carries the row's own `cell_path`, so the
@@ -329,7 +329,7 @@ subscriber from `context.subscriber` on the edge and refuses a body that asserts
 The seed under `seed/entities.jsonl` is the **birth state** and nothing more. After birth
 the agent's own AIeOS document lives in this hive as one entity, and `out_push` delivers it
 into the subscribing brain's `system.identity` slot whenever it changes. Changing the
-person is one write here; every brain that subscribed hears it on the next tick, and no
+person is one write here; every brain that subscribed hears it in the same flow, and no
 file anywhere is edited. The brain holds a projection of a record, not a copy of a text.
 
 The counter-example is the persona **cell**: a `code` cell that carries the persona in its
@@ -371,7 +371,7 @@ carries that same id since [#877](https://github.com/mmeyerlein/meclaw/issues/87
 `subscribe` supersedes the first: one active row per id, the old one kept inactive beside it,
 nothing deleted.
 
-**What the silence means is written on the row.** An untouched hive ticks and says nothing
+**What the silence means is written on the row.** An untouched hive says nothing
 because **nothing has subscribed**, not because nothing changed -- and the two are told
 apart by reading `status`, a fact anybody may select. `docs/development-rules.md` § 2c (an
 empty result and a forgotten call must never look alike) is satisfied by the column rather
@@ -650,7 +650,7 @@ proposals:
 - **`push` updates `subscribers` and inserts `audit`.** The clean receipt of a pack
   (`in_pack_ack`, GH #877) writes back `pack_hash` and `sent_at` on the row it names -- that hash **is** the
   push-on-change mechanism: without persisting it there is nothing to compare the next
-  tick against, and every tick would resend. Each send notes its try in `retry`, and a
+  run against, and every run would resend. Each send notes its try in `retry`, and a
   refused receipt parks the hash there; that note is what bounds the resend of a pack
   nobody confirms. None of the three is domain content, and none is reachable from a
   proposal.
@@ -679,7 +679,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.10.1` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.10.2` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -830,8 +830,8 @@ state rather than a data one: one **inactive** row, `entity:aiden` addressed at
 `aieos.linguistics.text_style`. It ships inactive
 ([#458](https://github.com/mmeyerlein/meclaw/issues/458)) because a row alone is half a
 subscription and the edge behind it can only be drawn by a mutation: it is the **shape** a
-`subscribe` writes, not a delivery the template can keep. A fresh hive therefore ticks
-silently, and `status` is where a reader finds out why -- see § *Wiring `out_push` for a
+`subscribe` writes, not a delivery the template can keep. A fresh hive therefore stays
+silent, and `status` is where a reader finds out why -- see § *Wiring `out_push` for a
 subscribing brain* and § *Subscribing is one act with two halves* for what the `cell_path`
 token is and who turns it into a subscription.
 
@@ -1005,7 +1005,7 @@ enters as the seed of a new hive, where the template's default decides, never in
 that names the column (`schema_mismatch`): a missing column without a default, a changed type, a
 column this store does not declare, a header `version` newer than the table's.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.1`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.2`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have
@@ -1039,29 +1039,17 @@ other.
 
 | param | default | what it bounds |
 |---|---|---|
-| `subscriber_rows` | 200 | subscriptions and subjects read per push tick |
+| `subscriber_rows` | 200 | subscriptions and subjects read per push run |
+| `retry_first_s` | 300 | seconds the first resend of an unconfirmed pack waits; each later wait doubles, capped at six hours |
 
-`./clock` is a `timer`, so its cadence is a value INSIDE a param rather than a param of its
-own: `TimerParams::parse` reads `schedules` and `query_timeout_ms` and nothing else, and a
-top-level `cron` key would be ignored in silence. The shipped schedule is
-`0 */5 * * * *` — **cron runs in UTC** — and an override replaces the whole array:
-
-```json
-"override_params": {
-  "affinity/brief": {"traverse_depth": 3},
-  "affinity/clock": {"schedules": [{
-    "schedule_id": "0190a3f2-0000-7000-8000-000000000001",
-    "schedule_name": "affinity-push",
-    "cron": "0 */30 * * * *",
-    "emit_to": "../push",
-    "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]},
-    "emit_headers": {}
-  }]}
-}
-```
-
-The `schedule_id` has to be a real UUID: the shipped file carries `${uuid7:affinity-push}`,
-which the colony mints at instantiation, and an override writes the value rather than the token.
+`./clock` has no cadence to tune since 3.10.2 (R-AG-1, [#1096](https://github.com/mmeyerlein/meclaw/issues/1096)):
+it ships no schedule. Every accepted write of `./gate` re-arms a retrigger watchdog on it
+(`affinity-push-write`, a debounce with one second of quiet), so the writes of one turn reach a
+subscriber as one pack a second after the last of them, and `./push` arms the clock's one watchdog (`affinity-push`, a
+one-shot with `rearm`) only while a pack is unconfirmed, for the earliest resend. The pack hash
+covers the newest trust verdict of the pair and the newest disclosure decision of the subject as
+well as the document, because `./brief` renders both: a `set_trust` reaches the subscriber like
+an `upsert_entity` does.
 
 **A knob that is not configured, or is `null`, or is a blank string, is the shipped default** —
 an operator who blanks a line in a config means the default, and there is no number in an empty

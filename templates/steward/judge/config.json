@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 180000
+    "message_timeout": 3364000
   },
   "params": {
     "provider": "${STEWARD_JUDGE_PROVIDER:-openai}",
@@ -10,7 +10,7 @@
     "requirement": "Decides whether the colony should change itself under the older name of the control loop: it weighs measurements against a charter, reasons through what would happen otherwise and states a decision with its way back. It needs the strongest reasoning available and careful, structured output of a few thousand tokens. Nobody waits on it, so up to two minutes and a high price per call are acceptable.",
     "api_key": "",
     "credential_grant_id": "grant:openrouter@template-steward/judge",
-    "external_timeout_ms": 120000,
+    "external_timeout_ms": 3058000,
     "system_order": [
       "role",
       "method",
@@ -52,6 +52,12 @@
         "secret": false,
         "default": "grant:openrouter@template-steward/judge",
         "description": "The grant this cell presents to get its provider key sealed from `./access` instead of carrying it in `api_key` (GH #560, #801). The template seeds this grant in `access/store/seed/grants.jsonl`; deposit the credential with `meclaw --vault-add`. Immutable: a different grant is a new cell."
+      },
+      "external_timeout_ms_row": {
+        "type": "string",
+        "secret": false,
+        "default": "anthropic/claude-opus-5.5",
+        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
       }
     },
     "consumes": {

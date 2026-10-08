@@ -211,15 +211,10 @@ impl ProxyCell {
         self
     }
 
-    /// GH #515: overrides the typing cadence (`TypingCadence::default` is the
-    /// production one: 4 s under Telegram's ~5 s decay, 60 s ceiling).
-    ///
-    /// A test/ops seam, deliberately NOT a params surface: the numbers follow
-    /// from the Bot API's own decay and from what a stuck turn may cost, not
-    /// from a topology's taste, and a settable one would be a new promise on a
-    /// template that is only supposed to grow a behaviour. What it buys is a
-    /// test that measures the real mechanism in under two seconds instead of
-    /// sitting out a 60 s ceiling.
+    /// GH #515: overrides the typing cadence. The factory sets the production
+    /// one (`TypingCadence::for_backstop`, GH #1099: 4 s under Telegram's ~5 s
+    /// decay, ceiling = the answering turn's backstop from `typing_max_ms`);
+    /// tests use it to measure the real mechanism in under two seconds.
     pub fn set_typing_cadence(&mut self, cadence: TypingCadence) {
         self.typing.set_cadence(cadence);
     }

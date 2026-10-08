@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 90000
+    "message_timeout": 1366000
   },
   "params": {
     "provider": "openai",
@@ -11,7 +11,7 @@
     "credential_grant_id": "",
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.2,
-    "external_timeout_ms": 60000,
+    "external_timeout_ms": 1241000,
     "system_order": [
       "instructions"
     ]
@@ -35,6 +35,12 @@
         "secret": false,
         "default": "",
         "description": "GH #801: the grant this cell presents to get its provider credential SEALED from an access hive instead of carrying a key. It ships EMPTY, which is no grant at all; whoever grows the cell (the builder recipe or the colony's own template) sets it through `override_params`, and the credential then arrives over the credential v-lane and is opened in RAM only. Immutable: a new grant is a new instance."
+      },
+      "external_timeout_ms_row": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-6-luna",
+        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
       }
     },
     "emits": {

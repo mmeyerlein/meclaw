@@ -2,7 +2,7 @@
 //!
 //! Since 0.62 a standalone template that spends a provider key carries its
 //! own broker: `summarizer` ships `access/config.json` (a `ref` to
-//! `access@2.5.1`) plus a SEED OVERLAY `access/store/seed/{grants,
+//! `access@2.5.2`) plus a SEED OVERLAY `access/store/seed/{grants,
 //! grant_events}.jsonl` granting `./writer` the credential `cred:openrouter`
 //! under `grant:openrouter@template-summarizer/writer`, the handle the writer's
 //! `credential_grant_id` names. The promise to an operator is: instantiate it,

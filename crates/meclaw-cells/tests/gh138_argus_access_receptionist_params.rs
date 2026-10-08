@@ -581,10 +581,22 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
 /// would have been silent -- green tests with a sweep firing into them.
 #[test]
 fn both_ticks_plan_on_the_schedule_their_params_carry() {
-    for (template, knob, shipped_cron) in [
-        ("argus", "cycle_cron", "0 0 */6 * * *"),
-        ("access", "cron", "0 */5 * * * *"),
-    ] {
+    // GH #1096 (R-AG-1): the access clock no longer ticks. It ships no
+    // schedule and no `cron` setting -- `./sweep` arms its one watchdog for
+    // the next `expires_at` -- so the pair below is argus's alone.
+    let access = config("access", "clock");
+    let shipped = TimerParams::parse(&access["params"]).expect("access/clock params");
+    assert!(
+        shipped.schedules.is_empty(),
+        "access/clock ships a schedule again -- a tick over unchanged grants"
+    );
+    assert!(
+        access["contract"]["settings"].get("cron").is_none(),
+        "access/clock declares a cron it no longer carries"
+    );
+    // The one timer knob left (argus); access/clock lost its schedule above.
+    let (template, knob, shipped_cron) = ("argus", "cycle_cron", "0 0 */6 * * *");
+    {
         let mut cfg = config(template, "clock");
         // Read before the mutable borrow below: the declared half of this
         // knob's pair. A timer has no script, so the triple the scripted knobs

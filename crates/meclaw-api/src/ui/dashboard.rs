@@ -191,6 +191,7 @@ async fn read_errors(colony: &Arc<ColonyHandle>) -> Result<Vec<MessageLogDto>, (
         only_error: true,
         since: None,
         limit: 100,
+        wait: None,
         ack: ack_tx,
     };
     colony.inbox.send(msg).await.map_err(|_| ())?;

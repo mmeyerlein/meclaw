@@ -1,10 +1,11 @@
 {
   "cell": {
-    "type": "bash"
+    "type": "bash",
+    "message_timeout": 660000
   },
   "params": {
-    "max_concurrency": 4,
-    "external_timeout_ms": 60000,
+    "max_concurrency": 16,
+    "external_timeout_ms": 600000,
     "sandbox": {
       "trust": "restricted",
       "network": "deny",

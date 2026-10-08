@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 14000
+    "message_timeout": 13000
   },
   "params": {
     "provider": "decisions",

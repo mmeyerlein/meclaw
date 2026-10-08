@@ -842,7 +842,12 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// Measured red in the strand's gate (439 against 434).
 ///
 /// Both together after the merge of welle-vg/main with master: 434 + 21 + 5.
-const EDGES: usize = 460;
+///
+/// Moved 460 -> 463 with GH #1096: `access` carries seventeen internal edges
+/// instead of fourteen (the watchdog round trip `./sweep -> ./clock` and
+/// `./clock -> ./sweep`, and the nudge `./policy -> ./sweep`). One access in
+/// the example: 1 x 3. Measured red in the integration run (463 against 460).
+const EDGES: usize = 463;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

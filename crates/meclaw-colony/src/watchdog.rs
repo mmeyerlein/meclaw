@@ -553,9 +553,10 @@ pub struct Watchdog {
 }
 
 impl Watchdog {
-    /// `threshold` consecutive misses trigger a `Stop`. The colony emits ~10
-    /// heartbeats/second; the production supervisor uses `threshold = 5`
-    /// (~0.5 s of silence).
+    /// `threshold` consecutive misses trigger a `Stop`. An idle colony beats
+    /// twice per supervisor period (`ColonyConfig::heartbeat_interval`, GH
+    /// #1099); the production supervisor uses `threshold = 5` (~0.5 s of
+    /// silence at the default 100 ms period).
     pub fn new(threshold: u32) -> Self {
         Self {
             threshold,

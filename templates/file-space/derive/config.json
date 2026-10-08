@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "code",
-    "message_timeout": 90000
+    "message_timeout": 40000
   },
   "params": {
     "runner": "python3",

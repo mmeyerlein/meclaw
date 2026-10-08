@@ -202,6 +202,16 @@
         },
         {
           "from": "./access",
+          "to": "./voice",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openai@template-freeswitch/duplex'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          }
+        },
+        {
+          "from": "./access",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {

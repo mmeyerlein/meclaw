@@ -733,7 +733,7 @@ grants and the edges in the same mutation (`seed_rows` writes through the mutati
     "add_nodes": [
       {
         "name": "access",
-        "template": "access@2.5.1"
+        "template": "access@2.5.2"
       },
       {
         "name": "voice",

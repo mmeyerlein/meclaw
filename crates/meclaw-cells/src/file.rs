@@ -625,6 +625,12 @@ use meclaw_colony::{CellFactory, RespawnFn, SpawnedCellKind, build_stateless_tas
 /// Unit-Struct factory for `FileCell`. Registered under cell type `"file"`.
 pub struct FileCellFactory;
 
+/// GH #1099: how many file operations run at once by default -- short local
+/// reads and writes, bounded for open file descriptors under a burst, as for
+/// `edit`.
+/// Over the ceiling a message waits for a free slot in the stateless
+/// dispatcher; since GH #1099 that wait is never silent -- the dispatcher logs
+/// it under `meclaw::concurrency` with the trace id and `waited_ms`.
 const DEFAULT_FILE_MAX_CONCURRENCY: usize = 8;
 
 struct ParsedFileParams {

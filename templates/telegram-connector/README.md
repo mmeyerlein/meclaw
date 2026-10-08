@@ -1,4 +1,4 @@
-# `telegram-connector@2.1.1`
+# `telegram-connector@2.2.0`
 
 A Telegram chat as one cell. One `proxy`, one credential, one wire in and one
 wire out. No persona, no llm cell, no answer of its own -- it carries turns
@@ -128,11 +128,11 @@ grant and the two edges in the same mutation (`seed_rows` writes through the mut
     "add_nodes": [
       {
         "name": "access",
-        "template": "access@2.5.1"
+        "template": "access@2.5.2"
       },
       {
         "name": "telegram-connector",
-        "template": "telegram-connector@2.1.1"
+        "template": "telegram-connector@2.2.0"
       }
     ],
     "seed_rows": [
@@ -218,7 +218,7 @@ cell, so `override_params` takes the flat form -- there is no path inside it to
 address:
 
 ```json
-{"name": "telegram-connector-2", "template": "telegram-connector@2.1.1",
+{"name": "telegram-connector-2", "template": "telegram-connector@2.2.0",
  "override_params": {"bot_token_grant_id": "grant:telegram-bot-2@template-telegram-connector/bot-2"}}
 ```
 
@@ -276,7 +276,7 @@ this node itself:
     "add_nodes": [
       {
         "name": "telegram",
-        "template": "telegram-connector@2.1.1",
+        "template": "telegram-connector@2.2.0",
         "birth": "inactive",
         "override_params": {
           "bot_token_grant_id": "",
@@ -330,7 +330,7 @@ credential -- the graph swap `swap_nodes` was re-dedicated for:
         "match": {"name": "telegram"},
         "with": {
           "name": "telegram-live",
-          "template": "telegram-connector@2.1.1",
+          "template": "telegram-connector@2.2.0",
           "params": {"bot_token_grant_id": "grant:telegram-bot@template-telegram-connector/bot"}
         }
       }
@@ -390,7 +390,14 @@ credential.
 
 The connector types. On every inbound message it calls Telegram's
 `sendChatAction` with `action=typing`, and it repeats that call every 4 seconds
-for at most 60 seconds, until the answer for that chat goes out. The chat shows
+for as long as the answer may still come, until the answer for that chat goes
+out. "As long as the answer may still come" is the turn's backstop: the
+`typing_max_ms` param, the `cell.message_timeout` of the cell that answers. It
+ships as the longest backstop of the brains that answer a member's chat turn
+(`cogny/brain`, 3 364 000 ms; a test holds the two together); a topology whose
+answer comes from elsewhere names its own. Without the param it is the backstop
+this colony gives a cell that declares none (`message_timeout_default_ms`,
+121 seconds by default) -- the connector itself has none. The chat shows
 "typing…" and **nothing is written into it** -- which is the whole reason this is
 `sendChatAction` and not a placeholder message: a connector that posts "still
 working" into the conversation has changed the transcript the agent behind it
@@ -400,10 +407,14 @@ Both numbers are forced. Telegram drops the status after roughly five seconds,
 so a single call covers only the first moment of a turn and the refresh needs a
 full second of margin under that decay. The ceiling exists because nothing tells
 a connector that a turn was abandoned somewhere in the topology -- without it, a
-turn that dies leaves the chat typing forever.
+turn that dies leaves the chat typing forever. It is the backstop because that is
+exactly how long the answer may still come: the fixed minute it used to be left a
+slow path (a 300-second reasoning backstop) silent in the chat after sixty
+seconds while it was still working (GH #1099).
 
-It is behaviour, not a setting: there is no params key for it, and there is
-nothing to wire. One repeater per chat at most -- a second message in the same
+The interval is behaviour, not a setting, and there is nothing to wire; the
+ceiling has the one key `typing_max_ms`, because only the topology knows which
+cell answers. One repeater per chat at most -- a second message in the same
 chat replaces the first one's repeater instead of stacking a second one on it --
 and the answer cancels it, so a chat that got its answer stops typing at once
 (GH #515).

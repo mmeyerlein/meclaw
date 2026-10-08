@@ -34,7 +34,21 @@ pub struct TraceQuery {
     pub since: Option<i64>,
     /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
+    /// GH #1099: the `log_seq` of the caller's previous reply. With
+    /// `wait_ms`, the read is held until the colony log commits past it.
+    pub after_seq: Option<u64>,
+    /// GH #1099: how long the read may be held for `after_seq`, in ms;
+    /// clamped to [`TRACE_WAIT_MAX_MS`]. Without `after_seq` the read is
+    /// answered at once.
+    pub wait_ms: Option<u64>,
 }
+
+/// GH #1099: the longest a waiting trace read is held, in ms. Half of the 60 s
+/// idle timeout common reverse proxies apply, so a held request is answered
+/// (with what the log holds, maybe unchanged) before a proxy in front of the
+/// API cuts it; a caller that needs longer simply asks again with the
+/// `log_seq` it got.
+pub const TRACE_WAIT_MAX_MS: u64 = 30_000;
 
 /// Handler for `GET /colony/trace`.
 pub async fn get_trace(
@@ -73,6 +87,14 @@ pub async fn get_trace(
         only_error: q.error.unwrap_or(false),
         since: q.since,
         limit: clamp_limit(q.limit),
+        wait: q
+            .after_seq
+            .map(|after_seq| meclaw_colony::api_dto::TraceWait {
+                after_seq,
+                max: std::time::Duration::from_millis(
+                    q.wait_ms.unwrap_or(0).min(TRACE_WAIT_MAX_MS),
+                ),
+            }),
         ack: ack_tx,
     };
     if colony.inbox.send(msg).await.is_err() {
@@ -90,5 +112,8 @@ pub async fn get_trace(
             );
         }
     };
-    (StatusCode::OK, Json(json!({ "trace": reply.entries })))
+    (
+        StatusCode::OK,
+        Json(json!({ "trace": reply.entries, "log_seq": reply.log_seq })),
+    )
 }

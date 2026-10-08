@@ -9,7 +9,8 @@
     "send_timeout_ms": 10000,
     "query_timeout_ms": 5000,
     "max_document_bytes": 20971520,
-    "base_url": "https://api.telegram.org"
+    "base_url": "https://api.telegram.org",
+    "typing_max_ms": 3364000
   },
   "contract": {
     "version": "1.0.0",

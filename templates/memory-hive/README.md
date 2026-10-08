@@ -1,4 +1,4 @@
-# `memory-hive@3.14.1`
+# `memory-hive@3.14.2`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Sixteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1180,8 +1180,11 @@ names: a walk whose anchors the question does not name ranks its nodes' facts wi
 `valid_from` counts as of unknown age, never as the oldest. A path's episode, too, needs a word of the question in
 its edge's relation, and it stands behind the facts. A full node page (`tier1_graph_node_page`, `40`) is reported as
 `capped_at`, and since 3.13.1 so is a walk that reached more nodes than get a page of their own (`tier1_graph_fact_pages`, `16`).
-The entity join looks up at most `tier1_graph_anchors` (`96`) name anchors and the walk starts at most at
-`tier1_graph_start` (`32`) entities, the ones the question names first; a cut there is said in the journal.
+The entity join looks up at most `tier1_graph_anchors` (`96` at factor 1) name anchors and the walk starts at most at
+`tier1_graph_start` (`32` at factor 1) entities, the ones the question names first. Since 3.13.4 (GH #1098) both grow with
+the asker's window like `tier1_leg_limit`, the starts never past `tier1_graph_nodes` // (`tier1_graph_depth` + 1) -- the
+starts one walk page can leave --, and a cut there is said in the journal and in the bundle's `complete_reason`
+(`the entity join looked up 96 of 120 name anchors`, `the graph walk started at 32 of 40 anchor entities`).
 
 New in the store: `entities.subject_key`, `entities.valid_until`, `entities.merged_into`, `entities.valid_from`
 (the instant the subject met the rule), `entity_edges.relation`, `entity_edges.relation_at`,
@@ -1213,7 +1216,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.14.1` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.14.2` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1620,7 +1623,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.25",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.26",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1688,9 +1691,9 @@ say "no legacy subject at all".
 
 | param | default | effect |
 |---|---|---|
-| `tier0_max_episodes` | `12` | Item cap of the bundle's episode leg |
-| `tier0_max_beliefs` | `20` | Item cap of the bundle's belief leg, and the `limit` of the belief select behind it |
-| `tier0_max_foresight` | `10` | Item cap of the bundle's foresight leg (facts that are about a future the memory has been told about) |
+| `tier0_max_episodes` | `null` | Item cap of the bundle's episode leg. Since 3.13.4 (GH #1098) it grows with the asker's window by the factor of the tier-0 budget (12 at factor 1); a number overrides the package |
+| `tier0_max_beliefs` | `null` | Item cap of the bundle's belief leg, and the `limit` of the belief select behind it; grows like `tier0_max_episodes` (20 at factor 1) |
+| `tier0_max_foresight` | `null` | Item cap of the bundle's foresight leg (facts that are about a future the memory has been told about); grows like `tier0_max_episodes` (10 at factor 1) |
 | `tier0_tokens` | `null` (window; `1200` at factor 1) | Token budget of the tier-0 bundle. Since 3.13.2 (GH #1085) it grows with the asker's window by the factor the tier-1 bundle grows by; a request that names no window sizes it by `input_soft_fallback`; a number overrides both |
 | `tier1_leg_limit` | `null` (package; `20` without) | Per-leg candidate cap of the tier-1 fan |
 | `tier1_axis_limit` | `200` | Page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without its predecessors** — `history: []` on the record in `recall_diagnostic`, no `previously` key in the payload — rather than with a guessed chain |
@@ -1700,8 +1703,8 @@ say "no legacy subject at all".
 | `tier1_graph_node_facts` | `3` | GH #1057: at most this many facts of one walked node enter the graph leg, ranked by source (first-hand before hearsay), then by the word stems they share with the question, then newest first; hearsay gets no seat where a first-hand fact answers, and for a question about now a replaced value of the same axis gets none -- a node with fifteen facts cannot take every seat of the leg |
 | `tier1_graph_fact_pages` | `16` | GH #1057: the walked nodes (in walk rank, at most `tier1_graph_fact_nodes`) that get a fact page of their own; a walk that reached more reports `capped_at` with this number |
 | `tier1_graph_node_page` | `40` | GH #1057: the size of one walked node's fact page, newest first (at most `tier1_graph_fact_limit`); `rank_node_facts` chooses from it, and a full page reports `capped_at` with this number |
-| `tier1_graph_anchors` | `96` | GH #1057: the name anchors (question names first, then the names of the best keyword rows) the entity join looks up; a cut is said in the journal |
-| `tier1_graph_start` | `32` | GH #1057: the anchor entities the graph walk starts at, the ones the question names first; a cut is said in the journal |
+| `tier1_graph_anchors` | `null` | GH #1057: the name anchors (question names first, then the names of the best keyword rows) the entity join looks up; since 3.13.4 (GH #1098) grown like `tier1_leg_limit` (96 at factor 1), a cut is said in the journal and the bundle |
+| `tier1_graph_start` | `null` | GH #1057: the anchor entities the graph walk starts at, the ones the question names first; since 3.13.4 (GH #1098) grown like `tier1_leg_limit` (32 at factor 1), never past `tier1_graph_nodes` // (`tier1_graph_depth` + 1), a cut is said in the journal and the bundle |
 | `tier1_graph_fact_limit` | `100` | Page bound of the join's `select facts` (GH #520). Generous on purpose: one popular subject carries a long version chain, and the leg's own `tier1_leg_limit` is the cut that decides what votes. A full page marks the leg **capped**, exactly as a full traverse page does |
 | `tier1_self_limit` | `null` (package; `20` without) | Page bound of the **self** leg (GH #536): how many of the asker's own facts it NOMINATES, newest first. Generous, because a member's dossier is a small bounded set (21 live rows on the hive this was measured on) and the leg has no query signal to rank by: what it cannot rank it must not cut early. Since GH #1040 it grows with the package like every other leg: the question now ranks the page, but only the rows the page holds |
 | `tier1_self_budget` | `0` | Since GH #1040 `0`: no seat is reserved — the self leg ranks its rows by the question, a matching row competes in the fused order and one that matches nothing fills only places no ranked element wanted; a number above 0 is the old reserved floor. With a number above 0 (the pre-#1040 floor): how many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut. Since 3.4.1 the budget counts **axes**, not rows ([#691](https://github.com/mmeyerlein/meclaw/issues/691)): the rows of one `(subject, predicate)` take one seat before any axis takes a second, and a multi axis (`has_child`) enumerates and is never folded |
@@ -1910,12 +1913,15 @@ nothing. Retune one per instance by editing the instantiated `config.json`.
 | `query_retries` | `1` | **read lane.** Extra attempts after the first before the lane answers degraded. `0` switches the retry off; the fail-open contract is unaffected either way — a retry never replaces it |
 | `query_retry_backoff_ms` | `250` | **read lane.** Pause between two attempts. Short by design: the measured failure was CPU contention on the box, not a rate limit |
 
-The read lane bounds itself against the cell's own `external_timeout_ms` (`65000`) and keeps a
+The read lane bounds itself against the cell's own `external_timeout_ms` (`63000`) and keeps a
 2 s reserve for spawn plus the final write, because a process killed mid-flight is **silence**,
 and silence hangs recall's fan-in forever — strictly worse than the degraded answer the retry
 exists to avoid. So the worst case has to fit: `(query_retries + 1) × query_timeout_ms +
 query_retries × query_retry_backoff_ms + 2000 ≤ external_timeout_ms`, and
-`cell.message_timeout` (`90000`) stays above that. Raise one of the four and raise the operation
+`cell.message_timeout` (`208000`) stays above that. Since GH #1097 both are that worst case and nothing
+more: 62 250 ms rounded up to the second, and the worst ticket wait plus one run -- ceil((4 + 1) / 4) = 2
+runs ahead, each holding its ticket for a whole operation timeout, plus its own, 3 × 63 s -- plus the
+backstop margin of the timeout chain (10 s, at least 10 %). Raise one of the four and raise the operation
 timeout with it — a test pins the arithmetic, so getting it wrong is a red test rather than a
 production hang.
 

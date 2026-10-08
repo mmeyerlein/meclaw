@@ -1,4 +1,4 @@
-# `llm-registry@2.8.3`
+# `llm-registry@2.8.4`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -336,8 +336,8 @@ model like this:
    after the other, so of two ops asking the same pair only the first one asks; the second one
    finds the question open and asks nothing (its `translations_asked` still counts the claim).
    The answer settles every subscriber of the requirement, whoever asked. An open question
-   closes with its answer, its refusal or its failure, and expires after 120 s -- past the
-   translator's 90 s backstop, so a question alone in the translator's mailbox is answered or
+   closes with its answer, its refusal or its failure, and expires 30 s past the
+   translator's backstop (`message_timeout`, derived by the timeout chain of `docs/cell-types.md`), so a question alone in the translator's mailbox is answered or
    failed by then, and past that the question may be asked again. The backstop bounds one call,
    not the wait in the mailbox: of several questions queued behind each other a late one can
    outlive its claim, and a trigger in that window asks it twice -- one more call, the same
@@ -552,12 +552,12 @@ pins this: an incident row changes no other table and emits nothing.
 
 | table | what it is | who writes it |
 |---|---|---|
-| `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s` | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
+| `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s`, with GH #1097 `output_tps` (the measured slow floor of the output rate in tokens a second, 0 = not measured; never pushed -- the timeout chain of `docs/cell-types.md` derives a born cell's `external_timeout_ms` from it and `max_output`) | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
 | `tiers` | the index: `tier -> model_id`, with `since`, `decided_by`, `active` | `seed/tiers.jsonl` at instantiation, then `hand` (`remap`) |
 | `overrides` | the replacements: `id`, `scope` (`global` \| `target`), `match`, `model_id`, `since`, `decided_by`, `active`. Since 2.2.0 | `hand` (`override_set`, `override_clear`, `reset`) |
 | `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push; `protocol` (`""` = chat, `decisions`, GH #957) | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
 | `translations` | since 2.3.0: one row per answered `(requirement_hash, catalogue_hash)` -- `model_id`, `reason`, `at` | `hand`, after checking the translator's answer |
-| `open_questions` | since 2.3.0: the questions asked and not yet answered -- `requirement_hash`, `catalogue_hash`, `claim`, `at`; a row counts as open until its answer, refusal or failure, 120 s at most; an expired row stays until the next claim of its pair removes it | `hand` |
+| `open_questions` | since 2.3.0: the questions asked and not yet answered -- `requirement_hash`, `catalogue_hash`, `claim`, `at`; a row counts as open until its answer, refusal or failure, at most 30 s past the translator's backstop; an expired row stays until the next claim of its pair removes it | `hand` |
 | `resolutions` | the journal: every lookup and every push, granted, refused or skipped -- with `rank` and `source_id` (the override id, `tier:<name>` or `translation:<requirement_hash>`) since 2.2.0; since 2.3.0 also every translation stored, refused or failed; since 2.3.1 every refusal a cell sent back (`hand_refused_by_cell`, `hand_refusal_stale`, `hand_refusal_unknown`, `hand_refusal_unaddressed`) | `select`, `hand` |
 | `incidents` | the field log: `model_id`, `kind` (`rate_limit`, `outage`, `slow`), `at`, `detail` | **boot-graph edge only** |
 

@@ -1,0 +1,72 @@
+{
+  "model_id": "openai/gpt-4o",
+  "endpoint_class": "openrouter",
+  "measured_at": "2026-10-08T01:54:08Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "taken",
+    "top_p": "taken",
+    "reasoning": "refused",
+    "reasoning_effort": "refused",
+    "thinking_token_budget": "accepted_unverified"
+  },
+  "listing": [
+    "frequency_penalty",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "prediction",
+    "presence_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p",
+    "web_search_options"
+  ],
+  "reasoning_field": null,
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=taken, top_p=taken, reasoning=refused, reasoning_effort=refused, thinking_token_budget=accepted_unverified; reasoning: refused (No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection); reasoning_effort: refused (No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection); thinking_token_budget: accepted_unverified (200 strict, not in the listing)"
+    },
+    "K4": {
+      "status": "green",
+      "note": "listing == measurement: temperature,top_p; 200 but not listed (accepted_unverified): ['thinking_token_budget']"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form thinking_token_budget, trace in no field"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "n/a",
+      "note": "no --requests-dir"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.000614
+}

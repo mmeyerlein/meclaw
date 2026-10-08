@@ -956,6 +956,27 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
     false
 }
 
+/// GH #1099: take one dispatch slot. `Some(wait)` iff no slot was free at
+/// arrival and the message had to wait for one -- the one case the dispatcher
+/// reports; a free slot costs no clock read.
+async fn acquire_dispatch_slot(
+    sem: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> (
+    tokio::sync::OwnedSemaphorePermit,
+    Option<std::time::Duration>,
+) {
+    if let Ok(permit) = sem.clone().try_acquire_owned() {
+        return (permit, None);
+    }
+    let started = std::time::Instant::now();
+    let permit = sem
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("dispatcher semaphore closed");
+    (permit, Some(started.elapsed()))
+}
+
 /// Phase-7: stateless cell dispatcher.
 ///
 /// Long-lived task that pulls messages from the cell's mailbox and spawns a
@@ -1061,11 +1082,21 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
                 None => return,
             },
         };
-        let permit = sem
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("dispatcher semaphore closed");
+        let (permit, waited) = acquire_dispatch_slot(&sem).await;
+        if let Some(waited) = waited {
+            // GH #1099: the wait over `max_concurrency` is visible, never
+            // silent -- keyed by trace id, so a slow turn can be read back to
+            // the slot it queued for.
+            tracing::info!(
+                target: "meclaw::concurrency",
+                path = %own_path.as_str(),
+                trace_id = %msg.trace_id,
+                message_id = %msg.id,
+                max_concurrency,
+                waited_ms = waited.as_millis() as u64,
+                "message waited for a free max_concurrency slot"
+            );
+        }
         // GH #47: built here, in the dispatcher, and moved into the worker.
         // Building it inside the spawned task would leave a window between the
         // `recv()` above and the worker's first line in which the message is
@@ -1132,6 +1163,24 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
 
 #[cfg(test)]
 mod tests {
+
+    /// GH #1099: a message that finds every slot taken reports its wait; one
+    /// that finds a free slot reports nothing.
+    #[tokio::test]
+    async fn a_wait_for_a_dispatch_slot_is_measured() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let (held, free_wait) = super::acquire_dispatch_slot(&sem).await;
+        assert!(free_wait.is_none(), "a free slot is no wait");
+        let sem2 = sem.clone();
+        let waiter = tokio::spawn(async move { super::acquire_dispatch_slot(&sem2).await.1 });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        drop(held);
+        let waited = waiter.await.unwrap().expect("a taken slot is a wait");
+        assert!(
+            waited >= std::time::Duration::from_millis(25),
+            "waited {waited:?}"
+        );
+    }
     use super::*;
     use meclaw_core::{MessageBuilder, Path};
     use meclaw_testing::mocks::EchoMockCell;

@@ -15,10 +15,10 @@
 //! 4. it ends on its own when no answer ever comes (the bounded timeout), so a
 //!    dead turn cannot leave a repeater running forever.
 //!
-//! The cadence is production-fixed (4 s / 60 s, `TypingCadence::default`); the
-//! test drives a scaled-down one through `ProxyCell::set_typing_cadence` so the
-//! same mechanism is measured in under two seconds. That seam is a test/ops
-//! seam, deliberately NOT a params surface — see its doc comment.
+//! The cadence is production-derived (4 s, ceiling = the turn's backstop,
+//! `TypingCadence::for_backstop`, GH #1099); the test drives a scaled-down one
+//! through `ProxyCell::set_typing_cadence` so the same mechanism is measured in
+//! under two seconds.
 
 use meclaw_cells::proxy::cell::ProxyCell;
 use meclaw_cells::proxy::db::setup_proxy_schema;
@@ -276,6 +276,11 @@ fn the_readme_names_the_cadence_the_code_actually_keeps() {
 
     let cadence = TypingCadence::default();
     let interval_s = cadence.interval.as_secs();
+    // GH #1099: the default ceiling is the colony's default backstop.
+    assert_eq!(
+        cadence.max_total,
+        Duration::from_millis(meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS)
+    );
     let max_total_s = cadence.max_total.as_secs();
 
     // The sentence, and the mechanism behind each half of it.
@@ -289,8 +294,12 @@ fn the_readme_names_the_cadence_the_code_actually_keeps() {
         "README does not name the interval the code keeps ({interval_s}s)"
     );
     assert!(
-        readme.contains(&format!("at most {max_total_s} seconds")),
+        readme.contains(&format!("{max_total_s} seconds by default")),
         "README does not name the ceiling the code keeps ({max_total_s}s)"
+    );
+    assert!(
+        readme.contains("`typing_max_ms`"),
+        "README does not name the key that sets the ceiling"
     );
     // The margin the prose claims under Telegram's ~5s decay.
     assert!(
@@ -301,15 +310,19 @@ fn the_readme_names_the_cadence_the_code_actually_keeps() {
         cadence.max_total > cadence.interval,
         "the ceiling must allow at least one refresh"
     );
-    // "there is no params key for it" - the shipped config declares none.
+    // GH #1099 (review fix1): the shipped connector names the ceiling of the
+    // turn that answers it -- `typing_max_ms`, the only typing key it has; the
+    // number itself is held to the answering brain's backstop in
+    // `proxy::typing::tests::the_ceiling_is_the_backstop_of_the_answering_turn`.
     let config = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../templates/telegram-connector/config.json"),
     )
     .expect("telegram-connector config.json");
-    assert!(
-        !config.contains("typing"),
-        "the README says the cadence is behaviour and not a setting - \
-         a params key for it would make that sentence false"
+    assert_eq!(
+        config.matches("typing").count(),
+        1,
+        "the shipped connector carries exactly one typing key, `typing_max_ms`"
     );
+    assert!(config.contains("\"typing_max_ms\""));
 }

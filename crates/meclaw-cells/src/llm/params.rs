@@ -22,8 +22,19 @@ pub const DEFAULT_MAX_TOKENS: u32 = 32_768;
 /// finish. A bound, so a model that never stops cannot loop a cell forever.
 pub const LENGTH_CONTINUATIONS_MAX: u32 = 8;
 
+/// GH #1099: the default operation timeout (A) of one provider call, in ms.
+///
+/// The phase-8 figure (`cell-types.md`, llm A-default), kept and now named:
+/// a non-streaming completion of a large window with reasoning on runs tens
+/// of seconds, and the measured cogny turns that need more declare it
+/// (`templates/cogny/brain` 300 000). It is the longest A a cell makes without
+/// declaring one, so it is what the colony-wide default backstop is derived
+/// from: `meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS` = this +
+/// [`backstop_margin_ms`] (pinned by a test, so neither moves alone).
+pub const DEFAULT_EXTERNAL_TIMEOUT_MS: u64 = 110_000;
+
 fn default_external_timeout_ms() -> u64 {
-    110_000
+    DEFAULT_EXTERNAL_TIMEOUT_MS
 }
 
 /// GH #118: default cap on the number of distinct slots in the persistent
@@ -264,8 +275,7 @@ pub struct LlmParams {
     #[serde(default)]
     pub provider_extra: serde_json::Map<String, serde_json::Value>,
     /// Operation-timeout (A) for the HTTP call to the provider, in
-    /// milliseconds; default 110_000 (= 110 s, llm A-default per
-    /// cell-types.md Z.1542).
+    /// milliseconds; default [`DEFAULT_EXTERNAL_TIMEOUT_MS`] (110 s).
     #[serde(default = "default_external_timeout_ms")]
     pub external_timeout_ms: u64,
     /// GH #87: operation-timeout (A) for reading ONE `attachments[]` blob from
@@ -580,9 +590,58 @@ pub const BACKSTOP_MARGIN_DIVISOR: u64 = 10;
 /// of an answer, CHANGELOG § 0.27.0).
 pub fn backstop_shortfall(external_ms: u64, backstop_ms: Option<u64>) -> Option<u64> {
     let backstop = backstop_ms?;
-    let required =
-        external_ms + BACKSTOP_MARGIN_FLOOR_MS.max(external_ms / BACKSTOP_MARGIN_DIVISOR);
+    let required = external_ms + backstop_margin_ms(external_ms);
     (backstop < required).then_some(required)
+}
+
+/// GH #1099: the margin the backstop rule reserves above a call of
+/// `external_ms`: `max(10 s, 10 %)` -- the "msg = ext + margin" of the time
+/// chain, stated once.
+pub const fn backstop_margin_ms(external_ms: u64) -> u64 {
+    let relative = external_ms / BACKSTOP_MARGIN_DIVISOR;
+    if relative > BACKSTOP_MARGIN_FLOOR_MS {
+        relative
+    } else {
+        BACKSTOP_MARGIN_FLOOR_MS
+    }
+}
+
+/// GH #1099: the backstop an `llm` cell really runs under -- the resolved
+/// `message_timeout`, raised to `external_ms` x (1 + `length_continuations`)
+/// plus [`backstop_margin_ms`]`(external_ms)` when it does not clear that: every
+/// continuation runs inside the same message as the first call
+/// (`continuation_timeout`), so the backstop has to outlast all of them in
+/// full -- the rule `docs/cell-types.en.md` § timeout chain states and
+/// `gh1097_time_ceilings_follow_one_chain` holds the templates to. With `0`
+/// continuations this is [`backstop_shortfall`]. `None` (no backstop) stays
+/// `None`. The second value is `Some(declared_ms)` iff it raised.
+///
+/// Raised at spawn rather than refused: the inversion is mechanically
+/// fixable, and the one value that satisfies the rule is known; a refusal
+/// would take the cell (at boot: the colony) down over a number the operator
+/// mostly never wrote -- the old 60 s colony default fell under every
+/// undeclared call. The raise is a WARN with both numbers, never silent. A
+/// run-time update of `external_timeout_ms` or `length_continuations` that
+/// the backstop does not clear by this rule is still refused
+/// (`check_run_time_update`): there a caller is waiting for the answer and
+/// can act on it.
+pub fn effective_backstop_ms(
+    external_ms: u64,
+    length_continuations: u32,
+    backstop_ms: Option<u64>,
+) -> (Option<u64>, Option<u64>) {
+    let Some(declared) = backstop_ms else {
+        return (None, None);
+    };
+    let calls = 1 + u64::from(length_continuations);
+    let required = external_ms
+        .saturating_mul(calls)
+        .saturating_add(backstop_margin_ms(external_ms));
+    if declared < required {
+        (Some(required), Some(declared))
+    } else {
+        (Some(declared), None)
+    }
 }
 
 /// GH #853: the origin of a URL (`scheme://host[:port]`) if it is one a list
@@ -962,8 +1021,9 @@ impl LlmParams {
     ///   with it (`cell.rs`, `wire::OPENAI_DEFAULT_BASE_URL`). Before the list
     ///   a message could send the bearer to any host while `api_key` itself
     ///   was immutable.
-    /// - `external_timeout_ms` must stay cleared by the backstop
-    ///   ([`backstop_shortfall`], the rule the shipped-template gate uses).
+    /// - `external_timeout_ms` x (1 + `length_continuations`) must stay
+    ///   cleared by the backstop ([`effective_backstop_ms`], the rule of the
+    ///   spawn raise and the shipped-template gate).
     pub(crate) fn check_run_time_update(
         &self,
         start_base_url: Option<&str>,
@@ -1005,14 +1065,24 @@ impl LlmParams {
             // Any other type has already failed `parse`.
             Some(_) => {}
         }
-        if update.contains_key("external_timeout_ms")
-            && let Some(required) = backstop_shortfall(merged.external_timeout_ms, backstop_ms)
+        // GH #1099 (delta review): the same chain as the spawn raise
+        // (`effective_backstop_ms`) -- every continuation is a full call
+        // inside the same message, so more continuations need as much backstop
+        // as a longer call.
+        if (update.contains_key("external_timeout_ms")
+            || update.contains_key("length_continuations"))
+            && let (Some(required), Some(_)) = effective_backstop_ms(
+                merged.external_timeout_ms,
+                merged.length_continuations,
+                backstop_ms,
+            )
         {
             return Err(format!(
-                "params update rejected: 'external_timeout_ms' {} ms is not cleared by this \
-                 cell's backstop (needs a message_timeout of at least {required} ms: +10 s and \
-                 +10 %)",
-                merged.external_timeout_ms
+                "params update rejected: 'external_timeout_ms' {} ms with \
+                 'length_continuations' {} is not cleared by this cell's backstop (needs a \
+                 message_timeout of at least {required} ms: the call x (1 + continuations), \
+                 +10 s and +10 %)",
+                merged.external_timeout_ms, merged.length_continuations
             ));
         }
         Ok(())
@@ -1780,11 +1850,74 @@ mod tests {
         assert!(err.contains("fixed at run time"), "{err}");
     }
 
+    /// GH #1099 (delta review): a run-time update is held to the same chain as
+    /// the spawn raise -- `ext x (1 + length_continuations) + margin(ext)` --
+    /// so neither a longer call nor more continuations can outrun the
+    /// backstop the cell already runs under.
+    #[test]
+    fn a_run_time_update_counts_the_continuations() {
+        let mut raw = api_key_raw();
+        raw["external_timeout_ms"] = json!(100_000);
+        let p = LlmParams::parse(&raw).unwrap();
+        let check = |upd: Value, backstop: u64| {
+            let upd = upd.as_object().unwrap().clone();
+            let (merged, _) = p.apply_update(&upd).map_err(|e| e.detail())?;
+            p.check_run_time_update(None, &upd, &merged, Some(backstop))
+        };
+        // 100 s x (1 + 2) + 10 s = 310 s.
+        let err = check(json!({"length_continuations": 2}), 110_000).unwrap_err();
+        assert!(
+            err.contains("310000") && err.contains("length_continuations"),
+            "{err}"
+        );
+        assert!(check(json!({"length_continuations": 2}), 310_000).is_ok());
+        let err = check(
+            json!({"external_timeout_ms": 100_000, "length_continuations": 2}),
+            300_000,
+        )
+        .unwrap_err();
+        assert!(err.contains("310000"), "{err}");
+        assert!(check(json!({"external_timeout_ms": 100_000}), 110_000).is_ok());
+        assert!(
+            check(json!({"temperature": 0.5}), 1).is_ok(),
+            "no timing key, no check"
+        );
+    }
+
     #[test]
     fn the_backstop_rule_is_ten_seconds_and_ten_percent() {
         assert_eq!(backstop_shortfall(120_000, Some(180_000)), None);
+        // GH #1099: the colony-wide default backstop is derived from the
+        // default call by this very rule -- exactly, so neither moves alone.
+        assert_eq!(
+            meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS,
+            DEFAULT_EXTERNAL_TIMEOUT_MS + backstop_margin_ms(DEFAULT_EXTERNAL_TIMEOUT_MS)
+        );
+        assert_eq!(
+            backstop_shortfall(
+                DEFAULT_EXTERNAL_TIMEOUT_MS,
+                Some(meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS)
+            ),
+            None
+        );
         assert_eq!(backstop_shortfall(170_000, Some(180_000)), Some(187_000));
         assert_eq!(backstop_shortfall(50_000, Some(59_999)), Some(60_000));
+        // GH #1099 fix1: the spawn raise counts every continuation call in
+        // full -- `ext x (1 + c) + margin(ext)`, not `ext + margin`.
+        assert_eq!(
+            effective_backstop_ms(100_000, 2, Some(110_000)),
+            (Some(310_000), Some(110_000)),
+            "c = 2 and msg = ext + margin is raised"
+        );
+        assert_eq!(
+            effective_backstop_ms(100_000, 2, Some(310_000)),
+            (Some(310_000), None)
+        );
+        assert_eq!(
+            effective_backstop_ms(100_000, 0, Some(110_000)),
+            (Some(110_000), None)
+        );
+        assert_eq!(effective_backstop_ms(100_000, 2, None), (None, None));
         assert_eq!(
             backstop_shortfall(999_999, None),
             None,

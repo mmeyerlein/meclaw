@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 180000
+    "message_timeout": 9480000
   },
   "params": {
     "provider": "openai",
@@ -11,7 +11,7 @@
     "credential_grant_id": "",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
-    "external_timeout_ms": 110000,
+    "external_timeout_ms": 3058000,
     "length_continuations": 2,
     "system_order": [
       "instructions"
@@ -54,6 +54,12 @@
           }
         },
         "description": "The provider overlay of this cell. Its one knob is the deliberation budget at provider_extra.reasoning.effort, a LITERAL of this cell's own `params` since GH #138 and no longer the colony-wide `MEMORY_REASONING_JUDGE` - set explicitly, never inherited from the provider default. Declared as the overlay rather than as the flat `reasoning_effort` param because the overlay is applied last and wins over that param anyway; a setting named after the flat param would name a field this cell does not set."
+      },
+      "external_timeout_ms_row": {
+        "type": "string",
+        "secret": false,
+        "default": "anthropic/claude-opus-5.5",
+        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
       }
     },
     "emits": {

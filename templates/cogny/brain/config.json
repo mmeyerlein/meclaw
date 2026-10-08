@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 400000
+    "message_timeout": 3364000
   },
   "params": {
     "provider": "openai",
@@ -12,7 +12,7 @@
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.3,
-    "external_timeout_ms": 300000,
+    "external_timeout_ms": 3058000,
     "system_order": [
       "identity",
       "memory",
@@ -49,6 +49,12 @@
         "secret": false,
         "default": 30000,
         "description": "GH #457: how long one sealed credential round may take before every parked turn gets its `credential_pending` receipt. The substrate default is 10 s, which was measured against a broker standing beside the consumer; a member's broker is three python cells and two store round trips away from a brain four levels down, so this template ships the longer one. It bounds nothing but the WAIT -- no provider is called and nothing is billed while it runs."
+      },
+      "external_timeout_ms_row": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-6-sol",
+        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
       }
     },
     "emits": {

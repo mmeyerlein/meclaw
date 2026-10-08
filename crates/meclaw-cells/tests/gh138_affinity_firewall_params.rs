@@ -43,7 +43,6 @@
 //! all three hand the knob down as `params` since this migration.
 
 use meclaw_cells::timer::params::TimerParams;
-use meclaw_cells::timer::schedule::ScheduleKind;
 use meclaw_core::serde_json::{Map, Value};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -91,7 +90,11 @@ const SCRIPTED: &[Scripted] = &[
     Scripted {
         template: "affinity",
         cell: "push",
-        knobs: &[("subscriber_rows", "_int", "SUBSCRIBER_ROWS")],
+        knobs: &[
+            ("subscriber_rows", "_int", "SUBSCRIBER_ROWS"),
+            // GH #1096: the first resend wait, the tick's old distance.
+            ("retry_first_s", "_int", "RETRY_FIRST_S"),
+        ],
     },
     Scripted {
         template: "firewall",
@@ -390,12 +393,12 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 12,
+        total, 13,
         "the scripted half of this migration is nine knobs plus the cap of the \
          `identity_short` slot (GH #935) and the two bounds of the `list` op \
          (GH #965), less the screen's size cap, which ships unset since GH #1085, \
-         plus the screen's fallback window (GH #1085, OR-IG-8); \
-         the push tick has no script"
+         plus the screen's fallback window (GH #1085, OR-IG-8), plus the first \
+         resend wait of `push` (GH #1096); the clock has no script"
     );
 }
 
@@ -546,60 +549,22 @@ fn an_instance_may_lower_the_hold_pile_and_never_raise_it() {
     );
 }
 
-/// The tenth knob. `affinity/clock` is a `timer`, so there is no script to read
-/// a literal out of: its schedule is a value of `params.schedules`, a key the
-/// cell already carried, and the migration there is the TOKEN leaving rather
-/// than a key arriving. Pinned through the REAL parser, both ways round.
-///
-/// The positive half is the one that matters: fifteen test files used to push
-/// this tick out of their way with an `AFFINITY_PUSH_CRON` line in a `.env`, and
-/// they say it with `override_params` now. A `.env` line that stopped meaning
-/// anything would have been silent -- green tests with a push lane firing into
-/// them every five minutes.
+/// The tenth knob is gone (GH #1096, R-AG-1). `affinity/clock` used to tick
+/// `./push` every five minutes over data that had not changed; now `./gate`
+/// nudges the push after every accepted write and the clock only holds the
+/// one resend watchdog `./push` arms. So the clock ships NO schedule and no
+/// `cron` setting, and a test that wants a push run sends the write -- or an
+/// `affinity-push` order of its own, which the hive's edge still recognises.
 #[test]
-fn the_push_clock_ticks_on_the_schedule_its_params_carry() {
-    let mut cfg = config("affinity", "clock");
-    // Read before the mutable borrow below: this is the declared half of the
-    // tenth knob's triple.
-    let declared = cfg["contract"]["settings"]["cron"]["default"]
-        .as_str()
-        .expect("contract.settings.cron.default")
-        .to_string();
-    let params = cfg["params"].as_object_mut().expect("params");
-    // The one substitution staging performs on this file: `${uuid7:...}` is not
-    // a UUID until the colony mints one.
-    params["schedules"][0]["schedule_id"] =
-        Value::String("0190a3f2-0000-7000-8000-000000000001".into());
-
-    let shipped = TimerParams::parse(&Value::Object(params.clone())).expect("shipped params");
-    assert_eq!(shipped.schedules.len(), 1, "the push lane ticks once");
-    let ScheduleKind::Cron(shipped_cron) = &shipped.schedules[0].kind else {
-        panic!("the push schedule is a repeating cron, not a one-shot `at`")
-    };
-    assert_eq!(
-        shipped_cron, "0 */5 * * * *",
-        "the shipped push cadence is a literal, not a token"
+fn the_push_clock_ships_no_schedule() {
+    let cfg = config("affinity", "clock");
+    let shipped = TimerParams::parse(&cfg["params"]).expect("shipped params");
+    assert!(
+        shipped.schedules.is_empty(),
+        "affinity/clock ships a schedule again -- a tick over unchanged data"
     );
-    // The tenth knob gets the same three-copies check as the nine scripted ones,
-    // minus the copy it cannot have: there is no script, so the triple is the
-    // parsed schedule, the raw param and the declaration beside it.
-    assert_eq!(
-        &declared, shipped_cron,
-        "contract.settings.cron.default and params.schedules[0].cron disagree -- a \
-         reader of the contract and the timer would be told different cadences"
-    );
-
-    // What a mutation writes: `override_params` replaces the whole `schedules`
-    // key (last-write-wins, `mutation::stage::patch_and_substitute_config`), and
-    // GH #294 lets it name that key precisely because it EXISTS under `params`.
-    let mut overridden = params.clone();
-    overridden["schedules"][0]["cron"] = Value::String("0 0 4 1 1 *".into());
-    let tuned = TimerParams::parse(&Value::Object(overridden)).expect("overridden params");
-    let ScheduleKind::Cron(tuned_cron) = &tuned.schedules[0].kind else {
-        panic!("the overridden schedule stopped being a cron")
-    };
-    assert_eq!(
-        tuned_cron, "0 0 4 1 1 *",
-        "the schedule an override names is not the one the timer plans on"
+    assert!(
+        cfg["contract"]["settings"].get("cron").is_none(),
+        "affinity/clock declares a cron it no longer carries"
     );
 }

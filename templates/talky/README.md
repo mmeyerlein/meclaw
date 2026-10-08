@@ -1,4 +1,4 @@
-# `talky@6.7.5`
+# `talky@6.7.6`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.7.5` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.7.6` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -692,7 +692,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.7.5",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.7.6",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1341,6 +1341,8 @@ verbatim so the cell re-resolves it from `.env` at spawn — the examples use th
 form to stay vendor-neutral. Since `4.3.0` the composite carries exactly ONE `llm` cell,
 the brain, so the key has one reader; a subscription or another provider for it is
 `override_params` on `brain.params` (`provider`, `auth`, `auth_ref`, `base_url`).
+
+**Since GH #1097 both numbers come from the timeout chain** (`docs/cell-types.md` § llm): `brain` is born on `openai/gpt-6-luna` (`contract.settings.external_timeout_ms_row`), so `external_timeout_ms` is 1 241 000 (the row's `max_output` 128 000 at its measured `output_tps` 104, plus 10 s for the first token) and `cell.message_timeout` 1 366 000 (that plus the backstop margin of 10 %). The paragraph below is the state before.
 
 **The brain's backstop is 240 000 ms since 5.4.0.** `brain` carries `cell.message_timeout` 240 000 over its `external_timeout_ms` 120 000. It was 180 000; the wider margin lets an instance whose provider needs a longer call -- a local model with `external_timeout_ms` 180 000 -- keep the rule that the backstop outlasts the call it guards (`crates/meclaw-cells/tests/a_shipped_llm_backstop_outlasts_its_own_call.rs`: at least 10 s and 10 % above) without a template of its own.
 

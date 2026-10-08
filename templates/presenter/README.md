@@ -1,4 +1,4 @@
-# `presenter@1.2.8`
+# `presenter@1.2.9`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -91,7 +91,7 @@ after `data_wait_ms` the view is withdrawn.
 
 | Param | Default | Meaning |
 |---|---|---|
-| `budget_ms` | 1000 | the verdict's deadline from the turn's arrival; later verdicts change nothing (`late`) |
+| `budget_ms` | 4000 | the verdict's deadline from the turn's arrival; later verdicts change nothing (`late`). Derived (GH #1097): `decide`'s `external_timeout_ms` 3000 (twice the slowest measured decision, 1007 ms, rounded up to the second) plus 1000 ms for the way back, so no verdict the decider may still deliver is `late`; `decide`'s backstop is 13000 (the chain's margin of 10 s) |
 | `threshold` | 0.7 | confidence a topic needs; a manifest `threshold` wins |
 | `data_wait_ms` | 4000 | how long an open window waits for a placeable block; a manifest value wins |
 | `also_threshold` | 0.5 | confidence the second block needs |

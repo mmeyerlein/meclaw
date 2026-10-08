@@ -1,4 +1,4 @@
-# `access@2.5.1`
+# `access@2.5.2`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -13,7 +13,7 @@ Six cells:
 | `policy` | `code` | the ONLY place a verdict is made -- deterministic, never a model |
 | `invoke` | `code` | grant check, address resolution, and the one edge into the connector |
 | `sweep` | `code` | TTL bookkeeping: writes the `expired` events |
-| `clock` | `timer` | the sweep tick (6-field Quartz cron, **UTC**) |
+| `clock` | `timer` | the TTL watchdog: one one-shot at the next `expires_at`, re-armed by `sweep` (R-AG-1, no tick) |
 | `vault` | `vault` | the credential VALUES, sealed at rest. Interior and unaddressable from outside; `params.broker` names `./invoke` as the only cell it answers, and two edges reach it (GH #421) -- what comes back is a sealed box, never a plaintext |
 
 ## The four messages
@@ -149,22 +149,24 @@ rule never mentioned is not part of the grant, and therefore not part of any add
 ## Cells and lanes
 
 ```
-access/                       hive  -- scope marker, sealed; fourteen edges in params.graph
+access/                       hive  -- scope marker, sealed; seventeen edges in params.graph
   store/                      store -- six tables
     seed/{policy,cred_refs}.jsonl
   policy/                     code  -- request -> allow | deny | require_approval
   invoke/                     code  -- grant check -> address from grant -> connector
   sweep/                      code  -- TTL: writes expired events
-  clock/                      timer -- the tick
+  clock/                      timer -- the watchdog on the next expiry
   vault/                      vault -- the credential values; sealed delivery to ./invoke
 ```
 
 A `code` cell has no `cell.db`, so a lane that needs several reads keeps its state on the
 wire: each cell emits its phase and its carry on the **hop**, the internal edge promotes
 both to **context** (`ac_phase` / `ac_carry`), and the store's answer brings them back. The
-store round trip *is* the cell's memory. Of the fourteen edges in `params.graph`, nine are
-interior: six store round trips (three cells, each with a leg out and a leg back), the clock
-tick into `sweep`, and the vault round trip (GH #421) -- `./invoke -> ./vault` on the `avault`
+store round trip *is* the cell's memory. Of the seventeen edges in `params.graph`, twelve are
+interior: six store round trips (three cells, each with a leg out and a leg back), the
+watchdog round trip (`sweep -> clock` arms it, `clock -> sweep` strikes, and a refused order
+comes back on a third edge), the nudge `policy -> sweep` after a grant is minted, and the vault
+round trip (GH #421) -- `./invoke -> ./vault` on the `avault`
 lane and `./vault -> ./invoke` back. The other five are the hive's own door -- two in, three
 out.
 
@@ -569,6 +571,14 @@ time. `sweep` only writes the `expired` row afterwards, and it is idempotent (a 
 newest event is already `expired` is skipped). A colony whose timer never fires is behind on
 its bookkeeping -- it is not open on its door.
 
+**No tick (R-AG-1, [#1096](https://github.com/mmeyerlein/meclaw/issues/1096), since 2.5.2).**
+The sweep runs when something can have expired: `policy` nudges it after every minted grant,
+and every run arms the clock's one watchdog (`access-sweep`, a one-shot with `rearm`) for the
+next `expires_at`, one millisecond past it. So the `expired` row is written the moment a grant
+runs out, not up to five minutes later, and a broker with no grant ahead orders nothing at all.
+An order whose moment passed in flight is refused with `at_in_past`; that refusal comes back to
+`sweep`, which runs again and books the grant.
+
 ## Secrets: `./vault` holds the values, `./store` holds the catalogue
 
 The hive ships a `vault` cell, and it is where a credential VALUE rests: XChaCha20-Poly1305
@@ -788,7 +798,7 @@ path:
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "access", "template": "access@2.5.1",
+ "nodes": [{"name": "access", "template": "access@2.5.2",
             "override_params": {
               "policy": {"max_ttl_ms": 3600000, "policy_rows": 1000},
               "sweep":  {"sweep_rows": 500},
@@ -807,12 +817,11 @@ a **blank string** falls back too: there is no number in it to read.
 
 | cell | param | default | meaning |
 |---|---|---|---|
-| `./clock` | `schedules[0].cron` | `0 */5 * * * *` | 6-field Quartz cron of the TTL sweep, **UTC**. A timer has no top-level `cron` param -- `TimerParams` reads `schedules` -- so an override replaces the whole array |
 | `./policy` | `policy_rows` | `200` | page bound of one rule read |
 | `./policy` | `max_ttl_ms` | `86400000` | the ceiling no rule can raise |
 | `./invoke` | `usage_rows` | `500` | page bound of the quota read |
-| `./sweep` | `sweep_rows` | `200` | grants examined per tick |
-| `./sweep` | `sweep_event_rows` | `2000` | event page per tick |
+| `./sweep` | `sweep_rows` | `200` | expired grants examined per run, newest first |
+| `./sweep` | `sweep_event_rows` | `2000` | event page per run |
 | `./vault` | `key_source` | `auto` | where the master key comes from: `auto`, `prompt`, `systemd-cred`, `plainfile`. It names a SOURCE, never key material, which is why it moved with the rest |
 | `./vault` | `credential_name` | `vault_key` | the file read under `$CREDENTIALS_DIRECTORY` when `key_source` resolves to `systemd-cred`. A file NAME, not its content |
 | `./vault` | `unlock_env` | `null` | **the one setting every deployment makes**: the NAME of the environment variable holding the passphrase. Declared here so a manifest can set it (GH #427); shipped unset, because a woken vault is locked until an operator opens it |

@@ -340,6 +340,12 @@ use std::sync::Arc;
 /// `external_timeout_ms` (≥1, default 15 000).
 pub struct WebSearchCellFactory;
 
+/// GH #1099: how many searches run at once by default. Each call is a request
+/// against a metered provider with its own burst limit, so the ceiling sits
+/// below the bursts providers allow instead of at what the box could send.
+/// Over the ceiling a message waits for a free slot in the stateless
+/// dispatcher; since GH #1099 that wait is never silent -- the dispatcher logs
+/// it under `meclaw::concurrency` with the trace id and `waited_ms`.
 const DEFAULT_WEB_SEARCH_MAX_CONCURRENCY: usize = 8;
 const DEFAULT_WEB_SEARCH_EXTERNAL_TIMEOUT_MS: u64 = 15_000;
 /// Default result-list cap: 10 (GH #83) — a full first page. Search providers

@@ -317,6 +317,8 @@ fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, assistant: &st
     let mut counter = 0;
     quiesce(&root.join("main/assistants"), &mut counter);
     patch(root, "main/affinity/clock/config.json", |v| {
+        // GH #1096: the clock ships no schedule; a test that wants a tick brings the row.
+        v["params"]["schedules"] = json!([{"schedule_name": "affinity-push", "emit_to": "../push", "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]}, "emit_headers": {}}]);
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
         // Since GH #138 the cadence is a literal of `./clock`'s own params, so
         // it is written here beside the schedule_id -- the form an

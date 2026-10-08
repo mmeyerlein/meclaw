@@ -152,8 +152,15 @@ fn the_completion_ceiling_the_description_names_is_the_one_that_ships() {
     let prose = compose["description"]["not_in_scope"]
         .as_str()
         .expect("the composer's description says why");
+    // GH #1097 / R-HK-13: `max_tokens` 0 is the catalogue row's `max_output`,
+    // and the description has to say so instead of naming a number of its own.
+    let named = if shipped == 0 {
+        "catalogue `max_output` (`max_tokens` 0".to_string()
+    } else {
+        format!("budget is {shipped}")
+    };
     assert!(
-        prose.contains(&format!("budget is {shipped}")),
+        prose.contains(&named),
         "the description names a completion budget the cell does not ship, so \
          the argument in it is about a different cell: {prose}"
     );

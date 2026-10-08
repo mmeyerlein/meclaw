@@ -5,36 +5,12 @@
   },
   "params": {
     "query_timeout_ms": 5000,
-    "schedules": [
-      {
-        "schedule_id": "${uuid7:access-sweep}",
-        "schedule_name": "access-sweep",
-        "cron": "0 */5 * * * *",
-        "emit_to": "../sweep",
-        "emit_body": {
-          "messages": [
-            {
-              "origin": "user",
-              "type": "text",
-              "text": "access-sweep"
-            }
-          ]
-        },
-        "emit_headers": {}
-      }
-    ]
+    "schedules": []
   },
   "contract": {
     "version": "1.0.0",
     "write_surface": "internal",
-    "settings": {
-      "cron": {
-        "type": "string",
-        "secret": false,
-        "default": "0 */5 * * * *",
-        "description": "6-field Quartz cron of the TTL sweep, in UTC. Documentation, not a params field of its own: a timer cell has no top-level `cron` param, the value lives inside the schedule at params.schedules[0].cron. Since GH #138 it is a LITERAL there rather than an environment token, so an instance retunes the sweep by overriding `schedules` (the key exists, which is what GH #294 asks of an override) or at runtime with a modify op by schedule_id -- and not by a colony-wide environment two brokers would have to share."
-      }
-    },
+    "settings": {},
     "emits": {
       "body": {
         "messages": {
@@ -82,13 +58,13 @@
     ]
   },
   "description": {
-    "purpose": "The tick of the TTL sweep. It sends, it decides nothing.",
-    "use_when": "Inside the access hive; change the cadence at runtime with add/modify/remove ops by schedule_id.",
-    "not_in_scope": "No catch-up, and none needed: a missed firing costs nothing because the expiry that matters is the comparison ./invoke makes on every call, and the next tick sweeps the same rows.",
-    "emits_meaning": "A plain trigger. The lane's state starts empty, which is how ./sweep recognises the start of a tick.",
-    "consumes_meaning": "Schedule ops (add/modify/remove by schedule_id) as body.op.",
+    "purpose": "The TTL watchdog (R-AG-1, GH #1096). It carries no schedule of its own: ./sweep keeps one one-shot named `access-sweep` under a fixed id and re-arms it (`rearm`) for the next expires_at after every run.",
+    "use_when": "Inside the access hive, always. It is not a poll (GH #553): a broker with no grant ahead orders nothing and stays silent.",
+    "not_in_scope": "No cron. The expiry that matters is the comparison ./invoke makes on every call; the watchdog only has the `expired` row written at the moment the grant runs out instead of minutes later.",
+    "emits_meaning": "A plain strike, schedule_name `access-sweep`, which is what the hive's edge recognises. A refused order leaves as `timer_op_error` and the hive's edge carries it to ./sweep.",
+    "consumes_meaning": "Schedule ops (add/modify/remove by schedule_id) as body.op -- in practice the one `add` with `rearm` that ./sweep sends.",
     "examples": [
-      "every five minutes -> ./sweep; nothing expired -> one select and silence"
+      "a grant expiring at 09:15:00.000 -> one strike at 09:15:00.001 -> ./sweep books it and arms the next"
     ]
   }
 }

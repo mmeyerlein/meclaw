@@ -26,13 +26,19 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
+/// GH #515: the refresh interval -- 4 s under Telegram's ~5 s decay, one full
+/// second of margin for a slow round trip.
+pub const TYPING_INTERVAL: Duration = Duration::from_secs(4);
+
 /// How often the typing status is refreshed, and how long a single turn may keep
 /// refreshing it before the keeper gives up.
 ///
-/// The production values are `Default`: a 4 s interval under Telegram's ~5 s
-/// decay (one full interval of margin for a slow round trip), and a 60 s ceiling
-/// — long enough for the slow turns this exists for, short enough that a turn
-/// which died somewhere in the topology stops pretending within a minute.
+/// `interval` is [`TYPING_INTERVAL`]. `max_total` is the backstop of the turn
+/// (GH #1099, [`TypingCadence::for_backstop`]): the keeper stands exactly as
+/// long as the answer may still come, and the answer ends it earlier. It used
+/// to be a fixed 60 s, so a turn on a slow path (a 300 s cogny backstop) went
+/// silent in the chat after a minute while it was still working. `Default` is
+/// the colony's default backstop (`meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS`).
 #[derive(Debug, Clone, Copy)]
 pub struct TypingCadence {
     /// Delay between two `sendChatAction` calls of the same turn.
@@ -41,12 +47,40 @@ pub struct TypingCadence {
     pub max_total: Duration,
 }
 
+impl TypingCadence {
+    /// GH #1099: the production cadence for a turn whose answer may take up to
+    /// `backstop`.
+    pub fn for_backstop(backstop: Duration) -> Self {
+        Self {
+            interval: TYPING_INTERVAL,
+            max_total: backstop,
+        }
+    }
+}
+
+impl TypingCadence {
+    /// GH #1099: the production cadence of a connector, from its
+    /// `typing_max_ms` param (the answering cell's backstop) and the backstop
+    /// the colony resolved for it (`message_timeout_default_ms` unless it
+    /// declares one). Neither (`0`/`-1`, no backstop at all) → the colony's
+    /// default backstop still bounds a keeper whose turn was abandoned.
+    pub fn for_connector(typing_max_ms: Option<u64>, resolved_backstop: Option<Duration>) -> Self {
+        Self::for_backstop(
+            typing_max_ms
+                .map(Duration::from_millis)
+                .or(resolved_backstop)
+                .unwrap_or(Duration::from_millis(
+                    meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS,
+                )),
+        )
+    }
+}
+
 impl Default for TypingCadence {
     fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(4),
-            max_total: Duration::from_secs(60),
-        }
+        Self::for_backstop(Duration::from_millis(
+            meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS,
+        ))
     }
 }
 
@@ -190,5 +224,89 @@ impl Drop for TypingKeepers {
         for (_, handle) in self.live.drain() {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shipped `cell.message_timeout` of a template cell, read from disk.
+    /// A shipped template file, read without an `exists` guard (delta review
+    /// of fix1): the lock below is about the shipped numbers, so a template
+    /// that went missing or moved fails it by name instead of passing it
+    /// silently.
+    fn shipped_json(rel: &str) -> meclaw_core::serde_json::Value {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../templates")
+            .join(rel);
+        let raw = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("no such template file {}: {e}", p.display()));
+        meclaw_core::serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    }
+
+    fn shipped_backstop_ms(rel: &str) -> u64 {
+        let v = shipped_json(rel);
+        v["cell"]["message_timeout"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{rel}: no message_timeout"))
+    }
+
+    /// Delta review of fix1: the ceiling lock reads its templates without an
+    /// `exists` guard -- a missing file is a failure that names it.
+    #[test]
+    #[should_panic(expected = "no such template file")]
+    fn a_missing_template_fails_the_ceiling_lock() {
+        shipped_json("telegram-connector/no-such-cell/config.json");
+    }
+
+    /// GH #1099: the keeper stands as long as the answering turn may run --
+    /// a 300 s backstop keeps "typing…" up past the old fixed 60 s; the answer
+    /// still ends it earlier (`stop`, locked in `gh515_*`).
+    ///
+    /// Review fix1: the ceiling is the backstop of the cell that ANSWERS, not
+    /// the proxy's. The shipped connector has no backstop of its own
+    /// (`timeout: -1`), so before it typed for the colony default (121 s) while
+    /// a cogny turn may run for its whole backstop (56 min); now it carries
+    /// `typing_max_ms` = the longest backstop of the cells that answer a
+    /// member's chat turn, and a row that moves a brain's backstop fails here.
+    #[test]
+    fn the_ceiling_is_the_backstop_of_the_answering_turn() {
+        let v = shipped_json("telegram-connector/config.json");
+        let answering = ["cogny/brain/config.json", "talky/brain/config.json"]
+            .iter()
+            .map(|rel| shipped_backstop_ms(rel))
+            .max()
+            .unwrap();
+        let typing_max_ms = v["params"]["typing_max_ms"].as_u64();
+        assert_eq!(
+            typing_max_ms,
+            Some(answering),
+            "the shipped connector types for the answering turn's backstop"
+        );
+        // The proxy's own (absent) backstop does not cut it short.
+        let shipped = TypingCadence::for_connector(typing_max_ms, None);
+        assert_eq!(shipped.max_total, Duration::from_millis(answering));
+        assert!(
+            shipped.max_total > Duration::from_millis(meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS)
+        );
+        // The smoke bot's turn is answered by its one worker.
+        let v = shipped_json("egon/proxy/config.json");
+        assert_eq!(
+            v["params"]["typing_max_ms"].as_u64(),
+            Some(shipped_backstop_ms("egon/worker/config.json"))
+        );
+        let slow = TypingCadence::for_connector(Some(300_000), Some(Duration::from_secs(121)));
+        assert_eq!(slow.max_total, Duration::from_secs(300));
+        assert!(slow.max_total > Duration::from_secs(60));
+        assert_eq!(slow.interval, TYPING_INTERVAL);
+        assert_eq!(
+            TypingCadence::for_connector(None, Some(Duration::from_secs(400))).max_total,
+            Duration::from_secs(400)
+        );
+        assert_eq!(
+            TypingCadence::for_connector(None, None).max_total,
+            Duration::from_millis(meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS)
+        );
     }
 }

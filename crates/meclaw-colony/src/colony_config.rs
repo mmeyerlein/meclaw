@@ -43,6 +43,7 @@ pub struct ColonyConfig {
     /// Default capacity of the bounded mpsc mailboxes (cells and colony).
     pub mailbox_default_capacity: usize,
     /// Default substrate-backstop per `handle()` call, in ms (concept B).
+    /// Default [`DEFAULT_MESSAGE_TIMEOUT_MS`].
     pub message_timeout_default_ms: u64,
     /// Default idle duration (ms) for stateful cells with `cell.timeout: 0`.
     pub idle_timeout_default_ms: u64,
@@ -82,7 +83,12 @@ pub struct ColonyConfig {
     /// in a topology that did not have it, and who hears it is the colony's
     /// decision, never the substrate's.
     pub mutation_receipts: Option<MutationReceipts>,
-    /// Maximum `one_for_one` restarts per cell before `failed`.
+    /// Maximum `one_for_one` restarts per cell before `failed`; a cell's own
+    /// `cell.restart_limit` overrides it. Default [`DEFAULT_RESTART_MAX_RETRIES`].
+    ///
+    /// GH #1099: read at every spawn path (boot, mutation, manifest). Before,
+    /// the field was parsed and only warned about, and the substrate used its
+    /// own constant -- a knob that moved nothing.
     pub restart_max_retries: u32,
     /// Threshold (bytes) at/above which a UBF body is offloaded to a blob.
     pub blob_inline_max_bytes: usize,
@@ -171,6 +177,28 @@ pub struct MutationReceipts {
     pub to: String,
 }
 
+/// GH #1099: the colony-wide default backstop (`message_timeout_default_ms`),
+/// in ms.
+///
+/// Derived, not chosen: the backstop B must clear the operation timeout A of
+/// the cell it guards by the backstop rule (`AGENTS.md` rule 12, "B generous,
+/// A precise": at least +10 s AND +10 %, the same rule
+/// `meclaw_cells::llm::params::backstop_shortfall` states). The longest A a
+/// cell makes without declaring one is the `llm` cell's provider call,
+/// 110 000 ms (`meclaw_cells::llm::params::DEFAULT_EXTERNAL_TIMEOUT_MS`), so
+/// the default is `110 000 + max(10 000, 11 000)` = 121 000 ms. The old
+/// 60 000 sat BELOW that call: an `llm` cell that declared no backstop was cut
+/// by the substrate mid-call instead of failing cleanly on its own timeout. A
+/// test in `meclaw-cells` pins this equation, so the two numbers cannot drift
+/// apart again.
+pub const DEFAULT_MESSAGE_TIMEOUT_MS: u64 = 121_000;
+
+/// GH #1099: the colony-wide default of [`ColonyConfig::restart_max_retries`]:
+/// five respawns after a panic or backstop death, i.e. up to six instances
+/// of a cell in all ("5 attempts" per spec). The one source for the serde
+/// default AND the registry's fallback, which used to keep a copy of its own.
+pub const DEFAULT_RESTART_MAX_RETRIES: u32 = 5;
+
 /// Serde/`Default` seed for [`ColonyConfig::shutdown_drain_timeout_ms`] — one
 /// source for both, so the two can never drift apart (GH #47).
 fn default_shutdown_drain_timeout_ms() -> u64 {
@@ -182,7 +210,7 @@ impl Default for ColonyConfig {
         ColonyConfig {
             schema_version: COLONY_CONFIG_SCHEMA_VERSION,
             mailbox_default_capacity: 1000,
-            message_timeout_default_ms: 60_000,
+            message_timeout_default_ms: DEFAULT_MESSAGE_TIMEOUT_MS,
             // Sole consumer of the constant: the colony-wide idle default is
             // seeded here (Phase-13.5 Slice-6 Nachzieh-Fix — all live spawn-path
             // fallbacks now read this field, never the constant directly).
@@ -198,7 +226,7 @@ impl Default for ColonyConfig {
             // GH #553: OFF by default — a receipt is traffic a topology has to
             // be built for, so the substrate never invents a listener.
             mutation_receipts: None,
-            restart_max_retries: 5,
+            restart_max_retries: DEFAULT_RESTART_MAX_RETRIES,
             blob_inline_max_bytes: 65_536,
             blob_max_recursion_depth: 64,
             slot_park_max: 64,
@@ -305,11 +333,26 @@ impl ColonyConfig {
         std::time::Duration::from_millis(self.watchdog_period_ms)
     }
 
+    /// GH #1099: how often an idle colony loop wakes to beat its heartbeat.
+    ///
+    /// Derived from the supervisor it feeds: the supervisor drains the beat
+    /// channel once per `watchdog_period_ms` and counts a period as silent
+    /// when no beat landed in it; `watchdog_threshold` silent periods in a row
+    /// trip. Half a period puts at least one beat into EVERY window, whatever
+    /// the phase between the two clocks and with a full half period of slack
+    /// for scheduling jitter -- so a quiet colony can never look silent, at any
+    /// threshold, including 1. The old fixed 100 ms beat only matched the
+    /// default period; a colony configured below it (`threshold × period`
+    /// under 100 ms) tripped while doing nothing. Never below 1 ms, the
+    /// timer's own resolution.
+    pub fn heartbeat_interval(&self) -> std::time::Duration {
+        (self.watchdog_period() / 2).max(std::time::Duration::from_millis(1))
+    }
+
     /// Warn (via `tracing`) for each field that is parsed but **not yet applied**
-    /// in this version, when it has been set away from its spec default. Only the
-    /// three genuinely-unwired fields remain: `restart_max_retries`,
-    /// `blob_max_recursion_depth`, `log_default_level` (roadmap § Restliche
-    /// `colony.json`-Feld-Verdrahtung). Every other field is consumed and must
+    /// in this version, when it has been set away from its spec default. Only
+    /// `log_default_level` remains genuinely unwired (`restart_max_retries`
+    /// left the set with GH #1099, `blob_max_recursion_depth` with GH #19). Every other field is consumed and must
     /// NOT warn — a warn on a wired field is a lying "ignored" diagnostic. Silent
     /// ignoring of the real gaps would contradict the strict-fail ruling, so we
     /// keep those three audible.
@@ -334,10 +377,9 @@ impl ColonyConfig {
         //     filters, where it bounds a `park` slot's queue.
         //   mailbox_overflow_* (GH #850) — read by the overflow a full
         //     mailbox runs into (`crate::overflow`).
-        // Only the two genuinely-unwired fields below remain forensic-only.
-        if self.restart_max_retries != d.restart_max_retries {
-            warn("restart_max_retries");
-        }
+        //   restart_max_retries (GH #1099) — the registry's restart ceiling
+        //     at every spawn path.
+        // Only the one genuinely-unwired field below remains forensic-only.
         if self.log_default_level != d.log_default_level {
             warn("log_default_level");
         }
@@ -511,18 +553,50 @@ mod tests {
     fn other_unwired_fields_still_warn() {
         let cfg = ColonyConfig::parse_str(
             r#"{
-                "restart_max_retries": 1,
                 "log_default_level": "debug"
             }"#,
         )
         .unwrap();
         let warns = capture_unwired_warns(&cfg);
-        for field in &["restart_max_retries", "log_default_level"] {
+        let field = "log_default_level";
+        assert!(
+            warns.contains(&field.to_owned()),
+            "expected unwired-warn for {field} but got: {warns:?}"
+        );
+    }
+
+    /// GH #1099: the idle heartbeat follows the supervisor period, so every
+    /// supervisor window holds a beat -- also for a period below the old fixed
+    /// 100 ms, where a quiet colony used to trip.
+    #[test]
+    fn the_idle_heartbeat_lands_in_every_supervisor_window() {
+        for period in [1_u64, 2, 20, 50, 100, 250, 1_000] {
+            let cfg = ColonyConfig::parse_str(&format!(
+                r#"{{"watchdog_threshold": 1, "watchdog_period_ms": {period}}}"#
+            ))
+            .unwrap();
+            let beat = cfg.heartbeat_interval();
             assert!(
-                warns.contains(&(*field).to_owned()),
-                "expected unwired-warn for {field} but got: {warns:?}"
+                beat * 2 <= cfg.watchdog_period() || beat.as_millis() == 1,
+                "period {period} ms: beat {beat:?} leaves a window without a beat"
             );
+            assert!(beat < cfg.watchdog_period() || period == 1);
         }
+        assert_eq!(
+            ColonyConfig::default().heartbeat_interval(),
+            std::time::Duration::from_millis(50)
+        );
+    }
+
+    /// GH #1099: `restart_max_retries` is wired -- a deviation must not warn.
+    #[test]
+    fn restart_max_retries_no_unwired_warn() {
+        let cfg = ColonyConfig::parse_str(r#"{"restart_max_retries": 1}"#).unwrap();
+        let warns = capture_unwired_warns(&cfg);
+        assert!(
+            !warns.contains(&"restart_max_retries".to_owned()),
+            "unexpected unwired-warn for restart_max_retries: {warns:?}"
+        );
     }
 
     /// GH #19: `blob_max_recursion_depth` is wired — it rides on the blob store

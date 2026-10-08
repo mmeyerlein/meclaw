@@ -1,9 +1,9 @@
-# `canvy@2.3.4`
+# `canvy@2.4.0`
 
 > **Deprecated since GH #455.** This template fuses two things the library now keeps apart: a SURFACE (a screen, which belongs to a person and is shared by everybody who writes to it) and a VIEW of the colony (which is one application among many). Those are `display` and `colony-view` in the table next door. `canvy` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new screen should be a `display` with `colony-view` writing onto it.
 
 One interactive canvas of the colony, reached at `/<mount>/` on the colony's one
-listener. A timer takes
+listener. A mutation receipt takes
 a topology snapshot, a `code` cell turns it into display objects, and a `web`
 cell holds those objects and serves the page. The browser owns two things and
 neither of them is the picture: the drag, and where you are looking.
@@ -11,10 +11,22 @@ neither of them is the picture: the drag, and where you are looking.
 The first — and so far only — thing it draws is the colony itself.
 
 ```
-clock (timer)    ->  probe (code)  ->  layout (code)  ->  web (display)
-     every minute        the colony's       objects,          the page,
-                         graph endpoint     not markup        under its mount
+mutation_committed  ->  probe (code)  ->  layout (code)  ->  web (display)
+  (the graph moved)       the colony's       objects,          the page,
+                          graph endpoint     not markup        under its mount
 ```
+
+## Since 2.4.0: no clock
+
+Until 2.4.0 a `clock` timer asked `/colony/graph` every minute for a topology that
+only changes when somebody mutates it -- a poll, and R-AG-1
+([#1096](https://github.com/mmeyerlein/meclaw/issues/1096)) has none. The hive now
+accepts `mutation_committed`, the receipt the mutation door leaves after every
+committed knock and once at boot ([#553](https://github.com/mmeyerlein/meclaw/issues/553)),
+and its own door turns it into `in_refresh`: the pattern `colony-view` took in 1.1.0.
+The picture is exactly as fresh as the graph and costs nothing between two changes.
+The parent draws the receipt lane to this hive like any other lane. A removed
+interior cell and a new lane are the second digit.
 
 ## What changed in 2.0.0, and why the first digit moved
 
@@ -36,7 +48,7 @@ not upgraded in place — it is instantiated fresh beside the old one, its saved
 positions replayed as object patches, and the old hive retired by disconnect.
 Running that is an operator's act and this repository only ships the recipe.
 
-## Since 2.2.0: the timer is called `clock`, and its cadence is a param
+## 2.2.0 to 2.3.4: the timer was called `clock`, and its cadence was a param
 
 The cell that used to be `refresh` is `clock`. Nothing about it moved — the same
 schedule, the same one-minute default, the same single out-edge to
@@ -57,7 +69,7 @@ never required, and buys nothing but the tidier name.
 
 ## The pipeline, pass by pass
 
-**`clock`** is a `timer` with one schedule and no opinions. `0 * * * * *` — a
+**`clock`** (until 2.4.0) was a `timer` with one schedule and no opinions. `0 * * * * *` — a
 6-field Quartz expression, planned in **UTC** like every `timer` in the library:
 second 0 of every minute. **Since 2.2.0 that expression is a literal in
 `params.schedules` and not a `CANVY_REFRESH_CRON` token**
@@ -75,7 +87,7 @@ form had one value for all of them. An instance retunes it by naming
 ```
 
 **`probe`** asks the colony's read-only graph endpoint and hands the answer on,
-unread. Two passes: a tick becomes a read, a reply becomes a snapshot. It is
+unread. Two passes: a refresh becomes a read, a reply becomes a snapshot. It is
 deliberately not part of anybody's request path — see *Why the topology is a
 snapshot* below.
 
@@ -162,10 +174,10 @@ that hive, and every hive above it, while the cursor is still down.
 its box is drawn. What says a *hand* put it there is the `pinned` prop, which a
 drag sets and the detail panel's *release to the layout* clears
 ([#415](https://github.com/mmeyerlein/meclaw/issues/415)). A display older than
-the marker is given it on the first tick and keeps its arrangement untouched
+the marker is given it on the first snapshot and keeps its arrangement untouched
 while that happens.
 
-**And a position, once set, is kept.** On every tick the layout reads back what
+**And a position, once set, is kept.** On every snapshot the layout reads back what
 the display holds and was marked as hand-placed, and leaves those coordinates
 alone; only a cell the display has never seen — or one handed back to the
 layout — is given a computed spot, which is then settled out of the way of
@@ -199,12 +211,13 @@ inside it; a caller names the hive and a lane on `hop.route`.
 
 | Lane | Direction | Meaning |
 |---|---|---|
-| `in_refresh` | in | take the topology snapshot now, instead of at the next tick |
+| `mutation_committed` | in | the graph moved: the door turns it into `in_refresh` (since 2.4.0) |
+| `in_refresh` | in | take the topology snapshot now, without a change |
 | `event` | out | something a person did in the browser that this hive does not handle itself |
 
 Nothing has to point at canvy at all: the way in is `/<mount>/` on the colony's
-listener. `in_refresh` exists for the case where a mutation has just landed and
-waiting a minute is silly.
+listener. `in_refresh` exists for the operator who wants a redraw without a
+change.
 
 Nothing inside consumes `event`, and that is deliberate — a browser event nobody
 wired for dead-letters as `no_route`, recorded and self-localising, which is
@@ -219,7 +232,7 @@ canvas in the same colony needs a different name, because two displays sharing
 one is a mount collision rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.3.4",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.4.0",
                 "override_params": {"web": {"mount": "ops-canvy"}}}]}
 ```
 
@@ -293,7 +306,7 @@ lease that guarantees one request at a time; with several browsers it is not,
 which is why the correlation travels in the message instead.
 
 So the snapshot is taken where **nothing is waiting**. A colony's graph changes
-on mutation, not on mouse movement, which makes a minute an honest interval
-rather than a compromise. In 2.0.0 there is not even a request path for it to be
+on mutation, not on mouse movement, which is why the mutation receipt is the
+trigger (since 2.4.0). In 2.0.0 there is not even a request path for it to be
 part of: the display serves from a materialised tree, so nothing a browser does
 reaches a `code` cell at all.

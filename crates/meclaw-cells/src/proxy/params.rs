@@ -46,6 +46,13 @@ pub struct ProxyParams {
     /// GH #1059: ceiling of the doubling wait between two rounds in ms
     /// (default 5 min). Immutable.
     pub credential_backoff_max_ms: u64,
+    /// GH #1099: how long one turn's "typing…" may stand without an answer,
+    /// in ms -- set it to the backstop of the cell that answers (e.g. its
+    /// `cell.message_timeout`), so the chat shows a sign of life exactly as
+    /// long as the answer may still come. The answer ends it earlier. Absent →
+    /// the backstop this colony hands a cell that declares none
+    /// (`message_timeout_default_ms`, as resolved for this cell). Immutable.
+    pub typing_max_ms: Option<u64>,
 }
 
 /// β: the `proxy` runtime-overlay projection — the mutable, runtime-tunable
@@ -84,6 +91,7 @@ impl crate::params_overlay::OverlayParams for ProxyOverlay {
         "bot_token_grant_id",
         "credential_wait_ms",
         "credential_backoff_max_ms",
+        "typing_max_ms",
     ];
     // GH #907: `max_document_bytes` is read at birth into the one client the
     // handler and the I/O task share; a runtime change would have to rebuild
@@ -97,6 +105,7 @@ impl crate::params_overlay::OverlayParams for ProxyOverlay {
         "bot_token_grant_id",
         "credential_wait_ms",
         "credential_backoff_max_ms",
+        "typing_max_ms",
     ];
     fn parse(raw: &JsonValue) -> Result<Self, String> {
         let obj = raw.as_object().ok_or("params: must be object")?;
@@ -230,9 +239,19 @@ impl ProxyParams {
                 .ok_or("max_document_bytes: a positive integer (bytes)")?,
         };
 
+        let typing_max_ms = match obj.get("typing_max_ms") {
+            None => None,
+            Some(v) => Some(
+                v.as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or("typing_max_ms: a positive integer (ms)")?,
+            ),
+        };
+
         Ok(Self {
             bot_token,
             emit_to: Path::new(emit_to_s),
+            typing_max_ms,
             long_poll_timeout_ms,
             long_poll_request_secs,
             send_timeout_ms,

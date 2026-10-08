@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.3.4`
+# Migrating a `canvy` instance from 1.x to `canvy@2.4.0`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -26,7 +26,7 @@ afterwards.
 | `node` | **carried** — becomes the `x`/`y` of the cell's `canvy-node` object, plus the `pinned` marker that says a hand put it there ([#415](https://github.com/mmeyerlein/meclaw/issues/415)) | the one thing a person made by hand |
 | `hive_shift` | **dropped** | a frame is derived from the cells it holds; moving a hive is moving its members, so there is no row to move ([#170](https://github.com/mmeyerlein/meclaw/issues/170)) |
 | `camera` | **dropped** | pan and zoom are local browser state and are neither sent nor stored |
-| the topology snapshot | **dropped** | the display's own object tree holds the picture; the next tick refills it |
+| the topology snapshot | **dropped** | the display's own object tree holds the picture; the next mutation receipt refills it |
 
 The dropped rows are **reported**, not skipped quietly: the export writes a
 receipt beside the bundle naming every row it left behind and why. Your hive
@@ -56,7 +56,7 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.3.4` beside the old hive
+## 1. Instantiate `canvy@2.4.0` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
 with the old one and the display a free mount:
@@ -68,7 +68,7 @@ with the old one and the display a free mount:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.3.4",
+        "template": "canvy@2.4.0",
         "override_params": {"web": {"mount": "canvy2"}}
       }
     ]
@@ -93,8 +93,8 @@ hive path — the lane is `in_refresh` and the hive path is the address.
 
 ## 2. Let it draw itself once — **before** step 4
 
-The timer takes a topology snapshot on the minute and the layout cell turns it
-into objects. Wait for one tick, or ask for one immediately by posting at the
+A mutation receipt takes a topology snapshot and the layout cell turns it
+into objects. Wait for the next mutation receipt, or ask for one immediately by posting at the
 hive path with the lane on `hop.route`:
 
 ```bash
@@ -172,7 +172,7 @@ curl -s 'http://127.0.0.1:7777/colony/dead_letters?limit=5' | jq '.'
 Look for `bundle_errors`. Then reload the page: your boxes are where you put
 them.
 
-**On the next tick they stay there.** The layout cell reads back what the
+**On the next snapshot they stay there.** The layout cell reads back what the
 display already holds before it writes, and leaves those coordinates alone —
 only a cell the display has never seen gets a computed spot. That is the same
 mechanism that makes a drag stick, and a migrated position is indistinguishable

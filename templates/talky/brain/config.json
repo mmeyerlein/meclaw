@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 240000
+    "message_timeout": 1366000
   },
   "params": {
     "provider": "openai",
@@ -13,7 +13,7 @@
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.3,
     "reasoning_effort": null,
-    "external_timeout_ms": 120000,
+    "external_timeout_ms": 1241000,
     "system_order": [
       "identity",
       "memory",
@@ -56,6 +56,12 @@
         "secret": false,
         "default": null,
         "description": "GH #1087: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`; passed through, not checked against a list). It ships UNSET (null): the request then carries no reasoning field and is byte for byte the one sent before this declaration. Set it through `override_params` -- an assistant addresses it as `talky/brain` and `talky-chat/brain` -- and it reaches the provider as `\"reasoning\": {\"effort\": ...}` (under the default `reasoning_wire`); a `reasoning` object, where one is set, outranks it. A spoken turn waits for hidden reasoning before its first token, so a low effort shortens the time to the first word."
+      },
+      "external_timeout_ms_row": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-6-luna",
+        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
       }
     },
     "emits": {

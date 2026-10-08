@@ -1,4 +1,4 @@
-# `tools@1.4.7`
+# `tools@1.4.8`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -220,6 +220,27 @@ cell that needs exactly this is not a widening; one that needs more is.**
 | `schemas` | yes | it reads names and writes declarations out of a table compiled into its own script |
 | `build-draft` | yes | it reads a hop and a turn and writes a turn; the correlation runs over the round's own context |
 | `build-apply` | yes | the same, and the ORDER of two submissions is the colony's to decide at the door, never this cell's to assume |
+
+**The time chain (GH #1097).** Three occupants carry numbers that belong to the rounds
+they serve, and each is derived rather than chosen (`docs/cell-types.md`, the timeout chain):
+
+| occupant | `max_concurrency` | `external_timeout_ms` | `cell.message_timeout` |
+|---|---|---|---|
+| `bash` | 16 | 600000 | 660000 |
+| `web_fetch` | 16 | 30000 | 40000 |
+| `web_search` | 16 | 15000 | 40000 |
+
+`max_concurrency` is the dispatcher's `max_calls` (16): a round fans out at most that many
+calls, so a full fan-out runs in one wave and not in four, and the round's idle window
+(`round_idle_ms` of the brain that calls) only has to outlast ONE call. `bash` runs a
+program in the workspace like a projection does, so its operation timeout is the
+projection's `exec_timeout_ms` (600000); before it was 60 s beside the projection's 600 s,
+with no reason given. `web_fetch` and `web_search` keep their operation timeouts (one HTTP
+request each, no catalogue number to derive from). Every backstop is the chain's: the
+longest legitimate handling -- the operation timeout, for a granted cell (`web_search`) the
+worst sealed-ticket wait plus its call (GH #1061: `ceil((credential_wait_max + 1) / max_concurrency) ×
+T + T`, 30000) -- plus 10 s, at least 10 % -- before, none was declared and the colony
+default of 60 s sat AT bash's 60 s. A template test holds all of it.
 
 `params.max_concurrency` is a queue and not a serialisation wherever the verdict is `yes`:
 the call over the cap waits and still answers on its own `tool_result`. **`edit` is the one

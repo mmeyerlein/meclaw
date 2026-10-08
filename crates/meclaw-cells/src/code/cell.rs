@@ -685,8 +685,11 @@ impl StatelessCell for CodeCell {
             // The copy's bytes live on in `stdin_json` alone.
             drop(stdin_msg);
 
-            let timeout =
-                std::time::Duration::from_millis(self.params.external_timeout_ms.unwrap_or(60_000));
+            let timeout = std::time::Duration::from_millis(
+                self.params
+                    .external_timeout_ms
+                    .unwrap_or(crate::code::params::DEFAULT_CODE_EXTERNAL_TIMEOUT_MS),
+            );
 
             let out = match &self.runner {
                 RunnerHandle::Cold => {

@@ -1,8 +1,8 @@
 {
-  "cell": { "type": "web_fetch" },
+  "cell": { "type": "web_fetch", "message_timeout": 40000 },
   "params": {
     "external_timeout_ms": 30000,
-    "max_concurrency": 4
+    "max_concurrency": 16
   },
   "contract": {
     "version": "1.0.0",

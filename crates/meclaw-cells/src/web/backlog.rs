@@ -530,6 +530,16 @@ impl Outbox {
         self.tx.capacity()
     }
 
+    /// GH #1099: resolves once `n` places are free at the same moment (or the
+    /// connection is gone) -- the event a resync waits for, instead of a
+    /// retry clock. The places are reserved and released at once: the resync
+    /// itself sends through [`Outbox::try_send_page`], so another sender may
+    /// still take them first, and the caller simply waits again.
+    pub async fn room_for(&self, n: usize) {
+        let n = n.clamp(1, self.tx.max_capacity());
+        let _ = self.tx.reserve_many(n).await;
+    }
+
     /// GH #1002: the places the queue has at all.
     pub fn max_capacity(&self) -> usize {
         self.tx.max_capacity()

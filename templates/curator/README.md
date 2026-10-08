@@ -1,4 +1,4 @@
-# `curator@1.11.4`
+# `curator@1.11.5`
 
 The window of one model, owned in one place, with a ledger of every call. Contract tables only; the prose follows with the program it belongs to.
 

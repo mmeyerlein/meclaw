@@ -97,6 +97,23 @@ pub struct ReadDeadLettersReply {
 pub struct ReadTraceReply {
     /// Filtered + capped audit-rows.
     pub entries: Vec<MessageLogDto>,
+    /// GH #1099: the writer's commit counter as it stood BEFORE these rows
+    /// were read -- pass it back as `wait.after_seq` to wait for the next
+    /// commit without missing one that landed during this read.
+    #[serde(default)]
+    pub log_seq: u64,
+}
+
+/// GH #1099: the waiting half of a `ReadTrace` -- hold the read until the
+/// log has committed past `after_seq`, or `max` has passed. The wait happens
+/// before the read takes a log-read permit, so a waiting reader never holds
+/// one a real read needs.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceWait {
+    /// The `log_seq` of the reader's previous reply.
+    pub after_seq: u64,
+    /// The longest the read may be held.
+    pub max: std::time::Duration,
 }
 
 /// The resolved question a `/colony/ledger` read answers (GH #267, ruling Q14).

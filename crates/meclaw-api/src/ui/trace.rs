@@ -66,6 +66,7 @@ pub async fn get_trace_ui(
         only_error: false,
         since: None,
         limit: clamp_limit(q.limit),
+        wait: None,
         ack: ack_tx,
     };
     if colony.inbox.send(msg).await.is_err() {

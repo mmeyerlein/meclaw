@@ -254,12 +254,11 @@ async fn a_restore_writes_the_line_and_warns_of_an_overlay_the_guards_refuse() {
     drop(s.sender);
 }
 
-/// The restore warning of the two other guard branches (review rev-F2, m5):
-/// with a list, a restored `base_url` whose origin is not on it, and a
-/// restored `external_timeout_ms` the backstop does not clear. The detail
-/// names what the operator needs to act on -- the ORIGIN, never the whole URL
-/// with its path, and the ms against the backstop they need -- and never a
-/// key's secret.
+/// The restore warning of the other guard branch (review rev-F2, m5): with a
+/// list, a restored `base_url` whose origin is not on it. The detail names
+/// what the operator needs to act on -- the ORIGIN, never the whole URL with
+/// its path -- and never a key's secret. (A restored `external_timeout_ms`
+/// the backstop does not clear is raised at spawn since GH #1099, below.)
 fn restore_warning(
     path: &str,
     birth: &Value,
@@ -312,23 +311,42 @@ async fn a_restore_warns_of_an_origin_off_the_list_by_its_origin_only() {
     assert!(!text.contains("deep-route"), "the path is not: {text}");
 }
 
+/// GH #1099: a restored `external_timeout_ms` the backstop does not clear is
+/// no longer refused at the restore -- the cell is spawned under the backstop
+/// the rule asks for (`effective_backstop_ms` over the RESTORED call), and the
+/// WARN names the call and the backstop it runs under, so the operator can
+/// declare it. The overlay then passes the run-time guards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restore_warns_of_a_timeout_the_backstop_does_not_clear_by_its_ms() {
-    let text = restore_warning(
-        "/restore-timeout",
+    let events = collect::install();
+    let td = TempDir::new().unwrap();
+    let path = "/restore-timeout";
+    let mut s = spawn(
+        path,
         &birth("http://127.0.0.1:1/v1"),
-        "external_timeout_ms",
-        &json!(175_000),
+        td.path(),
         Some(Duration::from_millis(180_000)),
     );
+    write_overlay(td.path(), "external_timeout_ms", &json!(175_000));
+    let _wiring = (s.wake)(s.receiver.take().unwrap());
+    let seen = collect::on(&events, TARGET, path);
+    let warns: Vec<String> = seen
+        .iter()
+        .filter(|e| e.level == tracing::Level::WARN)
+        .map(|e| e.message().to_string())
+        .collect();
+    assert_eq!(warns.len(), 1, "one warning, the raise: {warns:?}");
+    let text = &warns[0];
     assert!(
-        text.contains("'external_timeout_ms' 175000 ms"),
+        text.contains("external_timeout_ms 175000 ms"),
         "the ms are named: {text}"
     );
     assert!(
-        text.contains("at least 192500 ms"),
-        "and the backstop they need: {text}"
+        text.contains("runs under 192500 ms"),
+        "and the backstop it runs under: {text}"
     );
+    assert!(!text.contains("test-key-853"), "no secret: {text}");
+    drop(s.sender);
 }
 
 /// An overlay the guards take restores with its line and no warning.

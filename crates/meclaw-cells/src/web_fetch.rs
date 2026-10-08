@@ -721,6 +721,12 @@ use std::sync::Arc;
 /// Factory for `WebFetchCell`. Unit struct — stateless, config lives in params.
 pub struct WebFetchCellFactory;
 
+/// GH #1099: how many fetches run at once by default. A fetch waits on a
+/// remote host, not on this box, so a slot costs a socket and little else;
+/// 32 covers a curator round that fans out over every link of a result page.
+/// Over the ceiling a message waits for a free slot in the stateless
+/// dispatcher; since GH #1099 that wait is never silent -- the dispatcher logs
+/// it under `meclaw::concurrency` with the trace id and `waited_ms`.
 const DEFAULT_WEB_FETCH_MAX_CONCURRENCY: usize = 32;
 const DEFAULT_WEB_FETCH_EXTERNAL_TIMEOUT_MS: u64 = 30_000;
 /// Default redirect budget: 5 hops (GH #117).

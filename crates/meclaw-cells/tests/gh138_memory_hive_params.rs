@@ -67,9 +67,10 @@ const SCRIPTED: &[Scripted] = &[
     Scripted {
         cell: "recall",
         knobs: &[
-            ("tier0_max_episodes", "_int"),
-            ("tier0_max_beliefs", "_int"),
-            ("tier0_max_foresight", "_int"),
+            // GH #1098: the tier-0 counts grow with the window like tier 1 (null).
+            ("tier0_max_episodes", "_pkg"),
+            ("tier0_max_beliefs", "_pkg"),
+            ("tier0_max_foresight", "_pkg"),
             // GH #1085: grows with the asker's window like tier 1 (null).
             ("tier0_tokens", "_grown"),
             ("tier1_leg_limit", "_pkg"),
@@ -81,8 +82,8 @@ const SCRIPTED: &[Scripted] = &[
             ("tier1_graph_node_facts", "_int"),
             ("tier1_graph_fact_pages", "_int"),
             ("tier1_graph_node_page", "_int"),
-            ("tier1_graph_anchors", "_int"),
-            ("tier1_graph_start", "_int"),
+            ("tier1_graph_anchors", "_pkg"),
+            ("tier1_graph_start", "_pkg"),
             ("tier1_self_limit", "_pkg"),
             ("tier1_self_budget", "_int"),
             ("self_legacy_subject", "_str"),

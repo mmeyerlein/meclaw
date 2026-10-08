@@ -30,14 +30,44 @@ use tokio::task::JoinHandle;
 /// and the restore writes the params line — an overlay that outlives an
 /// environment change is visible on every wake instead of silent (GH #825).
 /// Used by both the WakeFn and RespawnFn closures.
+///
+/// GH #1099: returns the backstop the task must run under beside the cell --
+/// the resolved `message_timeout`, raised over the EFFECTIVE (restored)
+/// `external_timeout_ms` x (1 + `length_continuations`) by the backstop rule when it does not clear it
+/// ([`crate::llm::params::effective_backstop_ms`]), with a WARN naming both
+/// numbers. Before, the substrate cut such a cell mid-call (a 60 s colony
+/// default under a 110 s call), and nothing at spawn said so.
 fn restore_cell(
     conn: &rusqlite::Connection,
     birth: &JsonValue,
     http: reqwest::Client,
     path: &Path,
     message_timeout: Option<std::time::Duration>,
-) -> Result<LlmCell, String> {
-    let cell = LlmCell::restored(conn, birth, http)?.with_message_timeout(message_timeout);
+) -> Result<(LlmCell, Option<std::time::Duration>), String> {
+    let restored = LlmCell::restored(conn, birth, http)?;
+    let external_ms = restored.params.external_timeout_ms;
+    let continuations = restored.params.length_continuations;
+    let (backstop_ms, raised_from) = crate::llm::params::effective_backstop_ms(
+        external_ms,
+        continuations,
+        message_timeout.map(|d| d.as_millis() as u64),
+    );
+    if let (Some(declared), Some(effective)) = (raised_from, backstop_ms) {
+        tracing::warn!(
+            target: "meclaw::llm::params",
+            path = %path.as_str(),
+            message_timeout_ms = declared,
+            external_timeout_ms = external_ms,
+            length_continuations = continuations,
+            effective_message_timeout_ms = effective,
+            "message_timeout {declared} ms does not clear external_timeout_ms {external_ms} ms \
+             x (1 + {continuations} length_continuations) by the backstop rule (+10 s and \
+             +10 %) — the cell runs under {effective} ms; declare cell.message_timeout >= \
+             {effective} to silence this"
+        );
+    }
+    let message_timeout = backstop_ms.map(std::time::Duration::from_millis);
+    let cell = restored.with_message_timeout(message_timeout);
     tracing::info!(
         target: "meclaw::llm::params",
         "{}",
@@ -54,7 +84,7 @@ fn restore_cell(
              force; '$reset' returns the key to its start value"
         );
     }
-    Ok(cell)
+    Ok((cell, message_timeout))
 }
 
 /// Phase-8 `llm`-Cell factory. Unit-struct (no fields) — all per-instance
@@ -188,15 +218,15 @@ impl CellFactory for LlmCellFactory {
                 let conn = open_or_create_cell_db(&respawn_cell_dir.join("cell.db"))
                     .expect("respawn: open_or_create_cell_db failed");
                 // W4b: replay the persisted params overlay over birth-params.
-                let cell = restore_cell(
+                let (cell, message_timeout) = restore_cell(
                     &conn,
                     &respawn_birth,
                     respawn_client.clone(),
                     &respawn_path,
                     message_timeout,
                 )
-                .expect("respawn: restore params from cell.db overlay")
-                .with_attachment_reader(respawn_attachments.clone());
+                .expect("respawn: restore params from cell.db overlay");
+                let cell = cell.with_attachment_reader(respawn_attachments.clone());
                 let db = meclaw_colony::DbConn::wrap(conn, None);
                 let (s, r) = mpsc::channel::<Message>(respawn_mailbox_capacity);
                 let (j, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_stateful_task_with_peace(
@@ -247,15 +277,15 @@ impl CellFactory for LlmCellFactory {
             let conn = open_or_create_cell_db(&wake_cell_dir.join("cell.db"))
                 .expect("wake: open_or_create_cell_db failed");
             // W4b: replay the persisted params overlay over birth-params.
-            let cell = restore_cell(
+            let (cell, message_timeout) = restore_cell(
                 &conn,
                 &wake_birth,
                 wake_client.clone(),
                 &wake_path,
                 message_timeout,
             )
-            .expect("wake: restore params from cell.db overlay")
-            .with_attachment_reader(wake_attachments.clone());
+            .expect("wake: restore params from cell.db overlay");
+            let cell = cell.with_attachment_reader(wake_attachments.clone());
             let db = meclaw_colony::DbConn::wrap(conn, None);
             let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) =
                 build_stateful_task_with_peace(
@@ -328,6 +358,7 @@ mod tests {
             None,
         )
         .unwrap()
+        .0
         .params;
         assert_eq!(effective.model, "gpt-4o-mini");
         assert_eq!(effective.api_key.as_deref(), Some("x"));
@@ -348,8 +379,60 @@ mod tests {
             None,
         )
         .unwrap()
+        .0
         .params;
         assert_eq!(effective.model, "gpt-4o");
+    }
+
+    /// GH #1099: a backstop under the call is raised to call + margin at
+    /// spawn (the old 60 s colony default under the 110 s default call); one
+    /// that clears it, and "no backstop", stay as declared.
+    #[test]
+    fn a_backstop_under_the_call_is_raised_at_spawn() {
+        use meclaw_colony::persist::open_or_create_cell_db;
+        use std::time::Duration;
+        let td = tempfile::TempDir::new().unwrap();
+        let conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let birth = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
+        let run = |mt: Option<Duration>| {
+            restore_cell(&conn, &birth, reqwest::Client::new(), &Path::new("/l"), mt)
+                .unwrap()
+                .1
+        };
+        assert_eq!(
+            run(Some(Duration::from_millis(60_000))),
+            Some(Duration::from_millis(121_000))
+        );
+        assert_eq!(
+            run(Some(Duration::from_millis(200_000))),
+            Some(Duration::from_millis(200_000))
+        );
+        assert_eq!(run(None), None);
+        // fix1: two continuations -- a backstop of ext + margin no longer
+        // clears the message, it is raised to 3 x ext + margin.
+        let birth_c2 = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x",
+                              "external_timeout_ms": 100_000, "length_continuations": 2});
+        assert_eq!(
+            restore_cell(
+                &conn,
+                &birth_c2,
+                reqwest::Client::new(),
+                &Path::new("/l"),
+                Some(Duration::from_millis(110_000))
+            )
+            .unwrap()
+            .1,
+            Some(Duration::from_millis(310_000))
+        );
+        assert_eq!(
+            run(Some(Duration::from_millis(
+                meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS
+            ))),
+            Some(Duration::from_millis(
+                meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS
+            )),
+            "the colony default must clear the default call untouched"
+        );
     }
 
     #[test]

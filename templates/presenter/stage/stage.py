@@ -59,15 +59,28 @@ PHASE_WRITE = "write"
 FALLBACKS = ("none", "unsure", "no_topic", "timeout", "error", "no_selector",
              "invalid", "no_data", "foreign_round")
 
-# The decider's call carries 1 + 2*N questions; the decider takes at most 64 (E.2).
-MAX_TOPICS = 31
+# The decider's call carries 1 + 2*N questions (`topic`, then `<t>.lead` and
+# `<t>.also` per topic); the decider takes at most DECIDER_QUESTIONS (E.2, the
+# llm cell's `MAX_QUESTIONS` in `translate_decisions.rs`, a mirror), so
+# MAX_TOPICS is derived from it: 31 topics are 63 questions. A topic past it is
+# refused as `overflow` (an app's) or named on stderr (a built-in one), never
+# left out unsaid (GH #1098).
+DECIDER_QUESTIONS = 64
+MAX_TOPICS = (DECIDER_QUESTIONS - 1) // 2
 MAX_CANDIDATES = 5
 NONE = "none"
 NONE_TOPIC = "nothing on the screen helps with this request"
 NONE_ALSO = "no second block"
 
+# GH #1097 -- the verdict's deadline comes from the timeout chain (docs/cell-types.md
+# § llm, the decisions road): the slowest measured decision took 1007 ms (the decisions road
+# measurement, eight in parallel, 2026-10-02; 41 questions on the live wire 495 ms), the decider's own
+# operation timeout is twice that rounded up to the second (`decide`
+# `external_timeout_ms` 3000), and the stage waits that plus 1000 ms for the verdict's
+# way back (measured below 1 ms: t_verdict equals t_window). So a verdict the decider
+# may still deliver is never `late`; a template test holds the three numbers together.
 DEFAULTS = {
-    "budget_ms": 1000,
+    "budget_ms": 4000,
     "threshold": 0.7,
     "data_wait_ms": 4000,
     "also_threshold": 0.5,
@@ -98,7 +111,7 @@ TYPES = ("text", "int", "number", "boolean", "html")
 # GH #963: what the presenter observes, and its own topics
 
 # The tools whose CALLS the app block observes (`observes_tool_calls`), exactly the
-# occupants of a generation's own `./tools` hive (tools@1.4.7): their results are what the
+# occupants of a generation's own `./tools` hive (tools@1.4.8): their results are what the
 # string-form result observer hears from that hive. The file tool is `file` (op read,
 # write, list, stat), not `file_*`; the member's file space answers on its own road, which
 # no observer leg reaches (OR-DP.Q.1). A longer list is a pin change of the presenter.
@@ -645,8 +658,11 @@ def builtin_topics(params):
     extra = params.get("builtin_topics")
     for m in extra if isinstance(extra, list) else []:
         name = m.get("topic") if isinstance(m, dict) else None
-        if name in out or name in BUILTIN or len(out) >= MAX_TOPICS \
-                or check_topic(m, cat, own=True) is not None:
+        if name in out or name in BUILTIN or check_topic(m, cat, own=True) is not None:
+            continue
+        if len(out) >= MAX_TOPICS:
+            sys.stderr.write("presenter/stage: built-in topic %s left out -- the decider's "
+                             "call holds %d topics (MAX_TOPICS)\n" % (name, MAX_TOPICS))
             continue
         out[name] = {"owner": "", "manifest": m, "at": 0, "kind": "source"}
     return out

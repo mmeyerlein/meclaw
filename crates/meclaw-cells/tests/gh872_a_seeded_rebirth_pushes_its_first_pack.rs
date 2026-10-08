@@ -223,6 +223,8 @@ fn build_tree(
     );
     copy_cells(&templates_root().join("talky"), &root.join("main/talky"));
     patch(root, "main/affinity/clock/config.json", |v| {
+        // GH #1096: the clock ships no schedule; a test that wants a tick brings the row.
+        v["params"]["schedules"] = json!([{"schedule_name": "affinity-push", "emit_to": "../push", "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]}, "emit_headers": {}}]);
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
         // A literal of `./clock`'s own params since GH #138; two seconds so
         // several push ticks fire inside the failure marker.

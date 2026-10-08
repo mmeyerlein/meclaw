@@ -449,6 +449,7 @@ pub(crate) fn run_writer(
     mut rx: tokio::sync::mpsc::Receiver<ColonyWriteOp>,
     mut conn: rusqlite::Connection,
     queue_depth: Arc<AtomicI64>,
+    log_seq: Arc<tokio::sync::watch::Sender<u64>>,
 ) {
     while let Some(first) = rx.blocking_recv() {
         let tx = conn.transaction().expect("begin tx");
@@ -488,6 +489,9 @@ pub(crate) fn run_writer(
             tracing::error!(error = %e, "colony.db writer commit failed");
             panic!("colony.db writer commit failed: {e}");
         }
+        // GH #1099: the log moved -- wake every waiting reader. After the
+        // commit, so a woken reader always finds what woke it.
+        log_seq.send_modify(|seq| *seq = seq.wrapping_add(1));
         // Fire acks AFTER tx.commit() returned — durable ack guarantee.
         for a in acks {
             let _ = a.send(());

@@ -280,7 +280,7 @@ fn gate_stream() -> (Vec<Message>, usize) {
         "identity": {"names": {"first": "Ada"}}
     });
     let stream = vec![
-        // 2 store ops + audit + ack
+        // 2 store ops + audit + ack + the push nudge (GH #1096)
         proposal(
             json!({"op": "upsert_entity", "kind": "person", "display_name": "Ada", "aieos": aieos}),
         ),
@@ -292,7 +292,7 @@ fn gate_stream() -> (Vec<Message>, usize) {
         store_answer(None),
         // one error
         store_answer(Some("query_failed")),
-        // 1 store op + audit + ack
+        // 1 store op + audit + ack + the push nudge (GH #1096)
         proposal(
             json!({"op": "set_trust", "entity_id": "entity:1", "audience": "*", "level": "known"}),
         ),
@@ -310,13 +310,13 @@ fn gate_stream() -> (Vec<Message>, usize) {
         },
         // audit + ack (refused: no subscriber on the edge)
         proposal(json!({"op": "subscribe", "subject": "entity:1"})),
-        // 1 store op + audit + ack
+        // 1 store op + audit + ack + the push nudge (GH #1096)
         proposal(
             json!({"op": "propose", "source_ref": "turn:1", "entity_ref": "entity:1",
                         "field_path": "aieos.identity", "audience": "agent:x"}),
         ),
     ];
-    (stream, 4 + 2 + 1 + 3 + 2 + 2 + 3)
+    (stream, 5 + 2 + 1 + 4 + 2 + 2 + 4)
 }
 
 /// One emission with everything random (ids, timestamps) taken out: the lane,

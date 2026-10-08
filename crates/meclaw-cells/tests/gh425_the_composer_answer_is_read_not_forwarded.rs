@@ -136,8 +136,11 @@ fn the_composer_speaks_the_same_wire_as_every_other_shipped_llm_cell() {
          them extracted rather than concatenated into the system prompt, and a \
          composer that never declares the order never sends them"
     );
+    // GH #1097 / R-HK-13: 0 is the catalogue row's `max_output`, which every
+    // row the composer may run on states in the thousands.
+    let max_tokens = cfg["params"]["max_tokens"].as_u64().expect("max_tokens");
     assert!(
-        cfg["params"]["max_tokens"].as_u64().expect("max_tokens") >= 2048,
+        max_tokens == 0 || max_tokens >= 2048,
         "a manifest is longer than a spec — 512 truncates it into a refusal"
     );
 }

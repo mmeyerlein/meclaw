@@ -13,8 +13,13 @@
 //!    on route `answer` or `error`.
 //! 3. Print that hop's first turn, and exit on its route.
 //!
-//! Polling is legitimate here and only here: this is a client outside the
-//! substrate, not a cell inside it. The substrate itself stays event-driven.
+//! GH #1099: step 2 does not poll. Each read after the first passes the
+//! `log_seq` of the previous reply (`after_seq` + `wait_ms`), and the colony
+//! holds it until its log commits past that point -- so the answer is read
+//! the moment it is written, not on the next tick of a 500 ms clock (which
+//! added up to half a second to every CLI turn and every latency measured
+//! through it). Only against a colony too old to answer with `log_seq` does
+//! the loop fall back to `LEGACY_POLL_INTERVAL`.
 
 use anyhow::{Context, anyhow};
 use serde_json::{Value, json};
@@ -27,8 +32,10 @@ pub const EXIT_ERROR: i32 = 1;
 /// Exit code of a turn that was not answered before `--timeout`.
 pub const EXIT_TIMEOUT: i32 = 2;
 
-/// How often the trace is asked while the colony works on the turn.
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// How often the trace is asked of a colony that does not hold a read for the
+/// next commit (no `log_seq` in its reply: a binary before GH #1099), and
+/// after a failed read. The pre-#1099 cadence, kept for exactly that case.
+const LEGACY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Deadline of a single HTTP request. `--timeout` bounds the wait for an
 /// ANSWER; without this, one silent socket bounds nothing at all and the
@@ -36,6 +43,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// 40 s). Ten seconds is generous for a loopback read and short enough that the
 /// loop below notices its deadline.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// GH #1099: how long one read may be held by the colony while it waits for
+/// its log to move. Derived from [`HTTP_TIMEOUT`]: two seconds under it, so the
+/// held read is answered (and the next one asked) before the request's own
+/// deadline cuts it.
+const TRACE_WAIT: Duration = HTTP_TIMEOUT.saturating_sub(Duration::from_secs(2));
 
 /// Arguments of `meclaw ask`.
 #[derive(Debug, Clone, clap::Args)]
@@ -247,8 +260,9 @@ pub async fn run(args: AskArgs) -> anyhow::Result<i32> {
     }
 }
 
-/// Polls the trace and the dead letters until one of them speaks or `budget` is
-/// spent.
+/// Reads the trace and the dead letters until one of them speaks or `budget`
+/// is spent -- each read after the first held by the colony until its log
+/// moves (GH #1099).
 async fn wait_for_answer(
     client: &reqwest::Client,
     base: &str,
@@ -259,13 +273,21 @@ async fn wait_for_answer(
     let deadline = tokio::time::Instant::now() + budget;
     let mut saw_trace = false;
     let mut last_error: Option<anyhow::Error> = None;
+    // The colony's commit counter as of the last reply; `None` = read now.
+    let mut after_seq: Option<u64> = None;
     loop {
-        match read_trace(client, base, message_id).await {
+        let wait = after_seq.map(|seq| {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            (seq, left.min(TRACE_WAIT))
+        });
+        after_seq = None;
+        match read_trace(client, base, message_id, wait).await {
             Ok(trace) => {
                 // No `last_error = None` here: it is read only where no read
                 // ever succeeded, and that branch cannot be reached once this
                 // arm has run.
                 saw_trace = true;
+                after_seq = log_seq_of(&trace);
                 if let Some((row, verdict)) = first_terminal_row(&trace) {
                     print_answer(row, args.json);
                     return Ok(verdict.exit_code());
@@ -297,8 +319,17 @@ async fn wait_for_answer(
                 }
             };
         }
-        tokio::time::sleep(POLL_INTERVAL).await;
+        if after_seq.is_none() {
+            // An old colony (no `log_seq`) or a failed read: nothing to wait
+            // on, so the pre-#1099 cadence.
+            tokio::time::sleep(LEGACY_POLL_INTERVAL).await;
+        }
     }
+}
+
+/// GH #1099: the commit counter a reply carries, if the colony speaks it.
+pub fn log_seq_of(trace: &Value) -> Option<u64> {
+    trace.get("log_seq").and_then(Value::as_u64)
 }
 
 /// Prints what an answering row carries: its text, or the row itself.
@@ -353,15 +384,27 @@ async fn post_turn(
 }
 
 /// `GET /colony/trace` for exactly the turn that was sent.
+///
+/// `wait` = `(after_seq, max)`: the colony holds the read until its log
+/// commits past `after_seq` or `max` has passed (GH #1099).
 async fn read_trace(
     client: &reqwest::Client,
     base: &str,
     message_id: &str,
+    wait: Option<(u64, Duration)>,
 ) -> anyhow::Result<Value> {
     let url = format!("{base}/colony/trace");
+    let mut query: Vec<(&str, String)> = vec![
+        ("trace_id", message_id.to_string()),
+        ("limit", "1000".to_string()),
+    ];
+    if let Some((after_seq, max)) = wait {
+        query.push(("after_seq", after_seq.to_string()));
+        query.push(("wait_ms", max.as_millis().to_string()));
+    }
     let resp = client
         .get(&url)
-        .query(&[("trace_id", message_id), ("limit", "1000")])
+        .query(&query)
         .send()
         .await
         .with_context(|| format!("GET {url}"))?;
@@ -410,6 +453,15 @@ mod tests {
                 "messages": [{ "origin": "assistant", "type": "text", "text": text }]
             }).to_string(),
         })
+    }
+
+    /// GH #1099: a reply's `log_seq` is what the next read waits past; a
+    /// colony that does not send one gets the legacy cadence.
+    #[test]
+    fn the_next_read_waits_past_the_log_seq_of_the_last_reply() {
+        assert_eq!(log_seq_of(&json!({"trace": [], "log_seq": 41})), Some(41));
+        assert_eq!(log_seq_of(&json!({"trace": []})), None);
+        assert!(TRACE_WAIT < HTTP_TIMEOUT);
     }
 
     #[test]

@@ -440,6 +440,8 @@ fn build_tree(td: &tempfile::TempDir, with_trust: bool) {
     // `${uuid7:…}` is minted by the mutation path; a filesystem boot is handed a
     // literal, and the push clock a cron that never fires during a test.
     patch(root, "main/person/affinity/clock/config.json", |v| {
+        // GH #1096: the clock ships no schedule; a test that wants a tick brings the row.
+        v["params"]["schedules"] = json!([{"schedule_name": "affinity-push", "emit_to": "../push", "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]}, "emit_headers": {}}]);
         v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-000000000834");
         v["params"]["schedules"][0]["cron"] = json!("0 0 4 * * *");
     });

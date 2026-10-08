@@ -418,6 +418,12 @@ use tokio::sync::mpsc;
 /// spawn_cell canonicalises base_path and checks it is a directory.
 pub struct EditCellFactory;
 
+/// GH #1099: how many edits run at once by default. An edit is a short local
+/// file operation; the ceiling bounds open file descriptors under a burst,
+/// not the throughput, and eight is twice the shell ceiling of the same box.
+/// Over the ceiling a message waits for a free slot in the stateless
+/// dispatcher; since GH #1099 that wait is never silent -- the dispatcher logs
+/// it under `meclaw::concurrency` with the trace id and `waited_ms`.
 const DEFAULT_EDIT_MAX_CONCURRENCY: usize = 8;
 
 struct ParsedEditParams {

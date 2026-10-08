@@ -1,4 +1,4 @@
-# `freeswitch@2.4.1`
+# `freeswitch@2.4.3`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -58,6 +58,17 @@ edge back per handle. Deposit the two keys once into this broker's vault
 (`meclaw --root <root> --vault <instance>/access/vault --vault-add <credential>`,
 once per credential) and the next start of the hive asks for them.
 No key travels through `.env`.
+
+A line that runs ONE duplex provider instead of the pair (`params.duplex` on
+`./voice`) spends a third key. `voice` ships no handle for it, because its
+`duplex` block is null, so this hive ships one: `./access` seeds
+`grant:openai@template-freeswitch/duplex` (requester `agent:freeswitch/voice`,
+credential `cred:openai`) and the graph draws its `in_sealed` edge. A wish that
+sets `voice.duplex` names that handle in `duplex.credential_grant_id` and leaves
+`duplex.api_key` empty; the key is deposited into the same vault as the other
+two (#1103). Without the deposit the broker refuses the round and the cell
+refuses every duplex session after its wait; it never reads a key from the
+environment.
 
 ## What travels
 
@@ -251,7 +262,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.4.1",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.4.3",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -1152,7 +1163,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.4.1`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.4.3`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1165,7 +1176,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.4.1"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.4.3"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

@@ -14,6 +14,10 @@
           "type": "int",
           "default": 0
         },
+        "output_tps": {
+          "type": "int",
+          "default": 0
+        },
         "input_soft": {
           "type": "int",
           "default": 0

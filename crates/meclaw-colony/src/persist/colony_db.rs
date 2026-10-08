@@ -34,6 +34,11 @@ pub struct ColonyDb {
     /// a fresh `SQLITE_OPEN_READ_ONLY` connection inside `spawn_blocking`
     /// (WAL allows concurrent readers — the writer thread is unaffected).
     db_path: std::path::PathBuf,
+    /// GH #1099: the commit counter of the writer -- bumped once per
+    /// committed transaction, after `commit()` returned. A reader that waits
+    /// for the log to move (`ReadTrace` with `wait`) subscribes to it: an
+    /// event, never a re-read on a clock.
+    pub(crate) log_seq: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 /// Persisted mutation-log row from the `mutation_log` table (phase 6).
@@ -201,8 +206,10 @@ impl ColonyDb {
         let (writer_tx, writer_rx) = tokio::sync::mpsc::channel::<ColonyWriteOp>(1000);
         let queue_depth = Arc::new(AtomicI64::new(0));
         let qd_writer = queue_depth.clone();
+        let log_seq = Arc::new(tokio::sync::watch::channel(0_u64).0);
+        let seq_writer = log_seq.clone();
         let writer_join = std::thread::spawn(move || {
-            crate::persist::writer::run_writer(writer_rx, writer_conn, qd_writer);
+            crate::persist::writer::run_writer(writer_rx, writer_conn, qd_writer, seq_writer);
         });
         Ok(Self {
             writer_tx,
@@ -210,7 +217,13 @@ impl ColonyDb {
             writer_join: Some(writer_join),
             queue_depth,
             db_path: path.to_path_buf(),
+            log_seq,
         })
+    }
+
+    /// GH #1099: a receiver of the writer's commit counter (see `log_seq`).
+    pub fn subscribe_log_seq(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.log_seq.subscribe()
     }
 
     /// Current pending-op count (sent minus committed).
@@ -643,6 +656,7 @@ impl ColonyDb {
             read_conn: _,
             queue_depth: _,
             db_path: _,
+            log_seq: _,
         } = self;
         Self::send_shutdown_op_and_wait_sync(writer_tx);
         if let Some(h) = writer_join {
@@ -667,6 +681,7 @@ impl ColonyDb {
             read_conn: _,
             queue_depth: _,
             db_path: _,
+            log_seq: _,
         } = self;
         Self::send_shutdown_op_and_wait_async(writer_tx).await;
         if let Some(h) = writer_join {

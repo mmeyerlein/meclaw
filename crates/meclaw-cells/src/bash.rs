@@ -345,6 +345,13 @@ use meclaw_colony::{CellFactory, RespawnFn, SpawnedCellKind, build_stateless_tas
 /// Factory for `BashCell`. Unit struct — stateless, config lives in params.
 pub struct BashCellFactory;
 
+/// GH #1099: how many commands run at once by default. Each one is a child
+/// process with its own CPU and memory, so the ceiling is sized like a small
+/// box's cores rather than like the traffic; a turn's parallel tool round
+/// rarely asks for more than four shells at once.
+/// Over the ceiling a message waits for a free slot in the stateless
+/// dispatcher; since GH #1099 that wait is never silent -- the dispatcher logs
+/// it under `meclaw::concurrency` with the trace id and `waited_ms`.
 const DEFAULT_BASH_MAX_CONCURRENCY: usize = 4;
 const DEFAULT_BASH_EXTERNAL_TIMEOUT_MS: u64 = 60_000;
 /// What the cut mark tells the model to do for the rest of a cut output

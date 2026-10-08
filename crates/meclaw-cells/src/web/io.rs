@@ -1546,12 +1546,40 @@ async fn push_one(
     }
 }
 
-/// How often a viewer that lost a frame is offered the whole tree again.
+/// GH #1099: resolves as soon as ONE marked viewer has room for its whole tree
+/// (or is gone, or has no tree any more) -- the moment a resync can succeed.
 ///
-/// Short, because the window it closes is a person watching a picture that is
-/// already wrong; and only ever armed while somebody is actually marked, so an
-/// idle display ticks not at all.
-const RESYNC_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+/// It replaced a 50 ms retry clock: the window a resync closes is a person
+/// watching a picture that is already wrong, so it should close the instant
+/// the browser has drained, not on the next tick -- and a viewer that never
+/// drains no longer costs twenty wake-ups a second. The futures own clones of
+/// the outboxes, so `dirty` stays free for the push arm beside it.
+fn room_for_a_resync(
+    pages: &watch::Receiver<Arc<PageMap>>,
+    dirty: &HashMap<String, Addressed>,
+    chunk: usize,
+) -> impl std::future::Future<Output = ()> + use<> {
+    use futures_util::StreamExt;
+    let mut trees = Trees::default();
+    let mut waits = futures_util::stream::FuturesUnordered::new();
+    let mut ready = false;
+    for a in dirty.values() {
+        match trees.get(pages, &a.route, chunk, a.tx.max_capacity()) {
+            Some(tree) => {
+                let tx = a.tx.clone();
+                let n = tree.frames.len();
+                waits.push(async move { tx.room_for(n).await });
+            }
+            // No tree: `resync` drops the mark at once.
+            None => ready = true,
+        }
+    }
+    async move {
+        if !ready {
+            let _ = waits.next().await;
+        }
+    }
+}
 
 /// Offer every marked viewer its page's whole tree again.
 ///
@@ -1587,7 +1615,8 @@ fn resync(
 /// Two arms, and the second only exists while somebody is marked: a burst that
 /// fills a viewer's channel is caught by the push path (the next frame that
 /// viewer can be given is the whole tree), and the LAST frame of a burst — the
-/// one with no successor — is caught by the retry. Without it a person who drops
+/// one with no successor — is caught by the resync the moment the viewer has
+/// room again (GH #1099: an event, no retry clock). Without it a person who drops
 /// a node sees the picture snap back and stay there while the database is
 /// already correct.
 async fn fan_out(
@@ -1609,7 +1638,7 @@ async fn fan_out(
                     Some(push) => push_one(push, viewers, pages, dirty, chunk).await,
                     None => return,
                 },
-                _ = tokio::time::sleep(RESYNC_RETRY) => resync(pages, dirty, chunk),
+                () = room_for_a_resync(pages, dirty, chunk) => resync(pages, dirty, chunk),
             }
         }
     }
@@ -2156,6 +2185,61 @@ mod tests {
              newest state"
         );
 
+        drop(push_tx);
+        let _ = job.await;
+    }
+
+    /// GH #1099: the resync waits for the viewer's room, not for a clock. The
+    /// tree reaches the drained viewer at once; the old retry clock made it
+    /// wait out the rest of a 50 ms tick that had just been armed.
+    #[tokio::test]
+    async fn a_resync_goes_the_moment_the_viewer_has_room() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = Arc::new(ViewerRegistry::default());
+        let (wedged, mut wedged_rx) = viewer("/", 1);
+        wedged
+            .tx
+            .try_send(ViewerMsg::Frame("busy".to_string()))
+            .expect("prefill");
+        viewers.insert("a-wedged".to_string(), wedged).await;
+
+        let (push_tx, mut push_rx) = mpsc::channel::<WebReconfig>(8);
+        let viewers_for_task = viewers.clone();
+        let pages_for_task = pages_rx.clone();
+        let job = tokio::spawn(async move {
+            let mut dirty: HashMap<String, Addressed> = HashMap::new();
+            fan_out(
+                &mut push_rx,
+                &viewers_for_task,
+                &pages_for_task,
+                &mut dirty,
+                crate::web::params::JOIN_CHUNK_DEFAULT,
+            )
+            .await;
+        });
+        push_tx
+            .send(diff_push("0", "<i>only</i>"))
+            .await
+            .expect("push");
+        // Let the fan-out mark the viewer (its channel is full).
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        let t0 = std::time::Instant::now();
+        let _ = wedged_rx.recv().await.expect("the prefilled frame");
+        let got = wedged_rx.recv().await.expect("the tree").msg;
+        let lag = t0.elapsed();
+        assert!(
+            lag < std::time::Duration::from_millis(25),
+            "the tree must go when the room appears, not on a retry tick ({lag:?})"
+        );
+        let ViewerMsg::Frame(f) = got else {
+            panic!("a frame, not a close")
+        };
+        assert_eq!(
+            payload(&f),
+            page_map().get("/").expect("route").packed_tree()
+        );
         drop(push_tx);
         let _ = job.await;
     }

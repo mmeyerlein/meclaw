@@ -185,7 +185,12 @@ fn a_grant_request_is_untouched() {
         return;
     };
     let out = decide(&script, "allow", false);
-    assert_eq!(out.len(), 4, "the grant lane is four emissions, as before");
+    // GH #1096: the fifth is the nudge that has ./sweep arm its watchdog.
+    assert_eq!(
+        out.len(),
+        5,
+        "the grant lane is four emissions and the sweep nudge"
+    );
     assert_eq!(
         tables(&out),
         vec![

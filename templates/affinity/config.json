@@ -203,7 +203,7 @@
         {
           "from": "./clock",
           "to": "./push",
-          "condition": "has(hop.schedule_name) && hop.schedule_name == 'affinity-push'",
+          "condition": "has(hop.schedule_name) && (hop.schedule_name == 'affinity-push' || hop.schedule_name == 'affinity-push-write')",
           "modifier": {
             "set_context": {
               "affinity_origin": "'push'",
@@ -211,6 +211,28 @@
               "aff_carry": "''"
             }
           }
+        },
+        {
+          "from": "./push",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'clock'"
+        },
+        {
+          "from": "./clock",
+          "to": "./push",
+          "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'",
+          "modifier": {
+            "set_context": {
+              "affinity_origin": "'push'",
+              "aff_phase": "''",
+              "aff_carry": "''"
+            }
+          }
+        },
+        {
+          "from": "./gate",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'clock'"
         },
         {
           "from": "./brief",

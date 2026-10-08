@@ -77,6 +77,29 @@ fn smallest_chat_row() -> (String, u64) {
         .expect("a chat row")
 }
 
+/// Every chat row whose `input_soft` is the smallest one: two rows of one
+/// window size (`openai/gpt-4o` and `openai/gpt-4o-mini`, GH #1097) are both
+/// the smallest, and a shipped fallback may name either.
+fn smallest_chat_rows() -> Vec<String> {
+    let (_, soft) = smallest_chat_row();
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../templates/llm-registry/store/seed/models.jsonl");
+    std::fs::read_to_string(&p)
+        .expect("models.jsonl")
+        .lines()
+        .filter_map(|l| sj::from_str::<Value>(l).ok())
+        .filter(|r| matches!(r["status"].as_str(), Some("active" | "explicit")))
+        .filter(|r| {
+            matches!(
+                r["wire_dialect"].as_str(),
+                Some("chat_completions" | "responses")
+            )
+        })
+        .filter(|r| r["input_soft"].as_u64() == Some(soft))
+        .filter_map(|r| r["model_id"].as_str().map(str::to_string))
+        .collect()
+}
+
 /// Run the shipped script of `config` with `params`, swallow its exit, then
 /// `probe` in the same globals; stdout of the probe.
 fn probe(config: &str, params: Value, probe: &str) -> String {
@@ -526,9 +549,14 @@ fn an_ask_without_a_window_sizes_the_bundle_by_the_smallest_catalog_row() {
     // tokens: a fact of 30 000 characters (about 10 000 tokens) arrives
     // whole; one of 60 000 is cut with its mark and the bundle keeps its
     // budget.
-    let (row, soft) = smallest_chat_row();
+    let (_, soft) = smallest_chat_row();
     assert_eq!(shipped_param(RECALL, "input_soft_fallback"), json!(soft));
-    assert_eq!(shipped_param(RECALL, "input_soft_fallback_row"), json!(row));
+    let row = shipped_param(RECALL, "input_soft_fallback_row");
+    assert!(
+        smallest_chat_rows().iter().any(|id| json!(id) == row),
+        "the fallback row {row} is not one of the smallest chat rows {:?}",
+        smallest_chat_rows()
+    );
     let floor = probe(
         RECALL,
         json!({}),

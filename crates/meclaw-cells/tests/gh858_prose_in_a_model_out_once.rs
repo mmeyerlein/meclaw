@@ -1131,7 +1131,7 @@ fn a_claim_whose_catalogue_moved_is_asked_against_the_catalogue_now() {
             .collect()
     };
     // Review rev-F2, m2: a claim left standing where nothing is asked blocks
-    // its pair for the 120 s of `OPEN_QUESTION_SECONDS` with no question in
+    // its pair for the `OPEN_QUESTION_SECONDS` window with no question in
     // flight, so the two not-asked cases below lock the close positively.
     let closes_claim_1 = |ops: &[Value]| {
         ops.iter().any(|op| {

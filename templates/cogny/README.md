@@ -1,4 +1,4 @@
-# `cogny@5.9.4`
+# `cogny@5.9.5`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -102,7 +102,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.11.4"},
+{"cell": {"type": "ref", "template": "curator@1.11.5"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.9.4` above it in its provenance chain.
+`cogny@5.9.5` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -664,7 +664,7 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | knob | where | default | unit |
 |---|---|---|---|
 | `max_iter` | param | `16` (collector default `8`, [#980](https://github.com/mmeyerlein/meclaw/issues/980)) | collector -- **the loop bound**; at the cap the seam leaves on `answer` with `hop.round_capped == "1"`, `hop.partial == "1"` and a named partial answer as its last turn ([#570](https://github.com/mmeyerlein/meclaw/issues/570)). Raise it per instance for research-sized errands -- see above |
-| `round_idle_ms` | param | `630000` (collector default `120000`, [#980](https://github.com/mmeyerlein/meclaw/issues/980)) | collector -- idle window of one tool round; one program run of a file space's projection may take `exec_timeout_ms` (600000), so the window is that plus 30 s |
+| `round_idle_ms` | param | `630000` (collector default `120000`, [#980](https://github.com/mmeyerlein/meclaw/issues/980)) | collector -- idle window of one tool round; one program run of a file space's projection may take `exec_timeout_ms` (600000), so the window is that plus 30 s. Since GH #1097 the longest call of a round is held to it by a test: `tools/bash` runs as long as a projection (`external_timeout_ms` 600000) and every tool runs a full fan-out of the dispatcher's `max_calls` in one wave (`max_concurrency` 16), so the window outlasts every call by 30 s |
 | `memory_tier` | param | `""` | collector -- the AMBIENT memory leg, and it stays **empty** at this template since 4.4.0: a problem solver asks on purpose. Setting it gives the core a bundle before it has read the question, and pays for it every consult |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `interim` | param | `""` | dispatcher -- **off at this template since 4.4.0** ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). On (the shipped default, and what a channel voice keeps) a sentence standing next to a tool bundle leaves on the `answer` lane at once. This core has no channel, and its `answer` lane is the asking voice's advice lane, so such a sentence arrives as an advice nobody gave. Off it does not leave the dispatcher at all, and therefore does not enter this core's own window either -- a sentence nobody could hear was never said. The FINAL answer is untouched |
@@ -698,7 +698,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.9.4", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.9.5", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -726,8 +726,9 @@ a **resolved literal** (the K-H2 builder convention -- the builder resolves `MOD
 from `.env` itself), or the `MODEL_<ROLE>` token verbatim so the cell re-resolves it at every
 read.
 
-- `ctx.model` -> `brain`. A **thinking** model: the shipped `external_timeout_ms` is 300 s
-  and `message_timeout` 400 s, sized for a model that reasons. A fast channel model here
+- `ctx.model` -> `brain`. A **thinking** model: the shipped `external_timeout_ms` (3 058 s)
+  and `message_timeout` (3 364 s) are derived by the timeout chain of `docs/cell-types.md` from the row it is
+  born on, `openai/gpt-6-sol` (GH #1097): the row's whole `max_output` at its measured `output_tps`. A fast channel model here
   wastes the split between the surface and the core.
 - `ctx.model_fast` is **gone since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)),
   with the lane it fed. An instantiation that still passes it is not refused -- an unused ctx

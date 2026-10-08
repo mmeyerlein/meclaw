@@ -299,6 +299,8 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
     // `override_params`, so it is written where a mutation would have merged
     // it. The old line would have gone on being read by nothing.
     patch(root, "main/access/clock/config.json", |v| {
+        // GH #1096: the clock ships no schedule; a test that wants a tick brings the row.
+        v["params"]["schedules"] = json!([{"schedule_name": "access-sweep", "emit_to": "../sweep", "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "access-sweep"}]}, "emit_headers": {}}]);
         v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-0000000000ac");
         v["params"]["schedules"][0]["cron"] = json!(QUIET_CRON);
     });

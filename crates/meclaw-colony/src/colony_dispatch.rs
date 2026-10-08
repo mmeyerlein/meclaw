@@ -575,7 +575,10 @@ pub async fn handle_read_trace(
             Vec::new()
         }
     };
-    crate::api_dto::ReadTraceReply { entries }
+    crate::api_dto::ReadTraceReply {
+        entries,
+        log_seq: 0,
+    }
 }
 
 /// The bounds a ledger read is clamped into (GH #267, ruling Q14).
@@ -1892,6 +1895,7 @@ pub(crate) async fn run_mutation_door(
     idle_default_ms: u64,
     message_timeout_default_ms: u64,
     mailbox_default_capacity: usize,
+    restart_max_retries: u32, // GH #1099 — colony.json restart ceiling forwarded to handle_mutation
     strict_validation: bool,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     blob_inline_max_bytes: usize,
@@ -1922,6 +1926,7 @@ pub(crate) async fn run_mutation_door(
                 idle_default_ms,
                 message_timeout_default_ms,
                 mailbox_default_capacity,
+                restart_max_retries,
                 strict_validation,
                 blob_store,
                 blob_inline_max_bytes,
@@ -1956,6 +1961,7 @@ pub(crate) async fn run_mutation_door(
                 idle_default_ms,
                 message_timeout_default_ms,
                 mailbox_default_capacity,
+                restart_max_retries,
                 strict_validation,
                 blob_store,
                 blob_inline_max_bytes,
@@ -2036,6 +2042,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     idle_default_ms: u64, // Phase-13.5 A7 — colony.json idle-default forwarded to handle_mutation
     message_timeout_default_ms: u64, // P3-B-plumb-2 — colony.json B-backstop default forwarded to handle_mutation
     mailbox_default_capacity: usize, // Paket-1 T20 — colony.json mailbox-default forwarded to handle_mutation
+    restart_max_retries: u32, // GH #1099 — colony.json restart ceiling forwarded to handle_mutation
     strict_validation: bool, // paket-7 B5 — colony.json strict_validation forwarded to handle_mutation
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>, // Phase-13.5 A8 — forwarded to handle_mutation
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold forwarded to handle_mutation
@@ -2130,6 +2137,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                 idle_default_ms,
                 message_timeout_default_ms,
                 mailbox_default_capacity,
+                restart_max_retries,
                 strict_validation,
                 blob_store.clone(),
                 blob_inline_max_bytes,
@@ -2978,6 +2986,7 @@ mod tests {
             60_000,
             60_000,
             1000,
+            5,
             false,
             None,
             0,
@@ -3259,6 +3268,7 @@ mod tests {
             60_000,
             60_000,
             1000,
+            5,
             false,
             None,
             0,
@@ -3362,6 +3372,7 @@ mod tests {
             60_000,
             60_000,
             1000,
+            5,
             false,
             None,
             0,

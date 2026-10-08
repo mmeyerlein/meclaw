@@ -1,12 +1,12 @@
 {
-  "cell": { "type": "web_search" },
+  "cell": { "type": "web_search", "message_timeout": 40000 },
   "params": {
     "endpoint": "${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}",
     "api_key": "",
     "credential_grant_id": "",
     "credential_wait_max": 8,
     "external_timeout_ms": 15000,
-    "max_concurrency": 8
+    "max_concurrency": 16
   },
   "contract": {
     "version": "1.0.0",

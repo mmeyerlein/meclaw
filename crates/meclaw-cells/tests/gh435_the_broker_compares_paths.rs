@@ -92,8 +92,14 @@ fn decide(script: &str, rules: Value, resource: Value) -> Vec<Value> {
 }
 
 /// The payload of the answer the caller gets: `status` and `reason_code`.
+/// A minted grant is followed by the sweep nudge (GH #1096), so the answer is
+/// the last `grant` emission rather than the last emission.
 fn verdict(out: &[Value]) -> (String, String) {
-    let answer = out.last().expect("the script always answers");
+    let answer = out
+        .iter()
+        .rev()
+        .find(|m| m["header"]["route"] == json!("grant"))
+        .expect("the script always answers");
     assert_eq!(answer["header"]["route"], json!("grant"));
     let payload: Value =
         meclaw_core::serde_json::from_str(answer["messages"][0]["text"].as_str().expect("text"))

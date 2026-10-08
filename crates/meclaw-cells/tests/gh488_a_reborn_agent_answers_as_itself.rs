@@ -210,6 +210,8 @@ fn build_tree(
     copy_cells(affinity, &root.join("main/affinity"));
     copy_cells(talky, &root.join("main/talky"));
     patch(root, "main/affinity/clock/config.json", |v| {
+        // GH #1096: the clock ships no schedule; a test that wants a tick brings the row.
+        v["params"]["schedules"] = json!([{"schedule_name": "affinity-push", "emit_to": "../push", "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]}, "emit_headers": {}}]);
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
         // Since GH #138 the cadence is a literal of `./clock`'s own params, so
         // it is written here beside the schedule_id -- the form an

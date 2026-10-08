@@ -187,6 +187,8 @@ async fn boot() -> (tempfile::TempDir, ColonyHandle, mpsc::Receiver<Message>) {
     let clock = root.join("main/affinity/clock/config.json");
     let mut v: Value =
         meclaw_core::serde_json::from_str(&std::fs::read_to_string(&clock).unwrap()).unwrap();
+    // GH #1096: the clock ships no schedule; a test that wants a tick brings the row.
+    v["params"]["schedules"] = json!([{"schedule_name": "affinity-push", "emit_to": "../push", "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]}, "emit_headers": {}}]);
     v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-000000000832");
     v["params"]["schedules"][0]["cron"] = json!("0 0 4 * * *");
     std::fs::write(

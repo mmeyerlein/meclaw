@@ -526,10 +526,15 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
 /// on with an `override_params` schedule is that one instead. A `.env` line
 /// that stopped meaning anything would have been silent.
 #[test]
-fn the_three_clocks_tick_on_the_schedules_their_params_carry() {
+fn the_clocks_tick_on_the_schedules_their_params_carry() {
+    // `canvy/clock` left with GH #1096 (R-AG-1): canvy redraws on the mutation
+    // receipt, so the minute tick over an unchanged graph has no cell any more.
+    assert!(
+        !repo("templates/canvy/clock").exists(),
+        "canvy grew its minute clock back"
+    );
     for (cell, shipped) in [
         ("clock", "0 */5 * * * *"),
-        ("canvy/clock", "0 * * * * *"),
         ("daily-digest/clock", "0 0 8 * * *"),
     ] {
         let params = timer_params(cell);
@@ -625,7 +630,7 @@ fn the_digest_clock_carries_its_url_and_its_chat_id_on_the_schedule() {
 /// setting that documents nothing.
 #[test]
 fn every_declared_setting_of_the_three_clocks_is_the_literal_inside_the_schedule() {
-    for cell in ["clock", "canvy/clock", "daily-digest/clock"] {
+    for cell in ["clock", "daily-digest/clock"] {
         let cfg = config(cell);
         let settings = cfg["contract"]["settings"]
             .as_object()

@@ -44,6 +44,17 @@ impl ActorHandle {
         self.sender.try_send(msg).map_err(Box::new)
     }
 
+    /// The bounded capacity of this cell's mailbox -- the value it was spawned
+    /// with (`cell.mailbox_size`, else `colony.json mailbox_default_capacity`).
+    ///
+    /// GH #1099: a mailbox the colony swaps in for this cell (disconnect,
+    /// park) is sized from here, so the swap keeps the cell's own capacity
+    /// instead of a copy of the colony default that drifts when the config
+    /// changes.
+    pub fn mailbox_capacity(&self) -> usize {
+        self.sender.max_capacity()
+    }
+
     /// A second sender into this cell's mailbox.
     ///
     /// GH #850: only the overflow of a cell uses it. Its drain task owns the

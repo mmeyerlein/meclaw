@@ -548,7 +548,7 @@ const TIER0_BUNDLE: &str = concat!(
     r#"{"beliefs": [{"confidence": 0.9, "id": "b1", "statement": "alex prefers keyboard driven tools"}], "#,
     r#""episodes": [{"content": "The editor of choice is vscode.", "happened_at": "2026-08-09T09:00:00.000000Z", "id": "e1", "sender": "user"}], "#,
     r#""foresight": [{"claim": "ship the release on friday", "id": "f1", "predicate": "plans", "subject": "user:alex", "supersession_unknown": true, "valid_from": "2026-08-10T00:00:00.000000Z"}], "#,
-    r#""query": "what do we know?", "tier": 0, "token_estimate": 96}"#
+    r#""query": "what do we know?", "tier": 0, "token_estimate": 93}"#
 );
 
 /// The done-when of #295: the three fixed legs cost ONE store round trip, the

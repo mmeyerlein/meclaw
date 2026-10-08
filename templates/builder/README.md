@@ -1,4 +1,4 @@
-# `builder@1.26.36`
+# `builder@1.26.38`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -1798,9 +1798,9 @@ them alone gets the lane wrong:
 
 | | value | why |
 |---|---|---|
-| `params.external_timeout_ms` | 170 000 | the operation timeout (A): how long ONE model call may take before the cell emits a clean `provider_timeout` and carries on |
-| `cell.message_timeout` | 240 000 | the substrate backstop (B), 70 s above A so that A always fires first — `docs/meclaw-overview.md` § Timeouts, "B generous, A precise" |
-| `params.max_tokens` | 32 768 | the completion budget, and **reasoning spends it too** |
+| `params.external_timeout_ms` | 3 058 000 | the operation timeout (A): how long ONE model call may take before the cell emits a clean `provider_timeout` and carries on. Since GH #1097 derived by the timeout chain (`docs/cell-types.md` § llm) from the row the composer is born on (`openai/gpt-6-sol`, `contract.settings.external_timeout_ms_row`) |
+| `cell.message_timeout` | 3 364 000 | the substrate backstop (B), A plus the backstop margin of the chain (10 s, at least 10 %), so that A always fires first — `docs/meclaw-overview.md` § Timeouts, "B generous, A precise" |
+| `params.max_tokens` | 0 | the completion budget, and **reasoning spends it too**. Since GH #1097 (R-HK-13) the cell names no cap of its own: the request carries the model's catalogue `max_output` |
 
 The two caps were both measured, and both measurements first looked like
 statements about the model.
@@ -1828,7 +1828,9 @@ reason once already and was still not enough, and 16 384 — twice the budget th
 was measurably exhausted — left roughly 6 000 tokens of answer under the largest
 observed reasoning spend.
 
-**Since `1.2.0` it is 32 768**, and the reason is arithmetic rather than
+**Since GH #1097 it is the catalogue's `max_output`** (R-HK-13: an output cap belongs to the catalogue row, not to the cell); the history below is why a small cap failed.
+
+**From `1.2.0` it was 32 768**, and the reason is arithmetic rather than
 appetite. The wish this template exists for is now a whole agent: an
 organisation, a person, a generation and a channel is four declarations and
 **40** edges, and an edge with a guard and a modifier costs 60–120 tokens of

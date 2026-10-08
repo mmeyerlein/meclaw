@@ -154,7 +154,7 @@ impl CellFactory for ProxyCellFactory {
         colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<std::time::Duration>,
         _cell_timeout: i64,
-        _message_timeout: Option<std::time::Duration>,
+        message_timeout: Option<std::time::Duration>,
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
@@ -175,6 +175,7 @@ impl CellFactory for ProxyCellFactory {
                 contract.consumes.clone(),
                 contract.transfer_bounds(),
                 contract.ingress_carries_trace,
+                message_timeout,
             )?),
             ProxyPlatform::Slack => Box::new(make_build_slack(
                 params,
@@ -266,7 +267,7 @@ impl CellFactory for ProxyCellFactory {
         colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<std::time::Duration>,
         _cell_timeout: i64,
-        _message_timeout: Option<std::time::Duration>,
+        message_timeout: Option<std::time::Duration>,
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Option<RespawnFn> {
@@ -285,6 +286,7 @@ impl CellFactory for ProxyCellFactory {
                     contract.consumes.clone(),
                     contract.transfer_bounds(),
                     contract.ingress_carries_trace,
+                    message_timeout,
                 )
                 .ok()?,
             ),
@@ -372,6 +374,12 @@ fn make_build(
     bounds: meclaw_core::TransferBounds,
     // GH #617 — `contract.ingress.carries_trace`, handed to the LR funnel.
     carries_trace: bool,
+    // GH #1099 — this cell's resolved `message_timeout` (the colony default
+    // unless the cell declares one): only the FALLBACK typing ceiling of a
+    // hand-written config without `typing_max_ms`. The ceiling proper is the
+    // backstop of the cell that answers, which only the topology knows; the
+    // shipped connector carries it as `typing_max_ms` (review fix1).
+    default_backstop: Option<std::time::Duration>,
 ) -> Result<
     impl Fn() -> (
         mpsc::Sender<Message>,
@@ -394,8 +402,12 @@ fn make_build(
         bot_token_grant_id,
         credential_wait_ms,
         credential_backoff_max_ms,
+        typing_max_ms,
         ..
     } = ProxyParams::parse(&params)?;
+    // GH #1099: the typing keeper stands as long as the answer may come.
+    let typing_cadence =
+        crate::proxy::typing::TypingCadence::for_connector(typing_max_ms, default_backstop);
     // GH #1059 (OR-VG-4): a grant set → the literal is never used, not even
     // while the box is missing. Said once per birth, by param name, never value.
     if crate::credential::literal_is_ignored(bot_token_grant_id.as_deref(), Some(&bot_token)) {
@@ -480,6 +492,8 @@ fn make_build(
         // GH #907: the store a fetched document is committed to -- the same
         // handle the delivery boundary gets, on birth and respawn alike.
         .with_blob_store(blob_cap.clone());
+        let mut cell = cell;
+        cell.set_typing_cadence(typing_cadence);
         // GH #1059: a grant's connector is born without a token and asks for it.
         let cell = match bot_token_grant_id.as_deref() {
             Some(grant) => cell.with_credential(grant, credential_wait),

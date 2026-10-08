@@ -346,9 +346,14 @@ fn fresh_hash(recorded_at: &str) -> String {
 }
 
 /// `Some(new retry)` when the round sent a pack, `None` when it stayed silent
-/// -- and silent means silent: no pack, no write, no `audit` row.
+/// -- and silent means silent: no pack, no write, no `audit` row. The one
+/// thing a round may emit beside them is its resend watchdog (GH #1096), the
+/// clock order for the earliest due moment, which is not a send.
 fn round_with(retry: Value) -> Option<Value> {
-    let out = entities_round(&retry.to_string(), RECORDED);
+    let out: Vec<Value> = entities_round(&retry.to_string(), RECORDED)
+        .into_iter()
+        .filter(|m| m["header"]["route"] != "clock")
+        .collect();
     let briefs = out
         .iter()
         .filter(|m| m["header"]["route"] == "brief")
@@ -382,23 +387,50 @@ fn an_unconfirmed_pack_is_retried_with_a_doubling_gap_under_a_cap() {
     const CAP: f64 = 6.0 * 3600.0;
     let hash = fresh_hash(RECORDED);
 
-    // The first resend goes on the next tick, whenever that is, and the
-    // distance it measured becomes the unit: the next wait is twice it.
-    let t = epoch_now();
-    let second = round_with(json!({"hash": hash, "tries": 1, "at": t - 300.0, "gap": 0}))
-        .expect("the first resend goes on the next tick");
-    assert_eq!(second["tries"], 2, "{second}");
-    assert!(
-        (secs(&second["gap"]) - 600.0).abs() < 30.0,
-        "the next wait is twice the tick the first resend measured: {second}"
+    // GH #1096: no tick measures the unit any more. The first send waits
+    // RETRY_FIRST_S (300 s), and a resend once it is due doubles it.
+    let first = round_with(json!(null)).expect("a row never served is sent");
+    assert_eq!(
+        secs(&first["gap"]),
+        300.0,
+        "the first wait is five minutes: {first}"
     );
+    let t = epoch_now();
+    let second = round_with(json!({"hash": hash, "tries": 1, "at": t - 300.0, "gap": 300.0}))
+        .expect("the first resend goes once its five minutes are over");
+    assert_eq!(second["tries"], 2, "{second}");
+    assert_eq!(
+        secs(&second["gap"]),
+        600.0,
+        "the next wait is twice it: {second}"
+    );
+    // A note written before GH #1096 (`gap` 0) starts at the first wait.
+    let t = epoch_now();
+    let legacy = round_with(json!({"hash": hash, "tries": 1, "at": t - 1.0, "gap": 0}))
+        .expect("a legacy note is due");
+    assert_eq!(secs(&legacy["gap"]), 300.0, "{legacy}");
 
-    // Not yet due: silent. Due: sent, and the wait doubles.
+    // Not yet due: silent -- but the watchdog is armed for the moment it is.
     let t = epoch_now();
     assert!(
         round_with(json!({"hash": hash, "tries": 2, "at": t - 300.0, "gap": 600.0})).is_none(),
         "a try inside its wait must stay silent"
     );
+    let armed: Vec<Value> = entities_round(
+        &json!({"hash": hash, "tries": 2, "at": t - 300.0, "gap": 600.0}).to_string(),
+        RECORDED,
+    )
+    .into_iter()
+    .filter(|m| m["header"]["route"] == "clock")
+    .collect();
+    assert_eq!(
+        armed.len(),
+        1,
+        "one watchdog for the waiting pack: {armed:?}"
+    );
+    assert_eq!(armed[0]["op"], "add");
+    assert_eq!(armed[0]["schedule_name"], "affinity-push");
+    assert_eq!(armed[0]["rearm"], true);
     let t = epoch_now();
     let third = round_with(json!({"hash": hash, "tries": 2, "at": t - 601.0, "gap": 600.0}))
         .expect("a try whose wait is over goes again");
@@ -443,7 +475,9 @@ fn twenty_ticks_without_a_receipt_send_at_most_five_packs() {
     if affinity_shipped().is_none() {
         return;
     }
-    const TICK: f64 = 300.0;
+    // GH #1096: a tick just past the first wait (`retry_first_s`, 300 s), so
+    // the first resend is due on the very next one.
+    const TICK: f64 = 301.0;
     let mut state = Value::String(String::new());
     let mut sent_at_v: f64 = 0.0;
     let mut sends: Vec<usize> = Vec::new();
@@ -475,7 +509,7 @@ fn twenty_ticks_without_a_receipt_send_at_most_five_packs() {
     assert_eq!(
         &sends[..2],
         &[0, 1],
-        "the first pack goes at once and the first resend on the next tick: {sends:?}"
+        "the first pack goes at once and the first resend after five minutes: {sends:?}"
     );
 }
 
@@ -920,7 +954,6 @@ fn code_cell(script: &str, routes: &[&str], extra_hop: Value, extra_params: Valu
     })
 }
 
-const CLOCK_ID: &str = "01916f00-0000-7000-8000-000000000877";
 const NEVER: &str = "0 0 0 1 1 *";
 const SUBJECT: &str = "entity:alex";
 const ACKER_SUB: &str = "/acker";
@@ -1001,9 +1034,11 @@ fn build_affinity_tree(td: &tempfile::TempDir, affinity: &std::path::Path, ack_c
         ),
     );
     copy_cells(affinity, &root.join("main/affinity"));
-    patch(root, "main/affinity/clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // GH #1096: no clock tick to quiet any more (the clock ships no
+    // schedule). The first resend waits one second instead of five minutes,
+    // so the ticks below play the part the clock's resend watchdog plays.
+    patch(root, "main/affinity/push/config.json", |v| {
+        v["params"]["retry_first_s"] = json!(1);
     });
 }
 
@@ -1233,7 +1268,7 @@ async fn an_errored_ack_parks_the_pack_until_it_changes() {
     )
     .await;
 
-    h.send(to("/ticker", "tick")).await;
+    // GH #1096: the subscribe is a write, and the write runs the push.
     let first = recv_route(&mut s.push, "answer").await;
     assert_eq!(hop_of(&first, "pack_sub"), id, "{:?}", first.headers.hop);
     // The refused receipt reached the push cell and parked its hash on the
@@ -1268,8 +1303,9 @@ async fn an_errored_ack_parks_the_pack_until_it_changes() {
 
 /// The lock of review I-1, at the receiver: a subscriber whose receipt never
 /// comes (no door behind it -- the tap is the only place its pack lands) gets
-/// at most five packs in twenty ticks, and the second on the very next tick.
-/// Before the fix round every tick sent the same pack again, without end.
+/// at most five packs, and the second as soon as its first wait is over. Before
+/// the fix round every tick sent the same pack again, without end; since
+/// GH #1096 there is no tick and the resend watchdog is the only driver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_subscriber_that_never_confirms_gets_at_most_five_packs_in_twenty_ticks() {
     let Some(affinity) = affinity_shipped() else {
@@ -1291,29 +1327,33 @@ async fn a_subscriber_that_never_confirms_gets_at_most_five_packs_in_twenty_tick
     )
     .await;
 
-    // Tick 0 sends, and tick 1 -- the next one -- sends the first resend.
+    // GH #1096: no ticks. The subscribe runs the push, and the resend
+    // watchdog alone drives every further try -- one second first
+    // (`retry_first_s` in this tree), then doubling: 0, 1, 3, 7, 15 s.
+    let start = tokio::time::Instant::now();
     let mut packs = 0usize;
-    for _ in 0..2 {
-        tick_and_wait(&h, &td).await;
-        let m = recv_route(&mut s.push, "answer").await;
-        assert_eq!(hop_of(&m, "subscriber"), nobody, "{:?}", m.headers.hop);
-        packs += 1;
-    }
-    // Eighteen more ticks at a steady spacing -- the tick the wait doubles
-    // from -- then whatever is still under way reaches the tap.
-    for _ in 2..20usize {
-        tick_and_wait(&h, &td).await;
-        tokio::time::sleep(Duration::from_millis(400)).await;
-    }
-    while let Ok(Some(m)) = tokio::time::timeout(Duration::from_secs(2), s.push.recv()).await {
+    let mut second_at = None;
+    while let Ok(Some(m)) = tokio::time::timeout(
+        (start + Duration::from_secs(20)).saturating_duration_since(tokio::time::Instant::now()),
+        s.push.recv(),
+    )
+    .await
+    {
         if hop_of(&m, "route") == "answer" {
             assert_eq!(hop_of(&m, "subscriber"), nobody, "{:?}", m.headers.hop);
             packs += 1;
+            if packs == 2 {
+                second_at = Some(start.elapsed());
+            }
         }
     }
     assert!(
+        second_at.is_some_and(|t| t < Duration::from_secs(10)),
+        "the watchdog never sent the first resend: {packs} pack(s), second at {second_at:?}"
+    );
+    assert!(
         packs <= 5,
-        "a subscriber that never confirms got {packs} packs in 20 ticks"
+        "a subscriber that never confirms got {packs} packs in twenty seconds"
     );
 
     h.shutdown().await;
@@ -1643,9 +1683,11 @@ fn build_generation_tree(
         &json!({"cell": {"type": "hive"}}),
     );
     copy_cells(affinity, &root.join("main/affinity"));
-    patch(root, "main/affinity/clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // GH #1096: the clock ships no schedule. A pack that met no door goes
+    // again when its first wait is over -- six seconds here, so the door the
+    // lock draws is up by then and the resend is the one that lands.
+    patch(root, "main/affinity/push/config.json", |v| {
+        v["params"]["retry_first_s"] = json!(if door_at_boot { 300 } else { 6 });
     });
     let target = subscriber_literal();
     let rel = format!("main/{}", target.trim_start_matches("./"));
@@ -1731,9 +1773,9 @@ async fn a_pack_without_a_door_is_sent_again() {
     )
     .await;
 
-    // 1. The tick before the door. The pack LEAVES affinity (caught on the
-    //    tap), meets no edge into the generation, and the row stays unbooked.
-    h.send(to("/ticker", "tick")).await;
+    // 1. The push before the door -- the subscribe's own (GH #1096). The pack
+    //    LEAVES affinity (caught on the tap), meets no edge into the
+    //    generation, and the row stays unbooked.
     let early = recv_route(&mut s.push, "answer").await;
     assert_eq!(
         hop_of(&early, "subscriber"),
@@ -1767,10 +1809,9 @@ async fn a_pack_without_a_door_is_sent_again() {
         "the rendered identity door must commit: {outcome:?}"
     );
 
-    // 3. The next tick finds the row unbooked -- a change -- and delivers.
-    //    Its send is taken off the tap here, so that step 4 hears only what
-    //    the third tick says.
-    h.send(to("/ticker", "tick")).await;
+    // 3. The resend watchdog fires when the first wait is over, finds the row
+    //    unbooked -- a change -- and delivers. Its send is taken off the tap
+    //    here, so that step 4 hears only what the third run says.
     let resent = recv_route(&mut s.push, "answer").await;
     assert_eq!(hop_of(&resent, "pack_sub"), id, "{:?}", resent.headers.hop);
     let slots = eventually("the pack never reached the talky curator's ledger", || {
@@ -1873,7 +1914,7 @@ async fn talky_chat_gets_its_identity_pack() {
                "subscriber": subscriber}),
     )
     .await;
-    h.send(to("/ticker", "tick")).await;
+    // GH #1096: the subscribe is the write that runs the push.
 
     for rim in ["talky", "talky-chat", "cogny"] {
         let slots = eventually(

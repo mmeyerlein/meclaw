@@ -22,11 +22,11 @@ use std::collections::VecDeque;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-/// Default maximum number of *respawn attempts* after panic when no per-cell
-/// override is configured. "5 Versuche" per spec = 5 respawns, i.e. up to
-/// 6 cell instances total (1 original + 5 respawns).
-/// Used as the `unwrap_or` fallback in `handle_register`.
-const DEFAULT_RESTART_LIMIT: u32 = 5;
+/// Last-resort fallback of `handle_register` for a caller that resolves no
+/// ceiling (test helpers). Every production path resolves
+/// `cell.restart_limit ?? colony.json restart_max_retries` before it registers
+/// (GH #1099), so this is the colony.json default itself, never a copy.
+const DEFAULT_RESTART_LIMIT: u32 = crate::colony_config::DEFAULT_RESTART_MAX_RETRIES;
 
 /// Phase-13.5 Lifecycle-3b Task 4 (F5-Variante-A): default wall-clock budget for
 /// the inline death-ack-wait after a colony-initiated peace-stop during a
@@ -670,6 +670,9 @@ pub enum ColonyMsg {
         since: Option<i64>,
         /// Hard cap on returned entries; clamped to `1..=1000` in the arm.
         limit: usize,
+        /// GH #1099: `Some` = hold the read until the log moves past
+        /// `after_seq` (or `max`); `None` = read now.
+        wait: Option<crate::api_dto::TraceWait>,
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadTraceReply>,
     },
@@ -1280,10 +1283,6 @@ async fn handle_sleep(
     let _ = inbox_self_tx; // kept for symmetry with `handle_register`; future uses
 }
 
-/// Mailbox capacity for the fresh channel pair swapped in at disconnect (A3).
-/// Mirrors the production cell-mailbox convention (1000, see cell factories).
-const DISCONNECT_MAILBOX_CAPACITY: usize = 1000;
-
 /// Phase-13.5 Lifecycle-3b Task 4 (A3): `ColonyMsg::Stopped` arm handler.
 ///
 /// The cell-task already fired `peace_tx` (→ watcher silent, no `CellDied`, no
@@ -1384,7 +1383,10 @@ async fn handle_stopped(
     let Some(entry) = registry.get_mut(&owner) else {
         return;
     };
-    let (new_tx, new_rx) = mpsc::channel::<Message>(DISCONNECT_MAILBOX_CAPACITY);
+    // GH #1099: the fresh pair keeps the capacity the cell was spawned with
+    // (`cell.mailbox_size ?? colony.json mailbox_default_capacity`), read off
+    // the mailbox it replaces -- not a copy of the default.
+    let (new_tx, new_rx) = mpsc::channel::<Message>(entry.handle.mailbox_capacity());
     entry.handle = ActorHandle::new(owner.clone(), new_tx);
     entry.status = CellStatus::NotYetSpawned { receiver: new_rx };
     entry.active = false;
@@ -1397,7 +1399,8 @@ async fn handle_stopped(
 /// later `add_nodes`-resume passes the `resume_requires_stopped_cell` gate.
 /// `active`/`failed` are already set by the `handle_cell_died` corridor.
 fn park_entry_non_running(entry: &mut RegistryEntry, path: &Path) {
-    let (new_tx, new_rx) = mpsc::channel::<Message>(DISCONNECT_MAILBOX_CAPACITY);
+    // GH #1099: same capacity as the mailbox it replaces (see `handle_stopped`).
+    let (new_tx, new_rx) = mpsc::channel::<Message>(entry.handle.mailbox_capacity());
     entry.handle = ActorHandle::new(path.clone(), new_tx);
     entry.status = CellStatus::NotYetSpawned { receiver: new_rx };
 }
@@ -2145,7 +2148,7 @@ async fn run_shutdown_teardown(
                     death_ack_rx,
                     respawn,
                     wake,
-                    restart_limit,
+                    restart_limit.or(Some(colony_config.restart_max_retries)),
                     cell_id,
                     cell_type,
                     active,
@@ -2177,7 +2180,7 @@ async fn run_shutdown_teardown(
                     receiver,
                     respawn,
                     wake,
-                    restart_limit,
+                    restart_limit.or(Some(colony_config.restart_max_retries)),
                     cell_id,
                     cell_type,
                     active,
@@ -2365,6 +2368,7 @@ async fn run_shutdown_teardown(
                                 colony_config.idle_timeout_default_ms,
                                 colony_config.message_timeout_default_ms,
                                 colony_config.mailbox_default_capacity,
+                                colony_config.restart_max_retries,
                                 colony_config.strict_validation,
                                 blob_store.clone(),
                                 colony_config.blob_inline_max_bytes,
@@ -2631,6 +2635,7 @@ async fn run_shutdown_teardown(
                     colony_config.idle_timeout_default_ms,
                     colony_config.message_timeout_default_ms,
                     colony_config.mailbox_default_capacity,
+                    colony_config.restart_max_retries,
                     colony_config.strict_validation,
                     blob_store.clone(),
                     colony_config.blob_inline_max_bytes,
@@ -2684,6 +2689,7 @@ async fn run_shutdown_teardown(
                     colony_config.idle_timeout_default_ms,
                     colony_config.message_timeout_default_ms,
                     colony_config.mailbox_default_capacity,
+                    colony_config.restart_max_retries,
                     colony_config.strict_validation,
                     blob_store.clone(),
                     colony_config.blob_inline_max_bytes,
@@ -2909,13 +2915,15 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     };
 
     // Deep-Audit F3: heartbeat liveness clock. The interval arm (last in the
-    // biased select below) wakes the loop ~10×/s while idle; the actual heartbeat
+    // biased select below) wakes the loop twice per supervisor period while idle
+    // (GH #1099: `ColonyConfig::heartbeat_interval`, derived from
+    // `watchdog_period_ms` instead of a fixed 100 ms); the actual heartbeat
     // is emitted at the TOP of every iteration (message-driven OR interval-driven)
     // so a saturated inbox never starves it. Panic → loop gone → heartbeat stops;
     // a handler wedged in `.await` → loop stuck → heartbeat stops. Both detected by
     // the supervisor. NOTE: this arm lives in the select-LOOP, NOT in `route()` /
     // `handle_cell_died` (both stay byte-frozen).
-    let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    let mut heartbeat_interval = tokio::time::interval(colony_config.heartbeat_interval());
     // GH #439: the handle a running mutation beats on while it works. Built once
     // (a clone is an `Arc` bump plus a channel-sender clone) and re-labelled by
     // `handle_mutation` with the id and scope it mints for itself. `None`
@@ -3253,14 +3261,14 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     ColonyMsg::Register { path, sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx, respawn, wake, restart_limit, cell_id, cell_type, active, ack } => {
                         let registered = path.clone();
-                        handle_register(&mut registry, &inbox_self_tx, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx, respawn, wake, restart_limit, cell_id, cell_type, active, ack).await;
+                        handle_register(&mut registry, &inbox_self_tx, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx, respawn, wake, restart_limit.or(Some(colony_config.restart_max_retries)), cell_id, cell_type, active, ack).await;
                         // GH #850: an overflow that survived a restart starts
                         // draining once its cell is back.
                         adopt_overflow(&registry, &mut in_flight, &registered);
                     }
                     ColonyMsg::RegisterDormant { path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack } => {
                         let registered = path.clone();
-                        handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack).await;
+                        handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit.or(Some(colony_config.restart_max_retries)), cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack).await;
                         adopt_overflow(&registry, &mut in_flight, &registered);
                     }
                     ColonyMsg::AddEdge { id, from, to, ack } => {
@@ -3377,6 +3385,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                         colony_config.idle_timeout_default_ms,
                                         colony_config.message_timeout_default_ms,
                                         colony_config.mailbox_default_capacity,
+                                        colony_config.restart_max_retries,
                                         colony_config.strict_validation,
                                         blob_store.clone(),
                                         colony_config.blob_inline_max_bytes,
@@ -3614,8 +3623,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     // loop (GH #571). It is a marker, not a trip caption: the loop parks right
                     // after the spawn, a read is no longer a work item of the loop, and a trip
                     // during one is a parked loop's trip. It costs one `try_send`.
-                    ColonyMsg::ReadTrace { trace_id, path_prefix, correlation_id, only_error, since, limit, ack } => {
+                    ColonyMsg::ReadTrace { trace_id, path_prefix, correlation_id, only_error, since, limit, wait, ack } => {
                         let db_path = colony_db.db_path().to_path_buf();
+                        let mut log_seq = colony_db.subscribe_log_seq();
                         beat(
                             &heartbeat_tx,
                             crate::watchdog::Beat::WorkingOn(crate::watchdog::WorkItem::new(
@@ -3624,13 +3634,37 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         );
                         let admission = log_reads.clone();
                         tokio::spawn(async move {
-                            // A closed semaphore is impossible (nothing closes it); a
-                            // failed acquire would only mean the ack falls into the void.
-                            let Ok(_permit) = admission.acquire_owned().await else { return };
-                            let reply = crate::colony_dispatch::handle_read_trace(
-                                &db_path, trace_id, path_prefix, correlation_id, only_error, since, limit,
-                            ).await;
-                            let _ = ack.send(reply);
+                            let mut ack = ack;
+                            let read = async move {
+                                // A closed semaphore is impossible (nothing closes it); a
+                                // failed acquire would only mean the ack falls into the void.
+                                // GH #1099: a waiting read waits for the writer's next commit
+                                // BEFORE it takes a permit -- an event, not a re-read on a clock.
+                                if let Some(w) = wait {
+                                    let _ = tokio::time::timeout(
+                                        w.max,
+                                        log_seq.wait_for(|seq| *seq != w.after_seq),
+                                    )
+                                    .await;
+                                }
+                                let seq = *log_seq.borrow_and_update();
+                                let _permit = admission.acquire_owned().await.ok()?;
+                                let mut reply = crate::colony_dispatch::handle_read_trace(
+                                    &db_path, trace_id, path_prefix, correlation_id, only_error, since, limit,
+                                ).await;
+                                reply.log_seq = seq;
+                                Some(reply)
+                            };
+                            // GH #1099 (review fix1): a caller that hung up ends the task
+                            // at once -- a held read would otherwise sit out its whole
+                            // `max` (and keep its log subscription) for nobody.
+                            let reply = tokio::select! {
+                                _ = ack.closed() => return,
+                                reply = read => reply,
+                            };
+                            if let Some(reply) = reply {
+                                let _ = ack.send(reply);
+                            }
                         });
                     }
                     ColonyMsg::ReadLedger { query, ack } => {
@@ -3736,6 +3770,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             colony_config.idle_timeout_default_ms,
                             colony_config.message_timeout_default_ms,
                             colony_config.mailbox_default_capacity,
+                            colony_config.restart_max_retries,
                             colony_config.strict_validation,
                             blob_store.clone(),
                             colony_config.blob_inline_max_bytes,
@@ -3796,6 +3831,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             colony_config.idle_timeout_default_ms,
                             colony_config.message_timeout_default_ms,
                             colony_config.mailbox_default_capacity,
+                            colony_config.restart_max_retries,
                             colony_config.strict_validation,
                             blob_store.clone(),
                             colony_config.blob_inline_max_bytes,
@@ -4290,6 +4326,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     colony_config.idle_timeout_default_ms,
                                     colony_config.message_timeout_default_ms,
                                     colony_config.mailbox_default_capacity,
+                                    colony_config.restart_max_retries,
                                     colony_config.strict_validation,
                                     blob_store.clone(),
                                     colony_config.blob_inline_max_bytes,
@@ -4315,7 +4352,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 }
             }
             // Deep-Audit F3: heartbeat wake. Last in the biased select → fires only
-            // when inbox/outputs are idle, waking the loop ~10×/s so the top-of-loop
+            // when inbox/outputs are idle, waking the loop twice per supervisor
+            // period (GH #1099) so the top-of-loop
             // heartbeat keeps flowing during quiescence. Guarded by `is_some()` so a
             // watchdog-less spawn (`heartbeat_tx == None`, tests) keeps byte-identical
             // select behaviour. Body empty: the liveness emit happens at loop top.
@@ -5583,6 +5621,7 @@ pub(crate) async fn handle_manifest(
     idle_default_ms: u64,
     message_timeout_default_ms: u64,
     mailbox_default_capacity: usize,
+    restart_max_retries: u32, // GH #1099 — colony.json restart ceiling for mutation-spawn
     strict_validation: bool,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     blob_inline_max_bytes: usize,
@@ -5632,6 +5671,7 @@ pub(crate) async fn handle_manifest(
             idle_default_ms,
             message_timeout_default_ms,
             mailbox_default_capacity,
+            restart_max_retries,
             strict_validation,
             blob_store.clone(),
             blob_inline_max_bytes,
@@ -5704,6 +5744,7 @@ pub(crate) async fn handle_mutation(
     idle_default_ms: u64, // Phase-13.5 A7 — colony.json idle-default for mutation-spawn
     message_timeout_default_ms: u64, // P3-B-plumb-2 — colony.json B-backstop default for mutation-spawn
     mailbox_default_capacity: usize, // Paket-1 T20 — colony.json mailbox-default for mutation-spawn
+    restart_max_retries: u32,        // GH #1099 — colony.json restart ceiling for mutation-spawn
     strict_validation: bool, // paket-7 B5 — colony.json strict_validation for mutation-spawn validate_emits resolution
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>, // Phase-13.5 A8 — delivery-boundary resolution
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold for EDA error-reply paths
@@ -9032,7 +9073,7 @@ pub(crate) async fn handle_mutation(
                     respawn: real_respawn,
                     wake,
                     restart_count: 0,
-                    restart_limit: DEFAULT_RESTART_LIMIT,
+                    restart_limit: restart_max_retries,
                     cell_id,
                     cell_type: sd.template.clone(),
                     status: CellStatus::NotYetSpawned { receiver },
@@ -9209,7 +9250,7 @@ pub(crate) async fn handle_mutation(
                         respawn,
                         wake,
                         restart_count: 0,
-                        restart_limit: DEFAULT_RESTART_LIMIT,
+                        restart_limit: restart_max_retries,
                         cell_id,
                         cell_type: sd.template.clone(),
                         status: CellStatus::Awake,
@@ -9259,7 +9300,7 @@ pub(crate) async fn handle_mutation(
                         // Lazy kind: the factory's REAL wake (wake-on-message).
                         wake: Some(wake),
                         restart_count: 0,
-                        restart_limit: DEFAULT_RESTART_LIMIT,
+                        restart_limit: restart_max_retries,
                         cell_id,
                         cell_type: sd.template.clone(),
                         status: CellStatus::NotYetSpawned { receiver },
@@ -9546,7 +9587,7 @@ pub(crate) async fn handle_mutation(
                     respawn,
                     wake,
                     restart_count: 0,
-                    restart_limit: DEFAULT_RESTART_LIMIT,
+                    restart_limit: restart_max_retries,
                     cell_id,
                     cell_type: cell.cell_type.clone(),
                     status: CellStatus::NotYetSpawned {
@@ -13196,6 +13237,140 @@ mod tests {
         s_ack_rx.await.unwrap();
         join.await.unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// GH #1099: `colony.json restart_max_retries` is the registry's ceiling
+    /// for a cell that declares none. With 0, the first panic fails the cell
+    /// -- the respawn must never run (it used to: the constant 5 won).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn colony_restart_max_retries_is_the_ceiling() {
+        let (inbox_tx, inbox_rx) = mpsc::channel(8);
+        let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
+        let (tap_tx, mut tap_rx) = mpsc::channel(64);
+        let calls = Arc::new(AtomicU32::new(0));
+        let _td = tempfile::TempDir::new().unwrap();
+        let _db = crate::ColonyDb::open(&_td.path().join("c.db")).unwrap();
+        let config = crate::ColonyConfig {
+            restart_max_retries: 0,
+            ..crate::ColonyConfig::default()
+        };
+        let join = tokio::spawn(colony_task(ColonyTaskConfig::new(
+            inbox_tx.clone(),
+            inbox_rx,
+            out_tx.clone(),
+            out_rx,
+            _db,
+            crate::CellFactoryRegistry::new(),
+            _td.path().to_path_buf(),
+            config,
+            None,
+            None,
+        )));
+        let (cell_in_tx, cell_in_rx) = mpsc::channel(8);
+        let cell = FailOnDemandMockCell::new(Path::new("/f"), 1, calls.clone()).tap_to(tap_tx);
+        let cell_join = tokio::spawn(cell_task(
+            Path::new("/f"),
+            cell_in_rx,
+            out_tx.clone(),
+            cell,
+            None,
+            None,
+            Some(inbox_tx.clone()),
+        ));
+        let respawned = Arc::new(AtomicU32::new(0));
+        let respawned_in = respawned.clone();
+        let respawn_inbox = inbox_tx.clone();
+        let respawn_out = out_tx.clone();
+        let respawn: RespawnFn = Box::new(move || {
+            respawned_in.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (tx, rx) = mpsc::channel::<Message>(8);
+            let (peace_tx, peace_rx) = tokio::sync::oneshot::channel();
+            let (_backstop_tx, backstop_rx) = tokio::sync::oneshot::channel();
+            let outputs_inner = respawn_out.clone();
+            let inbox_inner = respawn_inbox.clone();
+            let j = tokio::spawn(async move {
+                let _peace_keep = peace_tx;
+                cell_task(
+                    Path::new("/f"),
+                    rx,
+                    outputs_inner,
+                    EchoMockCell::new(Path::new("/f")),
+                    None,
+                    None,
+                    Some(inbox_inner),
+                )
+                .await;
+            });
+            (tx, j, peace_rx, backstop_rx)
+        });
+        let (_peace_tx_initial, peace_rx_initial) = tokio::sync::oneshot::channel::<()>();
+        drop(_peace_tx_initial);
+        let (ack_tx, ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Register {
+                path: Path::new("/f"),
+                sender: cell_in_tx,
+                join: cell_join,
+                peace_rx: peace_rx_initial,
+                backstop_rx: dropped_backstop_rx(),
+                stop_tx: None,
+                death_ack_rx: None,
+                respawn,
+                wake: None,
+                restart_limit: None,
+                cell_id: Uuid::now_v7(),
+                cell_type: "test-mock".into(),
+                active: true,
+                ack: ack_tx,
+            })
+            .await
+            .unwrap();
+        ack_rx.await.unwrap();
+        inbox_tx
+            .send(ColonyMsg::Route {
+                sender_path: Path::new("/"),
+                msg: MessageBuilder::new(Path::new("/f")).build(),
+            })
+            .await
+            .unwrap();
+        let _ = tap_rx.recv().await;
+        // Failure-marker bound: only exhausted when the property is broken.
+        let mut failed = false;
+        for _ in 0..200 {
+            let (r_tx, r_rx) = oneshot::channel();
+            inbox_tx
+                .send(ColonyMsg::ReadRegistry {
+                    path: Some(Path::new("/f")),
+                    path_prefix: None,
+                    cell_type: None,
+                    active: None,
+                    limit: 10,
+                    ack: r_tx,
+                })
+                .await
+                .unwrap();
+            if r_rx.await.unwrap().entries.iter().any(|e| e.failed) {
+                failed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let (s_ack_tx, s_ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Shutdown { ack: s_ack_tx })
+            .await
+            .unwrap();
+        s_ack_rx.await.unwrap();
+        join.await.unwrap();
+        assert!(
+            failed,
+            "restart_max_retries 0: the first panic fails the cell"
+        );
+        assert_eq!(
+            respawned.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "restart_max_retries 0: no respawn"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

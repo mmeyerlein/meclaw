@@ -48,7 +48,7 @@ pub const PERSON: &str = "alex";
 pub const ROUND: &str = r#"["agent:scribe","member:alex"]"#;
 /// The speaker, as the member's entry in that round spells it.
 pub const SPEAKER: &str = "member:alex";
-pub const TELEGRAM: &str = "telegram-connector@2.1.1";
+pub const TELEGRAM: &str = "telegram-connector@2.2.0";
 
 /// The member's one-to-one chat (the chat id IS the sender's id).
 pub const OWN_CHAT: i64 = 111;

@@ -61,7 +61,8 @@ pub struct CodeParams {
     pub runner: String,
     /// Script source: exactly one of file path or inline code.
     pub script: Script,
-    /// Optional per-execution timeout in milliseconds (A-Timeout).
+    /// Optional per-execution timeout in milliseconds (A-Timeout); absent →
+    /// [`DEFAULT_CODE_EXTERNAL_TIMEOUT_MS`].
     pub external_timeout_ms: Option<u64>,
     /// Optional maximum number of concurrent script executions.
     pub max_concurrency: Option<usize>,
@@ -171,10 +172,29 @@ impl CodeParams {
     pub fn effective_max_concurrency(&self) -> usize {
         match self.runner_mode {
             RunnerMode::Resident => 1,
-            _ => self.max_concurrency.unwrap_or(4),
+            _ => self.max_concurrency.unwrap_or(DEFAULT_CODE_MAX_CONCURRENCY),
         }
     }
 }
+
+/// GH #1099: how many script executions run at once by default (`cold` and
+/// `pool`; `resident` is always 1). Each one is a child interpreter with its
+/// own CPU and memory, so the ceiling matches the `bash` cell's: sized like a
+/// small box's cores, not like the traffic. Over it a message waits for a
+/// free slot, and the dispatcher logs that wait under `meclaw::concurrency`.
+pub const DEFAULT_CODE_MAX_CONCURRENCY: usize = 4;
+
+/// GH #1099: the default A-timeout of ONE script execution, in ms (60 s).
+///
+/// The phase-9 figure, now named: a code cell runs a local script against its
+/// workspace -- no provider round trip -- and a run past a minute is a script
+/// that needs its own declared timeout, not a default. It sits under the
+/// colony's default backstop by the backstop rule (`60 000 + 10 000` =
+/// 70 000 <= `meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS`, pinned by a test),
+/// so an undeclared run fails on its own clean timeout before the substrate
+/// steps in. A longer job declares `params.external_timeout_ms` and the
+/// matching `cell.message_timeout`.
+pub const DEFAULT_CODE_EXTERNAL_TIMEOUT_MS: u64 = 60_000;
 
 /// GH #1060: the name of the environment entry a granted credential reaches
 /// the script in, unless `params.credential_env` names another.
@@ -283,6 +303,20 @@ mod tests {
         // "ruby" rejected — only python3 in Phase 9.
         let r2 = CodeParams::parse(&json!({"runner":"ruby","script_path":"x.rb"}));
         assert!(r2.is_err());
+    }
+
+    /// GH #1099: the default script timeout clears the colony's default
+    /// backstop by the backstop rule, so an undeclared run ends on its own
+    /// timeout, never on the substrate's.
+    #[test]
+    fn the_default_script_timeout_sits_under_the_default_backstop() {
+        assert_eq!(
+            crate::llm::params::backstop_shortfall(
+                DEFAULT_CODE_EXTERNAL_TIMEOUT_MS,
+                Some(meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS)
+            ),
+            None
+        );
     }
 
     #[test]

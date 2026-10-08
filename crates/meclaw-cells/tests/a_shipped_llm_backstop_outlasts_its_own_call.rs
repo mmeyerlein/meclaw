@@ -21,7 +21,8 @@
 //!
 //! Because the inversion is invisible from the file that carries it. A cell
 //! declares A and stays silent about B; B then falls to the colony default
-//! (`message_timeout_default_ms`, 60 000 ms), and nothing in the template says
+//! (`message_timeout_default_ms`, then 60 000 ms; derived from the default
+//! call since GH #1099, 121 000 ms), and nothing in the template says
 //! so. `templates/builder/compose/config.json` declared
 //! `external_timeout_ms: 170000` and no backstop — so the watchdog killed the
 //! cell at 60 s, the supervisor restarted it, and what the caller saw was
@@ -246,28 +247,41 @@ fn the_verdict_reads_both_sides() {
 #[test]
 fn an_inverted_pair_is_reported() {
     // The shape `templates/builder/compose/config.json` shipped: a declared
-    // 170 s call under the 60 s colony default.
+    // 170 s call under the colony default (60 s then, 121 s since GH #1099 --
+    // still under the call).
     let fabricated = serde_json::json!({
         "cell": { "type": "llm" },
         "params": { "provider": "openai", "model": "x", "external_timeout_ms": 170_000u64 }
     });
     let d = deadlines_of(&fabricated).expect("the fabricated params parse");
     assert_eq!(d.external_ms, 170_000);
-    assert_eq!(d.backstop_ms, Some(60_000));
+    assert_eq!(
+        d.backstop_ms,
+        Some(meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS)
+    );
     let complaint = inversion(d).expect("the inversion is reported");
-    assert!(complaint.contains("60000"), "{complaint}");
+    assert!(complaint.contains("121000"), "{complaint}");
 }
 
 #[test]
 fn an_undeclared_call_is_not_a_neutral_one() {
-    // A cell that declares no `external_timeout_ms` still makes a 110 s call,
-    // which is already above the 60 s colony default. This is the half of the
-    // audit that no reading of the FILES alone would have found.
+    // A cell that declares no `external_timeout_ms` still makes a 110 s call.
+    // Under the old 60 s colony default that was an inversion no reading of
+    // the FILES alone would have found; since GH #1099 the default is derived
+    // from exactly this call, so declaring nothing on either side is clean.
     let fabricated = serde_json::json!({
         "cell": { "type": "llm" },
         "params": { "provider": "openai", "model": "x" }
     });
     let d = deadlines_of(&fabricated).expect("the fabricated params parse");
     assert_eq!(d.external_ms, 110_000);
-    assert!(inversion(d).is_some());
+    assert!(inversion(d).is_none());
+    // ...while the old default is still caught as the inversion it was.
+    assert!(
+        inversion(Deadlines {
+            external_ms: 110_000,
+            backstop_ms: Some(60_000)
+        })
+        .is_some()
+    );
 }

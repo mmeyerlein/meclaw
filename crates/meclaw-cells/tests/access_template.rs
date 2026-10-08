@@ -293,14 +293,10 @@ fn main_config() -> Value {
     ]}}})
 }
 
-/// A cron far enough away that no sweep happens during a test that is not about
-/// sweeping. The TTL test overrides it.
-const QUIET_CRON: &str = "0 0 4 * * *";
-
 /// The vault passphrase these tests arm on disk (GH #421).
 const VAULT_PASSPHRASE: &str = "a passphrase nobody guesses";
 
-fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &str) {
+fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
     let root = td.path();
     write(root, "main/config.json", &main_config());
     write(
@@ -336,21 +332,10 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &st
         "main/probe/config.json",
         &code_cell(PROBE, &["pstore"], json!({})),
     );
+    // Since GH #1096 (R-AG-1) the clock ships no schedule: `./sweep` arms its
+    // one watchdog for the next `expires_at`, so there is no tick to quiet and
+    // no `${uuid7:…}` to hand a literal.
     copy_cells(root_template, &root.join("main/access"));
-    // `${uuid7:…}` is an INSTANTIATION-side substitution (the mutation path
-    // mints it); a raw directory copy bootstrapped from the filesystem has to
-    // be handed a literal.
-    //
-    // The cron travels the same way since GH #138: it is a LITERAL inside
-    // `params.schedules[0].cron`, so a case that wants a different tick says so
-    // where a mutation's `override_params` would have merged it. It used to be
-    // an `ACCESS_SWEEP_CRON` line in a `.env` beside the tree — and after the
-    // migration that line would have reached nothing, leaving every case here
-    // with the shipped five-minute sweep firing into it and no assert saying so.
-    patch(root, "main/access/clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-0000000000ac");
-        v["params"]["schedules"][0]["cron"] = json!(cron);
-    });
 }
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
@@ -741,7 +726,7 @@ async fn a_request_becomes_a_deterministic_grant_with_a_ttl_and_an_audit_line() 
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     probe(
@@ -864,7 +849,7 @@ async fn the_requester_comes_from_the_edge_and_never_from_the_body() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     probe(
@@ -934,7 +919,7 @@ async fn the_address_comes_from_the_grant_and_never_from_the_payload() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     probe(
@@ -1031,7 +1016,7 @@ async fn a_credential_spend_reaches_the_vault_with_the_name_from_the_grant() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     probe(
@@ -1104,7 +1089,7 @@ async fn a_vault_refusal_comes_back_on_the_ack_lane_and_is_booked_as_a_denial() 
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     seed_vault_secret(
         &td,
         "cred:openrouter:primary",
@@ -1181,7 +1166,7 @@ async fn a_hived_vault_with_unlock_env_delivers_after_a_plain_boot() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     seed_vault_secret(
         &td,
         "cred:openrouter:primary",
@@ -1259,8 +1244,9 @@ async fn an_expired_grant_is_refused_and_the_sweep_writes_the_event() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    // Two seconds, so this test sees a tick inside its own budget.
-    build_tree(&td, &root, "*/2 * * * * *");
+    // No tick (GH #1096): the sweep the grant's own nudge starts, or the
+    // watchdog it arms, books the expiry.
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     probe(
@@ -1301,8 +1287,8 @@ async fn an_expired_grant_is_refused_and_the_sweep_writes_the_event() {
         );
     }
 
-    // And the sweep catches up: within a few two-second ticks the newest event
-    // of this grant is `expired`, written by the sweep and not by the caller.
+    // And the sweep books it without a tick: the newest event of this grant
+    // is `expired`, written by the sweep and not by the caller.
     let mut event = String::new();
     for _ in 0..12 {
         let rows = probe(
@@ -1330,6 +1316,67 @@ async fn an_expired_grant_is_refused_and_the_sweep_writes_the_event() {
     h.shutdown().await;
 }
 
+/// GH #1096 (R-AG-1) — the expiry is an EVENT, not a tick. A grant that runs
+/// out in two seconds has its `expired` row within moments of running out:
+/// `./policy` nudges `./sweep` after the grant, the sweep arms the clock's one
+/// watchdog one millisecond past `expires_at`, and the strike books it. Red
+/// while the clock ticked every five minutes (the shipped cron), because no
+/// strike came inside this test's budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_grant_expiring_in_two_seconds_is_booked_without_a_tick() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root);
+    let (h, mut rx) = boot(&td).await;
+
+    probe(
+        &h,
+        &mut rx,
+        allow_rule("t-wd", "agent:example", "chat.send"),
+    )
+    .await;
+    let granted = tokio::time::Instant::now();
+    let grant_id = grant_for(&h, &mut rx, "agent:example", "chat-1", 2000).await;
+    let expired = |rows: &Value| rows.as_array().map(|a| !a.is_empty()).unwrap_or(false);
+    let select = json!({"operation": "select", "table": "grant_events",
+                        "columns": ["event", "actor", "reason_code"],
+                        "where": {"grant_id": grant_id.clone(), "event": "expired"},
+                        "limit": 5});
+
+    // Not before its time: the watchdog is armed for the moment, not now.
+    let early = probe(&h, &mut rx, select.clone()).await;
+    assert!(!expired(&early), "booked before it ran out: {early}");
+
+    // Booked shortly after it ran out. The budget is the TTL plus a margin
+    // for a loaded host; the shipped five-minute tick could never meet it.
+    let deadline = granted + Duration::from_secs(12);
+    let rows = loop {
+        let rows = probe(&h, &mut rx, select.clone()).await;
+        if expired(&rows) {
+            break rows;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the expiry of {grant_id} was never booked without a tick"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(
+        granted.elapsed() >= Duration::from_millis(1500),
+        "booked {:?} after the grant, before its two seconds were up",
+        granted.elapsed()
+    );
+    assert_eq!(rows[0]["actor"].as_str(), Some("access/sweep"), "{rows}");
+    assert_eq!(
+        rows[0]["reason_code"].as_str(),
+        Some("ttl_elapsed"),
+        "{rows}"
+    );
+    h.shutdown().await;
+}
+
 /// Revocation without an update and without a delete: one `revoked` row lands
 /// in `grant_events`, and the very next invoke is refused although `expires_at`
 /// is still fifteen minutes away. The effective state of a grant is its NEWEST
@@ -1341,7 +1388,7 @@ async fn a_revoked_grant_is_refused_although_it_has_not_expired() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     probe(
@@ -1412,7 +1459,7 @@ async fn an_unknown_capability_is_denied_and_audited() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     // A rule exists -- for something else entirely. The seeded rows are all
@@ -1770,7 +1817,7 @@ async fn a_transfer_import_from_outside_plants_no_policy_row() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     let count = |v: &Value| v.as_array().map(|a| a.len()).unwrap_or(0);
@@ -1894,22 +1941,31 @@ async fn a_transfer_import_from_outside_plants_no_schedule_row() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
-    // The clock is awake once its own schedule is on disk; the probe round trip
-    // below is only a boot barrier, not the observation.
-    let _ = probe(
+    // The clock holds an order once a grant is ahead of it (GH #1096: the
+    // sweep arms its watchdog after the grant's nudge); without one this test
+    // would prove nothing.
+    probe(
         &h,
         &mut rx,
-        json!({"operation": "select", "table": "policy", "columns": ["rule_id"], "limit": 1}),
+        allow_rule("t-imp", "agent:example", "chat.send"),
     )
     .await;
+    let _ = grant_for(&h, &mut rx, "agent:example", "chat-1", 600_000).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !schedule_names(&td).iter().any(|n| n == "access-sweep") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the sweep never armed its watchdog after a grant"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let before = schedule_names(&td);
     assert!(
         before.iter().any(|n| n == "access-sweep"),
-        "the clock never persisted its own schedule, so this test would prove \
-         nothing: {before:?}"
+        "the clock holds no watchdog, so this test would prove nothing: {before:?}"
     );
 
     h.send(
@@ -2080,7 +2136,7 @@ async fn a_transfer_export_of_the_policy_store_is_refused_and_names_no_table() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx) = boot(&td).await;
 
     // Twice: blanket, and addressed at the table a caller would guess. Guessing
@@ -2161,4 +2217,223 @@ async fn without_the_declaration_a_plain_store_still_exports() {
     );
 
     h.shutdown().await;
+}
+
+/// The shipped sweep script run once, by hand, on one stdin document -- the
+/// same document the code cell hands it (`params`, `envelope`, `body`). Returns
+/// its emissions.
+fn run_sweep(params: Value, phase: &str, carry: &Value, rows: &Value) -> Vec<Value> {
+    use std::io::Write;
+    let cfg = read_json(&templates_root().join("access/sweep/config.json"));
+    let script = cfg["params"]["script_inline"].as_str().unwrap().to_string();
+    let doc = json!({
+        "params": params,
+        "envelope": {"header": {"hop": {"operation": "select"},
+                                "context": {"ac_phase": phase,
+                                            "ac_carry": carry.to_string()}}},
+        "body": {"messages": [{"origin": "tool", "type": "tool_result",
+                               "text": rows.to_string()}]},
+    });
+    let mut child = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(doc.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "sweep script failed");
+    meclaw_core::serde_json::from_slice::<Vec<Value>>(&out.stdout).unwrap()
+}
+
+/// GH #1096 (R-AG-1, review fix1) -- a full page of expired grants that still
+/// had something to book goes on at once with the page below it, so the
+/// OLDEST grants of a backlog get their `expired` row too. Red before: every
+/// run read the newest page alone, and once that page was booked nothing ever
+/// reached the grants behind it.
+#[test]
+fn a_full_sweep_page_goes_on_with_the_page_below() {
+    if !templates_root().join("access/sweep/config.json").exists() {
+        return;
+    }
+    let grants = json!([
+        {"grant_id": "g2", "requester": "r", "capability": "c",
+         "expires_at": "2026-10-08T10:00:02.000000Z"},
+        {"grant_id": "g1", "requester": "r", "capability": "c",
+         "expires_at": "2026-10-08T10:00:01.000000Z"},
+    ]);
+    let live = json!([{"grant_id": "g2", "event": "granted", "at": "x"},
+                      {"grant_id": "g1", "event": "granted", "at": "x"}]);
+    let selects_below = |out: &[Value]| -> Vec<Value> {
+        out.iter()
+            .filter(|m| m["header"]["phase"] == "grants")
+            .map(|m| {
+                meclaw_core::serde_json::from_str::<Value>(
+                    m["messages"][0]["text"].as_str().unwrap(),
+                )
+                .unwrap()
+            })
+            .collect()
+    };
+
+    // A full page (sweep_rows 2) with two grants to book: both booked, and
+    // the next page is asked for at once, from the oldest stamp down.
+    let out = run_sweep(
+        json!({"sweep_rows": 2}),
+        "events",
+        &json!({"grants": grants}),
+        &live,
+    );
+    let below = selects_below(&out);
+    assert_eq!(
+        below.len(),
+        1,
+        "a full page must go on with the next: {out:?}"
+    );
+    // The next page starts with the grants that share the oldest stamp and
+    // sort below the last one read (delta review: ties are paged by
+    // `grant_id`, never re-read).
+    assert_eq!(
+        below[0]["where"]["expires_at"]["eq"].as_str(),
+        Some("2026-10-08T10:00:01.000000Z")
+    );
+    assert_eq!(below[0]["where"]["grant_id"]["lt"].as_str(), Some("g1"));
+    assert_eq!(below[0]["limit"].as_u64(), Some(2));
+
+    // A page that is not full, or a full one with nothing left to book, ends
+    // the sweep: an earlier run already went below it.
+    let out = run_sweep(
+        json!({"sweep_rows": 3}),
+        "events",
+        &json!({"grants": grants}),
+        &live,
+    );
+    assert!(selects_below(&out).is_empty(), "{out:?}");
+    let booked = json!([{"grant_id": "g2", "event": "expired", "at": "x"},
+                        {"grant_id": "g1", "event": "expired", "at": "x"}]);
+    let out = run_sweep(
+        json!({"sweep_rows": 2}),
+        "events",
+        &json!({"grants": grants}),
+        &booked,
+    );
+    assert!(out.is_empty(), "{out:?}");
+}
+
+/// GH #1096 (delta review of fix1) -- more than `sweep_rows` grants that
+/// expired at the same stamp are all booked: the sweep pages through the tie
+/// by `grant_id` (`eq` the stamp, `lt` the last id) and goes on below the
+/// stamp (`lt`) once the tie is through. Red before: the next page was `lte`
+/// the stamp again, which read the same page of ties, booked nothing and
+/// stopped -- the grants behind it never got their `expired` row.
+#[test]
+fn a_sweep_pages_through_more_ties_than_a_page() {
+    if !templates_root().join("access/sweep/config.json").exists() {
+        return;
+    }
+    const T: &str = "2026-10-08T10:00:00.000000Z";
+    let grant =
+        |id: &str| json!({"grant_id": id, "requester": "r", "capability": "c", "expires_at": T});
+    let live = |ids: &[&str]| {
+        Value::Array(
+            ids.iter()
+                .map(|i| json!({"grant_id": i, "event": "granted", "at": "x"}))
+                .collect(),
+        )
+    };
+    let selects = |out: &[Value]| -> Vec<(Value, Value)> {
+        out.iter()
+            .filter(|m| m["header"]["phase"] == "grants")
+            .map(|m| {
+                let q = meclaw_core::serde_json::from_str::<Value>(
+                    m["messages"][0]["text"].as_str().unwrap(),
+                )
+                .unwrap();
+                let carry = m["header"]["carry"].as_str().unwrap_or("");
+                let carry = if carry.is_empty() {
+                    Value::Null
+                } else {
+                    meclaw_core::serde_json::from_str::<Value>(carry).unwrap()
+                };
+                (q, carry)
+            })
+            .collect()
+    };
+    let inserts = |out: &[Value]| {
+        out.iter()
+            .filter(|m| m["header"]["phase"] == "written")
+            .count()
+    };
+    let p = json!({"sweep_rows": 2});
+
+    // 1. The newest page: g3, g2 at T, both live -> both booked, then the tie.
+    let out = run_sweep(
+        p.clone(),
+        "events",
+        &json!({"grants": [grant("g3"), grant("g2")]}),
+        &live(&["g3", "g2"]),
+    );
+    assert_eq!(inserts(&out), 4, "{out:?}");
+    let s = selects(&out);
+    assert_eq!(s.len(), 1, "{out:?}");
+    assert_eq!(s[0].0["where"]["expires_at"]["eq"].as_str(), Some(T));
+    assert_eq!(s[0].0["where"]["grant_id"]["lt"].as_str(), Some("g2"));
+    assert_eq!(s[0].0["order_by"][0]["col"].as_str(), Some("grant_id"));
+    assert_eq!(
+        s[0].1["tie"].as_str(),
+        Some(T),
+        "the tie page knows its stamp"
+    );
+
+    // 2. A full tie page that booked -> the next tie page below its last id.
+    let out = run_sweep(
+        p.clone(),
+        "events",
+        &json!({"grants": [grant("g1"), grant("g0")], "tie": T}),
+        &live(&["g1", "g0"]),
+    );
+    let s = selects(&out);
+    assert_eq!(s.len(), 1, "{out:?}");
+    assert_eq!(s[0].0["where"]["expires_at"]["eq"].as_str(), Some(T));
+    assert_eq!(s[0].0["where"]["grant_id"]["lt"].as_str(), Some("g0"));
+
+    // 3. A tie page that is not full ends the tie: the page below the stamp.
+    let out = run_sweep(
+        p.clone(),
+        "events",
+        &json!({"grants": [grant("f9")], "tie": T}),
+        &live(&["f9"]),
+    );
+    assert_eq!(inserts(&out), 2, "{out:?}");
+    let s = selects(&out);
+    assert_eq!(s.len(), 1, "{out:?}");
+    assert_eq!(s[0].0["where"]["expires_at"]["lt"].as_str(), Some(T));
+    assert!(s[0].0["where"].get("grant_id").is_none(), "{:?}", s[0].0);
+    assert!(
+        s[0].1.get("tie").is_none(),
+        "below the stamp is an ordinary page"
+    );
+
+    // 4. An empty tie page (the tie had exactly a page) goes below as well.
+    let out = run_sweep(p.clone(), "grants", &json!({"tie": T}), &json!([]));
+    let s = selects(&out);
+    assert_eq!(s.len(), 1, "{out:?}");
+    assert_eq!(s[0].0["where"]["expires_at"]["lt"].as_str(), Some(T));
+
+    // 5. A full tie page with nothing to book stops: an earlier run went on.
+    let booked = json!([{"grant_id": "g1", "event": "expired", "at": "x"},
+                        {"grant_id": "g0", "event": "expired", "at": "x"}]);
+    let out = run_sweep(
+        p,
+        "events",
+        &json!({"grants": [grant("g1"), grant("g0")], "tie": T}),
+        &booked,
+    );
+    assert!(out.is_empty(), "{out:?}");
 }

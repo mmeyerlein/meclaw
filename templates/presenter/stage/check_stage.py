@@ -500,7 +500,7 @@ def t_turns(s, t):
                 {"messages": [{"type": "text", "text": "x"}]})
     orders = [e for e in out if e["header"]["route"] == "clock" and e.get("op") == "add"]
     t.check("one order for the deadline", len(orders), 1)
-    c.tick(1000)
+    c.tick(s.DEFAULTS["budget_ms"])
     out = c.run({"route": "in_tick", "schedule_id": orders[0]["schedule_id"]})
     t.check("timeout journal", [r["fallback"] for r in journal_of(out)], ["timeout"])
     out = c.run({"route": "in_decision", "show_id": "t6"}, verdict("sample", 0.9, "rows"),
@@ -619,7 +619,7 @@ def t_partial(s, t):
     t.check("missing absent", s.missing_of({"decision": {}}), [])
     # a late, partial verdict changes nothing on the screen
     c.run({"route": "turn", "turn_id": "m6"}, {"messages": [{"type": "text", "text": "x"}]})
-    c.tick(1000)
+    c.tick(s.DEFAULTS["budget_ms"])
     c.run({"route": "in_tick"})
     out = c.run({"route": "in_decision", "show_id": "m6"},
                 partial("sample", 0.9, "rows", missing=["other.lead"]), ctx=DEC_CTX)
@@ -1636,7 +1636,7 @@ def t_clock(s, t):
     t.check("the first turn orders one deadline", [op for op, _ in first], ["add"])
     # The deadline passes: the timer fires and the order is `completed` there; its strike
     # is still in the queue when the next turn comes.
-    c.tick(2000)
+    c.tick(s.DEFAULTS["budget_ms"] + 1000)
     out = c.run({"route": "turn", "turn_id": "c2"},
                 {"messages": [{"type": "text", "text": "y"}]})
     ops = clock(out)

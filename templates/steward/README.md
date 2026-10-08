@@ -1,6 +1,6 @@
-# `steward@2.1.7`
+# `steward@2.1.8`
 
-> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.3.4` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
+> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.3.5` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.

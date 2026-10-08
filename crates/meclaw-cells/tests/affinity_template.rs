@@ -134,13 +134,6 @@ fn write(root: &std::path::Path, rel: &str, v: &Value) {
     std::fs::write(p, meclaw_core::serde_json::to_string_pretty(v).unwrap()).unwrap();
 }
 
-fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
-    let p = root.join(rel);
-    let mut v = read_json(&p);
-    f(&mut v);
-    std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
-}
-
 fn collect_configs(
     root: &std::path::Path,
     dir: &std::path::Path,
@@ -347,16 +340,12 @@ fn main_config() -> Value {
     ]}}})
 }
 
-/// A cron far enough away that no tick happens during a test that is not about
-/// ticks. The push test overrides it.
-const QUIET_CRON: &str = "0 0 4 * * *";
-
 /// The id of the seeded example subscription: the one `./gate` derives for the
 /// seeded address and subject (`"sub:" + subscriber + "|" + subject`), since
 /// GH #877 (F19) the same spelling in the seed as at the gate.
 const SEEDED_SUB_ID: &str = "sub:./assistants/aiden/brain|entity:aiden";
 
-fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &str) {
+fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
     let root = td.path();
     std::fs::write(root.join(".env"), "").unwrap();
     write(root, "main/config.json", &main_config());
@@ -386,18 +375,9 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &st
         "main/probe/config.json",
         &code_cell(PROBE, &["pstore"], json!({})),
     );
+    // Since GH #1096 (R-AG-1) the clock ships no schedule: every accepted
+    // `./gate` write re-arms the push debounce, so there is no tick to quiet.
     copy_cells(root_template, &root.join("main/affinity"));
-    // `${uuid7:…}` is an INSTANTIATION-side substitution (the mutation path
-    // mints it); a raw directory copy bootstrapped from the filesystem has to
-    // be handed a literal, exactly as `cogny_template.rs` hands its brains a
-    // base_url. The cron is written here too: since GH #138 it is a literal of
-    // `./clock`'s own params, and this is the form `override_params` takes at
-    // instantiation. An `AFFINITY_PUSH_CRON=` line in the `.env` would be read
-    // by nothing at all and would say nothing about it.
-    patch(root, "main/affinity/clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-0000000000af");
-        v["params"]["schedules"][0]["cron"] = json!(cron);
-    });
 }
 
 /// The colony, plus the TWO answer sinks the split exit (GH #289) needs: the
@@ -669,7 +649,7 @@ async fn the_gate_writes_a_valid_entity_and_audits_it() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     let op = json!({"op": "upsert_entity", "kind": "person",
@@ -751,7 +731,7 @@ async fn the_gate_refuses_a_mandatory_path_violation_and_writes_nothing() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     let mut doc = valid_aieos("will-be-removed", "Noor");
@@ -817,7 +797,7 @@ async fn a_directory_audience_is_never_auto_accepted() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // 1. The directory audience, asked for with `auto_accept: true`. The field path
@@ -1008,7 +988,7 @@ async fn the_peer_slot_carries_the_address_of_an_agent() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // 1. An agent entity whose own `mx` holds an address -- plus a third key
@@ -1083,7 +1063,7 @@ async fn the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // 1. The seeded agent asks about the seeded person. Its disclosure rows
@@ -1187,7 +1167,7 @@ async fn a_round_wider_than_the_release_is_refused_at_the_shipped_door() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // The seeded rows for `entity:alex` are released to `{agent:aiden}` alone.
@@ -1259,7 +1239,7 @@ async fn a_round_nobody_declared_is_refused_rather_than_narrowed_to_the_asker() 
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // `"unset"` makes the test asker stamp NO round on the hop at all -- the
@@ -1314,7 +1294,7 @@ async fn the_retired_spelling_is_not_a_round() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // `spelling` puts the round under the dead key and nowhere else. Nothing
@@ -1380,7 +1360,7 @@ async fn an_edge_pinned_round_outranks_the_hop_key() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // The port edge pins a four-person round into `context.audience_set`. The
@@ -1438,7 +1418,7 @@ async fn the_edge_pinned_audience_set_is_a_round_in_both_directions() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // `"audience_set":"unset"` keeps the hop key off the wire, so the pinned
@@ -1503,7 +1483,7 @@ async fn the_door_resets_an_inherited_lane_state() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // The probe's edge leaves `context.affinity_origin` behind, and the store
@@ -1555,7 +1535,7 @@ async fn two_hops_of_relations_come_back_from_one_store_op() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // The owner holds a `*` disclosure row on itself, so this is the audience
@@ -1628,7 +1608,7 @@ async fn a_body_asserted_subscriber_is_refused() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // The edge says `/main/consumer` and `member:alex`. The body says somebody
@@ -1698,7 +1678,7 @@ async fn the_subscription_row_carries_the_edge_identity() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     // No `cell_path`, no `audience`: the body says WHAT to subscribe to, the
@@ -1768,7 +1748,7 @@ async fn a_subscribe_without_an_edge_subscriber_is_refused() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &root, QUIET_CRON);
+    build_tree(&td, &root);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
     let op = json!({"op": "subscribe", "subject": "entity:alex"});
@@ -1820,8 +1800,8 @@ async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    // Two seconds, so the test sees several ticks inside its own budget.
-    build_tree(&td, &root, "*/2 * * * * *");
+    // No tick (GH #1096): the subscribe itself is the write that runs the push.
+    build_tree(&td, &root);
     // GH #289: the push lane has an exit of its own now, so the re-brief below
     // is drained where it actually lands. The `ack` still comes back at `/sink`
     // -- it is not an answer and takes neither of the two answer edges.
@@ -1952,6 +1932,143 @@ async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
     h.shutdown().await;
 }
 
+/// GH #1096 (R-AG-1) -- a trust change reaches the subscriber in the same
+/// flow. There is no push tick any more: every accepted `./gate` write re-arms
+/// the push debounce, and the pack hash covers the newest trust verdict of the
+/// pair, because `./brief` renders it. Red before twice over: the hash saw the
+/// document alone, so a `set_trust` moved nothing, and the only run left was
+/// the five-minute tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trust_change_reaches_the_subscriber_in_the_same_flow() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root);
+    let (h, mut rx, mut push_rx) = boot(&td).await;
+    let send = |op: Value| to("/writer", &meclaw_core::serde_json::to_string(&op).unwrap());
+
+    h.send(send(json!({"op": "subscribe", "subject": "entity:alex",
+                       "channel": "telegram", "slots": ["identity", "channel"],
+                       "subscriber": "/main/consumer"})))
+        .await;
+    assert_eq!(
+        turn_json(&recv_route(&mut rx, "ack").await)["outcome"].as_str(),
+        Some("accepted")
+    );
+    let first = recv_route(&mut push_rx, "answer").await;
+    let first_hash = hop_of(&first, "pack_hash");
+
+    // The clean receipt books the first pack, so an unchanged record is silent.
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".into(), json!("in_pack_ack"));
+    hop.insert("error_code".into(), json!(""));
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    ctx.insert("pack_sub".into(), json!(hop_of(&first, "pack_sub")));
+    ctx.insert("pack_hash".into(), json!(first_hash.clone()));
+    h.send(
+        MessageBuilder::new(Path::new("/affinity"))
+            .hop(hop)
+            .context(ctx)
+            .body(Body::Inline(json!({"messages": []})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let subs = probe(
+            &h,
+            &mut rx,
+            json!({"operation": "select", "table": "subscribers", "columns": ["pack_hash"],
+                   "where": {"cell_path": "/main/consumer", "status": "active"}, "limit": 5}),
+        )
+        .await;
+        if subs[0]["pack_hash"].as_str() == Some(first_hash.as_str()) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the receipt never booked: {subs}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(300), push_rx.recv()).await {
+    }
+
+    // The verdict changes, and the subscriber hears it -- no clock involved.
+    h.send(send(json!({"op": "set_trust", "entity_id": "entity:alex",
+                       "audience": "member:alex", "level": "trusted"})))
+        .await;
+    assert_eq!(
+        turn_json(&recv_route(&mut rx, "ack").await)["outcome"].as_str(),
+        Some("accepted")
+    );
+    let again = tokio::time::timeout(Duration::from_secs(15), recv_route(&mut push_rx, "answer"))
+        .await
+        .expect("a trust change never reached the subscriber without a tick");
+    assert_eq!(
+        hop_of(&again, "subscriber"),
+        "/main/consumer",
+        "{:?}",
+        again.headers.hop
+    );
+    assert_ne!(
+        hop_of(&again, "pack_hash"),
+        first_hash,
+        "the re-brief after a trust change carries the hash of the changed pack"
+    );
+    h.shutdown().await;
+}
+
+/// GH #1096 (R-AG-1, review fix1) -- two quick writes, ONE pack. Every
+/// accepted `./gate` write re-arms the push debounce (`affinity-push-write`)
+/// instead of nudging `./push` directly, so a subscribe and the trust verdict
+/// written right after it reach the subscriber as one pack, the one that
+/// already carries the verdict. Red before: a nudge per write rendered the
+/// first pack before the verdict landed and a second one after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_quick_gate_writes_send_one_pack() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root);
+    let (h, mut rx, mut push_rx) = boot(&td).await;
+    let send = |op: Value| to("/writer", &meclaw_core::serde_json::to_string(&op).unwrap());
+
+    h.send(send(json!({"op": "subscribe", "subject": "entity:alex",
+                       "channel": "telegram", "slots": ["identity", "channel"],
+                       "subscriber": "/main/consumer"})))
+        .await;
+    assert_eq!(
+        turn_json(&recv_route(&mut rx, "ack").await)["outcome"].as_str(),
+        Some("accepted")
+    );
+    // Well inside the one-second quiet, and long enough for a direct nudge's
+    // push run to have read the record without the verdict.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    h.send(send(json!({"op": "set_trust", "entity_id": "entity:alex",
+                       "audience": "member:alex", "level": "trusted"})))
+        .await;
+    assert_eq!(
+        turn_json(&recv_route(&mut rx, "ack").await)["outcome"].as_str(),
+        Some("accepted")
+    );
+    let mut packs = Vec::new();
+    while let Ok(Some(m)) = tokio::time::timeout(Duration::from_secs(6), push_rx.recv()).await {
+        if hop_of(&m, "route") == "answer" {
+            packs.push(hop_of(&m, "pack_hash"));
+        }
+    }
+    assert_eq!(
+        packs.len(),
+        1,
+        "two quick writes must send exactly one pack: {packs:?}"
+    );
+    h.shutdown().await;
+}
+
 /// GH #289 -- the answer route carries TWO lanes, and only `hop.subscriber`
 /// tells them apart.
 ///
@@ -1976,9 +2093,10 @@ async fn the_two_answer_lanes_are_told_apart_by_the_subscriber_key() {
         return;
     };
     let td = tempfile::TempDir::new().unwrap();
-    // A short cadence, so the push lane speaks inside the same window the tool
-    // lane does -- the point is the two lanes CROSSING, not either alone.
-    build_tree(&td, &root, "*/2 * * * * *");
+    // The subscribe runs the push in the same flow (GH #1096), so the push
+    // lane speaks inside the window the tool lane does -- the point is the two
+    // lanes CROSSING, not either alone.
+    build_tree(&td, &root);
     let (h, mut rx, mut push_rx) = boot(&td).await;
 
     // 1. A subscription, with its identity off the edge (GH #288): the body

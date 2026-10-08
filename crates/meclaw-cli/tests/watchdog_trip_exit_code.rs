@@ -7,11 +7,12 @@
 //! SIGTERM, so a supervisor saw a clean stop and nothing restarted or alerted.
 //!
 //! The trip here is produced by the REAL supervisor observing REAL colony
-//! silence: `WatchdogTuning` puts the supervisor deadline (3 × 20 ms = 60 ms)
-//! under the colony's own heartbeat period (100 ms), so the supervisor sees
-//! `threshold` consecutive periods without a beat — the same observation a dead
-//! or wedged colony loop produces. Nothing is mocked: the colony runs, the
-//! supervisor runs, and the deadline is the only thing the test chooses.
+//! silence: the supervisor window is set under the colony's own heartbeat
+//! period (since GH #1099 the colony beats every half `watchdog_period_ms` of
+//! its `colony.json`), so the supervisor sees `threshold` consecutive periods
+//! without a beat — the same observation a dead or wedged colony loop produces.
+//! Nothing is mocked: the colony runs, the supervisor runs, and the two clocks
+//! are the only thing the tests choose.
 
 use meclaw_cli::{Cli, WatchdogTuning, run_with_hooks_tuned};
 use std::time::Duration;
@@ -57,14 +58,18 @@ fn cli_for(root: &std::path::Path) -> Cli {
 async fn a_watchdog_trip_ends_the_run_with_an_error_not_a_clean_exit() {
     let td = tempfile::TempDir::new().unwrap();
     let cli = cli_for(td.path());
+    // GH #1099: the idle colony beats every half `watchdog_period_ms` of ITS
+    // config (50 ms at the default 100 ms); an override supervisor of 3 x 5 ms
+    // windows sits under that beat and trips. (3 x 20 ms no longer does: the
+    // beat used to be a fixed 100 ms.)
     let tuning = WatchdogTuning {
         threshold: 3,
-        period: Duration::from_millis(20),
+        period: Duration::from_millis(5),
         on_trip: meclaw_cli::WatchdogOnTrip::Exit,
     };
 
     // Generous failure marker (30 s convention): a trip is expected within
-    // ~150 ms, the timeout only fences a hang.
+    // ~100 ms, the timeout only fences a hang.
     let res = tokio::time::timeout(
         Duration::from_secs(30),
         run_with_hooks_tuned(cli, None, None, Some(tuning)),
@@ -125,30 +130,67 @@ async fn a_failed_boot_reports_the_boot_failure_and_never_a_watchdog_trip() {
 
 // ---------------------------------------------------------------- GH #84
 
-/// GH #84 half 1: the tuning is reachable from `colony.json`.
+/// A `colony.json` whose watchdog period makes the colony beat once every
+/// 30 s: the colony loop wakes for its heartbeat every HALF period (GH #1099,
+/// `ColonyConfig::heartbeat_interval`), so an idle colony is silent for 30 s
+/// at a time.
+const SLOW_BEAT_COLONY_JSON: &[u8] = br#"{"watchdog_period_ms": 60000}"#;
+
+/// GH #84 half 1: the watchdog tuning is reachable from `colony.json`.
 ///
-/// The receipt is deliberately the production entry point — `run_with_hooks`,
-/// the one `run()` calls, with NO override argument. The only thing this test
-/// writes is a file in the colony root; if the deadline still came from the
-/// hard-wired default, a colony that beats every 100 ms would never miss a
-/// 5 × 100 ms window and the run would hang until the failure marker.
+/// GH #1099 changed what a quiet colony can prove. The colony loop now beats
+/// every half `watchdog_period_ms`, so a deadline taken from `colony.json` puts
+/// a beat into every window by construction: an idle colony can no longer trip
+/// on its own configuration (the old fixed 100 ms beat made `3 x 20 ms` trip a
+/// colony doing nothing -- the false alarm #1099 removed). The test therefore
+/// pins the two places `colony.json` reaches, each on the code the production
+/// path runs:
+///
+/// * the COLONY side end to end: the file is the only thing that slows the
+///   beat. It goes through the real boot (`run_with_hooks_tuned`, the function
+///   `run()` calls), and a supervisor whose 3 x 20 ms window sits far under the
+///   30 s beat sees real silence from a real parked loop. Under the default
+///   config the same loop beats every 50 ms, which
+///   `a_watchdog_trip_ends_the_run_with_an_error_not_a_clean_exit` relies on.
+/// * the SUPERVISOR side: with no override, `run_with_hooks_tuned` takes its
+///   deadline from `WatchdogTuning::from_colony_config` over the parsed file;
+///   the same parse is checked here field by field.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn colony_json_sets_the_watchdog_deadline_on_the_production_path() {
+    let parsed = meclaw_colony::colony_config::ColonyConfig::parse_str(
+        r#"{"watchdog_threshold": 3, "watchdog_period_ms": 20, "watchdog_on_trip": "log-only"}"#,
+    )
+    .expect("a valid colony.json parses");
+    let tuning = WatchdogTuning::from_colony_config(&parsed);
+    assert_eq!(
+        tuning.threshold, 3,
+        "watchdog_threshold must reach the supervisor"
+    );
+    assert_eq!(
+        tuning.period,
+        Duration::from_millis(20),
+        "watchdog_period_ms must reach the supervisor"
+    );
+    assert!(
+        tuning.on_trip == meclaw_cli::WatchdogOnTrip::LogOnly,
+        "watchdog_on_trip must reach the supervisor"
+    );
+
     let td = tempfile::TempDir::new().unwrap();
     let cli = cli_for(td.path());
-    // 3 × 20 ms = 60 ms, under the colony's own 100 ms heartbeat period.
-    std::fs::write(
-        td.path().join("colony.json"),
-        br#"{"watchdog_threshold": 3, "watchdog_period_ms": 20}"#,
-    )
-    .unwrap();
+    std::fs::write(td.path().join("colony.json"), SLOW_BEAT_COLONY_JSON).unwrap();
+    let supervisor = WatchdogTuning {
+        threshold: 3,
+        period: Duration::from_millis(20),
+        on_trip: meclaw_cli::WatchdogOnTrip::Exit,
+    };
 
     let res = tokio::time::timeout(
         Duration::from_secs(30),
-        meclaw_cli::run_with_hooks(cli, None, None),
+        run_with_hooks_tuned(cli, None, None, Some(supervisor)),
     )
     .await
-    .expect("colony.json must reach the watchdog, so the run must end on the trip");
+    .expect("the colony.json beat must reach the colony, so the run must end on the trip");
 
     let err = res.expect_err("a watchdog trip must exit non-zero (Err), not Ok(())");
     let msg = format!("{err}");
@@ -207,27 +249,111 @@ async fn without_colony_json_the_default_deadline_does_not_trip_a_healthy_colony
     res.expect("a healthy colony under the DEFAULT deadline must exit Ok, not on a trip");
 }
 
-/// GH #84 half 3: `watchdog_on_trip: "log-only"` keeps the colony running.
+/// Counts the `watchdog trip` events the CLI's trip reporter emits, split by
+/// their `fatal` field. A process-wide subscriber, because the reporter runs on
+/// a runtime worker, not on the test's thread.
+mod trip_events {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    pub static NON_FATAL: AtomicUsize = AtomicUsize::new(0);
+    pub static FATAL: AtomicUsize = AtomicUsize::new(0);
+
+    struct Counter;
+
+    #[derive(Default)]
+    struct Fields {
+        is_trip: bool,
+        fatal: Option<bool>,
+    }
+
+    impl tracing::field::Visit for Fields {
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            if field.name() == "fatal" {
+                self.fatal = Some(value);
+            }
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" && format!("{value:?}") == "watchdog trip" {
+                self.is_trip = true;
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counter {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut f = Fields::default();
+            event.record(&mut f);
+            match (f.is_trip, f.fatal) {
+                (true, Some(false)) => {
+                    NON_FATAL.fetch_add(1, Ordering::SeqCst);
+                }
+                (true, Some(true)) => {
+                    FATAL.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Install once per process; later calls are no-ops.
+    pub fn install() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let sub = tracing_subscriber::registry().with(Counter);
+            tracing::subscriber::set_global_default(sub)
+                .expect("no other global subscriber in this test binary");
+        });
+    }
+}
+
+/// GH #84 half 3: `on_trip: log-only` keeps the colony running.
 ///
-/// Same deadline as the trip test above — the supervisor trips again and again —
-/// but the process must survive all of it and still end cleanly on its shutdown
-/// signal. The trips themselves are not silent (they go to stderr and to
-/// `tracing`); what this pins is that they no longer take the colony with them.
+/// The supervisor trips again and again — the receipt is positive: the CLI's
+/// trip reporter emitted non-fatal `watchdog trip` events while the run was
+/// alive, none of them fatal — and the process must survive all of it and still
+/// end cleanly on its shutdown signal. The silence is real silence of a parked
+/// loop: `colony.json` slows the colony's beat to one per 30 s (see
+/// [`SLOW_BEAT_COLONY_JSON`]) under a 3 x 20 ms supervisor window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn log_only_reports_the_trip_and_keeps_the_colony_running() {
+    use std::sync::atomic::Ordering;
+    trip_events::install();
     let td = tempfile::TempDir::new().unwrap();
     let cli = cli_for(td.path());
-    std::fs::write(
-        td.path().join("colony.json"),
-        br#"{"watchdog_threshold": 3, "watchdog_period_ms": 20,
-             "watchdog_on_trip": "log-only"}"#,
-    )
-    .unwrap();
+    std::fs::write(td.path().join("colony.json"), SLOW_BEAT_COLONY_JSON).unwrap();
+    let supervisor = WatchdogTuning {
+        threshold: 3,
+        period: Duration::from_millis(20),
+        on_trip: meclaw_cli::WatchdogOnTrip::LogOnly,
+    };
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let run = tokio::spawn(meclaw_cli::run_with_hooks(cli, None, Some(shutdown_rx)));
-    // Long enough for many trip windows to come and go under `exit` semantics.
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    let run = tokio::spawn(run_with_hooks_tuned(
+        cli,
+        None,
+        Some(shutdown_rx),
+        Some(supervisor),
+    ));
+    // Wait for the first reported trip (event-driven bound: 30 s marker), then
+    // let more trip windows come and go under `log-only`.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while trip_events::NON_FATAL.load(Ordering::SeqCst) == 0 {
+        assert!(
+            !run.is_finished(),
+            "log-only must keep the run alive while it trips"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the supervisor must report a trip within the failure marker"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
     shutdown_tx
         .send(())
         .expect("log-only must have kept the run alive");
@@ -237,6 +363,15 @@ async fn log_only_reports_the_trip_and_keeps_the_colony_running() {
         .expect("the run must end on the shutdown hook, not hang")
         .expect("the run task must not panic");
     res.expect("under log-only a silence trip must not end the process");
+    assert!(
+        trip_events::NON_FATAL.load(Ordering::SeqCst) >= 2,
+        "the supervisor must have kept tripping under log-only"
+    );
+    assert_eq!(
+        trip_events::FATAL.load(Ordering::SeqCst),
+        0,
+        "no trip may be reported fatal under log-only"
+    );
 }
 
 /// A `colony.json` the substrate cannot run with is a boot failure, not a clamp.
