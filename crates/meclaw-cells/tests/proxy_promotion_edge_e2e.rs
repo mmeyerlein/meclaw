@@ -593,6 +593,7 @@ fn telegram_proxy_config(base_url: &str, require_chat_id: bool) -> Value {
     // unset variable fails the whole boot even when `params` supplies a literal.
     cfg["contract"]["settings"]["bot_token"]["default"] = json!(TELEGRAM_BOT_TOKEN);
     cfg["contract"]["consumes"]["context"]["chat_id"]["required"] = json!(require_chat_id);
+    strip_token_grants(&mut cfg, &["bot_token_grant_id"]);
     cfg
 }
 
@@ -609,7 +610,28 @@ fn slack_proxy_config(base_url: &str, require_chat_id: bool) -> Value {
     cfg["contract"]["settings"]["app_token"]["default"] = json!(SLACK_APP_TOKEN);
     cfg["contract"]["settings"]["bot_token"]["default"] = json!(SLACK_BOT_TOKEN);
     cfg["contract"]["consumes"]["context"]["chat_id"]["required"] = json!(require_chat_id);
+    strip_token_grants(&mut cfg, &["app_token_grant_id", "bot_token_grant_id"]);
     cfg
+}
+
+/// Takes the vault grants out of a shipped proxy config, so the literal tokens
+/// above are the ones the connector uses.
+///
+/// The shipped templates fetch their tokens per grant (GH #1061): a set grant
+/// wins over the literal, and the connector is born without a token and emits
+/// `credential_request` over its out-edge instead of opening the socket. This
+/// tree has no vault, so the request lands on the relay and the mention never
+/// arrives. Routing is what these tests pin, not credential delivery, so the
+/// grant goes -- in `params` and in the `contract.settings` default alike.
+fn strip_token_grants(cfg: &mut Value, keys: &[&str]) {
+    for key in keys {
+        if let Some(params) = cfg["params"].as_object_mut() {
+            params.remove(*key);
+        }
+        if let Some(settings) = cfg["contract"]["settings"].as_object_mut() {
+            settings.remove(*key);
+        }
+    }
 }
 
 /// Writes the bot loop: `proxy → relay → proxy`, plus one edge that leaves the

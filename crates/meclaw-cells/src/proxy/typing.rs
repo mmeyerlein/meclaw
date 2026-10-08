@@ -252,6 +252,80 @@ mod tests {
             .unwrap_or_else(|| panic!("{rel}: no message_timeout"))
     }
 
+    fn templates_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates")
+    }
+
+    /// Every `config.json` under `dir`, as a path relative to the templates root.
+    fn config_files(dir: &std::path::Path, out: &mut Vec<String>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                config_files(&path, out);
+            } else if path.file_name().is_some_and(|n| n == "config.json") {
+                let rel = path.strip_prefix(templates_root()).unwrap();
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    /// The proxy configs that carry `typing_max_ms`, each with the cells that
+    /// answer its turn. The first row is the shipped connector and is checked
+    /// unconditionally; a row whose template is not in this tree (the export
+    /// leaves `egon` out, GH #1099 follow-up) is no claim about this tree.
+    const TYPING_CEILINGS: &[(&str, &[&str])] = &[
+        (
+            "telegram-connector/config.json",
+            &["cogny/brain/config.json", "talky/brain/config.json"],
+        ),
+        ("egon/proxy/config.json", &["egon/worker/config.json"]),
+    ];
+
+    /// The ceiling lock runs in every tree that ships the templates, public
+    /// or private: the connector row is read without a guard, the rows of
+    /// templates the tree does not hold are not read, and a proxy config that
+    /// sets `typing_max_ms` without a row here fails by name -- every shipped
+    /// ceiling names the backstop of the cells that answer it.
+    #[test]
+    fn every_shipped_typing_ceiling_is_the_backstop_of_its_answering_cells() {
+        let mut found = Vec::new();
+        config_files(&templates_root(), &mut found);
+        let carriers: Vec<&String> = found
+            .iter()
+            .filter(|rel| shipped_json(rel)["params"]["typing_max_ms"].is_u64())
+            .collect();
+        for rel in &carriers {
+            assert!(
+                TYPING_CEILINGS.iter().any(|(proxy, _)| proxy == rel),
+                "{rel} sets typing_max_ms but names no answering cells in TYPING_CEILINGS"
+            );
+        }
+        let (connector, _) = TYPING_CEILINGS[0];
+        assert!(
+            carriers.iter().any(|rel| *rel == connector),
+            "the shipped connector {connector} carries no typing_max_ms"
+        );
+        for (proxy, answering) in TYPING_CEILINGS {
+            if *proxy != connector && !templates_root().join(proxy).is_file() {
+                continue;
+            }
+            let backstop = answering
+                .iter()
+                .map(|rel| shipped_backstop_ms(rel))
+                .max()
+                .unwrap();
+            assert_eq!(
+                shipped_json(proxy)["params"]["typing_max_ms"].as_u64(),
+                Some(backstop),
+                "{proxy} types for the backstop of the cells that answer it"
+            );
+        }
+    }
+
     /// Delta review of fix1: the ceiling lock reads its templates without an
     /// `exists` guard -- a missing file is a failure that names it.
     #[test]
@@ -289,12 +363,6 @@ mod tests {
         assert_eq!(shipped.max_total, Duration::from_millis(answering));
         assert!(
             shipped.max_total > Duration::from_millis(meclaw_colony::DEFAULT_MESSAGE_TIMEOUT_MS)
-        );
-        // The smoke bot's turn is answered by its one worker.
-        let v = shipped_json("egon/proxy/config.json");
-        assert_eq!(
-            v["params"]["typing_max_ms"].as_u64(),
-            Some(shipped_backstop_ms("egon/worker/config.json"))
         );
         let slow = TypingCadence::for_connector(Some(300_000), Some(Duration::from_secs(121)));
         assert_eq!(slow.max_total, Duration::from_secs(300));

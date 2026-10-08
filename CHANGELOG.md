@@ -12,6 +12,13 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.63.1] — 2026-10-08
+
+### Fixed
+
+- **The public test suite passes again** ([#1099](https://github.com/mmeyerlein/meclaw/issues/1099)). One unit test, `the_ceiling_is_the_backstop_of_the_answering_turn`, read a template the export does not ship and failed in the public tree. The typing-ceiling lock now checks the shipped `telegram-connector` against the backstop of the cells that answer it unconditionally, checks further proxy configs only where their template is in the tree, and fails by name when a proxy config sets `typing_max_ms` without naming its answering cells. The release gate's export-tree station now also runs the library unit tests of every crate whose sources read template files, so a unit test like this one turns the release gate red before the export.
+- **The Slack promotion-edge tests run without a vault again** ([#1061](https://github.com/mmeyerlein/meclaw/issues/1061)). Since the shipped `slack-agent` proxy fetches its tokens per grant, `proxy_promotion_edge_e2e` booted a connector that asked for credentials instead of opening the socket, so no mention ever reached the loop; the test now strips the grants from the shipped config and runs on the literal test tokens, and routing stays what it pins.
+
 ## [0.63.0] — 2026-10-08
 
 ### No clock ticks over unchanged data (#1096)
