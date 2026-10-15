@@ -186,8 +186,9 @@ fn a_tap_that_leads_a_window_moves_the_rest_row() {
         "the finger holds the window up for the linger (§ 4.19)"
     );
 
-    // The tap wrote nothing but the rest row: delete + insert of `(display, screen-rest)`,
-    // one bundle of its own, because this turn carried no app write.
+    // The tap wrote nothing but the rest row: one insert that replaces
+    // `(display, screen-rest)` (GH #1199), one bundle of its own, because this turn carried
+    // no app write.
     let bundles: Vec<&Value> = screen
         .hops()
         .iter()
@@ -196,7 +197,7 @@ fn a_tap_that_leads_a_window_moves_the_rest_row() {
     assert_eq!(bundles.len(), 1, "one store bundle: {bundles:?}");
     assert_eq!(
         bundles[0]["ops"],
-        json!(["delete", "insert"]),
+        json!(["insert"]),
         "the rest row's identity is kept by hand (no primary key): {bundles:?}"
     );
     assert_eq!(bundles[0]["request"], json!({"rest": true}), "{bundles:?}");

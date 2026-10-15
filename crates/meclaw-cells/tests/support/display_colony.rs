@@ -2250,7 +2250,8 @@ impl Colony {
     }
 
     /// The `views` table as the store holds it: every bundle the compose cell sent to
-    /// `views`, folded in log order (delete by `where`, insert the row) over the empty
+    /// `views`, folded in log order (delete by `where`, insert the row after removing what
+    /// its `replace` matches, GH #1199) over the empty
     /// table this colony boots with. Read where the store took the calls; since GH #809 no
     /// write asks the store back, so there is no answer to read the table out of.
     pub async fn store_rows(&self) -> Vec<Value> {
@@ -2262,7 +2263,12 @@ impl Colony {
                         let wanted = call["where"].as_object().cloned().unwrap_or_default();
                         table.retain(|row| !wanted.iter().all(|(k, v)| row[k] == *v));
                     }
-                    "insert" => table.push(call["row"].clone()),
+                    "insert" => {
+                        if let Some(wanted) = call["replace"].as_object() {
+                            table.retain(|row| !wanted.iter().all(|(k, v)| row[k] == *v));
+                        }
+                        table.push(call["row"].clone());
+                    }
                     _ => {}
                 }
             }
@@ -2420,8 +2426,8 @@ impl Named for Site {
             Site::B710 => 242,
             Site::Gh961 => 162,
             Site::Gh1028 => 105,
-            Site::Gh867CspPhone => 175,
-            Site::Gh867VoiceFiles => 373,
+            Site::Gh867CspPhone => 187,
+            Site::Gh867VoiceFiles => 409,
         }
     }
 

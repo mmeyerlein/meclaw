@@ -121,7 +121,7 @@ pub fn dispatch_with(
 /// that is not on the list is a key the store would have ignored.
 fn known_args(op: &str) -> Option<&'static [&'static str]> {
     Some(match op {
-        "insert" => &["operation", "table", "row"],
+        "insert" => &["operation", "table", "row", "rows", "if_absent", "replace"],
         "select" => &[
             "operation",
             "table",
@@ -361,17 +361,133 @@ fn op_insert(
         .get("table")
         .and_then(|v| v.as_str())
         .ok_or("missing table")?;
-    let row = args
-        .get("row")
-        .and_then(|v| v.as_object())
-        .ok_or("missing row object")?;
-    if row.is_empty() {
+    // GH #1199: `rows` writes several rows in one step; `row` stays the form
+    // of one.
+    let rows: Vec<&meclaw_core::serde_json::Map<String, Value>> =
+        match (args.get("row"), args.get("rows")) {
+            (Some(_), Some(_)) => return Err("insert takes `row` or `rows`, not both".into()),
+            (Some(r), None) => vec![r.as_object().ok_or("missing row object")?],
+            (None, Some(rs)) => {
+                let list = rs
+                    .as_array()
+                    .ok_or("rows must be an array of row objects")?;
+                if list.is_empty() {
+                    return Err("rows must hold at least one row".into());
+                }
+                list.iter()
+                    .map(|r| r.as_object().ok_or("rows must be an array of row objects"))
+                    .collect::<Result<_, _>>()?
+            }
+            (None, None) => return Err("missing row object".into()),
+        };
+    if rows.iter().any(|r| r.is_empty()) {
         return Err("row must declare at least one column".into());
+    }
+    // GH #1199: a row that must exist once is written in ONE step, never as
+    // a `delete` and an `insert` in a bundle that is no transaction (a reader
+    // between the two legs misses the row, and an insert leg that fails loses
+    // it). `if_absent` inserts only while no row matches (one statement: a
+    // row that stands keeps every column it was booked with); `replace`
+    // removes the rows that match and inserts the new ones in one
+    // transaction (a failure takes the removal back with it).
+    let if_absent = args.get("if_absent");
+    let replace = args.get("replace");
+    for (name, guard) in [("if_absent", if_absent), ("replace", replace)] {
+        if let Some(g) = guard
+            && g.as_object().is_none_or(|o| o.is_empty())
+        {
+            return Err(format!("{name} must name at least one column"));
+        }
+    }
+    if if_absent.is_some() && replace.is_some() {
+        return Err("insert takes `if_absent` or `replace`, not both".into());
+    }
+    if if_absent.is_some() && rows.len() != 1 {
+        return Err("if_absent guards exactly one row".into());
     }
     let cat = match Catalog::load(conn, table) {
         Ok(c) => c,
         Err(e) => return Ok(catalog_error_outcome("insert", e)),
     };
+    let guard = match if_absent {
+        Some(g) => match build_where(Some(g), &cat)? {
+            Ok(w) => Some(w),
+            Err(e) => return Ok(catalog_error_outcome("insert", e)),
+        },
+        None => None,
+    };
+    let removal = match replace {
+        Some(g) => match build_where(Some(g), &cat)? {
+            Ok(w) => Some(w),
+            Err(e) => return Ok(catalog_error_outcome("insert", e)),
+        },
+        None => None,
+    };
+    let one_step = removal.is_some() || rows.len() > 1;
+    if one_step && let Err(e) = conn.execute_batch("SAVEPOINT store_insert") {
+        return Ok(sql_error_outcome("insert", &e));
+    }
+    let written = (|| -> Result<Result<i64, OpOutcome>, String> {
+        if let Some((where_clause, where_vals)) = &removal {
+            let stmt = format!("DELETE FROM \"{}\"{where_clause}", cat.table());
+            let bind: Vec<&dyn rusqlite::ToSql> = where_vals
+                .iter()
+                .map(|v| v as &dyn rusqlite::ToSql)
+                .collect();
+            if let Err(e) = conn.execute(&stmt, bind.as_slice()) {
+                return Ok(Err(sql_error_outcome("insert", &e)));
+            }
+        }
+        let mut total = 0i64;
+        for row in &rows {
+            match insert_row(conn, &cat, canonical, row, guard.as_ref())? {
+                Ok(n) => total += n,
+                Err(o) => return Ok(Err(o)),
+            }
+        }
+        Ok(Ok(total))
+    })();
+    if one_step {
+        let end = match &written {
+            Ok(Ok(_)) => "RELEASE store_insert",
+            _ => "ROLLBACK TO store_insert; RELEASE store_insert",
+        };
+        if let Err(e) = conn.execute_batch(end) {
+            let _ = conn.execute_batch("ROLLBACK TO store_insert; RELEASE store_insert");
+            // A write that failed is the cause: SQLite may have rolled the
+            // whole transaction back on it (a full disk, an interrupted
+            // write), taking the savepoint along, so the end fails as well --
+            // the op answers the write's failure, not that one.
+            return match written? {
+                Err(o) => Ok(o),
+                Ok(_) => Ok(sql_error_outcome("insert", &e)),
+            };
+        }
+    }
+    match written? {
+        Ok(rows) => Ok(OpOutcome {
+            operation: "insert",
+            rows_affected: rows,
+            payload: Value::Null,
+            error_code: None,
+            error_text: None,
+            error_index: None,
+        }),
+        Err(o) => Ok(o),
+    }
+}
+
+/// One row of an `insert`: `Ok(Ok(n))` rows written, `Ok(Err(outcome))` the
+/// store outcome of a write that failed, `Err` a malformed row. With a
+/// `guard` (`if_absent`, GH #1199) the row is written only while no row
+/// matches it, in the same statement.
+fn insert_row(
+    conn: &rusqlite::Connection,
+    cat: &Catalog,
+    canonical: &CanonicalMap,
+    row: &meclaw_core::serde_json::Map<String, Value>,
+    guard: Option<&(String, Vec<rusqlite::types::Value>)>,
+) -> Result<Result<i64, OpOutcome>, String> {
     // The derived column is STORE-OWNED: a caller-supplied value is dropped and
     // replaced by the one the alias table implies, so the invariant "target is
     // always derived from source" holds for every writer without exception.
@@ -392,15 +508,15 @@ fn op_insert(
                 vals.push(rusqlite::types::Value::Text(v));
             }
             Ok(None) => {}
-            Err(e) => return Ok(sql_error_outcome("insert", &e)),
+            Err(e) => return Ok(Err(sql_error_outcome("insert", &e))),
         }
     }
     if cols.is_empty() {
         return Err("row must declare at least one column".into());
     }
-    let resolved = match resolve_columns(&cat, &cols) {
+    let resolved = match resolve_columns(cat, &cols) {
         Ok(c) => c,
-        Err(e) => return Ok(catalog_error_outcome("insert", e)),
+        Err(e) => return Ok(Err(catalog_error_outcome("insert", e))),
     };
     let col_list = resolved
         .iter()
@@ -408,21 +524,24 @@ fn op_insert(
         .collect::<Vec<_>>()
         .join(",");
     let placeholders = cols.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let stmt = format!(
-        "INSERT INTO \"{}\" ({col_list}) VALUES ({placeholders})",
-        cat.table()
-    );
+    let stmt = match guard {
+        None => format!(
+            "INSERT INTO \"{}\" ({col_list}) VALUES ({placeholders})",
+            cat.table()
+        ),
+        Some((where_clause, where_vals)) => {
+            vals.extend(where_vals.iter().cloned());
+            format!(
+                "INSERT INTO \"{t}\" ({col_list}) SELECT {placeholders} \
+                 WHERE NOT EXISTS (SELECT 1 FROM \"{t}\"{where_clause})",
+                t = cat.table()
+            )
+        }
+    };
     let bind: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     match conn.execute(&stmt, bind.as_slice()) {
-        Ok(rows) => Ok(OpOutcome {
-            operation: "insert",
-            rows_affected: rows as i64,
-            payload: Value::Null,
-            error_code: None,
-            error_text: None,
-            error_index: None,
-        }),
-        Err(e) => Ok(write_error_outcome(conn, "insert", &cat, &e)),
+        Ok(n) => Ok(Ok(n as i64)),
+        Err(e) => Ok(Err(write_error_outcome(conn, "insert", cat, &e))),
     }
 }
 
@@ -3183,5 +3302,168 @@ mod tests {
         let (code, text) = classify_sql_error(&err);
         assert_eq!(code, "store_degraded", "{text}");
         assert!(text.contains("unable to open"), "the cause travels: {text}");
+    }
+
+    // ---- GH #1199: a row that must exist once is written in ONE step ----
+
+    /// A table of rows keyed by `k`, and an injected failure: an insert of a
+    /// row whose `v` is `boom` is aborted by the database, as a full disk or
+    /// an interrupted query would abort it.
+    fn gh1199_fixture() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (k TEXT, v TEXT, booked TEXT);
+             CREATE TRIGGER t_boom BEFORE INSERT ON t WHEN NEW.v = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;
+             INSERT INTO t VALUES ('a', 'old-1', 'refused'), ('a', 'old-2', ''),
+                                  ('b', 'other', '');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn gh1199_rows(conn: &rusqlite::Connection, k: &str) -> Vec<(String, String)> {
+        let mut st = conn
+            .prepare("SELECT v, coalesce(booked, '') FROM t WHERE k = ?1 ORDER BY v")
+            .unwrap();
+        st.query_map([k], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// `if_absent`: the insert happens only when no row matches, in one
+    /// statement -- a row that stands keeps every column it was booked with.
+    #[test]
+    fn gh1199_an_insert_if_absent_leaves_a_standing_row_as_it_is() {
+        let conn = gh1199_fixture();
+        let o = dispatch(
+            &conn,
+            &json!({"operation": "insert", "table": "t",
+                    "row": {"k": "a", "v": "start", "booked": ""},
+                    "if_absent": {"k": "a"}}),
+        )
+        .unwrap();
+        assert_eq!((o.error_code, o.rows_affected), (None, 0));
+        assert_eq!(
+            gh1199_rows(&conn, "a"),
+            vec![
+                ("old-1".to_string(), "refused".to_string()),
+                ("old-2".to_string(), String::new())
+            ],
+            "nothing written over a row that stands"
+        );
+        let o = dispatch(
+            &conn,
+            &json!({"operation": "insert", "table": "t",
+                    "row": {"k": "c", "v": "start", "booked": ""},
+                    "if_absent": {"k": "c"}}),
+        )
+        .unwrap();
+        assert_eq!((o.error_code, o.rows_affected), (None, 1));
+        assert_eq!(
+            gh1199_rows(&conn, "c"),
+            vec![("start".to_string(), String::new())]
+        );
+    }
+
+    /// `replace`: the rows that match go and the new ones come in ONE step --
+    /// an insert that fails takes the delete back with it, so the old rows are
+    /// never lost to a failed write.
+    #[test]
+    fn gh1199_a_replace_whose_insert_fails_keeps_the_old_rows() {
+        let conn = gh1199_fixture();
+        let o = dispatch(
+            &conn,
+            &json!({"operation": "insert", "table": "t",
+                    "rows": [{"k": "a", "v": "new-1"}, {"k": "a", "v": "boom"}],
+                    "replace": {"k": "a"}}),
+        )
+        .unwrap();
+        assert!(
+            o.error_code.is_some(),
+            "the injected failure answers as one"
+        );
+        assert_eq!(
+            gh1199_rows(&conn, "a"),
+            vec![
+                ("old-1".to_string(), "refused".to_string()),
+                ("old-2".to_string(), String::new())
+            ],
+            "the failed replace lost nothing and wrote nothing"
+        );
+        assert!(conn.is_autocommit(), "no transaction left open");
+        let o = dispatch(
+            &conn,
+            &json!({"operation": "insert", "table": "t",
+                    "rows": [{"k": "a", "v": "new-1"}, {"k": "a", "v": "new-2"}],
+                    "replace": {"k": "a"}}),
+        )
+        .unwrap();
+        assert_eq!((o.error_code, o.rows_affected), (None, 2));
+        assert_eq!(
+            gh1199_rows(&conn, "a"),
+            vec![
+                ("new-1".to_string(), String::new()),
+                ("new-2".to_string(), String::new())
+            ]
+        );
+        assert_eq!(gh1199_rows(&conn, "b").len(), 1, "another key is untouched");
+    }
+
+    /// Re-check M1: when the database itself rolls the WHOLE transaction back
+    /// (a full disk, an interrupted write -- injected here as a trigger's
+    /// `RAISE(ROLLBACK)`), the savepoint is gone with it and its end fails.
+    /// The op answers the write's own failure, not the failed end.
+    #[test]
+    fn gh1199_a_write_the_database_rolls_back_answers_its_own_cause() {
+        let conn = gh1199_fixture();
+        conn.execute_batch(
+            "CREATE TRIGGER t_gone BEFORE INSERT ON t WHEN NEW.v = 'gone'
+             BEGIN SELECT RAISE(ROLLBACK, 'injected rollback'); END;",
+        )
+        .unwrap();
+        let o = dispatch(
+            &conn,
+            &json!({"operation": "insert", "table": "t",
+                    "rows": [{"k": "a", "v": "new-1"}, {"k": "a", "v": "gone"}],
+                    "replace": {"k": "a"}}),
+        )
+        .unwrap();
+        let text = o.error_text.clone().unwrap_or_default();
+        assert!(
+            o.error_code.is_some() && text.contains("injected rollback"),
+            "the write's own failure is the answer, not the savepoint's end: {:?} {text}",
+            o.error_code
+        );
+        assert_eq!(
+            gh1199_rows(&conn, "a"),
+            vec![
+                ("old-1".to_string(), "refused".to_string()),
+                ("old-2".to_string(), String::new())
+            ],
+            "the rolled-back replace lost nothing and wrote nothing"
+        );
+        assert!(conn.is_autocommit(), "no transaction left open");
+    }
+
+    /// The guards are refused as input when they could not mean what they
+    /// say: an empty one would match every row, and both at once contradict.
+    #[test]
+    fn gh1199_an_empty_or_doubled_guard_is_refused_as_input() {
+        let conn = gh1199_fixture();
+        for args in [
+            json!({"operation": "insert", "table": "t", "row": {"k": "a"}, "if_absent": {}}),
+            json!({"operation": "insert", "table": "t", "row": {"k": "a"}, "replace": {}}),
+            json!({"operation": "insert", "table": "t", "row": {"k": "a"},
+                   "if_absent": {"k": "a"}, "replace": {"k": "a"}}),
+            json!({"operation": "insert", "table": "t", "rows": [{"k": "a"}, {"k": "b"}],
+                   "if_absent": {"k": "a"}}),
+            json!({"operation": "insert", "table": "t", "rows": []}),
+            json!({"operation": "insert", "table": "t", "row": {"k": "a"}, "rows": [{"k": "a"}]}),
+        ] {
+            assert!(dispatch(&conn, &args).is_err(), "refused: {args}");
+        }
+        assert_eq!(gh1199_rows(&conn, "a").len(), 2, "and nothing was written");
     }
 }

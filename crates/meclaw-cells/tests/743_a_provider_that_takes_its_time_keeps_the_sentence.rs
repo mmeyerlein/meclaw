@@ -27,12 +27,12 @@
 //!
 //! The cap-as-backstop claim of #717 is unchanged and stays in that file.
 //!
-//! Where this lock gives way first: the silence tail re-arms from the moment it
-//! wakes (`connection.rs`), so drift accumulates over its ticks. Nominally it
-//! needs 1.78 s and the cap stands at 2.5 s, which is 720 ms of room, about
-//! 28 ms a tick. That is comfortable on a loaded runner and it is also the
-//! point — a default that ever went back below about 2.0 s would turn red here
-//! before it was felt on a phone.
+//! Where this lock gives way first: the silence tail runs on a fixed 20 ms
+//! grid from the release (`connection.rs`, GH #1199), so a late wake-up no
+//! longer shifts the frames after it and missed slots are skipped, never sent
+//! in a burst. Nominally it needs 1.78 s and the cap stands at 2.5 s, which is
+//! 720 ms of room. A default that ever went back below about 2.0 s would turn
+//! red here before it was felt on a phone.
 
 use meclaw_cells::voice::cell::{VoiceCell, VoiceReconfig};
 use meclaw_cells::voice::contract::{AudioFormat, SttError, SttEvent, SttProvider};

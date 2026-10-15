@@ -36,7 +36,7 @@ import unittest.mock
 
 from scripts import flake_triage
 from scripts.pipeline import coverage, hygiene, lane, measure, register
-from scripts.tests import fake_ssh, kit_time, kit_tree, store_isolation
+from scripts.tests import fake_ssh, kit_time, kit_tree, private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MARK = "lane-engstelle-ausnahme:"
@@ -657,6 +657,32 @@ class EntryIsolation(unittest.TestCase):
             with self.subTest(entry=rel):
                 self.assertEqual("#!/usr/bin/python3 -I", (REPO / rel).read_text(encoding="utf-8").splitlines()[0])
 
+    KIT_SHEBANGS = ("#!/bin/bash -p", "#!/usr/bin/python3 -I")
+
+    def test_every_kit_entry_is_checked_in_executable(self):
+        """A file under scripts/ whose first line is a kit entry's shebang is an
+        entry, and an entry is checked in with mode 100755 -- found by its
+        shebang, not listed, so a new entry is covered the day it lands.
+        `scripts/flake_triage.py` carried `#!/usr/bin/python3 -I` and its
+        docstring shows the direct call, but it was checked in as 100644: the
+        call failed with `Permission denied` and every caller went round it
+        with an explicit interpreter (wave val2, strand b01, kit finding c).
+        The mode is read from the index, the one place a checkout takes it from."""
+        listing = subprocess.run(["git", "-C", str(REPO), "ls-files", "-s", "-z", "scripts"],
+                                 capture_output=True, check=True).stdout.decode()
+        entries = {}
+        for item in filter(None, listing.split("\0")):
+            meta, rel = item.split("\t", 1)
+            path = REPO / rel
+            if not path.is_file() or path.is_symlink():
+                continue
+            with open(path, "rb") as fh:
+                head = fh.readline(200).decode("utf-8", "replace").rstrip("\n")
+            if head in self.KIT_SHEBANGS:
+                entries[rel] = meta.split()[0]
+        self.assertEqual([], sorted(set(self.BASH_ENTRIES + self.PY_ENTRIES) - set(entries)))
+        self.assertEqual({}, {rel: mode for rel, mode in entries.items() if mode != "100755"})
+
     # Every kit shell file -- the one scan of KitShellClass (`kit_tree.shell_files`:
     # tracked under scripts/ at any depth, `*.sh` or a shell shebang; re-check
     # bundle N N-K6, OR-T12-18) -- is either a kit entry (scanned: its Python only
@@ -1186,18 +1212,25 @@ class KitShellClass(unittest.TestCase):
             with self.subTest(file=rel, check="self by tool"):
                 self.assertEqual([], kit_tree.self_by_tool(text),
                                  "%s finds its own directory with dirname/readlink/realpath" % rel)
-        # the named exclusions are each still there (no stale entry: a list, not a rule)
-        self.assertEqual({k for k in kit_tree.NOT_SOURCES if not k[0].endswith(".py")}, excluded)
+        # the named exclusions are each still there (no stale entry: a list, not a rule);
+        # GH #1199: an entry of a file the export does not carry is judged where
+        # the file is -- `private_tree.require` at the end, never skipped here
+        named = {k for k in kit_tree.NOT_SOURCES if not k[0].endswith(".py")}
+        absent = sorted({k[0] for k in named if not (REPO / k[0]).is_file()})
+        self.assertEqual({k for k in named if k[0] not in absent}, excluded)
         # not vacuous: the found files and the lines of the re-check are in the scan
         for rel in ("scripts/strand-gate.sh", "scripts/gate_legacy.sh", "scripts/test-tier.sh",
                     "scripts/pipeline/coverage_host.sh", "scripts/start.sh", "scripts/publish_docs.sh"):
-            self.assertIn(rel, files)
+            if (REPO / rel).is_file() or rel not in absent:
+                self.assertIn(rel, files)
         for pair in (("scripts/test-tier.sh", "cargo-target.sh"),
                      ("scripts/gate_legacy.sh", "cargo-target.sh"),
                      ("scripts/pipeline/coverage_host.sh", "cargo-target.sh"),
                      ("scripts/cargo-target.sh", "pipeline/kit_python.sh"),
                      ("scripts/lane_sync.sh", "snippet")):
             self.assertIn(pair, seen)
+        if absent:   # private tree: never absent; export: a named skip
+            private_tree.require(*absent)
 
     def test_the_scan_sees_every_form(self):
         """The scan itself, on the forms the re-check found green (bundle N

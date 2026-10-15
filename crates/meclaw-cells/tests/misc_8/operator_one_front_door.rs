@@ -664,7 +664,7 @@ fn the_shell_doors_every_caller_lane_to_the_front_door_and_takes_the_answer_out(
             env!("CARGO_MANIFEST_DIR"),
             "/../../templates/meclaw-os/operator/config.json"
         ))["cell"]["template"],
-        "operator@1.2.6",
+        "operator@1.2.7",
         "pinned exactly: a bare name would adopt a new front door on a bump"
     );
     assert!(
@@ -731,7 +731,11 @@ fn nothing_in_this_hive_authenticates_anything() {
         not_in_scope.contains("NEVER AUTHENTICATION"),
         "the prose and the mechanism are one drift lock, not two"
     );
-    assert_eq!(tpl["version"], "1.2.6");
+    assert_eq!(
+        tpl["version"].as_str().expect("a version"),
+        told_version("operator"),
+        "operator ships at the number its README and purpose tell"
+    );
     assert_eq!(
         tpl["sandbox_union"]["trust"], "restricted",
         "the widest axis over every occupant, and here they are all the same"
@@ -1154,4 +1158,40 @@ fn a_refused_round_is_still_an_agents_round_when_the_id_came_back_empty() {
             .expect("text")
             .contains("requester_not_permitted")
     );
+}
+
+/// The number a shipped template TELLS for itself, read from its own sources
+/// and never hard-wired -- the merge point's cascade (GH #1173) owns every
+/// number and writes both: the README heading `` # `<name>@<v>` `` and the
+/// purpose's last `Since <v> (` sentence. The two must agree.
+fn told_version(name: &str) -> String {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../templates")
+        .join(name);
+    let readme = std::fs::read_to_string(dir.join("README.md")).expect("README.md");
+    let head = readme.lines().next().unwrap_or_default();
+    let from_readme = head
+        .strip_prefix(&format!("# `{name}\u{40}"))
+        .and_then(|r| r.strip_suffix('`'))
+        .unwrap_or_else(|| panic!("{name}: the README heads with its version: {head}"))
+        .to_string();
+    let meta: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(dir.join("template.json")).expect("template.json"),
+    )
+    .expect("template.json is JSON");
+    let purpose = meta["description"]["purpose"].as_str().expect("a purpose");
+    let last_since = purpose
+        .match_indices("Since ")
+        .filter_map(|(i, _)| {
+            let rest = &purpose[i + "Since ".len()..];
+            let (v, tail) = rest.split_once(' ')?;
+            (tail.starts_with('(') && v.split('.').count() == 3).then(|| v.to_string())
+        })
+        .last()
+        .unwrap_or_else(|| panic!("{name}: the purpose tells its number in a `Since` sentence"));
+    assert_eq!(
+        from_readme, last_since,
+        "{name}: the README and the purpose tell the same number"
+    );
+    from_readme
 }

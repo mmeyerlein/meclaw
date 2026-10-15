@@ -159,14 +159,10 @@ fn a_brain_that_draws_its_own_push_edge_is_asked_about_and_let_through() {
     // 3. That phase submits unconditionally — every question has been answered,
     //    and asking again would be a loop.
     let done = unpark("subscribing", &decls);
-    assert_eq!(
-        done.len(),
-        3,
-        "forget the park, remember the flight, submit"
-    );
-    assert_eq!(done[2]["header"]["route"], "mutate");
-    assert_eq!(done[2]["manifest"][0]["ctx"]["requester"], REQUESTER);
-    assert_eq!(done[2]["header"]["manifest_sha256"], sha.as_str());
+    assert_one_step_flight(&done);
+    assert_eq!(done[1]["header"]["route"], "mutate");
+    assert_eq!(done[1]["manifest"][0]["ctx"]["requester"], REQUESTER);
+    assert_eq!(done[1]["header"]["manifest_sha256"], sha.as_str());
 }
 
 #[test]
@@ -331,12 +327,11 @@ fn an_ordinary_manifest_asks_no_third_question() {
         }] }
     }]);
     let out = unpark("parked", &decls);
+    assert_one_step_flight(&out);
     assert_eq!(
-        out.len(),
-        3,
+        out[1]["header"]["route"], "mutate",
         "no question: nothing here opens an identity door"
     );
-    assert_eq!(out[2]["header"]["route"], "mutate");
 }
 
 #[test]
@@ -379,8 +374,8 @@ fn a_manifest_that_both_authors_code_and_subscribes_answers_three_questions() {
     assert_eq!(op_of(&second[0])["capability"], "affinity.subscribe");
 
     let third = unpark("subscribing", &decls);
-    assert_eq!(third.len(), 3);
-    assert_eq!(third[2]["header"]["route"], "mutate");
+    assert_one_step_flight(&third);
+    assert_eq!(third[1]["header"]["route"], "mutate");
 }
 
 #[test]
@@ -402,4 +397,23 @@ fn the_gate_still_carries_no_policy_of_its_own() {
     ] {
         assert!(script.contains(word), "the gate must name {word}");
     }
+}
+
+/// GH #1199: forgetting the park and remembering the flight are ONE store
+/// write -- an `insert` with `replace` over the parked row, no separate
+/// delete leg; the un-parking is that write, then the submission.
+fn assert_one_step_flight(out: &[Value]) {
+    assert_eq!(
+        out.len(),
+        2,
+        "forget the park and remember the flight in one step, then submit: {out:?}"
+    );
+    let flight = op_of(&out[0]);
+    assert_eq!(flight["operation"], "insert");
+    assert_eq!(flight["replace"], json!({ "id": "p1" }));
+    assert!(
+        flight.get("where").is_none(),
+        "no separate delete leg: {flight}"
+    );
+    assert_eq!(flight["row"]["kind"], "flight");
 }

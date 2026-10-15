@@ -1583,5 +1583,140 @@ class TestRootFromLanesFile(unittest.TestCase):
             self.assertEqual(hygiene.Ctx(clock=lambda: 0).root, "/x/y")
 
 
+
+# --- the one CPU source of the kit (GH #1199, re-check A-I1) ------------------------
+
+# Where a CPU count may come from. `--kit` (export_tree_tests.ci_runner) emulates
+# the public runner by the affinity (`taskset`) and a sysroot (MECLAW_FP_SYSROOT);
+# `os.cpu_count()` counts the machine and /sys or /proc read the host, so any
+# other site computed host width under `--kit` and runner width in the public CI.
+# hygiene.py is the one module that counts CPUs without `cpus` (it runs alone on
+# a lane), so the rule lives beside its tests. The allow list is narrow and
+# named, `(file, function)`:
+CPU_COUNT_HOME = {("scripts/pipeline/cpus.py", "threads")}
+# the sysroot reader of the kit; hygiene.py runs alone on a lane (ssh stdin, no
+# sibling to import) and counts its affinity inline
+TOPOLOGY_READERS = {("scripts/pipeline/cpus.py", None)}
+# (and `ci_runner`, which picks the CPUs of its `taskset` pin from the affinity)
+AFFINITY_READERS = {("scripts/pipeline/cpus.py", None),
+                    ("scripts/pipeline/hygiene.py", "_affinity_threads"),
+                    ("plans/export-fixtures/export_tree_tests.py", "ci_runner")}
+# writers of a FAKE topology, never a reading: the runner's sysroot of `--kit`
+TOPOLOGY_WRITERS = {("plans/export-fixtures/export_tree_tests.py", "runner_sysroot")}
+TOPOLOGY_WORDS = ("cpuinfo", "thread_siblings", "devices/system/cpu")
+TOPOLOGY_PIECES = {"devices", "system", "cpu"}
+
+
+def kit_python_files(root):
+    """The kit's Python: scripts/**/*.py without fixtures, .github/**/*.py and
+    the export station's runner (plans/export-fixtures/export_tree_tests.py)."""
+    root = pathlib.Path(root)
+    out = [p for p in sorted((root / "scripts").rglob("*.py")) if "fixtures" not in p.parts]
+    out += sorted((root / ".github").rglob("*.py"))
+    ett = root / "plans" / "export-fixtures" / "export_tree_tests.py"
+    if ett.is_file():
+        out.append(ett)
+    return out
+
+
+def _functions_of(tree):
+    """`{id(node): innermost function name}` for every node of `tree`."""
+    import ast
+    owner = {}
+
+    def visit(node, name):
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else name
+            owner[id(child)] = inner
+            visit(child, inner)
+    visit(tree, None)
+    return owner
+
+
+def _allowed(allow, rel, fn):
+    return (rel, fn) in allow or (rel, None) in allow
+
+
+def cpu_source_findings(root):
+    """`path:line why` of every kit site that reads a CPU count past `cpus.py`:
+    an `os.cpu_count()` call outside `cpus.threads`; in scripts/ outside its
+    tests and in export_tree_tests.py a topology path (`cpuinfo`,
+    `thread_siblings`, `devices/system/cpu` or its join pieces) outside the
+    reader, and an affinity read outside the named ones. A `mock.patch(
+    "os.cpu_count", ...)` string is no call, a docstring no path."""
+    import ast
+    root = pathlib.Path(root)
+    found = []
+    for path in kit_python_files(root):
+        rel = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+            found.append("%s:0 unreadable (%s)" % (rel, exc))
+            continue
+        owner = _functions_of(tree)
+        prose = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr)}
+        files_rule = rel.startswith("scripts/") and not rel.startswith("scripts/tests/") \
+            or rel == "plans/export-fixtures/export_tree_tests.py"
+        for node in ast.walk(tree):
+            fn = owner.get(id(node))
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "attr", getattr(node.func, "id", None))
+                if name == "cpu_count" and not _allowed(CPU_COUNT_HOME, rel, fn):
+                    found.append("%s:%d cpu_count() outside cpus.threads" % (rel, node.lineno))
+                if files_rule and name == "sched_getaffinity" \
+                        and not _allowed(AFFINITY_READERS, rel, fn):
+                    found.append("%s:%d affinity read outside cpus.threads" % (rel, node.lineno))
+                pieces = {a.value for a in node.args
+                          if isinstance(a, ast.Constant) and isinstance(a.value, str)}
+                if files_rule and TOPOLOGY_PIECES <= pieces and not (
+                        _allowed(TOPOLOGY_READERS, rel, fn) or _allowed(TOPOLOGY_WRITERS, rel, fn)):
+                    found.append("%s:%d topology path joined outside cpus.py" % (rel, node.lineno))
+            elif files_rule and isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in prose and any(w in node.value for w in TOPOLOGY_WORDS) \
+                    and not (_allowed(TOPOLOGY_READERS, rel, fn)
+                             or _allowed(TOPOLOGY_WRITERS, rel, fn)):
+                found.append("%s:%d topology path %r outside cpus.py" % (rel, node.lineno,
+                                                                       node.value[:40]))
+    return found
+
+
+class KitCpuSource(unittest.TestCase):
+    """GH #1199 (re-check A-I1): `--kit` pins the runner's CPUs by affinity and a
+    sysroot, so every CPU count of the kit comes from `pipeline.cpus` -- `threads()`
+    (the affinity) and `physical_cores()` (the sysroot's topology). A second source
+    computes host width under `--kit` and runner width in the public CI."""
+
+    def test_the_kit_counts_cpus_in_one_place(self):
+        self.assertEqual([], cpu_source_findings(REPO))
+
+    def test_the_rule_sees_every_other_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = pathlib.Path(tmp, "scripts", "pipeline")
+            tests = pathlib.Path(tmp, "scripts", "tests")
+            pkg.mkdir(parents=True)
+            tests.mkdir()
+            (pkg / "cpus.py").write_text(
+                "import os\ndef threads():\n    return os.cpu_count()\n"
+                "def peek():\n    return os.cpu_count()\n"
+                "ROOT = os.path.join('/', 'sys', 'devices', 'system', 'cpu')\n")
+            (pkg / "wide.py").write_text(
+                "'''Reads /proc/cpuinfo.'''\n"
+                "import os\nN = os.cpu_count()\nA = len(os.sched_getaffinity(0))\n"
+                "P = '/proc/cpuinfo'\nQ = os.path.join('/', 'sys', 'devices', 'system', 'cpu')\n")
+            (tests / "test_x.py").write_text(
+                "import os\nfrom unittest import mock\nP = mock.patch('os.cpu_count')\n"
+                "T = 'sys/devices/system/cpu/cpu0/topology/thread_siblings_list'\n"
+                "N = os.cpu_count()\n")
+            self.assertEqual(["scripts/pipeline/cpus.py:5 cpu_count() outside cpus.threads",
+                              "scripts/pipeline/wide.py:3 cpu_count() outside cpus.threads",
+                              "scripts/pipeline/wide.py:4 affinity read outside cpus.threads",
+                              "scripts/pipeline/wide.py:5 topology path '/proc/cpuinfo' outside "
+                              "cpus.py",
+                              "scripts/pipeline/wide.py:6 topology path joined outside cpus.py",
+                              "scripts/tests/test_x.py:5 cpu_count() outside cpus.threads"],
+                             sorted(cpu_source_findings(tmp)))
+
+
 if __name__ == "__main__":
     unittest.main()

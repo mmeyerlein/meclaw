@@ -174,9 +174,16 @@ fn a_turn_on_a_scoped_channel_carries_the_scope_to_the_brain() {
         .unwrap_or_else(|| panic!("the stated scope is written to the session row: {out:?}"));
     assert_eq!(put.1["row"]["tools_deny"], json!(["x"]), "{put:?}");
     assert_eq!(put.1["row"]["tools_allow"], json!([]), "{put:?}");
-    assert!(
-        writes.iter().any(|(_, a)| a["operation"] == "delete"),
+    // GH #1199: the old row is replaced IN the write -- `insert` with
+    // `replace` over the session, never a separate delete leg.
+    assert_eq!(
+        put.1["replace"],
+        json!({"session_id": "s1"}),
         "the old row is replaced, not doubled: {writes:?}"
+    );
+    assert!(
+        writes.iter().all(|(_, a)| a["operation"] != "delete"),
+        "no separate delete leg: {writes:?}"
     );
     no_menu_write(&out);
 
@@ -338,17 +345,16 @@ fn calls_of_or_empty(m: &Value) -> Vec<(String, Value)> {
 #[test]
 fn a_changed_scope_is_taken_over_and_said() {
     let out = assemble(&[], turn(TURN2, json!({"tools_deny": "y"}), "again"));
-    let ids: Vec<String> = session_ops(&out).into_iter().map(|(id, _)| id).collect();
+    let ops = session_ops(&out);
+    let ids: Vec<String> = ops.iter().map(|(id, _)| id.clone()).collect();
     assert_eq!(
         ids,
-        vec![
-            "c-open-scope-was",
-            "c-open-scope-del",
-            "c-open-scope-put",
-            "c-open-scope"
-        ],
+        vec!["c-open-scope-was", "c-open-scope-put", "c-open-scope"],
         "the old row is read BEFORE it is replaced, the new one after"
     );
+    // GH #1199: the replacement is the write itself, no separate delete leg.
+    assert_eq!(ops[1].1["operation"], "insert", "{ops:?}");
+    assert_eq!(ops[1].1["replace"], json!({"session_id": "s1"}), "{ops:?}");
     let (b, stderr) = run_cell(
         ASSEMBLE,
         &[],

@@ -1409,7 +1409,7 @@ receipt the immediately following shutdown still eats is healed by the next star
 
 | Invocation | Behaviour |
 |---|---|
-| `meclaw --root R --apply f` | One-shot: boot, apply, receipt on stdout, graceful shutdown, exit 0 on `committed` and non-zero otherwise. The stdin/stdout bridge is off, as under `--daemon` |
+| `meclaw --root R --apply f` | One-shot: boot, apply, receipt on stdout, graceful shutdown, exit 0 on `committed` and non-zero otherwise. The shutdown waits for the colony's ack up to `shutdown_drain_timeout_ms` plus a teardown margin; an ack that does not come, or a colony task that panics in its teardown (the `colony.db` writer, for one), is non-zero with the cause on stderr, even after a `committed`. The stdin/stdout bridge is off, as under `--daemon` |
 | `meclaw --root R --daemon --apply f` | Boot, apply, receipt, keeps running. A `rejected` does not end the daemon: the colony stands, the mutation does not, which is the audit semantics of every mutation. The line goes to stderr |
 | `meclaw --root R --api A --apply f` | as `--daemon --apply` |
 | `meclaw --root R --validate --apply f` | `--validate` has precedence, with a `note:` line on stderr |

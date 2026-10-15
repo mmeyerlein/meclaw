@@ -531,14 +531,16 @@ fn a_turn_with_peer_words_leaves_one_peer_mark_in_its_session() {
         ),
     );
     let open = in_phase(&out, "turn-open");
-    let drop = call(open, "c-open-peer-drop");
-    assert_eq!(drop["operation"], "delete");
+    // GH #1199: the older mark goes IN the write of the new one -- `insert`
+    // with `replace`, no separate delete leg.
+    let put = call(open, "c-open-peer-mark");
+    assert_eq!(put["operation"], "insert", "{put}");
     assert_eq!(
-        drop["where"],
+        put["replace"],
         json!({"session_id": SESSION, "role": "depart", "correlation": ""}),
-        "the older mark of the session goes -- one mark per session: {drop}"
+        "the older mark of the session goes -- one mark per session: {put}"
     );
-    let mark = call(open, "c-open-peer-mark")["row"].clone();
+    let mark = put["row"].clone();
     assert_eq!(mark["role"], "depart", "{mark}");
     assert_eq!(mark["session_id"], SESSION, "{mark}");
     assert_eq!(
@@ -549,9 +551,12 @@ fn a_turn_with_peer_words_leaves_one_peer_mark_in_its_session() {
     assert_eq!(body, json!({"peer": 1}), "{mark}");
     let ids = ids_of(open);
     assert!(
-        pos(&ids, "c-open-peer-drop") < pos(&ids, "c-open-peer-mark")
-            && pos(&ids, "c-open-peer-mark") < pos(&ids, "c-open-depart"),
-        "drop, mark, then the read that sees it: {ids:?}"
+        !ids.iter().any(|i| i == "c-open-peer-drop"),
+        "no separate delete leg: {ids:?}"
+    );
+    assert!(
+        pos(&ids, "c-open-peer-mark") < pos(&ids, "c-open-depart"),
+        "the mark (replacing the older one), then the read that sees it: {ids:?}"
     );
 
     // The person's own words leave no mark.
@@ -652,25 +657,82 @@ fn a_newer_departure_under_the_same_id_replaces_the_older_one() {
     );
     let bundle = &out[0];
     assert_eq!(bundle["header"]["phase"], "round-check", "{bundle}");
-    let drop = call(bundle, "c-round-check-depart-drop");
-    assert_eq!(drop["operation"], "delete", "{drop}");
+    // A write of the new departure that fails keeps the older one: the later
+    // answer under the id still finds its round. The failure is injected where
+    // a loaded store fails it, the insert of a departure.
+    let store = window_store();
+    run_ops(
+        &store,
+        &[json!({"operation": "insert", "table": "round", "row": {
+            "turn_id": "chat#older", "session_id": SESSION, "iter": 0, "role": "depart",
+            "turn": "{\"id\":\"call-1\",\"name\":\"consult_cogny\"}", "fired": 1,
+            "recorded_at": ago(5.0), "correlation": "k-7", "deadline_ms": 0}})],
+    );
+    store
+        .execute_batch(
+            "CREATE TRIGGER gh1199_fail BEFORE INSERT ON round WHEN NEW.role = 'depart' \
+             BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;",
+        )
+        .expect("the trigger");
+    let legs: Vec<Value> = calls_of(bundle).into_iter().map(|(_, a)| a).collect();
+    run_ops(&store, &legs);
+    let found = meclaw_cells::store::ops::dispatch(
+        &store,
+        &json!({"operation": "select", "table": "round", "columns": ["turn_id"],
+                "where": {"session_id": SESSION, "role": "depart", "correlation": "k-7"}}),
+    )
+    .expect("the lookup runs")
+    .payload;
     assert_eq!(
-        drop["where"],
-        json!({"session_id": SESSION, "role": "depart", "correlation": {"in": ["k-7"]}}),
-        "the older departure under the id, in this session: {drop}"
+        found,
+        json!([{"turn_id": "chat#older"}]),
+        "the later answer under k-7 still finds the round it left from"
+    );
+
+    // GH #1199: the older departure goes IN the write of the new one --
+    // `insert` with `replace`, no separate delete leg.
+    let put = call(bundle, "c-round-check-depart-0");
+    assert_eq!(put["operation"], "insert", "{put}");
+    assert_eq!(
+        put["replace"],
+        json!({"session_id": SESSION, "role": "depart", "correlation": "k-7"}),
+        "the older departure under the id, in this session: {put}"
     );
     let ids = ids_of(bundle);
     assert!(
-        pos(&ids, "c-round-check-depart-drop") < pos(&ids, "c-round-check-depart-0"),
-        "in front of the new one, which it must not take: {ids:?}"
+        !ids.iter().any(|i| i == "c-round-check-depart-drop"),
+        "no separate delete leg: {ids:?}"
     );
-    let row = call(bundle, "c-round-check-depart-0")["row"].clone();
+    let row = put["row"].clone();
     assert_eq!(row["correlation"], "k-7", "{row}");
     let body: Value = serde_json::from_str(row["turn"].as_str().expect("turn")).expect("json");
     assert!(
         body.get("answered").is_none(),
         "a fresh departure is not answered yet: {row}"
     );
+}
+
+/// The collector's store (`window`), as its template declares it, empty.
+fn window_store() -> rusqlite::Connection {
+    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../templates/collector/window/config.json");
+    let raw: Value =
+        serde_json::from_str(&std::fs::read_to_string(&p).expect("window config")).expect("json");
+    let params =
+        meclaw_cells::store::StoreParams::parse(&raw["params"]).expect("the store params parse");
+    let conn = rusqlite::Connection::open_in_memory().expect("an in-memory store");
+    meclaw_cells::store::ddl::apply_declared_schema_ddl(&conn, &params)
+        .expect("the declared schema applies");
+    conn
+}
+
+/// Every op in order, as the store runs a bundle (a leg that fails does not
+/// stop the ones behind it).
+fn run_ops(conn: &rusqlite::Connection, ops: &[Value]) {
+    for op in ops {
+        meclaw_cells::store::ops::dispatch(conn, op)
+            .unwrap_or_else(|e| panic!("the store refused {op} as input: {e}"));
+    }
 }
 
 /// The instant `minutes` ago, in the store's fixed-width UTC form.

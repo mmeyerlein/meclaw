@@ -646,6 +646,15 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
     // that is parked lazily waits in that cell's mailbox, which `Settle`
     // counts as pending -- so the barrier only hangs (measured: `HANG: the
     // colony settles`, build01, 2026-10-15).
+    //
+    // The read after the wait is a claim of its own (GH #1199, #1093): a row
+    // once written never goes missing again. Every receipt of the growth
+    // announces the member once more, and until 0.64.1 an announcement that
+    // read a row as unknown wrote it as a delete and an insert, two legs of a
+    // bundle that is no transaction -- this read fell between them (the
+    // coverage of a20e7d3fe lost the closer's row here; #1093 the judge's).
+    // The registry writes such a row in one step now, pinned deterministically
+    // by the `gh1199_*` tests at the end of this file.
     let rows = || find_store_db(root).map_or_else(Vec::new, |db| subscriber_rows(&db));
     wait::boot_until_with(
         "every subscriber row of the grown generation and member",
@@ -1260,4 +1269,462 @@ async fn a_refused_push_on_the_shipped_road_reaches_show() {
         "no push reached the provider"
     );
     h.shutdown().await;
+}
+
+// ---- GH #1199 / #1093: the registry announces a subscriber row in ONE step ----
+//
+// Every receipt of a growth announces the member again, and announcements in
+// flight together each read a row as unknown (measured: `hand_subscribed` five
+// times for each memory cell). The store runs one bundle after the other, so
+// the interleaving is: both reads, then the first write bundle, then the
+// second. These pins replay exactly that order, deterministically: the hand
+// is the shipped script (`python3 -c`, as the code cell runs it), the store is
+// the shipped registry schema under the store's own ops, and each leg of the
+// second write bundle is applied on its own -- the state between two legs is
+// what a reader beside the lane (the coverage of a20e7d3fe; #1093) could see.
+
+const PIN_GEN: &str = "/os/orgs/acme/members/alex/assistants/pin";
+const PIN_BRAIN: &str = "/os/orgs/acme/members/alex/assistants/pin/talky/brain";
+
+/// The shipped registry store's tables, empty, under the store's own DDL.
+fn pin_store() -> rusqlite::Connection {
+    let raw = read_json(&repo("templates/llm-registry/store/config.json"));
+    let params =
+        meclaw_cells::store::StoreParams::parse(&raw["params"]).expect("the store params parse");
+    let conn = rusqlite::Connection::open_in_memory().expect("an in-memory store");
+    meclaw_cells::store::ddl::apply_declared_schema_ddl(&conn, &params)
+        .expect("the declared schema applies");
+    conn
+}
+
+/// One store op, as the store cell runs it; the outcome's payload.
+fn pin_op(conn: &rusqlite::Connection, args: &Value) -> Value {
+    let o = meclaw_cells::store::ops::dispatch(conn, args)
+        .unwrap_or_else(|e| panic!("the store refused {args} as input: {e}"));
+    o.payload
+}
+
+/// The shipped hand, run once on `doc` (stdin), as the code cell runs it.
+fn pin_hand(doc: &Value) -> Vec<Value> {
+    use std::io::Write as _;
+    let cfg = read_json(&repo("templates/llm-registry/hand/config.json"));
+    let script = cfg["params"]["script_inline"]
+        .as_str()
+        .expect("the hand's script");
+    let mut child = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3 runs");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(doc.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("the hand ends");
+    assert!(
+        out.status.success(),
+        "the hand failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    meclaw_core::serde_json::from_slice(&out.stdout).expect("the hand answers a JSON list")
+}
+
+/// The store ops of a hand message to the store, in call order.
+fn pin_legs(msg: &Value) -> Vec<Value> {
+    msg["messages"]
+        .as_array()
+        .expect("a store bundle")
+        .iter()
+        .map(|t| meclaw_core::serde_json::from_str(t["text"].as_str().unwrap()).unwrap())
+        .collect()
+}
+
+/// The hand's one store bundle among its messages, by phase.
+fn pin_bundle(out: &[Value], phase: &str) -> Value {
+    out.iter()
+        .find(|m| m["header"]["route"] == "rstore" && m["header"]["phase"] == phase)
+        .cloned()
+        .unwrap_or_else(|| panic!("no `{phase}` store bundle in {out:#?}"))
+}
+
+/// One command or announcement, read against the store as it stands NOW:
+/// the hand's `world` read is answered here, and everything the hand decides
+/// on it is returned unapplied -- its write bundle runs later, after other
+/// bundles.
+fn pin_decide(conn: &rusqlite::Connection, doc: &Value) -> Vec<Value> {
+    let read = pin_bundle(&pin_hand(doc), "world");
+    let results: Vec<Value> = pin_legs(&read)
+        .iter()
+        .map(|leg| {
+            json!({"origin": "tool", "type": "tool_result",
+                   "text": pin_op(conn, leg).to_string()})
+        })
+        .collect();
+    pin_hand(&json!({
+        "envelope": {"header": {"hop": {"operation": "bundle"}, "context": {
+            "lr_phase": "world",
+            "lr_carry": read["header"]["carry"]}}},
+        "body": {"messages": results},
+        "params": {}}))
+}
+
+/// The tree's announcement of the brain, as the generation's edge stamps it.
+fn pin_announcement() -> Value {
+    let entries = json!([{"cell_path": PIN_BRAIN, "start_model": "m-start"}]);
+    json!({
+        "envelope": {"header": {"hop": {}, "context": {
+            "model_announcer": PIN_GEN,
+            "model_generation": PIN_GEN,
+            "model_announced": entries.to_string()}}},
+        "body": {"messages": []},
+        "params": {}})
+}
+
+/// One announcement of the brain read as unknown: its write bundle (the
+/// `landed` phase -- the hand settles the row on the store's answer to it),
+/// unapplied.
+fn pin_announce(conn: &rusqlite::Connection) -> Value {
+    pin_bundle(&pin_decide(conn, &pin_announcement()), "landed")
+}
+
+/// The brain's subscriber rows: (model_id, rank, package_hash, refused).
+fn pin_rows(conn: &rusqlite::Connection) -> Vec<(String, String, String, String)> {
+    let mut st = conn
+        .prepare(
+            "SELECT coalesce(model_id,''), coalesce(rank,''), coalesce(package_hash,''), \
+             coalesce(refused,'') FROM subscribers WHERE cell_path = ?1",
+        )
+        .unwrap();
+    st.query_map([PIN_BRAIN], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+/// The race of GH #1199: two announcements read the brain as unknown, the
+/// first one's bundle writes and settles the row (a targeted override moves it
+/// off its start value, so a package is pushed), and the cell refuses that
+/// package. Returns the store, the second announcement's write bundle (still
+/// to run), and the row as it stands before it runs.
+fn pin_race() -> (
+    rusqlite::Connection,
+    Vec<Value>,
+    (String, String, String, String),
+) {
+    let conn = pin_store();
+    pin_op(
+        &conn,
+        &json!({"operation": "insert", "table": "models", "row": {
+            "model_id": "m-target", "provider": "p", "base_url": "http://127.0.0.1:9/v1",
+            "wire_dialect": "chat", "context_window": 8192, "status": "active"}}),
+    );
+    pin_op(
+        &conn,
+        &json!({"operation": "insert", "table": "overrides", "row": {
+            "id": "o-1", "scope": "target", "match": PIN_BRAIN, "model_id": "m-target",
+            "since": "2026-10-15T00:00:00Z", "decided_by": "operator", "active": 1}}),
+    );
+    let first = pin_announce(&conn);
+    let second = pin_announce(&conn);
+    for leg in pin_legs(&first) {
+        pin_op(&conn, &leg);
+    }
+    pin_op(
+        &conn,
+        &json!({"operation": "update", "table": "subscribers",
+                "set": {"refused": "the cell refused the package", "refused_at": "t1"},
+                "where": {"cell_path": PIN_BRAIN}}),
+    );
+    let booked = pin_rows(&conn);
+    assert_eq!(booked.len(), 1, "the first announcement wrote one row");
+    let booked = booked.into_iter().next().unwrap();
+    assert_eq!(
+        (booked.0.as_str(), booked.1.as_str()),
+        ("m-target", "target"),
+        "precondition: the first announcement settled the row off its start value"
+    );
+    assert!(!booked.2.is_empty(), "precondition: a package was pushed");
+    (conn, pin_legs(&second), booked)
+}
+
+/// Pin (a): the row never goes missing while the second announcement runs --
+/// not after any one of its legs.
+#[test]
+fn gh1199_a_second_announcement_in_flight_never_takes_the_row_away() {
+    if !shipped() {
+        return;
+    }
+    let (conn, legs, _) = pin_race();
+    for (i, leg) in legs.iter().enumerate() {
+        pin_op(&conn, leg);
+        assert_eq!(
+            pin_rows(&conn).len(),
+            1,
+            "after leg {i} of the second announcement ({leg}) the brain has exactly one row"
+        );
+    }
+}
+
+/// Pin (b): what was booked on the row since the first announcement -- the
+/// resolution and the refusal -- stands after the second one.
+#[test]
+fn gh1199_a_second_announcement_in_flight_leaves_the_booked_refusal() {
+    if !shipped() {
+        return;
+    }
+    let (conn, legs, booked) = pin_race();
+    for leg in &legs {
+        pin_op(&conn, leg);
+    }
+    assert_eq!(
+        pin_rows(&conn),
+        vec![booked],
+        "the late announcement wrote nothing over the settled, refused row"
+    );
+}
+
+/// Pin (c): a write of the second announcement that fails loses no row. The
+/// failure is injected where a loaded store fails it: the insert.
+#[test]
+fn gh1199_an_announcement_whose_write_fails_keeps_the_row() {
+    if !shipped() {
+        return;
+    }
+    let (conn, legs, booked) = pin_race();
+    conn.execute_batch(
+        "CREATE TRIGGER pin_fail BEFORE INSERT ON subscribers \
+         BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;",
+    )
+    .unwrap();
+    for leg in &legs {
+        pin_op(&conn, leg);
+    }
+    assert_eq!(
+        pin_rows(&conn),
+        vec![booked],
+        "the row the store held survives a failed announcement write"
+    );
+}
+
+// ---- GH #1199, re-check I1: two DIFFERENT statements of one row in flight ----
+//
+// An operator `subscribe` that states a tier and the tree's announcement of
+// the same brain both read the row as unknown. Whichever bundle runs second
+// finds the row standing: its `if_absent` insert writes nothing. The hand
+// decides on the store's answer -- `rows_affected` of that leg -- what it
+// pushes and journals, so the row and the package the cell runs always agree:
+// the loser pushes nothing of its own, reads the row again, and settles it the
+// way it settles a known row.
+
+/// The shipped store as a store cell answers ONE hand message: every leg in
+/// call order; two or more are a bundle with `results[]` (GH #295), one op
+/// carries its metadata on the hop.
+fn pin_reply(conn: &rusqlite::Connection, msg: &Value) -> Value {
+    let turns = msg["messages"].as_array().expect("a store message");
+    let (mut messages, mut results, mut sum, mut errors) = (vec![], vec![], 0i64, 0i64);
+    for t in turns {
+        let args: Value = meclaw_core::serde_json::from_str(t["text"].as_str().unwrap()).unwrap();
+        let o = meclaw_cells::store::ops::dispatch(conn, &args)
+            .unwrap_or_else(|e| panic!("the store refused {args} as input: {e}"));
+        let text = o
+            .error_text
+            .clone()
+            .unwrap_or_else(|| o.payload.to_string());
+        messages.push(
+            json!({"origin": "tool", "type": "tool_result", "id": t["id"],
+                             "text": text}),
+        );
+        let mut r = json!({"tool_call_id": t["id"], "operation": o.operation,
+                           "rows_affected": o.rows_affected, "duration_ms": 0});
+        if let Some(code) = o.error_code {
+            r["error_code"] = json!(code);
+            errors += 1;
+        }
+        sum += o.rows_affected;
+        results.push(r);
+    }
+    let (hop, body) = if turns.len() > 1 {
+        (
+            json!({"operation": "bundle", "rows_affected": sum, "duration_ms": 0,
+                   "bundle_errors": errors}),
+            json!({"messages": messages, "results": results}),
+        )
+    } else {
+        let mut hop = results[0].clone();
+        hop.as_object_mut().unwrap().remove("tool_call_id");
+        (hop, json!({"messages": messages}))
+    };
+    json!({
+        "envelope": {"header": {"hop": hop, "context": {
+            "lr_phase": msg["header"]["phase"],
+            "lr_carry": msg["header"]["carry"]}}},
+        "body": body,
+        "params": {}})
+}
+
+/// Runs everything the hand sends to its store, and everything the hand
+/// answers to the store's replies, until nothing goes to the store any more.
+/// Returns every other message the hand emitted on the way, in order.
+fn pin_drive(conn: &rusqlite::Connection, out: Vec<Value>) -> Vec<Value> {
+    let mut queue: std::collections::VecDeque<Value> = out.into();
+    let mut seen = vec![];
+    let mut rounds = 0;
+    while let Some(m) = queue.pop_front() {
+        if m["header"]["route"] == "rstore" {
+            rounds += 1;
+            assert!(rounds < 16, "the hand keeps talking to its store: {m}");
+            queue.extend(pin_hand(&pin_reply(conn, &m)));
+        } else {
+            seen.push(m);
+        }
+    }
+    seen
+}
+
+/// An operator's `subscribe` of the brain, stating its tier.
+fn pin_operator_subscribe() -> Value {
+    let cmd = json!({"op": "subscribe", "cell_path": PIN_BRAIN, "start_model": "m-start",
+                     "tier": "fast"});
+    json!({
+        "envelope": {"header": {"hop": {}, "context": {"actor": "operator"}}},
+        "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "c-1",
+                               "text": cmd.to_string()}]},
+        "params": {}})
+}
+
+/// A store whose tier `fast` means `m-fast`: the operator's statement moves
+/// the brain off its start value (a package is pushed), the tree's does not.
+fn pin_tier_store() -> rusqlite::Connection {
+    let conn = pin_store();
+    pin_op(
+        &conn,
+        &json!({"operation": "insert", "table": "models", "row": {
+            "model_id": "m-fast", "provider": "p", "base_url": "http://127.0.0.1:9/v1",
+            "wire_dialect": "chat", "context_window": 8192, "status": "active"}}),
+    );
+    pin_op(
+        &conn,
+        &json!({"operation": "insert", "table": "tiers", "row": {
+            "tier": "fast", "model_id": "m-fast", "since": "2026-10-15T00:00:00Z",
+            "decided_by": "operator", "active": 1}}),
+    );
+    conn
+}
+
+/// The brain's row: (tier, model_id, rank, package_hash).
+fn pin_row(conn: &rusqlite::Connection) -> Vec<(String, String, String, String)> {
+    let mut st = conn
+        .prepare(
+            "SELECT coalesce(tier,''), coalesce(model_id,''), coalesce(rank,''), \
+             coalesce(package_hash,'') FROM subscribers WHERE cell_path = ?1",
+        )
+        .unwrap();
+    st.query_map([PIN_BRAIN], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+/// The pushes among the hand's messages that reach the brain: (model_id, rank).
+fn pin_pushes(seen: &[Value]) -> Vec<(String, String)> {
+    seen.iter()
+        .filter(|m| m["header"]["route"] == "update" && m["header"]["subscriber"] == PIN_BRAIN)
+        .map(|m| {
+            (
+                m["header"]["model_id"].as_str().unwrap_or("").to_string(),
+                m["header"]["rank"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+/// How often the journal booked the brain as subscribed.
+fn pin_subscribed(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row(
+        "SELECT count(*) FROM resolutions WHERE cell_path = ?1 AND reason = 'hand_subscribed'",
+        [PIN_BRAIN],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Pin (d): the operator's subscription runs second and finds the tree's row.
+/// Its tier lands on the row, and the package the cell is sent is the one the
+/// row records -- not a package of a statement the store never took.
+#[test]
+fn gh1199_an_operator_subscription_that_loses_the_race_lands_and_pushes_what_the_row_says() {
+    if !shipped() {
+        return;
+    }
+    let conn = pin_tier_store();
+    let operator = pin_decide(&conn, &pin_operator_subscribe());
+    let tree = pin_decide(&conn, &pin_announcement());
+    let tree_seen = pin_drive(&conn, tree);
+    assert!(
+        pin_pushes(&tree_seen).is_empty(),
+        "precondition: the tree's announcement keeps the start value and pushes nothing"
+    );
+    let seen = pin_drive(&conn, operator);
+    let rows = pin_row(&conn);
+    assert_eq!(rows.len(), 1, "one row of the brain: {rows:?}");
+    let (tier, model_id, rank, hash) = rows[0].clone();
+    assert_eq!(
+        tier, "fast",
+        "the tier the operator stated stands on the row, it was not dropped by the race"
+    );
+    assert_eq!(
+        (model_id.as_str(), rank.as_str()),
+        ("m-fast", "tier"),
+        "the row resolves the stated tier"
+    );
+    assert!(!hash.is_empty(), "the row records the package it was sent");
+    assert_eq!(
+        pin_pushes(&seen).last(),
+        Some(&(model_id, rank)),
+        "the last package pushed to the cell is the one its row records"
+    );
+}
+
+/// Pin (e): the tree's announcement runs second and finds the operator's row.
+/// It pushes nothing of its own and books no subscription it did not write;
+/// what the operator stated and pushed stands.
+#[test]
+fn gh1199_an_announcement_that_loses_the_race_books_and_pushes_nothing() {
+    if !shipped() {
+        return;
+    }
+    let conn = pin_tier_store();
+    let tree = pin_decide(&conn, &pin_announcement());
+    let operator = pin_decide(&conn, &pin_operator_subscribe());
+    let operator_seen = pin_drive(&conn, operator);
+    assert_eq!(
+        pin_pushes(&operator_seen),
+        vec![("m-fast".to_string(), "tier".to_string())],
+        "precondition: the operator's subscription pushed its tier's package"
+    );
+    let booked = pin_row(&conn);
+    let seen = pin_drive(&conn, tree);
+    assert!(
+        pin_pushes(&seen).is_empty(),
+        "the announcement that lost pushed nothing: {seen:#?}"
+    );
+    assert_eq!(
+        pin_row(&conn),
+        booked,
+        "the operator's row stands as it was booked"
+    );
+    assert_eq!(
+        pin_subscribed(&conn),
+        1,
+        "the journal books the brain subscribed once -- by the statement that wrote the row"
+    );
 }

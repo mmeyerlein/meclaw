@@ -99,6 +99,6 @@
   "description": {
     "purpose": "Three tables: `shows` (one row per accepted topic: the owning app and its manifest), `pending` (one row per turn in flight, the stage's state written through) and `journal` (one row per turn that asked the decider: topic, confidence, lead, also, fallback, late, the three times, model, round -- never the turn's text).",
     "use_when": "Inside the presenter only, written by `stage` alone.",
-    "not_in_scope": "It deletes no journal row and expires nothing: the hit rate is read from the journal later. One row per key is kept by hand, as a delete followed by an insert in one bundle."
+    "not_in_scope": "It deletes no journal row and expires nothing: the hit rate is read from the journal later. One row per key is kept by hand, as one `insert` with `replace` on the key (the old row goes and the new one comes in one step; a write that fails keeps the old row)."
   }
 }

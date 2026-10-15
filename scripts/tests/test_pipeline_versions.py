@@ -23,7 +23,11 @@ sys.path.insert(0, str(SCRIPTS))
 from pipeline import versions  # noqa: E402
 
 from . import test_pipeline_merge as fx  # noqa: E402
-from scripts.tests import store_isolation  # noqa: E402
+from scripts.tests import private_tree, store_isolation  # noqa: E402
+
+# The subject make_export.py gives the export commit a release tag sits on;
+# `ExportSubjectTest` holds the fixture, the producer and the parser to it.
+EXPORT_SUBJECT = "export: public tree rebuilt from %s"
 
 # gate-selftest loads every module into one process: no fixture event of this
 # module may reach the metrics target of the caller's environment.
@@ -68,8 +72,10 @@ class BumpTest(VersionsCase):
         self.assertTrue(res["versions"]["c"].get("cascade"))
         self.assertNotIn("cascade", res["versions"]["a"])
         self.assertIsNone(res["workspace"])
+        # the fixture carries no release tag: the line says so (Re-Check I1)
         self.assertEqual(versions.version_line(res),
-                         "Versions: a 1.0.0 -> 1.0.1 (fix), c 0.3.0 -> 0.3.1 (fix)")
+                         "Versions: a 1.0.0 -> 1.0.1 (fix), c 0.3.0 -> 0.3.1 (fix); "
+                         "no release base found -- raising unconditionally")
 
     def test_versions_feature_bumps_second(self):
         res = self.assign(self.touch("templates/a/README.md", "templates/b/new.md"),
@@ -312,6 +318,46 @@ class CascadeTest(VersionsCase):
                          "Since a@0.9.0 it reads by message; data@1.0.0 "
                          "and a@1.0.0.5 are not pins.\n")
 
+    def test_cascade_lists_the_pins_it_left_at_the_old_version(self):
+        # GH #1108: a pin the cascade does not rewrite (workshop Markdown, a
+        # generator script, a non-JSON scaffold) went unnoticed until a
+        # builder scenario booted it red. The merge point names every mention
+        # of the version that just moved which it left standing.
+        fx.write(self.root, "workshop/tools/gen.py", 'PIN = "a@1.0.0"\nOLD = "a@0.9.0"\n')
+        fx.write(self.root, "examples/e/notes.txt", "boots a@1.0.0 and b@2.0.0\n")
+        fx.git(self.root, "add", "-A")
+        fx.git(self.root, "commit", "-q", "-m", "left pins")
+        res = self.assign(self.touch("templates/a/README.md"))
+        left = sorted((p["path"], p["line"], p["template"], p["version"]) for p in res["left"])
+        self.assertEqual(left, [("examples/e/notes.txt", 1, "a", "1.0.0"),
+                                ("workshop/evals/run.md", 1, "a", "1.0.0"),
+                                ("workshop/tools/gen.py", 1, "a", "1.0.0")])
+        self.assertEqual(versions.left_line(res),
+                         "Pins left: 3 in 3 files (examples/e/notes.txt, "
+                         "workshop/evals/run.md, workshop/tools/gen.py)")
+
+    def test_pins_cascade_cli_names_the_left_pins(self):
+        # `pipeline pins --cascade` proposes the JSON raises and names, apart,
+        # the same old number where it never writes (GH #1108).
+        import argparse
+        import contextlib
+        import io
+        dirs = {n: d for d, n in versions.template_dirs(self.root).items()}
+        versions._set_template_version(self.root, dirs["a"], "1.0.1")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = versions.cmd_cascade(argparse.Namespace(repo=str(self.root), write=False))
+        self.assertEqual(rc, 0)
+        text = buf.getvalue()
+        self.assertIn("CASCADE %s:" % fx.SCAFFOLD, text)
+        self.assertIn("LEFT workshop/evals/run.md:1 a@1.0.0\n", text)
+        self.assertIn("Pins left: ", text)
+        self.assertNotIn("LEFT %s" % fx.SCAFFOLD, text)
+
+    def test_cascade_left_line_without_left_pins(self):
+        self.assertEqual(versions.left_line({"left": []}), "Pins left: none")
+        self.assertEqual(versions.left_line({}), "Pins left: none")
+
     def test_cascade_grep_rules_match_dev_rules_4a(self):
         rules = SCRIPTS.parent / "docs" / "development-rules.md"
         if not rules.is_file():
@@ -431,6 +477,205 @@ class HistoryTest(VersionsCase):
         res = self.assign(self.touch("templates/b/README.md"))
         self.assertEqual(res["versions"]["b"]["to"], "2.0.1")
         self.assertNotIn("description", json.loads(fx.read(self.root, "templates/b/template.json")))
+
+
+class ReleaseBaselineTest(VersionsCase):
+    """V2-A14 (welle-validierung-2): after tag v0.64.0 two fix merges gave
+    0.64.1 and 0.64.2 -- a public number skipped (development-rules § 4). A
+    digit is raised only if it has not been raised since the last release tag;
+    the baseline of a template is its version at that tag."""
+
+    def setUp(self):
+        super().setUp()
+        fx.write(self.root, "Cargo.toml", '[workspace]\nmembers = ["x"]\n\n'
+                 '[workspace.package]\nversion = "0.5.2"\nedition = "2021"\n')
+        fx.write(self.root, "Cargo.lock", 'version = 4\n\n[[package]]\nname = "x"\n'
+                 'version = "0.5.2"\n')
+        fx.git(self.root, "add", "-A")
+        fx.git(self.root, "commit", "-q", "-m", "workspace")
+        self.n = 0
+
+    def export_tag(self, tag, source="master"):
+        """The tag the way make_export.py sets it: on an export commit outside
+        master's history whose subject names the private source commit."""
+        src = fx.git(self.root, "rev-parse", source)
+        tree = fx.git(self.root, "rev-parse", source + "^{tree}")
+        commit = fx.git(self.root, "commit-tree", tree, "-m", EXPORT_SUBJECT % src[:7])
+        fx.git(self.root, "tag", "-a", tag, "-m",
+               "%s -- %s" % (tag, EXPORT_SUBJECT % src[:7]), commit)
+
+    def merge(self, kinds, *rels):
+        """One merge point: number the change, commit it to master."""
+        rels = rels or ("templates/a/README.md",)
+        self.n += 1
+        for rel in rels:
+            fx.write(self.root, rel, "change %d\n" % self.n)
+        res = self.assign(list(rels), kinds)
+        fx.git(self.root, "add", "-A")
+        fx.git(self.root, "commit", "-q", "--allow-empty", "-m", "merge %d" % self.n)
+        return res
+
+    def numbers(self):
+        return (fx.version_of(self.root, "a"), fx.version_of(self.root, "c"),
+                versions.workspace_version(fx.read(self.root, "Cargo.toml")))
+
+    def test_fix_after_fix_since_the_tag_raises_nothing(self):
+        self.export_tag("v0.5.2")
+        first = self.merge({"a": "fix", "workspace": "fix"})
+        self.assertEqual(first["versions"]["a"], {"from": "1.0.0", "to": "1.0.1", "kind": "fix"})
+        self.assertEqual(self.numbers(), ("1.0.1", "0.3.1", "0.5.3"))
+        second = self.merge({"a": "fix", "workspace": "fix"})
+        self.assertEqual(self.numbers(), ("1.0.1", "0.3.1", "0.5.3"))
+        self.assertEqual(second["versions"], {})
+        self.assertIsNone(second["workspace"])
+        self.assertEqual(versions.version_line(second),
+                         "Versions: none; held since v0.5.2: a 1.0.1 (fix), workspace 0.5.3 (fix)")
+        self.assertIsNone(versions.changelog_line(second, [101]))
+
+    def test_feature_after_fix_since_the_tag_raises_the_minor_once(self):
+        self.export_tag("v0.5.2")
+        self.merge({"a": "fix", "workspace": "fix"})
+        res = self.merge({"a": "feature", "workspace": "feature"})
+        self.assertEqual(res["versions"]["a"], {"from": "1.0.1", "to": "1.1.0", "kind": "feature"})
+        self.assertEqual(res["workspace"], {"from": "0.5.3", "to": "0.6.0", "kind": "feature"})
+        # c follows the pin, but its third digit is raised since the tag already
+        self.assertEqual(self.numbers(), ("1.1.0", "0.3.1", "0.6.0"))
+        self.assertIn("a@1.1.0", fx.read(self.root, "templates/c/template.json"))
+        self.assertNotIn("c", res["versions"])
+        self.assertEqual(res["held"]["c"], {"at": "0.3.1", "kind": "fix"})
+
+    def test_second_feature_since_the_tag_raises_nothing(self):
+        self.export_tag("v0.5.2")
+        self.merge({"a": "feature", "workspace": "feature"})
+        self.assertEqual(self.numbers(), ("1.1.0", "0.3.1", "0.6.0"))
+        self.merge({"a": "feature", "workspace": "feature"})
+        self.assertEqual(self.numbers(), ("1.1.0", "0.3.1", "0.6.0"))
+        self.merge({"a": "fix", "workspace": "fix"})
+        self.assertEqual(self.numbers(), ("1.1.0", "0.3.1", "0.6.0"))
+
+    def test_a_break_since_the_tag_absorbs_feature_and_fix(self):
+        self.export_tag("v0.5.2")
+        self.merge({"b": "break"}, "templates/b/new.md")
+        self.assertEqual(fx.version_of(self.root, "b"), "3.0.0")
+        self.merge({"b": "feature"}, "templates/b/new.md")
+        self.merge({"b": "fix"}, "templates/b/new.md")
+        self.assertEqual(fx.version_of(self.root, "b"), "3.0.0")
+
+    def test_without_a_reachable_tag_every_merge_raises(self):
+        # Defined case: no release tag reachable from master (a fresh history,
+        # or only tags of a foreign line) -- nothing is published on this line,
+        # the merge point raises from master's number as before.
+        fx.git(self.root, "checkout", "-q", "-b", "side")
+        fx.write(self.root, "docs/side.md", "side\n")
+        fx.git(self.root, "add", "-A")
+        fx.git(self.root, "commit", "-q", "-m", "side")
+        fx.git(self.root, "checkout", "-q", "master")
+        self.export_tag("v9.0.0", source="side")
+        self.merge({"a": "fix", "workspace": "fix"})
+        res = self.merge({"a": "fix", "workspace": "fix"})
+        self.assertEqual(self.numbers(), ("1.0.2", "0.3.2", "0.5.4"))
+        self.assertEqual(res.get("held"), {})
+        self.assertIsNone(res["release"])
+        # OR-V2.v2-fix-bump.1 is loud (Re-Check I1): the same fallback hits when
+        # the export subject drifts, so every Versions line says it.
+        self.assertEqual(versions.version_line(res),
+                         "Versions: a 1.0.1 -> 1.0.2 (fix), c 0.3.1 -> 0.3.2 (fix), "
+                         "workspace 0.5.3 -> 0.5.4 (fix); "
+                         "no release base found -- raising unconditionally")
+
+    def test_the_release_base_is_the_highest_reachable_tag_by_number(self):
+        # Re-Check I2: "v0.9.0" sorts above "v0.10.0" as text, and v0.11.0 is
+        # higher still but on a foreign line -- skipped, not taken (and not the
+        # end of the search). The base is v0.10.0.
+        fx.git(self.root, "tag", "v0.9.0")
+        fx.write(self.root, "docs/next.md", "next\n")
+        fx.git(self.root, "add", "-A")
+        fx.git(self.root, "commit", "-q", "-m", "next")
+        ten = fx.git(self.root, "rev-parse", "HEAD")
+        self.export_tag("v0.10.0")
+        fx.git(self.root, "checkout", "-q", "-b", "side")
+        fx.write(self.root, "docs/side.md", "side\n")
+        fx.git(self.root, "add", "-A")
+        fx.git(self.root, "commit", "-q", "-m", "side")
+        fx.git(self.root, "checkout", "-q", "master")
+        self.export_tag("v0.11.0", source="side")
+        self.assertEqual(versions.release_base(self.root, "master"), ("v0.10.0", ten))
+        res = self.merge({"a": "fix", "workspace": "fix"})
+        self.assertEqual(res["release"], "v0.10.0")
+        self.assertNotIn("no release base", versions.version_line(res))
+
+    def test_the_highest_reachable_tag_is_the_baseline(self):
+        self.export_tag("v0.5.2")
+        self.merge({"a": "fix", "workspace": "fix"})
+        # the next release: a plain tag on master's own commit counts as well
+        fx.git(self.root, "tag", "v0.5.3")
+        self.merge({"a": "fix", "workspace": "fix"})
+        self.assertEqual(self.numbers(), ("1.0.2", "0.3.2", "0.5.4"))
+        self.merge({"a": "fix", "workspace": "fix"})
+        self.assertEqual(self.numbers(), ("1.0.2", "0.3.2", "0.5.4"))
+
+    def test_a_template_born_after_the_tag_keeps_its_number(self):
+        self.export_tag("v0.5.2")
+        self.f.master_commit({"templates/d/template.json": fx.template_json("d", "0.1.0")},
+                             "d is born")
+        res = self.merge({"d": "feature"}, "templates/d/notes.md")
+        self.assertEqual(fx.version_of(self.root, "d"), "0.1.0")
+        self.assertEqual(res["held"]["d"], {"at": "0.1.0", "kind": "feature"})
+
+    def test_a_revert_since_the_tag_keeps_the_number(self):
+        # A revert restores the pre-merge template.json and pins; a held number
+        # is put back and the restored pins follow it -- never taken back.
+        self.export_tag("v0.5.2")
+        self.merge({"a": "fix"})
+        self.assertEqual(self.numbers()[:2], ("1.0.1", "0.3.1"))
+        fx.write(self.root, "templates/a/template.json", fx.template_json("a", "1.0.0"))
+        fx.write(self.root, fx.SCAFFOLD, json.dumps({"template": "a@1.0.0"}, indent=2) + "\n")
+        res = self.assign(["templates/a/template.json", fx.SCAFFOLD])
+        self.assertEqual(fx.version_of(self.root, "a"), "1.0.1")
+        self.assertIn("a@1.0.1", fx.read(self.root, fx.SCAFFOLD))
+        self.assertEqual(res["versions"], {})
+        self.assertEqual(res["held"]["a"], {"at": "1.0.1", "kind": "fix"})
+
+
+class ExportSubjectTest(VersionsCase):
+    """Re-Check I1 (b): the release base reads the subject make_export.py
+    writes on the export commit. A drift there sends every merge back to the
+    no-release fallback, so the producer, the parser (`_EXPORT_SUBJECT`, also
+    read by plan.py's `github-main` base) and this module's fixture are held
+    together here -- a changed text on either side is red."""
+
+    SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def test_make_export_writes_the_subject_the_release_base_reads(self):
+        import importlib
+        private_tree.require("plans/export-fixtures/make_export.py")
+        here = str(private_tree.REPO / "plans" / "export-fixtures")
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        make_export = importlib.import_module("make_export")
+        subject = make_export.export_message(self.SHA).splitlines()[0]
+        self.assertEqual(subject, EXPORT_SUBJECT % self.SHA[:7])
+        self.assertEqual(versions._EXPORT_SUBJECT.match(subject).group(1), self.SHA[:7])
+        self.assertEqual(versions.export_source(subject), self.SHA[:7])
+
+    def test_export_source_reads_short_and_full_shas_only(self):
+        self.assertEqual(versions.export_source(EXPORT_SUBJECT % self.SHA), self.SHA)
+        self.assertEqual(versions.export_source(EXPORT_SUBJECT % self.SHA[:7] + "\n"),
+                         self.SHA[:7])
+        self.assertIsNone(versions.export_source(EXPORT_SUBJECT % self.SHA[:6]))
+        self.assertIsNone(versions.export_source("Merge " + EXPORT_SUBJECT % self.SHA[:7]))
+
+    def test_the_github_main_base_reads_the_same_subject(self):
+        # M2: plan.py's `github-main` base parses with the same expression.
+        from pipeline import plan
+        src = fx.git(self.root, "rev-parse", "master")
+        tree = fx.git(self.root, "rev-parse", "master^{tree}")
+        export = fx.git(self.root, "commit-tree", tree, "-m", EXPORT_SUBJECT % src[:7])
+        fx.git(self.root, "branch", "github-main", export)
+        self.assertEqual(plan._github_main_base(self.root), src)
+        with mock.patch.object(versions, "export_source", return_value=None):
+            with self.assertRaisesRegex(ValueError, "cannot read the export base"):
+                plan._github_main_base(self.root)
 
 
 if __name__ == "__main__":

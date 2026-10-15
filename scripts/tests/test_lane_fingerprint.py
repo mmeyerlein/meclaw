@@ -66,6 +66,39 @@ def fingerprint(*args, stdin=False, env=None):
                               timeout=2 * kit_time.HANG, env=env, cwd=cwd)
 
 
+FAKE_CARGO = """#!/bin/sh
+case "$1" in
+    --version) echo "cargo 1.90.0 (fake 2026-01-01)" ;;
+    nextest) echo "cargo-nextest 0.9.146 (fake)" ;;
+    *) exit 1 ;;
+esac
+"""
+
+FAKE_RUSTC = """#!/bin/sh
+case "$1" in
+    --version) echo "rustc 1.90.0 (fake 2026-01-01)" ;;
+    -vV) printf 'rustc 1.90.0 (fake 2026-01-01)\\nhost: x86_64-unknown-linux-gnu\\n' ;;
+    *) exit 1 ;;
+esac
+"""
+
+
+def toolchain_env(root, **extra):
+    """`clean_env(**extra)` with a HOME of its own under `root` whose
+    `.cargo/bin` answers for rustc, cargo and nextest (the script puts
+    `$HOME/.cargo/bin` first on its PATH). GH #1199: the cases that need a
+    whole fingerprint took this host's toolchain -- the public runner has no
+    cargo-nextest, its fingerprint said `nextest: null` and every one of them
+    was red there, green here."""
+    bin_dir = pathlib.Path(root) / "toolchain-home" / ".cargo" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name, body in (("cargo", FAKE_CARGO), ("rustc", FAKE_RUSTC)):
+        path = bin_dir / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+    return clean_env(**dict({"HOME": str(bin_dir.parents[1])}, **extra))
+
+
 def kit_python_version():
     """The version of the kit's one Python in the one form, `platform.python_version()`."""
     from scripts.pipeline import lane
@@ -103,7 +136,7 @@ class TestOneProducer(unittest.TestCase):
             with self.subTest(flags=flags, incr=incr):
                 extra = dict({} if flags is None else {"RUSTFLAGS": flags},
                              **({} if incr is None else {"CARGO_INCREMENTAL": incr}))
-                env = clean_env(**extra)
+                env = toolchain_env(self.root, **extra)
                 res = fingerprint(str(self.root), stdin=True, env=env)  # lane.fingerprint
                 self.assertEqual(0, res.returncode, res.stderr)
                 lanes = json.loads(res.stdout)
@@ -1046,7 +1079,7 @@ class TestNoAnswer(unittest.TestCase):
     def test_no_fingerprint_keys_nothing_and_records_nothing(self):
         from scripts.pipeline import cache, gate
         nulls = self.run_with(self.root / "missing.sh")
-        good = json.loads(fingerprint(str(self.root)).stdout)
+        good = json.loads(fingerprint(str(self.root), env=toolchain_env(self.root)).stdout)
         keys = {("gate-selftest", ""): {"inputs": ["tool:python"]}}
         # null == null is no proof: a run without an answer doubts its pass
         self.assertIsNotNone(gate._cache_doubt(keys, nulls, nulls))

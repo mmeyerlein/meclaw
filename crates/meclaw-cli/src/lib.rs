@@ -578,6 +578,97 @@ pub fn direct_mode(cli: &Cli) -> bool {
     cli.api.is_none() && !cli.daemon && cli.apply.is_none()
 }
 
+/// What the colony gets, on top of its drain budget, for the teardown that
+/// follows the drain and fires the shutdown ack (DLQ flush, the `colony.db`
+/// writer's last batch and close, the sqlite close).
+///
+/// WHY a margin and not a second budget: the ack comes AFTER the teardown
+/// (GH #1208), so a wait of the drain budget alone cuts exactly the teardown it
+/// is waiting for. Boot profile K10 (welle-validierung-2, `v2-flake-b01.md`
+/// § Boot-Profil) measured that teardown at 0.45–0.57 s wall on a quiet lane
+/// and under an 80 % CPU quota; five seconds is the headroom the daemon path
+/// has carried since GH #47. The one-shot used to wait a fixed 5 s for the ack
+/// and 5 s for the join instead, which under a shared 80 % quota ended the
+/// process mid-drain in 3 of 6 runs, with the writer dead before its ack and
+/// exit code 0.
+const SHUTDOWN_TEARDOWN_MARGIN_MS: u64 = 5_000;
+
+/// How long a shutdown waits for the colony's ack: its drain budget
+/// (`colony.json shutdown_drain_timeout_ms`) plus [`SHUTDOWN_TEARDOWN_MARGIN_MS`].
+fn shutdown_ack_budget(shutdown_drain_timeout_ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(
+        shutdown_drain_timeout_ms.saturating_add(SHUTDOWN_TEARDOWN_MARGIN_MS),
+    )
+}
+
+/// The one-shot's shutdown (GH #423): `Shutdown`, wait for the ack, join the
+/// colony task — and an error unless all three happened.
+///
+/// The ack fires after the drain AND the teardown, so it is waited for as long
+/// as both may take ([`shutdown_ack_budget`]); the join after it only covers
+/// the loop's return and gets one more margin. A colony that drops the ack, does
+/// not send it in time, panics on the way (the `colony.db` writer's "died
+/// before it acked the shutdown" is such a panic) or does not end is an error
+/// that names the cause: the one-shot's exit code is its whole verdict, and
+/// before this a cut shutdown read as `0`.
+async fn one_shot_shutdown(
+    inbox_tx: &tokio::sync::mpsc::Sender<meclaw_colony::ColonyMsg>,
+    colony_join: tokio::task::JoinHandle<()>,
+    shutdown_drain_timeout_ms: u64,
+) -> anyhow::Result<()> {
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    // A failed send drops the ack sender with the message; the ack wait below
+    // then reports it, and the join says why the colony was gone.
+    let _ = inbox_tx
+        .send(meclaw_colony::ColonyMsg::Shutdown { ack: ack_tx })
+        .await;
+    let budget = shutdown_ack_budget(shutdown_drain_timeout_ms);
+    let ack = tokio::time::timeout(budget, ack_rx).await;
+    let margin = std::time::Duration::from_millis(SHUTDOWN_TEARDOWN_MARGIN_MS);
+    let join = tokio::time::timeout(margin, colony_join).await;
+    // The panic first: it is the cause, a missing ack only its symptom.
+    let join = match join {
+        Ok(Err(e)) if e.is_panic() => anyhow::bail!(
+            "the colony task panicked during the shutdown: {}; \
+             writes queued before it may not be durable",
+            panic_text(e.into_panic())
+        ),
+        other => other,
+    };
+    match ack {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => anyhow::bail!(
+            "the colony ended and did not acknowledge the shutdown; \
+             its drain or teardown did not finish"
+        ),
+        Err(_) => anyhow::bail!(
+            "the colony did not acknowledge the shutdown within {} ms \
+             (shutdown_drain_timeout_ms {shutdown_drain_timeout_ms} + teardown margin \
+             {SHUTDOWN_TEARDOWN_MARGIN_MS}); its drain or teardown was cut",
+            budget.as_millis()
+        ),
+    }
+    match join {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => anyhow::bail!("the colony task ended abnormally after its shutdown ack: {e}"),
+        Err(_) => anyhow::bail!(
+            "the colony task did not end within {SHUTDOWN_TEARDOWN_MARGIN_MS} ms \
+             of its shutdown ack"
+        ),
+    }
+}
+
+/// The text of a panic payload: the `&str` or `String` a `panic!` carries.
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(s) => *s,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(s) => (*s).to_string(),
+            Err(_) => "(a panic without a text payload)".to_string(),
+        },
+    }
+}
+
 /// [`run_with_hooks`] with the watchdog deadline made explicit.
 ///
 /// Same lifecycle, one extra knob: `watchdog_override` decides how much colony
@@ -1417,20 +1508,27 @@ pub async fn run_with_hooks_tuned(
     // GH #423 — the one-shot: without `--daemon`/`--api` the process has said
     // everything it came to say.
     //
-    // The shutdown is the one the bootstrap failure branch above already runs —
-    // Shutdown + ack + join, each with its own timeout. Deliberately NOT
+    // The shutdown is Shutdown + ack + join, as in the bootstrap failure branch
+    // above, but sized by the drain budget and judged (`one_shot_shutdown`).
+    // Deliberately NOT
     // `std::process::exit`: that would skip the lease guard's `Drop` and leave
     // a stale lease behind for the next boot to reclaim.
     if let Some(committed) = apply_verdict
         && !cli.daemon
         && cli.api.is_none()
     {
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        let _ = inbox_tx
-            .send(meclaw_colony::ColonyMsg::Shutdown { ack: ack_tx })
-            .await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), colony_join).await;
+        // Boot profile K10: the shutdown waits as long as the drain and the
+        // teardown may take, and a shutdown that did not end cleanly is a
+        // failure of the run even after a committed manifest — the receipt
+        // says what was applied, this says the colony did not get to persist
+        // it all.
+        if let Err(e) = one_shot_shutdown(&inbox_tx, colony_join, shutdown_drain_timeout_ms).await {
+            return Err(e.context(if committed {
+                "--apply: the manifest was committed, but the shutdown did not end cleanly"
+            } else {
+                "--apply: the manifest was refused, and the shutdown did not end cleanly"
+            }));
+        }
         // The exit-code contract of the overview § CLI: 0 means it worked,
         // anything else means it did not, and no code carries a diagnosis —
         // the receipt already printed one.
@@ -1725,11 +1823,9 @@ pub async fn run_with_hooks_tuned(
     if inbox_tx.send(door).await.is_ok() {
         // GH #47: the ack budget must outlast the drain it is waiting for, or
         // the CLI would cut exactly the work the colony is saving. Drain budget
-        // plus five seconds of grace for the teardown itself (DLQ flush, writer
-        // join, sqlite close).
-        let ack_budget =
-            std::time::Duration::from_millis(shutdown_drain_timeout_ms.saturating_add(5_000));
-        let _ = tokio::time::timeout(ack_budget, ack_rx).await;
+        // plus the teardown margin (`SHUTDOWN_TEARDOWN_MARGIN_MS`: DLQ flush,
+        // writer join, sqlite close).
+        let _ = tokio::time::timeout(shutdown_ack_budget(shutdown_drain_timeout_ms), ack_rx).await;
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), colony_join).await;
 
@@ -1814,6 +1910,127 @@ pub fn declares_restricted_sandbox(params: &meclaw_core::JsonValue) -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // ---- Boot profile K10: the one-shot shutdown waits for the drain and ----
+    // ---- says so when it does not end cleanly                            ----
+    //
+    // Time-logic class (Rule 11): a fake colony on a tokio channel, the paused
+    // clock, every wait point a tokio timer or channel. The durations are
+    // inputs that place the ack before or after the budget; no assertion reads
+    // a clock.
+
+    /// A fake colony loop: takes the one `Shutdown` it is sent and hands its
+    /// ack to `on_shutdown`, which plays the drain and the teardown.
+    fn fake_colony<F, Fut>(
+        on_shutdown: F,
+    ) -> (
+        tokio::sync::mpsc::Sender<meclaw_colony::ColonyMsg>,
+        tokio::task::JoinHandle<()>,
+    )
+    where
+        F: FnOnce(tokio::sync::oneshot::Sender<()>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let join = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let meclaw_colony::ColonyMsg::Shutdown { ack } = msg {
+                    on_shutdown(ack).await;
+                    return;
+                }
+            }
+        });
+        (tx, join)
+    }
+
+    /// The measured case: a drain that takes longer than the old fixed 5 s
+    /// ack + 5 s join, inside its `shutdown_drain_timeout_ms`. The one-shot
+    /// returns only after the colony acked, and returns `Ok`.
+    #[tokio::test(start_paused = true)]
+    async fn a_one_shot_shutdown_waits_the_drain_budget_for_the_ack() {
+        let (acked_tx, mut acked_rx) = tokio::sync::oneshot::channel::<()>();
+        let drain_ms = 60_000;
+        let (inbox, join) = fake_colony(move |ack| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(drain_ms - 1_000)).await;
+            let _ = ack.send(());
+            let _ = acked_tx.send(());
+        });
+        let verdict = one_shot_shutdown(&inbox, join, drain_ms).await;
+        assert!(
+            acked_rx.try_recv().is_ok(),
+            "the one-shot returned before the colony acked its shutdown"
+        );
+        assert!(verdict.is_ok(), "{verdict:?}");
+    }
+
+    /// A colony that ends without firing the ack has cut its own shutdown
+    /// short: the one-shot says so and does not exit 0.
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_shutdown_ack_is_an_error() {
+        let (inbox, join) = fake_colony(|ack| async move { drop(ack) });
+        let verdict = one_shot_shutdown(&inbox, join, 10_000).await;
+        let err = verdict.expect_err("a dropped ack must not read as a clean shutdown");
+        assert!(format!("{err:#}").contains("acknowledge"), "{err:#}");
+    }
+
+    /// An ack that never comes within drain budget plus margin is an error,
+    /// not a quiet `Ok` after the cap.
+    #[tokio::test(start_paused = true)]
+    async fn an_ack_that_never_comes_is_an_error() {
+        let (inbox, join) = fake_colony(|ack| async move {
+            let _held = ack;
+            std::future::pending::<()>().await;
+        });
+        let verdict = one_shot_shutdown(&inbox, join, 10_000).await;
+        let err = verdict.expect_err("a missing ack must not read as a clean shutdown");
+        assert!(format!("{err:#}").contains("acknowledge"), "{err:#}");
+    }
+
+    /// The writer panic of the measured case (`persist/colony_db.rs`,
+    /// "writer died before it acked the shutdown") ends the colony task with a
+    /// panic before the ack: the one-shot exits non-zero and names it.
+    #[tokio::test(start_paused = true)]
+    async fn a_colony_panic_in_the_teardown_is_an_error_that_names_it() {
+        let (inbox, join) = fake_colony(|_ack| async move {
+            panic!("the writer died before it acked the shutdown");
+        });
+        let verdict = one_shot_shutdown(&inbox, join, 10_000).await;
+        let err = verdict.expect_err("a teardown panic must not read as a clean shutdown");
+        assert!(
+            format!("{err:#}").contains("writer died before it acked the shutdown"),
+            "{err:#}"
+        );
+    }
+
+    /// The K10 shape (`v2-flake-b01.md` § Boot-Profil): the drain runs into
+    /// its deadline, the teardown follows (measured 0.45–0.57 s), and only
+    /// then the ack fires — after the bare drain budget, inside budget plus
+    /// teardown margin. That is a clean shutdown, not a cut one.
+    #[tokio::test(start_paused = true)]
+    async fn an_ack_after_the_drain_budget_but_inside_the_teardown_margin_is_a_clean_shutdown() {
+        let drain_ms = 10_000;
+        let teardown_ms = 500;
+        let (inbox, join) = fake_colony(move |ack| async move {
+            // The drain at its deadline, then the teardown, then the ack.
+            tokio::time::sleep(std::time::Duration::from_millis(drain_ms + teardown_ms)).await;
+            let _ = ack.send(());
+        });
+        let verdict = one_shot_shutdown(&inbox, join, drain_ms).await;
+        assert!(verdict.is_ok(), "{verdict:?}");
+    }
+
+    /// The colony acks and then does not end: the one-shot does not wait for
+    /// ever and does not read it as clean either — it names the stuck task.
+    #[tokio::test(start_paused = true)]
+    async fn a_colony_task_that_does_not_end_after_its_ack_is_an_error() {
+        let (inbox, join) = fake_colony(|ack| async move {
+            let _ = ack.send(());
+            std::future::pending::<()>().await;
+        });
+        let verdict = one_shot_shutdown(&inbox, join, 10_000).await;
+        let err = verdict.expect_err("a colony task that does not end must not read as clean");
+        assert!(format!("{err:#}").contains("did not end"), "{err:#}");
+    }
 
     // ---- GH #1216 (OR-T12-14): the stdin reader never holds the shutdown ----
 

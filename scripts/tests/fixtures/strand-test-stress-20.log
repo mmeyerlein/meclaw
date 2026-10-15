@@ -1,0 +1,107 @@
+    Finished `test` profile [unoptimized] target(s) in 0.80s
+────────────
+ Nextest run ID 355335ab-7142-4f0d-b2ec-23a36d4bce96 with nextest profile: default
+    Starting 27 tests across 4 binaries (1557 tests and 242 binaries skipped)
+────────────
+ Stress test iteration 1/20 (00:00:00 elapsed so far, 20 iterations remaining)
+        PASS [   0.028s] [ 1/20] ( 1/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   1.104s] [ 1/20] (27/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.218s] iteration 1/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 2/20 (00:00:01 elapsed so far, 19 iterations remaining)
+        PASS [   0.037s] [ 2/20] ( 9/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.990s] [ 2/20] (24/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.217s] iteration 2/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 3/20 (00:00:02 elapsed so far, 18 iterations remaining)
+        PASS [   0.043s] [ 3/20] (11/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.926s] [ 3/20] (22/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.128s] iteration 3/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 4/20 (00:00:03 elapsed so far, 17 iterations remaining)
+        PASS [   0.035s] [ 4/20] ( 6/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.956s] [ 4/20] (24/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.094s] iteration 4/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 5/20 (00:00:04 elapsed so far, 16 iterations remaining)
+        PASS [   0.034s] [ 5/20] ( 7/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.978s] [ 5/20] (24/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.159s] iteration 5/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 6/20 (00:00:05 elapsed so far, 15 iterations remaining)
+        PASS [   0.030s] [ 6/20] ( 3/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.964s] [ 6/20] (23/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.094s] iteration 6/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 7/20 (00:00:06 elapsed so far, 14 iterations remaining)
+        PASS [   0.028s] [ 7/20] ( 1/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   1.027s] [ 7/20] (25/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.130s] iteration 7/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 8/20 (00:00:08 elapsed so far, 13 iterations remaining)
+        PASS [   0.034s] [ 8/20] ( 8/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.815s] [ 8/20] (22/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.108s] iteration 8/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 9/20 (00:00:09 elapsed so far, 12 iterations remaining)
+        PASS [   0.043s] [ 9/20] (10/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   1.069s] [ 9/20] (23/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.491s] iteration 9/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 10/20 (00:00:10 elapsed so far, 11 iterations remaining)
+        PASS [   0.037s] [10/20] ( 3/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.936s] [10/20] (22/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.155s] iteration 10/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 11/20 (00:00:11 elapsed so far, 10 iterations remaining)
+        PASS [   0.030s] [11/20] ( 1/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.853s] [11/20] (22/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.143s] iteration 11/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 12/20 (00:00:12 elapsed so far, 9 iterations remaining)
+        PASS [   0.057s] [12/20] (12/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   1.000s] [12/20] (23/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.202s] iteration 12/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 13/20 (00:00:14 elapsed so far, 8 iterations remaining)
+        PASS [   0.043s] [13/20] (10/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   1.235s] [13/20] (25/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.352s] iteration 13/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 14/20 (00:00:15 elapsed so far, 7 iterations remaining)
+        PASS [   0.031s] [14/20] ( 4/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.929s] [14/20] (23/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.172s] iteration 14/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 15/20 (00:00:16 elapsed so far, 6 iterations remaining)
+        PASS [   0.046s] [15/20] (10/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.942s] [15/20] (23/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.191s] iteration 15/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 16/20 (00:00:17 elapsed so far, 5 iterations remaining)
+        PASS [   0.031s] [16/20] ( 3/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.992s] [16/20] (24/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.158s] iteration 16/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 17/20 (00:00:19 elapsed so far, 4 iterations remaining)
+        PASS [   0.029s] [17/20] ( 1/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   1.110s] [17/20] (27/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.190s] iteration 17/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 18/20 (00:00:20 elapsed so far, 3 iterations remaining)
+        PASS [   0.029s] [18/20] ( 1/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.961s] [18/20] (24/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.125s] iteration 18/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 19/20 (00:00:21 elapsed so far, 2 iterations remaining)
+        PASS [   0.042s] [19/20] (12/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   0.938s] [19/20] (24/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.099s] iteration 19/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+ Stress test iteration 20/20 (00:00:22 elapsed so far, 1 iteration remaining)
+        PASS [   0.037s] [20/20] ( 7/27) meclaw-colony persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once
+        PASS [   1.044s] [20/20] (26/27) meclaw-colony::gh_1 gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony
+ Stress test [   1.208s] iteration 20/20: 27 tests run: 27 passed, 1557 skipped
+────────────
+     Summary [  23.634s] 20/20 stress run iterations: 20 passed
+TEST [(binary_id(=meclaw-testing) & test(=deadline::tests::deadline_scales_with_the_time_factor_and_never_below_ten_seconds)) | (binary_id(=meclaw-testing) & test(=deadline::tests::hang_names_what_never_came)) | (binary_id(=meclaw-testing) & test(=deadline::tests::hang_with_carries_the_last_observed_state)) | (binary_id(=meclaw-testing) & test(=deadline::tests::hang_passes_the_value_through)) | (binary_id(=meclaw-testing) & test(=wait::tests::until_reports_hang_with_its_description)) | (binary_id(=meclaw-testing) & test(=wait::tests::until_returns_as_soon_as_the_predicate_holds)) | (binary_id(=meclaw-testing) & test(=wait::tests::the_wait_helpers_run_under_a_paused_clock)) | (binary_id(=meclaw-testing) & test(=colony_handle::tests::log_since_sees_only_rows_after_the_mark)) | (binary_id(=meclaw-testing) & test(=colony_handle::tests::sync_returns_after_every_earlier_inbox_message_was_read)) | (binary_id(=meclaw-testing) & test(=mock_http::tests::with_delay_holds_back_for_exactly_the_delay)) | (binary_id(=meclaw-testing) & test(=mock_http::tests::with_delay_holds_back_response)) | (binary_id(=meclaw-testing) & test(=mock_openai_tts::tests::chunk_delay_spaces_the_chunks_out)) | (binary_id(=meclaw-testing) & test(=mock_openai_tts::tests::head_delay_holds_the_response_back)) | (binary_id(=meclaw-testing) & test(=mock_openai_tts::tests::delayed_script_serves_every_chunk_over_tcp)) | (binary_id(=meclaw-testing) & test(=voice_client::tests::pcm_pacing_puts_each_chunk_at_its_own_offset)) | (binary_id(=meclaw-testing) & test(=voice_client::tests::streaming_pcm_delivers_every_chunk_in_order)) | (binary_id(=meclaw-colony) & test(=persist::writer::tests::the_writer_ack_does_not_advance_the_paused_clock)) | (binary_id(=meclaw-colony) & test(=persist::writer::tests::the_writer_keeps_batch_order_and_acks_after_commit)) | (binary_id(=meclaw-colony) & test(=persist::writer::tests::a_lingering_writer_takes_a_queued_op_at_once)) | (binary_id(=meclaw-colony) & test(=persist::writer::tests::a_lingering_writer_wakes_for_an_op_sent_meanwhile)) | (binary_id(=meclaw-colony) & test(=persist::writer::tests::a_lingering_writer_ends_on_close_and_on_an_empty_linger)) | (binary_id(=meclaw-colony) & test(=templates::sync_tests::a_template_rescan_never_blocks_a_runtime_thread)) | (binary_id(=meclaw-colony::gh_1) & test(=gh1208_settle_answers_at_quiescence::settle_answers_once_every_mailbox_is_empty_and_no_handler_runs)) | (binary_id(=meclaw-colony::gh_1) & test(=gh1208_settle_answers_at_quiescence::settle_waits_for_the_writer_fence)) | (binary_id(=meclaw-colony::gh_1) & test(=gh1208_settle_answers_at_quiescence::settle_never_ends_the_colony)) | (binary_id(=meclaw-colony::gh_1) & test(=gh1208_settle_answers_at_quiescence::a_settle_during_a_drain_is_answered)) | (binary_id(=meclaw-colony::misc) & test(=writer_shutdown_with_a_full_queue_persists_every_op::writer_shutdown_with_a_full_queue_persists_every_op))] 540/540 28s GREEN (20/20 iterations green)

@@ -113,7 +113,19 @@ async fn a_display_runs_under_a_strict_csp() {
         println!("SKIP the driver does not ship in this tree");
         return;
     }
-    let colony = boot_with_voice_echo(Boot::default()).await;
+    // Linger and fade far past the binary's leash: this lock reads the hostile window on
+    // the phone, not the curator's fade. With the helper's defaults (2 s + 3 s, made for
+    // locks that wait FOR the fade) the window's score `0.5 x 0.9 x decay` fell below the
+    // bar 0.3 one second after the linger, the phone (dock hidden) drew it no more, and
+    // the page lacked `pane-hostile` for good: re-gate v2-fix-e on build01, and every run
+    // whose page read came later than 5 s after the write (welle-val2 v2-flake-b01 fix D).
+    // The shape `gh767_the_drivers_tap_reaches_the_curator_browser.rs` uses.
+    let colony = boot_with_voice_echo(Boot {
+        linger_ms: 900_000,
+        fade_ms: 900_000,
+        ..Boot::default()
+    })
+    .await;
 
     // One window with the hostile text in every text slot a view has: the title, a line,
     // a list with its items, a table's caption -- and hostile markup in the four raw

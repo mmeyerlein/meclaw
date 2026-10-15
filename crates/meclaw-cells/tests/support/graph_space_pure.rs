@@ -49,7 +49,23 @@ def run_bundle(db, ops):
         if o == "select":
             out[cid] = [{c: r.get(c) for c in op["columns"]} for r in t if _match(r, op.get("where"))][:op["limit"]]
         elif o == "insert":
-            t.append(dict(op["row"]))
+            # GH #1199: the store's insert is ONE step -- `replace` drops the
+            # rows it names first, `if_absent` writes nothing over a match,
+            # `rows` carries several rows; exactly one of `row` / `rows`.
+            # It refuses what `op_insert` refuses as input (re-check RC-GT M2):
+            # an empty row, an empty guard, `if_absent` over several rows.
+            assert ("row" in op) != ("rows" in op), op
+            rows = [op["row"]] if "row" in op else op["rows"]
+            assert rows and all(rows), op
+            assert not ("replace" in op and "if_absent" in op), op
+            for g in ("replace", "if_absent"):
+                assert g not in op or (isinstance(op[g], dict) and op[g]), op
+            assert "if_absent" not in op or len(rows) == 1, op
+            if "replace" in op:
+                t = db[op["table"]] = [r for r in t if not _match(r, op["replace"])]
+            if "if_absent" in op and any(_match(r, op["if_absent"]) for r in t):
+                rows = []
+            t.extend(dict(r) for r in rows)
             out[cid] = []
         elif o == "update":
             for r in t:

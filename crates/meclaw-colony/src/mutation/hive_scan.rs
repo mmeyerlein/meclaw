@@ -19,10 +19,11 @@
 //! silent, stuck work item -- the beats are progress, never a timer.
 //!
 //! The same per-config announcement carries the operation timeout (rule 12):
-//! the async side waits at most [`scan_timeout`] for the next config, and when
-//! it does not come the scan ends with [`HiveScanTimeout`], which every caller
-//! turns into a clean refusal (`hive_config_timeout`) or, for the slot
-//! rebuild, into a closed hive boundary and a retry on the next pass.
+//! the async side waits at most [`scan_timeout`] of charged time for the next
+//! config (see [`within_charged`]), and when it does not come the scan ends
+//! with [`HiveScanTimeout`], which every caller turns into a clean refusal
+//! (`hive_config_timeout`) or, for the slot rebuild, into a closed hive
+//! boundary and a retry on the next pass.
 //!
 //! A scan given up on keeps its blocking thread until the read returns. The
 //! [`HiveScanGate`] the colony owns lets at most ONE scan be in flight: the
@@ -30,7 +31,7 @@
 //! is still stuck, ends with the same timeout without starting a second read
 //! -- a disk that never answers holds one blocking thread, not one per pass.
 
-use crate::watchdog::{WorkItem, WorkPulse};
+use crate::watchdog::{WORK_ITEM_DENIAL_FACTOR, WorkItem, WorkPulse, denial_deduction};
 use meclaw_core::Path;
 use std::time::Duration;
 
@@ -48,10 +49,71 @@ pub(crate) const HIVE_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// `on_trip = exit` is the verdict. The timeout is the clean end where the
 /// process stays up (`log-only`), so the colony loop is not held by one read
 /// forever. One read of one `config.json` is sub-millisecond on an idle disk.
+///
+/// GH #1199: twice the budget of CHARGED time. The supervisor does not charge
+/// a silent item the CPU the host denied it (GH #1216), so under a quota its
+/// verdict comes up to [`WORK_ITEM_DENIAL_FACTOR`] budgets late; a scan
+/// under a supervisor credits the same denial from the same source
+/// ([`within_charged`]) and stays above that verdict. A host that denies
+/// nothing waits exactly this long.
 pub(crate) fn scan_timeout(pulse: &WorkPulse) -> Duration {
     pulse
         .budget()
         .map_or(HIVE_READ_TIMEOUT, |b| b.saturating_mul(2))
+}
+
+/// Awaits `fut` for `timeout` of charged time (GH #1199, K10): the wait less
+/// the CPU denial the supervisor of `pulse` deducts from a silence, by the
+/// same rule ([`denial_deduction`]) and read from the same source
+/// ([`WorkPulse::read_denial`]). `Err` carries the timeout that ran out:
+/// `timeout` extended by the credited denial.
+///
+/// A pulse with no supervisor (no budget) has no verdict to stay above and
+/// waits `timeout` of plain time. Otherwise the denial is read only when a
+/// wait outlives a fifth of `timeout` -- the fifth the supervisor charges
+/// whatever the host denies, so no credit is lost -- and again at each
+/// deadline, never per config: an honest read costs nothing. A host that
+/// denies nothing ends the wait at exactly `timeout`; one that denies all of
+/// it at [`WORK_ITEM_DENIAL_FACTOR`] × `timeout`, never later.
+async fn within_charged<F: std::future::Future>(
+    timeout: Duration,
+    pulse: &WorkPulse,
+    fut: F,
+) -> Result<F::Output, Duration> {
+    if pulse.budget().is_none() {
+        return tokio::time::timeout(timeout, fut)
+            .await
+            .map_err(|_| timeout);
+    }
+    tokio::pin!(fut);
+    let start = tokio::time::Instant::now();
+    let fifth = timeout / WORK_ITEM_DENIAL_FACTOR;
+    if let Ok(out) = tokio::time::timeout(fifth, &mut fut).await {
+        return Ok(out);
+    }
+    let base = pulse.read_denial();
+    let last = start + timeout.saturating_mul(WORK_ITEM_DENIAL_FACTOR);
+    let mut deadline = start + timeout;
+    loop {
+        if let Ok(out) = tokio::time::timeout_at(deadline, &mut fut).await {
+            return Ok(out);
+        }
+        let now = tokio::time::Instant::now();
+        let waited = now - start;
+        let denied = pulse.read_denial().max_growth_since(&base);
+        let charged = waited.saturating_sub(denial_deduction(waited, denied));
+        if charged >= timeout || deadline >= last {
+            return Err(deadline - start);
+        }
+        // At the rate the wait has been charged so far; at least the fifth,
+        // so a denial that sets in late cannot shrink the steps for ever, and
+        // never past the last deadline.
+        let rest = (timeout - charged).as_nanos() * waited.as_nanos() / charged.as_nanos().max(1);
+        let rest = Duration::from_nanos(u64::try_from(rest).unwrap_or(u64::MAX))
+            .max(fifth)
+            .min(last.saturating_duration_since(now));
+        deadline = now + rest;
+    }
 }
 
 /// A scan that did not hear of its next config within the read timeout.
@@ -62,7 +124,8 @@ pub(crate) struct HiveScanTimeout {
     /// The config whose read was last announced -- the one that did not
     /// return. `None` when not even the first read was announced.
     pub hive: Option<String>,
-    /// The timeout that ran out.
+    /// The timeout that ran out: the read timeout, extended by the CPU
+    /// denial credited under a supervisor (GH #1199).
     pub after: Duration,
     /// Set when this scan never started: an earlier scan (named here) was
     /// still stuck on [`Self::hive`] when the timeout ran out.
@@ -233,9 +296,7 @@ pub(crate) async fn scan_hives_paced<T: Send + 'static>(
     // this caller's own timeout, and never run beside.
     if let Some(mut prev) = gate.in_flight.take()
         && !prev.task.is_finished()
-        && tokio::time::timeout(read_timeout, &mut prev.task)
-            .await
-            .is_err()
+        && let Err(granted) = within_charged(read_timeout, pulse, &mut prev.task).await
     {
         // DEBUG, not WARN (GH #1176 re-check): under a lasting hang every
         // pass of the slot rebuild lands here; the caller reports the outcome
@@ -246,12 +307,13 @@ pub(crate) async fn scan_hives_paced<T: Send + 'static>(
             behind = prev.what,
             hive = prev.hive.as_deref().unwrap_or("<none>"),
             timeout_ms = read_timeout.as_millis() as u64,
+            granted_ms = granted.as_millis() as u64,
             "config scan: the previous scan is still stuck, not starting another"
         );
         let err = HiveScanTimeout {
             what,
             hive: prev.hive.clone(),
-            after: read_timeout,
+            after: granted,
             behind: Some(prev.what),
         };
         gate.in_flight = Some(prev);
@@ -285,7 +347,7 @@ pub(crate) async fn scan_hives_paced<T: Send + 'static>(
         tokio::select! {
             biased;
             joined = &mut task => return finished(joined, &mut done_rx, what, current, read_timeout),
-            next = tokio::time::timeout(read_timeout, progress_rx.recv()) => match next {
+            next = within_charged(read_timeout, pulse, progress_rx.recv()) => match next {
                 Ok(Some(hive)) => current = Some(hive),
                 // The scan dropped its announcer: it has returned, only the
                 // join is left.
@@ -293,11 +355,12 @@ pub(crate) async fn scan_hives_paced<T: Send + 'static>(
                     let joined = (&mut task).await;
                     return finished(joined, &mut done_rx, what, current, read_timeout);
                 }
-                Err(_) => {
+                Err(granted) => {
                     tracing::warn!(
                         scan = what,
                         hive = current.as_deref().unwrap_or("<none>"),
                         timeout_ms = read_timeout.as_millis() as u64,
+                        granted_ms = granted.as_millis() as u64,
                         "config scan: a read did not finish in time"
                     );
                     gate.in_flight = Some(InFlight {
@@ -308,7 +371,7 @@ pub(crate) async fn scan_hives_paced<T: Send + 'static>(
                     return Err(HiveScanTimeout {
                         what,
                         hive: current,
-                        after: read_timeout,
+                        after: granted,
                         behind: None,
                     });
                 }

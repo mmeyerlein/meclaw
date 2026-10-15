@@ -597,18 +597,27 @@ def build(root, metadata=None, coverage=None, cache=None, stations=True, files=N
         g.node("template:%s" % name, "template", name, "templates/%s" % name)
     for name in examples:
         g.node("example:%s" % name, "example", name, "examples/%s" % name)
+    tops = [rel for rel in files if gate_plan.is_catalogue_top(rel)]
     for crate_dir, stem, text in sources_of_tests:
         crate = by_dir.get(crate_dir, crate_dir)
         bid = bin_addr("%s::%s" % (crate, stem))
+        # one rule with the resolver: paths are read from the code alone --
+        # every comment, an ignore reason and an assert/panic/expect message
+        # blanked first (`gate_plan.reader_text`, #1160, V2-R1-1); a walk of an
+        # ancestor directory is the runtime block below, never a comment
         raw = _literals_in(text, idx, head_re, odd)
-        # a path a prose comment names reads nothing (#1160) -- unless the unit
-        # walks an ancestor directory of it (the resolver's doubt, B-1)
         hits = _literals_in(gate_plan.reader_text(text), idx, head_re, odd) if raw else set()
-        for lit in sorted(raw):
+        for lit in sorted(hits):
             for rel in idx[lit]:
-                if lit in hits or gate_plan.walks_ancestor(root, crate_dir, stem, rel):
-                    g.node("file:%s" % rel, "file", rel, rel)
-                    g.edge(bid, "file:%s" % rel, "reads")
+                g.node("file:%s" % rel, "file", rel, rel)
+                g.edge(bid, "file:%s" % rel, "reads")
+        # rule 8 runtime, catalogue shape: a test that enumerates the
+        # catalogue reads its top-level files (`gate_plan.is_catalogue_top`)
+        if tops and gate_plan._is_catalogue_wide(text) \
+                and not gate_plan.is_helper(root, crate_dir, stem):
+            for rel in tops:
+                g.node("file:%s" % rel, "file", rel, rel)
+                g.edge(bid, "file:%s" % rel, "reads", data={"runtime": "catalogue"})
         key = "%s:%s" % (blob_sha(text.encode("utf-8", "surrogateescape")), names_key)
         tpls = sorted(_template_refs(text, templates, ref_res, rel_res, memo, key))
         exs = [name for name in examples if "examples/%s" % name in text]

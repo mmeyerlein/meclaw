@@ -74,6 +74,40 @@ fn declared_version(name: &str) -> Option<String> {
     v.get("version").and_then(Value::as_str).map(str::to_string)
 }
 
+/// The number a shipped template TELLS for itself, read from its own sources
+/// and never hard-wired -- the merge point's cascade (GH #1173) owns every
+/// number and writes both: the README heading `` # `<name>@<v>` `` and the
+/// purpose's last `Since <v> (` sentence. The two must agree.
+fn told_version(name: &str) -> String {
+    let dir = repo("templates").join(name);
+    let readme = std::fs::read_to_string(dir.join("README.md")).expect("README.md");
+    let head = readme.lines().next().unwrap_or_default();
+    let from_readme = head
+        .strip_prefix(&format!("# `{name}\u{40}"))
+        .and_then(|r| r.strip_suffix('`'))
+        .unwrap_or_else(|| panic!("{name}: the README heads with its version: {head}"))
+        .to_string();
+    let meta: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(dir.join("template.json")).expect("template.json"),
+    )
+    .expect("template.json is JSON");
+    let purpose = meta["description"]["purpose"].as_str().expect("a purpose");
+    let last_since = purpose
+        .match_indices("Since ")
+        .filter_map(|(i, _)| {
+            let rest = &purpose[i + "Since ".len()..];
+            let (v, tail) = rest.split_once(' ')?;
+            (tail.starts_with('(') && v.split('.').count() == 3).then(|| v.to_string())
+        })
+        .last()
+        .unwrap_or_else(|| panic!("{name}: the purpose tells its number in a `Since` sentence"));
+    assert_eq!(
+        from_readme, last_since,
+        "{name}: the README and the purpose tell the same number"
+    );
+    from_readme
+}
+
 /// One lane of a contract list, blaming the template when it is gone.
 fn lane<'a>(lanes: &'a [LaneSpec], route: &str, what: &str) -> &'a LaneSpec {
     lanes
@@ -465,14 +499,14 @@ fn the_versions_moved_with_the_declarations() {
              `memory-hive@3.13.1` (GH #1057, #1074), the third digit; 2.5.20 only derives \
              `./assistants` from `assistant@3.7.11` (GH #1087), the third digit; 2.5.21 only pins \
              `assistant@3.7.12`, `file-space@1.4.6`, `firewall@2.4.1`, \
-             `graph-space@1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085), the third digit; 2.5.22 only pins \
+             `graph-space\u{40}1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085), the third digit; 2.5.22 only pins \
              `assistant@3.7.13` and `memory-hive@3.13.3` (GH #1085, no window of a role's own), the third digit; 2.5.23 only pins \
              `assistant@3.7.14` and `memory-hive@3.13.4` (GH #1094), the third digit; 2.5.24 only pins \
              `memory-hive@3.14.0` (GH #1095), the third digit; 2.5.25 only pins \
              `memory-hive@3.14.1` (GH #1095), the third digit; 2.5.26 only pins \
              `access@2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space` 1.4.8, \
              `memory-hive@3.14.2` and `telegram-connector@2.2.0` (GH #1096, #1097, #1098, #1099), the third digit; 2.5.27 only pins \
-             `affinity@3.10.3`, `assistant@3.7.16`, `firewall@2.4.2` and \
+             `affinity@3.10.3`, `assistant\u{40}3.7.16`, `firewall@2.4.2` and \
              `memory-hive` 3.14.3 (Dev-Tempo cascade, GH #1126), the third digit; every \
              number after that is the merge point's"
         );
@@ -498,7 +532,8 @@ fn the_versions_moved_with_the_declarations() {
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "3.7.16",
+            v,
+            told_version("assistant"),
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -559,8 +594,8 @@ fn the_versions_moved_with_the_declarations() {
              `talky@6.7.3`, `cogny@5.9.2` and `tools@1.4.7` (GH #1085), the third digit; 3.7.13 only pins \
              `cogny@5.9.3` and `talky@6.7.4` (GH #1085, no window of a role's own), the third digit; 3.7.14 only pins \
              `cogny@5.9.4` and `talky@6.7.5` (GH #1094), the third digit; 3.7.15 only pins \
-             `cogny@5.9.5`, `talky@6.7.6` and `tools@1.4.8` (GH #1097), the third digit; 3.7.16 only pins \
-             `talky@6.7.7` (Dev-Tempo cascade, GH #1126), the third digit"
+             `cogny\u{40}5.9.5`, `talky@6.7.6` and `tools@1.4.8` (GH #1097), the third digit; 3.7.16 only pins \
+             `talky\u{40}6.7.7` (Dev-Tempo cascade, GH #1126), the third digit"
         );
     }
 }

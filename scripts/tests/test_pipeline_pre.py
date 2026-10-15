@@ -1371,6 +1371,35 @@ class Gate(unittest.TestCase):
         self.assertEqual(2, res.returncode)
         self.assertIn("older than 24 h", res.stderr)
 
+    def commit_in_wt(self, rel, text):
+        write(self.wt, rel, text)
+        git(self.wt, "add", "-A")
+        git(self.wt, "commit", "-q", "-m", "after pre")
+
+    def test_gate_keeps_the_stamp_over_recheck_scripts_after_pre(self):
+        # GH #1199 (e): a re-check writes its class scripts after pre; the
+        # gate's stamp check reads the ONE post-gate list (`POST_GATE`).
+        self.assertEqual(0, self.strand("pre", "--no-lane").returncode)
+        rdir = "plans/w-2026-01-01/recheck/skripte/s1/"
+        self.commit_in_wt(rdir + "authors_s1.py", "import sys\nsys.exit(0)\n")
+        write(self.wt, rdir + "run_all.sh", "#!/bin/sh\nexit 0\n")
+        write(self.wt, "plans/w-2026-01-01/RESTLISTE.md", "# Restliste\n")
+        res = self.strand("gate", "--wave", "w-2026-01-01")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("run strand.sh pre first", res.stderr)
+        self.assertIn("GATE-SUMMARY strand", res.stdout)
+
+    def test_gate_refuses_code_after_pre_beside_recheck_scripts(self):
+        self.assertEqual(0, self.strand("pre", "--no-lane").returncode)
+        self.commit_in_wt("plans/w-2026-01-01/recheck/skripte/s1/authors_s1.py", "X = 1\n")
+        for rel in ("scripts/later.py", "plans/PREAMBLE.md"):
+            with self.subTest(rel=rel):
+                write(self.wt, rel, "later\n")
+                res = self.strand("gate", "--wave", "w-2026-01-01")
+                self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+                self.assertIn("run strand.sh pre first (tree changed since", res.stderr)
+                self.assertIn(rel, res.stderr)
+
     def test_gate_no_pre_requires_reason_and_records_it(self):
         res = self.strand("gate", "--wave", "w-2026-01-01", "--no-pre")
         self.assertEqual(2, res.returncode)

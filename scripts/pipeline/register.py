@@ -121,6 +121,7 @@ import re
 import subprocess
 import sys
 
+from . import cpus
 from . import plan as _plan
 
 SCHEMA = "meclaw.pipeline.stations/1"
@@ -793,7 +794,7 @@ def build_plan(repo_root, mode, base, files=None, *, pipeline_dir=None, python=N
     if dense or cored:
         environ = os.environ if environ is None else environ
         if not lane_cpu:
-            lane_cpu = os.cpu_count() or 1
+            lane_cpu = cpus.threads()
             lane_cores = lane_cores or local_cores()
         density, why = colony_density(lane_cpu, environ, pool, lane_cores, pool_name)
         rows = [_density_row(r, density, lane_cpu, workers) if r["name"] in dense else
@@ -805,7 +806,7 @@ def build_plan(repo_root, mode, base, files=None, *, pipeline_dir=None, python=N
         # No pool named: the lane's colonies are the pool, D slots (or its real cores).
         if not (dense or cored):
             if not lane_cpu:
-                lane_cpu = os.cpu_count() or 1
+                lane_cpu = cpus.threads()
                 lane_cores = lane_cores or local_cores()
             density = _lane_cores(lane_cpu, lane_cores)[0]
         pool = [str(i) for i in range(density)]
@@ -918,22 +919,31 @@ def _git_dir(repo):
     return os.path.join(repo, ".git")
 
 
+def _mirror_source(repo):
+    """(rsync source, mirror name) of one repository: its git directory
+    (a worktree's is the main repository's, `--git-common-dir`), anchored
+    so rsync -R recreates `<name>/.git/` (or a bare `<name>/`)."""
+    gdir = _git_dir(os.path.abspath(os.path.expanduser(str(repo))))
+    if os.path.basename(gdir) == ".git":
+        name = os.path.basename(os.path.dirname(gdir))
+        return "%s/./%s/.git/" % (os.path.dirname(os.path.dirname(gdir)), name), name
+    return _anchored(gdir), os.path.basename(gdir.rstrip("/"))
+
+
+def mirror_dirs(paths, dest_root=MIRRORS_ROOT):
+    """The directory below `dest_root` each repository's mirror lands in
+    (`mirrors_spec` writes there; `git -C` works on it)."""
+    return ["%s/%s" % (dest_root.rstrip("/"), _mirror_source(repo)[1]) for repo in paths]
+
+
 def mirrors_spec(paths, dest_root=MIRRORS_ROOT, target=None):
     """One rsync argv per repository: its git directory with ALL refs to
     `<dest_root>/<name>/.git/` (`git -C <dest_root>/<name>` works there),
-    lock files and secrets excluded."""
-    out = []
-    for repo in paths:
-        repo = os.path.abspath(os.path.expanduser(str(repo)))
-        gdir = _git_dir(repo)
-        if os.path.basename(gdir) == ".git":
-            src = "%s/./%s/.git/" % (os.path.dirname(os.path.dirname(gdir)),
-                                    os.path.basename(os.path.dirname(gdir)))
-        else:
-            src = _anchored(gdir)
-        out.append([_rsync(target), "-aR", "--delete"] + list(SECRET_EXCLUDES)
-                   + ["--exclude=*.lock"] + _rsh(target) + [src, _dest(target, dest_root.rstrip("/") + "/")])
-    return out
+    lock files and secrets excluded; `<name>` as in `mirror_dirs`."""
+    return [[_rsync(target), "-aR", "--delete"] + list(SECRET_EXCLUDES)
+            + ["--exclude=*.lock"] + _rsh(target)
+            + [_mirror_source(repo)[0], _dest(target, dest_root.rstrip("/") + "/")]
+            for repo in paths]
 
 
 def assets_spec(cache_root, dest_root=ASSETS_ROOT, target=None, versions=None):

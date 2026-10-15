@@ -118,7 +118,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import plan  # noqa: E402
-from pipeline import flakes, gitenv, hang_dump  # noqa: E402
+from pipeline import cpus, flakes, gitenv, hang_dump  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DURATIONS = os.path.join(HERE, "selftest_durations.json")
@@ -436,11 +436,8 @@ def log_paths(n):
 
 
 def _nproc():
-    """The threads this process may run on (its affinity, else the machine's count)."""
-    try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except (AttributeError, OSError):
-        return max(1, os.cpu_count() or 1)
+    """The threads this process may run on: `cpus.threads()`, the kit's one count."""
+    return cpus.threads()
 
 
 _popen = subprocess.Popen

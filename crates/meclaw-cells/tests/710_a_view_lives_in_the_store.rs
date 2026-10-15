@@ -175,7 +175,7 @@ async fn a_view_lives_in_the_store() {
     );
     assert!(!present(&last, &flash), "and the withdrawn one does not");
 
-    // -- GH #809: the store is read once, and a write is a delete and an insert -------
+    // -- GH #809: the store is read once, and a write is one insert that replaces -----
     // Everything above happened through real cells, so the colony's log is the whole
     // history of this screen. Before GH #809 every pass selected the whole table and
     // carried its plan in the header; now the rows live in the cell's memory, so the one
@@ -193,16 +193,23 @@ async fn a_view_lives_in_the_store() {
             .collect();
         selects += ops.iter().filter(|op| **op == "select").count();
         let mark = request_of(&row);
-        if mark["write"].is_object() {
+        if mark["write"]["withdraw"] == true {
+            writes += 1;
+            assert_eq!(
+                ops,
+                ["delete"],
+                "a withdrawal only takes the row down, and nothing is read back: {ops:?}"
+            );
+        } else if mark["write"].is_object() {
             writes += 1;
             assert!(
-                ops.iter().all(|op| *op == "delete" || *op == "insert"),
-                "a write is a delete and an insert, and nothing is read back: {ops:?}"
+                ops.iter().all(|op| *op == "insert"),
+                "a write is an insert, and nothing is read back: {ops:?}"
             );
-            assert_eq!(
-                ops.first(),
-                Some(&"delete"),
-                "and it starts by taking down what stood under the name: {ops:?}"
+            assert!(
+                calls.iter().all(|c| c["replace"].is_object()),
+                "each takes down what stood under its name in the same step (GH #1199): \
+                 {calls:?}"
             );
         }
         assert!(

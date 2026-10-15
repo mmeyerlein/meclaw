@@ -236,7 +236,8 @@ def revert(target, reason, repo="meclaw", start=None, wave=None, host=None, db=N
         cand = m.open_candidate(root, base, label)
         take_back(cand, row["merge_sha"])
         changed = m.out(cand, "diff", "--name-only", "--cached", base).split()
-        # Every touched template gets a fresh fix bump from master's number --
+        # Every touched template gets a fix kind, numbered by the merge point's
+        # rule (third digit once per release, else held at master's number) --
         # the revert's own template.json lines would renumber.
         result = versions.assign(cand, base, changed, {}, repo=root,
                                  before_round=m.regenerate_corpus,

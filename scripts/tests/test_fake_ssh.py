@@ -54,7 +54,7 @@ import unittest
 import unittest.mock
 
 from scripts.pipeline import lane
-from scripts.tests import fake_ssh, kit_time, kit_tree, side_effect_guard, store_isolation
+from scripts.tests import fake_ssh, kit_time, kit_tree, private_tree, side_effect_guard, store_isolation
 
 # lane_sync.sh's functions in a file beside the kit libraries they source
 # (M7w): sourced as `source "$0"`, never pasted into a `bash -c`.
@@ -1371,6 +1371,7 @@ class FakeSshRule(unittest.TestCase):
         self.assertEqual([], red)
         self.assertEqual({k: _data_count(v) for k, v in DEADLINE_DATA.items()}, data)
 
+    @private_tree.private()   # GH #1199: the base is the private master
     def test_the_named_rest_only_shrinks_against_the_base_of_the_branch(self):
         """Re-check tv-bn M7h B-M2 (orchestrator OR-T10-2): `may only shrink`
         was pinned as equality with the tree -- a new key or a higher count

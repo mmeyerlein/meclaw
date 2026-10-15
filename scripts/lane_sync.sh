@@ -777,6 +777,15 @@ remote_long() {   # target, command string
     "$SSH_CHECKED" "${SSH_OPTS[@]}" -o ServerAliveInterval=60 "$target" "$(remote_env_i "$*")"
 }
 
+# A hold on the lane (Z5): the lock's connection idles on stdin for a whole
+# gate run, which is exactly what a middlebox drops -- and with the
+# connection the far side's `cat` ends and the build path is unlocked under
+# a running gate. The three holds (`hold`, the push lock, the coverage tree
+# lock) went over `remote()` without a keep-alive; they take remote_long's.
+remote_hold() {   # target, command string
+    remote_long "$@"
+}
+
 # The build path's lock (W1 hand-over, Delta C I-neu-1): `<build path>.lock`,
 # the one a gate holds from its push to its fetch (`lane.hold`). Whoever
 # rewrites the build path takes it with `flock -n` -- busy is exit 5, and no
@@ -792,7 +801,7 @@ hold_nonce() { printf '%s-%s-%s' "$$" "$(date +%s%N)" "$RANDOM$RANDOM"; }
 cmd_hold() {   # <ssh-target> <strand>: prints `held <nonce>`, holds until stdin closes
     local target="$1" wt
     wt=$(build_path "$2") || exit 5
-    remote "$target" "bash -c $(q "$HOLD_SH") hold $(q "$wt.lock") $(q "$(hold_nonce)")"
+    remote_hold "$target" "bash -c $(q "$HOLD_SH") hold $(q "$wt.lock") $(q "$(hold_nonce)")"
 }
 
 # Take (or check) the lock of build path $2 on host $1 for this push.
@@ -804,7 +813,7 @@ push_lock() {
         echo "lane_sync: refused -- MECLAW_LANE_HOLD does not hold $lock on $target" >&2
         exit 5
     fi
-    coproc PUSH_HOLD { remote "$target" "bash -c $(q "$HOLD_SH") hold $(q "$lock") $(q "$(hold_nonce)")"; }
+    coproc PUSH_HOLD { remote_hold "$target" "bash -c $(q "$HOLD_SH") hold $(q "$lock") $(q "$(hold_nonce)")"; }
     read -r word _ <&"${PUSH_HOLD[0]}" || word=""
     [ "$word" = held ] && return 0
     [ "$word" = busy ] || die "the host $target did not answer"
@@ -1434,7 +1443,7 @@ cmd_coverage() {
     # the owner's machine above stays first and is not overridable.
     run_guards "$target" "$wt" "$tdir" || return $?
     nonce=$(hold_nonce)
-    coproc COV_HOLD { remote "$target" "bash -c $(q "$HOLD_SH") hold $(q "$wt.lock") $(q "$nonce")"; }
+    coproc COV_HOLD { remote_hold "$target" "bash -c $(q "$HOLD_SH") hold $(q "$wt.lock") $(q "$nonce")"; }
     read -r word _ <&"${COV_HOLD[0]}" || word=""
     if [ "$word" != held ]; then
         [ "$word" = busy ] || die "the host $target did not answer"

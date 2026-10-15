@@ -9425,27 +9425,25 @@ def pass_request(body, envelope, withdraw):
 def write_row(owner, row, withdraw=False):
     """ONE store bundle that puts `row` up under `(owner, view_id)`, or takes it down.
 
-    The same bundle for a view and for a notice: delete what stood under the name, then
-    insert the row. No select any more (GH #809): the cell holds the rows in memory
+    The same bundle for a view and for a notice: the row replaces what stood under the
+    name in ONE step (`insert` with `replace`, GH #1199 -- as a delete leg and an insert leg
+    an insert that failed left no row, and after a restart the view was gone); a
+    withdrawal deletes it. No select any more (GH #809): the cell holds the rows in memory
     (`ram()["rows"]`), so the before-state is already known. The mark on the hop is
     small and says only whose write this was -- enough for a refused leg to become a
     receipt to that app, and nothing the screen is drawn from.
     """
     view_id = row["view_id"]
-    legs = [
-        tool_call(
-            {
-                "operation": "delete",
-                "table": TABLE,
-                "where": {"owner": owner, "view_id": view_id},
-            },
-            "d-delete",
-        ),
-    ]
-    if not withdraw:
-        legs.append(
-            tool_call({"operation": "insert", "table": TABLE, "row": row}, "d-insert")
-        )
+    key = {"owner": owner, "view_id": view_id}
+    if withdraw:
+        legs = [tool_call({"operation": "delete", "table": TABLE, "where": key}, "d-delete")]
+    else:
+        legs = [
+            tool_call(
+                {"operation": "insert", "table": TABLE, "row": row, "replace": key},
+                "d-insert",
+            )
+        ]
     mark = {"write": {"owner": owner, "view_id": view_id, "withdraw": bool(withdraw)}}
     return [
         emission(
@@ -10200,14 +10198,16 @@ def ram():
     one), so the select already reads them. `due`: the clock's order this cell last gave,
     None until it gave one. `asked`: when the repair read left (REPAIR_RETRY_MS).
     `repaired`: the patch a repair drew is still unanswered -- its refusal is not a mirror
-    fault, and one read cannot cure it.
+    fault, and one read cannot cure it. `refused`: the orders the clock did not apply whose
+    pass already ran, and the orders those passes gave (`pass_refused`, at most
+    `REFUSED_KEPT`).
     """
     held = globals().get("_RAM")
     if isinstance(held, dict) and held.get("v") == RAM_V:
         return held
     held = {"v": RAM_V, "phase": "cold", "pending": [], "state": None, "rows": {},
             "have": None, "rest": None, "said": [], "dials": None, "define": [], "seen": [], "due": None,
-            "asked": None, "repaired": False}
+            "asked": None, "repaired": False, "refused": {}}
     globals()["_RAM"] = held
     return held
 
@@ -10509,15 +10509,15 @@ def rest_legs(content, now):
     row = {"owner": REST_OWNER, "view_id": REST_VIEW_ID, "region": REGIONS[0], "ord": 0,
            "kind": STATE_KIND, "content": content, "components": "[]", "ttl_ms": 0,
            "updated_at": now}
-    return [tool_call({"operation": "delete", "table": TABLE,
-                       "where": {"owner": REST_OWNER, "view_id": REST_VIEW_ID}}, "r-delete"),
-            tool_call({"operation": "insert", "table": TABLE, "row": row}, "r-insert")]
+    # GH #1199: one step, so a write that fails keeps the rest row it would replace.
+    return [tool_call({"operation": "insert", "table": TABLE, "row": row,
+                       "replace": {"owner": REST_OWNER, "view_id": REST_VIEW_ID}}, "r-insert")]
 
 
 def with_rest(ops, now):
     """`ops`, plus the rest row when its content changed (OR-D4).
 
-    Two more legs IN the store bundle of the app write that caused them -- one bundle, one
+    One more leg IN the store bundle of the app write that caused it -- one bundle, one
     round trip -- or, when this turn wrote nothing (a tap, a verdict, a stroke), a bundle
     of their own.
     """
@@ -11607,6 +11607,99 @@ def pass_tick(hop):
     return pass_or_queue(event, now_ms(), [])
 
 
+# How many orders the cell remembers as rescued (`ram()["refused"]`). An order is one second,
+# so this is the last half minute of rescues -- far more than one pass can order.
+REFUSED_KEPT = 32
+
+# What the curator does with each answer the clock can give an op (`timer/cell.rs`, every
+# `emit_op_error`/`emit_op_error_for`; the class script
+# `plans/welle-validierung-2-2026-10-14/recheck/skripte/v2-flake-b01/silent_timer_errors.py`
+# holds the three tables against the timer). The curator sends `add` and `remove` only.
+#
+# NOT APPLIED: an `add` the clock did not store although nothing is wrong with it. Its pass
+# runs now, once (`pass_refused`). `at_in_past`: the moment came before the op (GH #231);
+# `query_timeout`: the clock's write ran out of `query_timeout_ms`, nothing was stored
+# (`cell-types.md`, timer). Both left the screen without an order -- 710 red, Fix B / B2.
+CLOCK_NOT_APPLIED = ("at_in_past", "query_timeout")
+# SAID: the op itself is what the clock refuses, so the same op would meet the same refusal
+# -- a new order cannot cure it and a retry would loop. One stderr line, nothing ordered.
+# `invalid_body`, `parse_error`, `invalid_cron`, `invalid_params`: the op is malformed;
+# `op_not_accepted`: the clock's `accept_ops` refuse it; `invalid_input`: a `params` update
+# (never sent here); `kind_mismatch`: a `modify` (never sent here).
+CLOCK_SAID = ("invalid_body", "op_not_accepted", "parse_error", "invalid_cron",
+              "invalid_params", "invalid_input", "kind_mismatch")
+# SILENT, each with its reason: the clock already holds what the curator wanted.
+CLOCK_SILENT = {
+    "schedule_not_found": "a `remove` of an order that has already struck: the order is "
+                          "gone, which is what the remove wanted",
+    "schedule_id_exists": "an `add` of an order that stands under the same id (GH #681, "
+                          "GH #690): the order stands and will strike",
+}
+
+
+def pass_refused(hop):
+    """The clock answered an op with an error: redo a lost order once, say the rest.
+
+    Measured (wave validation 2, strand v2-flake-b01): the order for the fresh second
+    leaves with one second of lead (`step11_strokes`, `due_ops_from_strokes`), the clock
+    refuses an `at` that is already past when the op arrives (`at_in_past`, GH #231), and
+    this lane used to drop every refusal. Under a full suite on a 12-vCPU lane the fresh
+    second arrived late, no order stood any more, no pass came, and the fresh window never
+    settled (test 710 red, "the fresh second strikes and the note settles"). § 4.34 promises
+    that pass within a second. An `add` that runs out of the clock's `query_timeout_ms`
+    under database load is the same loss (Fix B2): nothing was stored, no order stands.
+
+    Told apart by the CODE and the REQUEST, never by the text: the answer names the order
+    back (GH #904), and only the order this cell gave last (`ram()["due"]`) is an `add`
+    whose loss leaves the screen without an order -- a `remove` names an earlier one. That
+    order did not land, so its pass runs NOW, as if it had struck -- `struck` keeps the
+    render from taking back an order the clock never stored. The pass orders whatever is
+    due then: a moment that has come is consumed, one still ahead is ordered again (and a
+    pass before the moment is no harm: `settled` comes from the next pass on, whatever
+    triggered it, § 4.35).
+    An answer about an order a later pass already replaced is said and changes nothing:
+    the later order stands.
+
+    Once per order: the lost order and the order its pass gives are marked, and a further
+    loss of either is said on stderr and orders nothing, so a host too loaded for any lead
+    or any write cannot turn refusals into a loop.
+
+    `CLOCK_SAID` is said on stderr and never retried; `CLOCK_SILENT` stays silent, as
+    before (the tables above give each reason). The normal path never reaches this
+    function: no new message, no new round trip, the same lead.
+    """
+    code = str(hop.get("error_code") or "")
+    if code in CLOCK_SILENT:
+        return []
+    sid = str(hop.get("schedule_id") or "")
+    if code not in CLOCK_NOT_APPLIED:
+        # CLOCK_SAID, and any code the timer may learn later: never silent, never retried.
+        kind = "refused" if code in CLOCK_SAID else "refused with an unknown code"
+        sys.stderr.write("clock: order %s %s (%s); nothing ordered again\n" % (sid, kind, code))
+        return []
+    r = ram()
+    held = r.get("due")
+    if not sid or (held is not None and sid != str(held)):
+        sys.stderr.write("clock: order %s not applied (%s); not the order this cell gave "
+                         "last, which stands\n" % (sid, code))
+        return []
+    refused = r.setdefault("refused", {})
+    if sid in refused:
+        sys.stderr.write("clock: order %s not applied again (%s); not ordered a third time\n"
+                         % (sid, code))
+        return []
+    refused[sid] = True
+    sys.stderr.write("clock: order %s not applied (%s); its pass runs now\n" % (sid, code))
+    out = pass_tick({"schedule_id": sid})
+    # The order the rescue gave has had its one chance, too.
+    given = str(r.get("due") or "")
+    if given:
+        refused[given] = True
+    for old in list(refused)[:-REFUSED_KEPT]:
+        del refused[old]
+    return out
+
+
 def due_ops_from_strokes(state, want, have, now, struck=""):
     """Zero, one or two timer ops: remove the last order, add the next (§ 4.34).
 
@@ -11875,8 +11968,9 @@ def main():
     if route == "in_tick":
         return pass_tick(hop)
     if route == "in_tick_error":
-        # An order that was already struck cannot be removed; expected, silent.
-        return []
+        # An order that was already struck cannot be removed (expected, silent); an `add`
+        # the clock did not apply runs its pass now, once; the rest is said (`pass_refused`).
+        return pass_refused(hop)
     if route == "in_verdict":
         return pass_verdict(body, hop)
 

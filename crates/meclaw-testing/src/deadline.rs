@@ -28,6 +28,44 @@ pub const BOOT_HANG: Duration = Duration::from_secs(60);
 /// [`BOOT_HANG`] (2.2 ×) did not.
 pub const REPLAY_HANG: Duration = Duration::from_secs(120);
 
+/// The hang mark of a one-shot `meclaw --apply` child: a whole boot of a fresh
+/// binary with the shipped library, the apply and the shutdown, awaited as one
+/// event (GH #423). Basis (TV-Z3, coordinator rule K9: >= 3 x the P95 of the
+/// step under full-suite load on the weakest lane at factor 1, never a verdict):
+/// - P95 under overbooking at factor 1 (measured lighter than the full suite
+///   and than the 80 % quota at F = 3, so not a full-suite P95): 14 busy
+///   loops on build01 (12 vCPU, the weakest lane class), no quota, beside the
+///   other gh423 and gh974 tests of the run; n = 20 full applies (one-shot and
+///   stdin) in 10 runs: p50 16.6 s, P95 21.7 s, max 22.5 s (wave validation 2,
+///   strand v2-flake-b01, fix round F, 2026-10-15). 3 x P95 = 65 s.
+/// - The full-suite re-gate v2-fix-e on build01 at factor 1 is a censored lower
+///   bound, not a P95: the old test died at its own 60 s deadline after 61.5 s,
+///   so the step took longer than that there. 3 x 61.5 s = 184.5 s.
+///
+/// The mark is the larger of the two, rounded up: 190 s at factor 1. Under the
+/// 80 % CPU quota (F = 3) the step took p50 46.4-52.5 s, max 59.5 s.
+/// [`BOOT_HANG`] (60 s) sits below the re-gate bound.
+pub const APPLY_BOOT_HANG: Duration = Duration::from_secs(190);
+
+/// The hang mark of one person's turn through a freshly grown organism, from
+/// the sent turn to its answer on the channel (GH #974): the brain's tool
+/// round, the recall and the channel's code cell in one wait. Basis (TV-Z3,
+/// K9 as for [`APPLY_BOOT_HANG`]):
+/// - P95 under overbooking at factor 1 (lighter than the full suite, as for
+///   [`APPLY_BOOT_HANG`]): 14 busy loops on build01 (12 vCPU),
+///   no quota, beside the other gh423 and gh974 tests of the run; n = 30 turns
+///   in 10 runs: p50 13.4 s, P95 14.2 s, max 14.3 s; the longest turn of a
+///   run P95 14.2 s (wave validation 2, strand v2-flake-b01, fix round F,
+///   2026-10-15). 3 x P95 = 43 s.
+/// - The full-suite re-gate v2-fix-e on build01 at factor 1 is a censored lower
+///   bound: the old test waited 90 s on one answer and died at its own
+///   deadline, so a turn there took longer than 90 s. 3 x 90 s = 270 s.
+///
+/// The mark is the larger of the two: 270 s at factor 1. Under the 80 % CPU
+/// quota (F = 3) a turn took p50 62.2 s, max 66.4 s (n = 15, build02).
+/// [`HANG`] (30 s), [`BOOT_HANG`] (60 s) and [`REPLAY_HANG`] (120 s) sit below it.
+pub const TURN_HANG: Duration = Duration::from_secs(270);
+
 /// [`HANG`] in milliseconds at factor 1. A config value or driver that takes
 /// ms reads [`hang_ms`], which carries the factor.
 pub const HANG_MS: u64 = 30_000;
@@ -51,10 +89,12 @@ pub const BROWSER_RUN_OUTSIDE: Duration = Duration::from_secs(60);
 
 /// Every hang mark by name -- the one list the factor pin walks, so a mark
 /// added here is scaled-and-pinned without a second list to forget.
-pub const MARKS: [(&str, Duration); 6] = [
+pub const MARKS: [(&str, Duration); 8] = [
     ("HANG", HANG),
     ("BOOT_HANG", BOOT_HANG),
     ("REPLAY_HANG", REPLAY_HANG),
+    ("APPLY_BOOT_HANG", APPLY_BOOT_HANG),
+    ("TURN_HANG", TURN_HANG),
     ("BROWSER_RUN_COLONY", BROWSER_RUN_COLONY),
     ("BROWSER_RUN_SHEET", BROWSER_RUN_SHEET),
     ("BROWSER_RUN_OUTSIDE", BROWSER_RUN_OUTSIDE),
@@ -228,6 +268,40 @@ where
     L: FnOnce() -> S,
 {
     mark(desc, scaled(BOOT_HANG), fut, Some(last_state)).await
+}
+
+/// Awaits `fut` under the [`APPLY_BOOT_HANG`] mark; on a hang the panic
+/// carries the last observed state.
+pub async fn apply_boot_hang_with<F, S, L>(desc: &str, fut: F, last_state: L) -> F::Output
+where
+    F: Future,
+    S: Debug,
+    L: FnOnce() -> S,
+{
+    mark(desc, scaled(APPLY_BOOT_HANG), fut, Some(last_state)).await
+}
+
+/// Awaits `fut` under the [`TURN_HANG`] mark. On a hang the async
+/// `last_state` runs once, after the mark and never while `fut` still runs, so
+/// it may read what the wait would not (a fixture's dead letters, its round),
+/// and the panic reads `HANG: <desc> (waited <n> s); last state: <state>`.
+pub async fn turn_hang_with<F, L, LFut>(desc: &str, fut: F, last_state: L) -> F::Output
+where
+    F: Future,
+    L: FnOnce() -> LFut,
+    LFut: Future<Output = String>,
+{
+    let limit = scaled(TURN_HANG);
+    match tokio::time::timeout(limit, fut).await {
+        Ok(out) => out,
+        Err(_) => {
+            let state = last_state().await;
+            panic!(
+                "HANG: {desc} (waited {} s); last state: {state}",
+                limit.as_secs()
+            )
+        }
+    }
 }
 
 async fn mark<F, S, L>(desc: &str, limit: Duration, fut: F, last_state: Option<L>) -> F::Output
@@ -445,5 +519,58 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn hang_passes_the_value_through() {
         assert_eq!(hang("ready", async { 7 }).await, 7);
+    }
+
+    /// K9 (GH #1199): a mark this strand added is at least 3 x the larger of its
+    /// P95 under overbooking at factor 1 and the lower bound the full-suite
+    /// re-gate observed at factor 1 -- the figures its doc names.
+    #[test]
+    fn the_apply_and_turn_marks_carry_three_times_their_basis() {
+        for (name, mark, p95_s, gate_lower_s) in [
+            ("APPLY_BOOT_HANG", APPLY_BOOT_HANG, 21.7_f64, 61.5_f64),
+            ("TURN_HANG", TURN_HANG, 14.2, 90.0),
+        ] {
+            let basis = 3.0 * p95_s.max(gate_lower_s);
+            assert!(
+                mark.as_secs_f64() >= basis,
+                "{name} = {} s is below 3 x its basis ({basis} s)",
+                mark.as_secs()
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn turn_hang_with_carries_the_state_read_after_the_mark() {
+        let hung = tokio::spawn(async {
+            turn_hang_with("the answer", std::future::pending::<()>(), || async {
+                tokio::task::yield_now().await;
+                "dead letters: []".to_string()
+            })
+            .await
+        })
+        .await
+        .expect_err("the mark fires");
+        let said = hung.into_panic();
+        let said = said
+            .downcast_ref::<String>()
+            .expect("a formatted panic")
+            .clone();
+        let waited = scaled(TURN_HANG).as_secs();
+        assert_eq!(
+            said,
+            format!("HANG: the answer (waited {waited} s); last state: dead letters: []")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn turn_hang_with_passes_the_value_through() {
+        let read = std::cell::Cell::new(false);
+        let out = turn_hang_with("ready", async { 7 }, || async {
+            read.set(true);
+            String::new()
+        })
+        .await;
+        assert_eq!(out, 7);
+        assert!(!read.get(), "the state is read only after the mark");
     }
 }

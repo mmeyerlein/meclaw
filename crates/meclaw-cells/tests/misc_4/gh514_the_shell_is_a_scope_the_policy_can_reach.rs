@@ -691,19 +691,34 @@ fn the_front_asks_over_the_shell_and_the_answer_decides_the_door() {
         "an allowed verdict un-parks the manifest: {allowed:?}"
     );
     let out = unpark("parked", &decls);
+    assert_one_step_flight(&out);
     assert_eq!(
-        out.len(),
-        3,
-        "forget the park, remember the flight, submit: {out:?}"
-    );
-    assert_eq!(
-        out[2]["header"]["route"],
+        out[1]["header"]["route"],
         json!("mutate"),
         "an allowed shell-scoped submission reaches the door"
     );
     assert_eq!(
-        out[2]["manifest"][0]["scope"],
+        out[1]["manifest"][0]["scope"],
         json!("/os"),
         "and what reaches it is the declaration that was refused a moment ago"
     );
+}
+
+/// GH #1199: forgetting the park and remembering the flight are ONE store
+/// write -- an `insert` with `replace` over the parked row, no separate
+/// delete leg; the un-parking is that write, then the submission.
+fn assert_one_step_flight(out: &[Value]) {
+    assert_eq!(
+        out.len(),
+        2,
+        "forget the park and remember the flight in one step, then submit: {out:?}"
+    );
+    let flight = args_of(&out[0]);
+    assert_eq!(flight["operation"], "insert");
+    assert_eq!(flight["replace"], json!({ "id": "p1" }));
+    assert!(
+        flight.get("where").is_none(),
+        "no separate delete leg: {flight}"
+    );
+    assert_eq!(flight["row"]["kind"], "flight");
 }

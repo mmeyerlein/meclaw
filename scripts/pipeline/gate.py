@@ -30,7 +30,7 @@ import threading
 import time
 import uuid
 
-from . import cache, events, flakes, full_pass, lane, plan, receipt, schedule, store
+from . import cache, cpus, events, flakes, full_pass, gitenv, lane, plan, progress, receipt, schedule, store
 from . import register as satellites
 
 MODES = ("strand", "integration", "release")
@@ -306,18 +306,13 @@ def holder_key(repo, strand, wave, holder=None):
 
 
 def _holder_key(repo, strand, wave):
-    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    if strand and "/" in strand:
-        return strand
-    if not strand:
-        return branch if "/" in branch else ""
-    if wave:
-        w = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", wave.rstrip("/").split("/")[-1])
-    elif "/" in branch:
-        w = branch.split("/", 1)[0]
-    else:
-        return strand
-    return "%s/%s" % (w, strand)
+    """The one chain `--strand` > branch (`gitenv.strand_of`, GH #1199 f)."""
+    return strand_of(repo, strand, wave).key
+
+
+def strand_of(repo, strand="", wave=""):
+    """`gitenv.strand_of` for the tree `repo`: its branch read once here."""
+    return gitenv.strand_of(_git(repo, "rev-parse", "--abbrev-ref", "HEAD"), strand, wave)
 
 
 def _pre_applies(repo):
@@ -1149,7 +1144,7 @@ def _local_plus_env(o):
     `+env` its stations start under, for `_run_local` and the `--plan-only` measure
     (`_plan_build`; re-check bundle N kit-fp M3, N-K3: the plan rebuilt it a second
     time): `_local_width`'s words and the mode."""
-    nproc = os.cpu_count() or 2
+    nproc = cpus.threads()
     cpu, env, egon = _local_width(o.mode, nproc)
     return nproc, cpu, egon, dict(env, MECLAW_GATE_MODE=o.mode)
 
@@ -1715,7 +1710,27 @@ def _satellite_lane_plan(o, repo, ln, kit=None, run_root=None, lane_cpu=None):
 
 
 def _cmd_gate(args):
-    return run_gate(args.argv, sys.stdout, sys.stderr)
+    """`pipeline.py gate`. GH #1199 (V2-A8): an exit that is neither a verdict
+    (0 GREEN, 1 RED, 4 ASK) nor a pass that printed its GATE-SUMMARY is a
+    refusal before the pass -- its last stderr line goes to stdout too (when
+    that is another file) and to the lease, so a wrapper keeping one stream
+    and `token who` see it."""
+    out, err = progress.Tail(sys.stdout, marks=("GATE-SUMMARY",)), progress.Tail(sys.stderr)
+    rc = run_gate(args.argv, out, err)
+    if rc not in (0, 1, 4) and not out.marked:
+        progress.refuse("gate", err.last or "no reason printed", out=sys.stdout, err=sys.stderr,
+                        holder=_gate_holder(args.argv), code=rc, word="REFUSED (exit %d)" % rc)
+    return rc
+
+
+def _gate_holder(argv):
+    """The lease key of a gate call from its words (`--strand/--wave/--holder`), "" when unknown."""
+    val = {k: argv[i + 1] for i, k in enumerate(argv[:-1]) if k in ("--strand", "--wave", "--holder")}
+    try:
+        repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
+        return holder_key(repo, val.get("--strand"), val.get("--wave"), val.get("--holder")) if repo else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 # --- pipeline.py test ----------------------------------------------------------------------
@@ -1803,15 +1818,17 @@ def _main_root(repo):
     return os.path.dirname(common) if common else ""
 
 
-def _wave_dir(plans, want, repo, err):
-    """`--wave`, else the one `plans/<wave>-*` of the branch (the strand's report breaks a tie)."""
+def _wave_dir(plans, want, key, err):
+    """`--wave`, else the one `plans/<wave>-*` of the strand's key `<wave>/<S>`
+    -- the branch, or a `--strand <wave>/<S>` in a detached tree (GH #1199 f);
+    the strand's report breaks a tie."""
     if want:
         want = want.rstrip("/")
         if not os.path.isdir(os.path.join(plans, want)):
             raise _TestExit(2, "strand: no such wave: plans/%s" % want)
         print("strand: wave %s" % want, file=err)
         return want
-    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = key
     if "/" in branch:
         wave, name = branch.split("/", 1)[0], branch.rsplit("/", 1)[-1]
         try:
@@ -1923,8 +1940,11 @@ def _lease_gate(db, repo, holder, host, out, err):
         raise _TestExit(3, "strand: test runs on a lane -- take one ('scripts/strand.sh token take') "
                            "or pass --host <lane> with MECLAW_STRAND_TOKEN_SKIP=<reason>")
     skip = os.environ.get("MECLAW_STRAND_TOKEN_SKIP", "")
-    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    if not skip and (not schedule._armed(db) or "/" not in branch):
+    # The lease key decides, not the branch (GH #1199 f, OR-V2.S2.2): a
+    # detached tree with `--strand <wave>/<S>` was refused with exit 3 here
+    # although the lease of `<wave>/<S>` was held -- the key is the branch on
+    # a strand branch and `--strand` wherever it is given (`gitenv.strand_of`).
+    if not skip and (not schedule._armed(db) or "/" not in (holder or "")):
         raise _TestExit(3, "strand: a test on a build host binds to a held token -- arm the lanes "
                            "and take one, or name the reason in MECLAW_STRAND_TOKEN_SKIP")
     res = schedule.lease_check(db, holder, pid=os.getpid(), lane=host, caller=os.getpid(), skip=skip)
@@ -1934,6 +1954,52 @@ def _lease_gate(db, repo, holder, host, out, err):
     return host
 
 
+class TestProgress:
+    """GH #1199 (kit find V2-A8): the pass lines of one `strand.sh test` -- one
+    when the lane starts (`pass 0/n`), one per stress iteration as nextest
+    prints it, one at the end of a run without iterations -- flushed onto the
+    caller's streams and noted at the lease (`token who`). `clock` is the kit
+    clock (epoch seconds)."""
+
+    def __init__(self, out, holder, n, clock=time.time, err=None):
+        self.out, self.err, self.holder, self.n, self.clock = out, err, holder, max(int(n), 1), clock
+        self.done = self.red = 0
+
+    def _say(self):
+        line = progress.pass_line(self.done, self.n, self.done, self.red, now=self.clock())
+        progress.emit(line, self.err, self.out)
+        progress.beat(self.holder, line, now=self.clock())
+
+    def start(self):
+        self._say()
+
+    def line(self, text):
+        if not STRESS_ITER.search(text):
+            return
+        m = re.search(r" iteration [0-9]+/([0-9]+):", text)
+        if m:
+            self.n = max(self.n, int(m.group(1)))
+        self.done += 1
+        if re.search(r", [1-9][0-9]* (failed|timed out|exec failed)", text):
+            self.red += 1
+        self._say()
+
+    def end(self, rc):
+        if self.done == 0:
+            self.done, self.red = 1, int(rc != 0)
+            self._say()
+
+
+def _stress_count(extra):
+    """`--stress-count N` (or `=N`) among the nextest words, else 1."""
+    for i, w in enumerate(extra):
+        v = w.split("=", 1)[1] if w.startswith("--stress-count=") else (
+            extra[i + 1] if w == "--stress-count" and i + 1 < len(extra) else None)
+        if v is not None and v.isdigit():
+            return int(v)
+    return 1
+
+
 def _test(argv, out, err):
     expr, host, strand_in, wave_in, holder_n, extra = _parse_test(argv)
     repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
@@ -1941,13 +2007,13 @@ def _test(argv, out, err):
     if not root:
         raise _TestExit(2, "strand: not a git repository")
     plans = os.path.join(root, "plans")
-    wdir = _wave_dir(plans, wave_in, repo, err)
-    name = strand_in
-    if not name:
-        branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-        name = branch.rsplit("/", 1)[-1] if "/" in branch else ""
-    if not name:
-        raise _TestExit(2, "strand: cannot tell the strand from the branch -- pass --strand")
+    # The strand first (GH #1199 f): a detached tree without `--strand` hears
+    # the way out, not "cannot tell the wave".
+    who = strand_of(repo, strand_in, wave_in)
+    if not who.name:
+        raise _TestExit(2, "strand: " + who.why)
+    wdir = _wave_dir(plans, wave_in, who.key, err)
+    name = who.name
     archive_root = os.path.join(plans, wdir, "receipts", name)
 
     db = store.open()
@@ -1988,6 +2054,8 @@ def _test(argv, out, err):
         print("strand: test log %s" % log, file=out, flush=True)
 
         t0 = int(time.time())
+        prog = TestProgress(out, holder, _stress_count(extra), err=err)
+        prog.start()
         # The test on the lane is W1's `lane_sync.sh test` (one truth): the tier
         # in the build path with the lane's width and class, the guards, the
         # golden switches and their way back.
@@ -1997,7 +2065,9 @@ def _test(argv, out, err):
                 lane.mark_partial(ln, pushed["target"])
             except lane.LaneError as exc:
                 raise _TestExit(2, "strand: lane %s unreachable\n  %s" % (host, exc))
-        rc = lane.run_test(ln, name, expr, extra, log, run=os.path.basename(run_dir))
+        rc = lane.run_test(ln, name, expr, extra, log, run=os.path.basename(run_dir),
+                           on_line=prog.line)
+        prog.end(rc)
         secs = int(time.time()) - t0
     finally:
         held.release()
@@ -2039,7 +2109,23 @@ def run_test(args, out, err):
     except _TestExit as ex:
         if str(ex):
             print(str(ex), file=out if ex.code == 0 else err)
+        if ex.code != 0:
+            # GH #1199 (V2-A8): a refused or lost test says so on both streams
+            # and at the lease -- a wrapper that keeps one stream sees it.
+            first = (str(ex).splitlines() or ["exit %d" % ex.code])[0]
+            progress.refuse("pipeline test", first, out=out, err=err, holder=_test_holder(args),
+                            code=ex.code, word="REFUSED (exit %d)" % ex.code)
         return ex.code
+
+
+def _test_holder(args):
+    """The lease key of a `pipeline.py test` call, "" when it cannot be told."""
+    try:
+        _, _, strand_in, wave_in, holder_n, _ = _parse_test(args)
+        repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
+        return holder_key(repo, strand_in, wave_in, holder_n) if repo else ""
+    except (_TestExit, OSError, subprocess.SubprocessError):
+        return ""
 
 
 def _cmd_test(args):

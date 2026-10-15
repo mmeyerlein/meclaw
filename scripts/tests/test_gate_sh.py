@@ -35,6 +35,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+from scripts.pipeline import cpus
 from scripts.tests import kit_time, kit_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -99,6 +100,15 @@ SUMMARY_LINE = re.compile(
     r"(?P<secs>\d+)s (?P<verdict>GREEN|RED|ASK)$")
 
 
+def machine_threads():
+    """The threads the runner counts with `nproc`: the CPUs this process may
+    run on. GH #1199: `os.cpu_count()` counts the machine, not the affinity --
+    under a 4-CPU pin of an 8-thread host the cases expected 8 and saw 4. The
+    kit's one count, `pipeline.cpus.threads` (re-check A-I1); `run_gate` keeps
+    OMP_NUM_THREADS/OMP_THREAD_LIMIT out, which nproc reads first (B-2)."""
+    return cpus.threads()
+
+
 def _git(repo, *args):
     env = dict(os.environ)
     env.update({
@@ -155,6 +165,12 @@ def run_gate(repo, *args, plan=None, dry=True, extra_env=None, timeout_s=None):
     # station inherits the outer runner's `NEXTEST_TEST_THREADS=4`, and the
     # lane case (full width) went red on exactly that (GH #934, L gate).
     env.pop("NEXTEST_TEST_THREADS", None)
+    # ... and nor may the runner's `nproc`: GNU nproc answers OMP_NUM_THREADS
+    # and OMP_THREAD_LIMIT before the affinity (the kit sets the first itself,
+    # `lane.env_for`), so an inherited value would decide every width case
+    # that `machine_threads` models by the affinity (GH #1199, re-check B-2).
+    env.pop("OMP_NUM_THREADS", None)
+    env.pop("OMP_THREAD_LIMIT", None)
     # ... and neither may a target directory inherited from the shell decide
     # where the receipt lands: TestTargetDirectory sets it deliberately.
     env.pop("CARGO_TARGET_DIR", None)
@@ -317,7 +333,7 @@ class TestBuildWidth(GateShTestCase):
         log = self.log_of_build_station()
         found = re.search(r"CARGO_BUILD_JOBS=(\d+)", log)
         self.assertIsNotNone(found, "no build width in the station log: %r" % log)
-        self.assertEqual(max(1, (os.cpu_count() or 2) // 2), int(found.group(1)))
+        self.assertEqual(max(1, machine_threads() // 2), int(found.group(1)))
 
     def test_a_preset_build_width_wins(self):
         run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
@@ -2832,7 +2848,7 @@ class TestLane(GateShTestCase):
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         log = self.station_log("build").read_text()
         self.assertIn("CARGO_BUILD_JOBS=<unset>", log)
-        self.assertIn("NEXTEST_TEST_THREADS=%d" % (os.cpu_count() or 1), log)
+        self.assertIn("NEXTEST_TEST_THREADS=%d" % machine_threads(), log)
         self.assertRegex(log, r"# cargo hygiene \(lane\):")
         self.assertNotIn("nice -n 19", log)
 
@@ -3280,7 +3296,9 @@ class TestMakeExportLaneReceipt(unittest.TestCase):
 _LEGACY_STUB = """#!/usr/bin/env bash
 python3 -c 'import json, os, sys
 with open(os.environ["SHELL_RECORD"], "a") as f:
-    f.write(json.dumps(["legacy"] + sys.argv[1:]) + "\\n")' "$@"
+    f.write(json.dumps(["legacy"] + sys.argv[1:]) + "\\n")
+with open(os.environ["SHELL_RECORD"] + ".cwd", "a") as f:
+    f.write(os.getcwd() + "\\n")' "$@"
 echo "legacy says hello"
 exit "${SHELL_EXIT:-0}"
 """
@@ -3288,6 +3306,8 @@ exit "${SHELL_EXIT:-0}"
 _PIPELINE_STUB = """import json, os, sys
 with open(os.environ["SHELL_RECORD"], "a") as f:
     f.write(json.dumps(["pipeline"] + sys.argv[1:]) + "\\n")
+with open(os.environ["SHELL_RECORD"] + ".cwd", "a") as f:
+    f.write(os.getcwd() + "\\n")
 print("pipeline says hello")
 sys.exit(int(os.environ.get("SHELL_EXIT") or 0))
 """
@@ -3412,6 +3432,55 @@ class TestShell(unittest.TestCase):
             self.shell(*argv)
             self.assertEqual(["legacy"] + argv, self.calls()[-1], argv)
         self.assertNotIn("pipeline", [c[0] for c in self.calls()])
+
+
+    def cwds(self):
+        path = pathlib.Path(str(self.record) + ".cwd")
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_dash_C_runs_either_runner_in_the_named_directory(self):
+        """GH #1199 (b): `gate.sh -C <dir> <mode>` acts as a `cd <dir>` first
+        (git -C) -- the pipeline gate reads its tree from the cwd, and an
+        agent shell that resets its cwd per call needed a wrapper script."""
+        there = pathlib.Path(self._tmp.name) / "there"
+        there.mkdir()
+        res = self.shell("-C", str(there), "strand", "--plan-only")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["pipeline", "gate", "--mode", "strand", "--plan-only"], self.calls()[-1])
+        self.assertEqual(os.path.realpath(there), self.cwds()[-1])
+        res = self.shell("-C", "there", "ci", "--plan-only", cwd=self._tmp.name)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["legacy", "ci", "--plan-only"], self.calls()[-1])
+        self.assertEqual(os.path.realpath(there), self.cwds()[-1])
+
+    def test_dash_C_on_a_missing_directory_is_a_clear_exit_2(self):
+        gone = pathlib.Path(self._tmp.name) / "gone"
+        res = self.shell("-C", str(gone), "strand")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("gate: -C: no such directory: %s" % gone, res.stderr)
+        res = self.shell("-C")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("gate: -C needs a value", res.stderr)
+        self.assertEqual([], self.calls())
+
+    def test_the_old_strand_gate_shim_passes_dash_C_before_the_mode(self):
+        """Re-check v2-fix-c M2: `strand-gate.sh` execs `gate.sh strand "$@"`,
+        so a leading `-C <dir>` landed behind the mode, where gate.sh no
+        longer takes it -- the pipeline got `-C` as a gate option and the
+        cwd stayed the caller's."""
+        shim = self.scripts / "strand-gate.sh"
+        shutil.copy(REPO / "scripts" / "strand-gate.sh", shim)
+        shim.chmod(0o755)
+        there = pathlib.Path(self._tmp.name) / "there"
+        there.mkdir()
+        res = subprocess.run([str(shim), "-C", str(there), "--plan-only", "--corpus"],
+                             cwd=self._tmp.name, capture_output=True, text=True,
+                             env=dict(os.environ, SHELL_RECORD=str(self.record)),
+                             timeout=kit_time.HANG)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["pipeline", "gate", "--mode", "strand", "--plan-only"], self.calls()[-1])
+        self.assertEqual(os.path.realpath(there), self.cwds()[-1])
+        self.assertIn("--corpus ignored", res.stderr)
 
 
 def setUpModule():

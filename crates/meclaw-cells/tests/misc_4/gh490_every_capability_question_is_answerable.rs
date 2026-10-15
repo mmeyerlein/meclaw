@@ -316,13 +316,11 @@ fn three_questions_are_asked_and_answered_in_sequence() {
     //    remembered, and the identity door goes out on `mutate` — through the
     //    submission front, not through `/colony/mutations`.
     let out = unpark("subscribing", &decls);
-    assert_eq!(out.len(), 3, "forget the park, remember the flight, submit");
-    assert_eq!(op_of(&out[0])["operation"], "delete");
-    assert_eq!(op_of(&out[1])["row"]["kind"], "flight");
-    assert_eq!(out[2]["header"]["route"], "mutate");
-    assert_eq!(out[2]["header"]["manifest_sha256"], sha.as_str());
-    assert_eq!(out[2]["header"]["requester"], REQUESTER);
-    let door = &out[2]["manifest"][0]["diff"]["add_edges"][0];
+    assert_one_step_flight(&out);
+    assert_eq!(out[1]["header"]["route"], "mutate");
+    assert_eq!(out[1]["header"]["manifest_sha256"], sha.as_str());
+    assert_eq!(out[1]["header"]["requester"], REQUESTER);
+    let door = &out[1]["manifest"][0]["diff"]["add_edges"][0];
     assert_eq!(
         door["modifier"]["set_hop"]["route"], "'in_pack'",
         "the identity door is committed through the submission front"
@@ -352,8 +350,8 @@ fn a_manifest_asks_only_the_questions_its_diff_owes() {
     // And a plain manifest asks nothing more at all.
     let plain = json!([{ "scope": "/os/orgs/acme", "ctx": {}, "diff": { "add_edges": [] } }]);
     let out = unpark("parked", &plain);
-    assert_eq!(out.len(), 3, "straight to the door");
-    assert_eq!(out[2]["header"]["route"], "mutate");
+    assert_one_step_flight(&out);
+    assert_eq!(out[1]["header"]["route"], "mutate", "straight to the door");
 }
 
 // ── the correlation is the ask's own id, never a phase ───────────────────────
@@ -480,4 +478,23 @@ fn the_script_tells_the_two_round_trips_apart_by_the_lane() {
         ),
         "and a store marker is only read where the message is not a verdict"
     );
+}
+
+/// GH #1199: forgetting the park and remembering the flight are ONE store
+/// write -- an `insert` with `replace` over the parked row, no separate
+/// delete leg; the un-parking is that write, then the submission.
+fn assert_one_step_flight(out: &[Value]) {
+    assert_eq!(
+        out.len(),
+        2,
+        "forget the park and remember the flight in one step, then submit: {out:?}"
+    );
+    let flight = op_of(&out[0]);
+    assert_eq!(flight["operation"], "insert");
+    assert_eq!(flight["replace"], json!({ "id": "p1" }));
+    assert!(
+        flight.get("where").is_none(),
+        "no separate delete leg: {flight}"
+    );
+    assert_eq!(flight["row"]["kind"], "flight");
 }

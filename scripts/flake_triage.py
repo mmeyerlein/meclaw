@@ -61,6 +61,7 @@ Usage:
         'meclaw-cells::gh1001_web_write_cost' 'gh1001_write_cost_does_not_grow_with_untouched_objects' ...
     scripts/flake_triage.py --host build03 --throttle 80 --runs 5 <binary_id> <name> ...
     scripts/flake_triage.py --scan-only <binary_id> <name> ...
+    scripts/flake_triage.py -C <worktree> ...   (as git -C: run as if started there)
     scripts/flake_triage.py --log <test.log> <binary_id> <name> ...   (table from an existing log)
     scripts/flake_triage.py --unittest --throttle 80 --runs 5 scripts.tests.test_kit_time.TestHang ...
 
@@ -75,6 +76,20 @@ the kit's exit 3 (`waits or held`). An `#[ignore]` test runs only with
 run (no ssh target, ssh fails, a loop missing at the start or dead at the end)
 is exit 2 as well: a run "under load" carries the load in its first line
 (loops alive, load1 before and at the end), or it is no result.
+
+Progress and refusals (GH #1199, kit find V2-A8: a series started without
+`-I` refused with one stderr line its background wrapper never kept, and a
+running series printed nothing until its end). A real run (not `--scan-only`
+or `--log`) checks `-I` before anything else. Every refusal before the run --
+that one, a wrong `--stress-count`, a LoadError, a LaneError -- is exit 2
+with one `flake_triage: REFUSED -- <reason>` line on stderr and stdout (once
+when they are one file), in `--out` and at the lease (`token who`). A
+`--unittest` series writes one flushed `HH:MM:SS pass i/n done=k red=r` line
+per run; a nextest series passes the stderr of `strand.sh test` through, which
+carries the same line per stress iteration. With the token pool armed, a lane
+run whose holder holds no lease is refused before anything runs; a series in
+which no test ran in any pass ends with exit 1 and `flake_triage: NO PASS --
+...` -- both name the holder looked for and the branch (V2-A8b).
 """
 import argparse
 import os
@@ -83,15 +98,18 @@ import random
 import re
 import signal
 import shlex
+import sqlite3
 import statistics
 import subprocess
 import sys
+import threading
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from scripts.pipeline import flakes  # noqa: E402
 from scripts.pipeline import lane as _lanes  # noqa: E402
+from scripts.pipeline import progress  # noqa: E402
 
 ERROR_MARKER_S = 30
 RESULT = re.compile(r"^\s*(PASS|FAIL|FLAKY|TIMEOUT|LEAK-FAIL|LEAK|SIG[A-Z]+|ABORT)\s+\[\s*([0-9.]+)s\]")
@@ -527,8 +545,8 @@ def stop_load(load):
         proc.terminate()
 
 
-def strand_of_branch(repo=None):
-    """The strand of the tree's branch (`<wave>/<strand>`, as `strand.sh`), else None.
+def head_branch(repo=None):
+    """The tree's branch: "" on a detached HEAD, None without a readable HEAD.
 
     Read from the tree's HEAD file, no git process: the run's own subprocess
     calls stay the only ones."""
@@ -539,8 +557,19 @@ def strand_of_branch(repo=None):
         head = (git / "HEAD").read_text().strip()
     except (OSError, IndexError):
         return None
-    branch = head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else ""
-    return branch.rsplit("/", 1)[1] if "/" in branch else None
+    return head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else ""
+
+
+def strand_of(strand=None, repo=None):
+    """THE strand of the call (`gitenv.strand_of`, GH #1199 f): `--strand` >
+    the branch `<wave>/<strand>` > none, with the way out in `.why`."""
+    from scripts.pipeline import gitenv
+    return gitenv.strand_of(head_branch(repo), strand or "")
+
+
+def strand_of_branch(repo=None):
+    """The strand of the tree's branch (`<wave>/<strand>`, as `strand.sh`), else None."""
+    return strand_of(None, repo).name or None
 
 
 RUN_LOG = re.compile(r"^strand: test log (\S.*?)\s*$", re.M)
@@ -783,12 +812,95 @@ def unittest_label(tid):
     return ".".join(tid.split(".")[-2:])
 
 
+def isolated():
+    """Is this the kit's Python (`-I`)? The lane's narrow point refuses any other."""
+    return bool(sys.flags.isolated)
+
+
+def holder_of(a):
+    """The lease key of this run (`<wave>/<strand>[:<holder>]`): the one chain
+    `gitenv.strand_of` (GH #1199 f) over the tree's HEAD file, without the git
+    process of `gate.holder_key`."""
+    from scripts.pipeline import gitenv
+    key = gitenv.strand_of(head_branch(), a.strand or "", a.wave or "").key
+    return "%s:%s" % (key, a.holder) if key and a.holder else key
+
+
+def refused(a, msg):
+    """GH #1199 (kit find V2-A8): a refusal before the run is exit 2 and one
+    line on stderr AND stdout (one log or two), in `--out`, at the lease --
+    never only a stderr line a background wrapper may not keep."""
+    return progress.refuse("flake_triage", msg, out=sys.stdout, err=sys.stderr,
+                           holder=holder_of(a), also=a.out)
+
+
+def store_or_reason(path):
+    """(the pipeline store at `path` open, "") or (None, why it cannot be
+    read). Re-check v2-fix-e M1: a store error before the run was a
+    traceback; it is a refusal line like every other."""
+    from scripts.pipeline import store
+    try:
+        return store.open(path), ""
+    except (sqlite3.Error, OSError, RuntimeError, store.MigrationDrift) as e:
+        return None, "pipeline store %s: %s" % (path, e)
+
+
+def lease_missing(a, env=None):
+    """V2-A8b (re-check test-cc2, 14.10.): `--strand v2-fix-b` from a tree on
+    branch `.../v2-fix-b-hd1` found no lease, ran 0 passes and said nothing.
+    With the token pool armed, a lane run whose holder (`holder_of`) holds no
+    lease is refused before anything runs; the reason names the holder looked
+    for and the branch. "" when it may run: the lease is there, the pool is
+    not armed, there is no store, or MECLAW_STRAND_TOKEN_SKIP is set (logged
+    by the kit's own token check)."""
+    env = os.environ if env is None else env
+    if env.get("MECLAW_STRAND_TOKEN_SKIP"):
+        return ""
+    from scripts.pipeline import schedule, store
+    holder, path = holder_of(a), pathlib.Path(env.get("MECLAW_PIPELINE_DB") or store.default_path())
+    if not path.exists():
+        return ""
+    db, bad = store_or_reason(path)
+    if db is None:
+        return bad
+    try:
+        if not schedule._armed(db):
+            return ""
+        st = schedule._load(db)
+        # a batch holder `<wave>/S1+S2` runs on a member's lease, as in the kit
+        if holder and schedule._holder(st, schedule._batch_speaker(st, holder, a.host)):
+            return ""
+    except sqlite3.Error as e:
+        return "pipeline store %s: %s" % (path, e)
+    finally:
+        store.close(db)
+    return ("no lease for holder %r (branch %r) in the armed token pool -- take one "
+            "(`strand.sh token take`) or name the holder of the lane (--wave/--strand/--holder)"
+            % (holder, head_branch() or ""))
+
+
+def no_pass(a, n):
+    """V2-A8b: a series in which no test ran in any of its `n` passes is no
+    result -- one line on stderr and stdout, in `--out`, at the lease, naming
+    the holder and the branch; exit 1 (not run is RED, kit find (i))."""
+    return progress.refuse("flake_triage", "no test ran in any of %d passes -- holder %r (branch %r)"
+                           % (n, holder_of(a), head_branch() or ""), out=sys.stdout, err=sys.stderr,
+                           holder=holder_of(a), also=a.out, code=1, word="NO PASS")
+
+
+def say_pass(a, i, n, done, red):
+    """One pass line per run into the log at once (flushed) and at the lease."""
+    line = progress.pass_line(i, n, done, red)
+    progress.emit(line, sys.stderr, sys.stdout)
+    progress.beat(holder_of(a), line)
+
+
 def main_unittest(a):
     """`--unittest`: the Python class on the lane `--host` (see the module docstring)."""
     ids = list(a.tests)
     if a.log:
-        print("flake_triage: --log reads nextest logs; the Python class runs", file=sys.stderr)
-        return 2
+        # re-check v2-fix-e M1: a usage refusal is one on both streams too
+        return refused(a, "--log reads nextest logs; the Python class runs")
     n = a.stress_count
     stats, header, unexplained, red_runs = {}, [], 0, []
     if not a.scan_only:
@@ -801,9 +913,12 @@ def main_unittest(a):
             if not target:
                 raise LoadError(f"no ssh target for lane {a.host}")
             if target != LOCAL:
-                strand = a.strand or strand_of_branch()
-                if not strand:
-                    raise LoadError("the lane's tree needs a strand name: --strand")
+                # A detached tree has no branch to name it (GH #1199 f):
+                # `--strand` wins, without it the way out, exit 2.
+                who = strand_of(a.strand)
+                if not who.name:
+                    raise LoadError("the lane's tree needs a strand name: " + who.why)
+                strand = a.strand or who.name
                 bind_lane(a.host, a.wave, a.strand, a.holder)
                 tree = push_tree(a.host, strand)
                 header.append(f"host: {a.host} ({target}), tree {tree}")
@@ -813,9 +928,9 @@ def main_unittest(a):
             if a.throttle:
                 prefix, n_load, note = plan_throttle_local(a.throttle, a.load, target)
             load = start_load(a.host, n_load, a.load_cap, target=target)
-        except LoadError as e:
-            print(f"flake_triage: {e}", file=sys.stderr)
-            return 2
+        except (LoadError, _lanes.LaneError) as e:
+            return refused(a, str(e))
+        reds = 0
         try:
             for i in range(n):
                 s = None if seed is None else seed + i
@@ -827,7 +942,8 @@ def main_unittest(a):
                 if tree:   # the assert column names repo paths, not the lane's
                     text = text.replace(tree.rstrip("/") + "/", str(REPO) + "/")
                 named = sum(st["red"] for st in stats.values())
-                if merge_unittest_run(stats, text, ids, run.returncode):
+                run_red = merge_unittest_run(stats, text, ids, run.returncode)
+                if run_red:
                     # Re-check fix2 M1: a run only its summary calls red (or that
                     # has none) named no red test -- it is red all the same.
                     unexplained += sum(st["red"] for st in stats.values()) == named
@@ -837,10 +953,11 @@ def main_unittest(a):
                     # Kit find C4: the error text of a red run is the finding;
                     # it goes into the result, not only its last line to stderr.
                     red_runs += red_run_entry(label, text, ids, run.returncode)
+                reds += run_red
+                say_pass(a, i + 1, n, i + 1, reds)
             header.append(check_load(load))
-        except LoadError as e:
-            print(f"flake_triage: {e}", file=sys.stderr)
-            return 2
+        except (LoadError, _lanes.LaneError) as e:
+            return refused(a, str(e))
         finally:
             stop_load(load)
         if note:
@@ -873,20 +990,57 @@ def main_unittest(a):
     for name in short:
         print(f"flake_triage: {name} ran {stats.get(name, {}).get('runs', 0)} of {n} times "
               f"-- RED, not run: check the id (module.Class.test)", file=sys.stderr)
+    if not any(st["runs"] for st in stats.values()):
+        return no_pass(a, n)
     if short:
         return 1   # kit find (i): not run is RED, never exit 3 (`waits or held`)
     return 1 if unexplained or any(s["red"] for s in stats.values()) else 0
 
 
 def pairs(words):
+    """The `<binary_id> <name>` pairs; an odd list is a LoadError (re-check
+    v2-fix-e M1: it was a SystemExit, one stderr line, and `main` turns it
+    into a refusal on both streams)."""
     if len(words) % 2:
-        raise SystemExit("flake_triage: tests come as pairs <binary_id> <name>")
+        raise LoadError("tests come as pairs <binary_id> <name>")
     return [(words[i], words[i + 1]) for i in range(0, len(words), 2)]
+
+
+def run_relayed(argv, env):
+    """`strand.sh test` (`argv`) with its stdout read as it comes, the result
+    like `subprocess.run(..., stdout=PIPE)`. Re-check v2-fix-e I1 (GH #1199,
+    kit find V2-A8): the child writes each pass line on its stdout and its
+    stderr; the stdout copy stayed in the pipe until the end, so a wrapper
+    keeping only this run's stdout (`flake_triage.py ... > log`) held no pass
+    line while the series ran. A pass or refusal line goes on to this stdout
+    at once when it is another file than stderr (there the child's stderr
+    copy has landed already)."""
+    r, w = os.pipe()
+    got, relay = [], len(progress.distinct(sys.stderr, sys.stdout)) == 2
+
+    def pump():
+        with os.fdopen(r, "r", errors="replace") as fh:
+            for ln in fh:
+                got.append(ln)
+                if relay and progress.RELAY.match(ln.rstrip("\n")):
+                    progress.emit(ln.rstrip("\n"), sys.stdout)
+    t = threading.Thread(target=pump, daemon=True)
+    t.start()
+    try:
+        run = subprocess.run(argv, stdout=w, text=True, errors="replace", env=env)
+    finally:
+        os.close(w)
+        t.join()
+    if run.stdout is None:
+        run.stdout = "".join(got)
+    return run
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("tests", nargs="+", help="pairs <binary_id> <name>; with --unittest unittest ids")
+    ap.add_argument("-C", dest="chdir", action="append", metavar="DIR",
+                    help="run as if started in DIR (as git -C; GH #1199)")
     ap.add_argument("--unittest", action="store_true",
                     help="the Python class: unittest ids, run on the lane --host (or --host local)")
     ap.add_argument("--seed", type=int, help="--unittest: first T3 seed (run i: seed + i)")
@@ -911,17 +1065,33 @@ def main(argv=None):
     ap.add_argument("--log", help="build the table from this log instead of running")
     ap.add_argument("--out", help="also write the table to this file")
     a = ap.parse_args(argv)
+    # GH #1199 (b): `strand.sh test` below reads strand and lease from the
+    # cwd's branch; `-C` is the `cd` an agent shell cannot keep.
+    from scripts.pipeline import gitenv
+    gitenv.enter_dirs(a.chdir, "flake_triage")
     from scripts.pipeline import schedule
     if schedule.strand_colon_error(a.strand):
         # kit find tv-br M5 (M7d2): the old form went whole into the lane push
         ap.error(schedule.strand_colon_error(a.strand))
     if a.stress_count < 1 and not (a.scan_only or a.log):
         # Re-check fix5 M2: zero runs prove nothing -- `short_runs(.., 0)` named no case.
-        print(f"flake_triage: --stress-count {a.stress_count}: at least one run", file=sys.stderr)
-        return 2
+        return refused(a, f"--stress-count {a.stress_count}: at least one run")
+    if not (a.scan_only or a.log) and not isolated():
+        # V2-A8: started as `python3 scripts/flake_triage.py`, the run reached
+        # the lane's narrow point (LaneError, exit 2) after the token check.
+        return refused(a, "started without -I: the lane's narrow point runs only in the kit's "
+                          "Python -- start scripts/flake_triage.py itself (#!/usr/bin/python3 -I) "
+                          "or /usr/bin/python3 -I scripts/flake_triage.py")
+    if not (a.scan_only or a.log) and a.host and a.host != LOCAL:
+        why = lease_missing(a)
+        if why:
+            return refused(a, why)
     if a.unittest:
         return main_unittest(a)
-    cases = pairs(a.tests)
+    try:
+        cases = pairs(a.tests)
+    except LoadError as e:
+        return refused(a, str(e))
     scans = {}
     for case in cases:
         path = test_file(*case)
@@ -942,29 +1112,31 @@ def main(argv=None):
                 # refused before any load starts (the Rust marks refuse it too:
                 # no quota mark from the lane transport).
                 if factor and "MECLAW_LANE_CPU_QUOTA" not in quota:
+                    # GH #1199: this refusal now reaches stdout too (the log); it
+                    # never says "quota run" there -- that marks a header with one.
                     raise LoadError("--time-factor needs a CPU quota, and %s has none "
-                                    "(cpu controller not delegated): a factor belongs to a "
-                                    "quota run only (OR-T12-13)" % a.host)
+                                    "(cpu controller not delegated): a factor belongs only "
+                                    "to a run under a CPU quota (OR-T12-13)" % a.host)
                 env = dict(os.environ, **quota, **factor)
                 if factor:
                     note += "\ntime factor: MECLAW_TEST_TIME_FACTOR=%s (quota run)" % a.time_factor
             load = start_load(a.host, n_load, a.load_cap)
-        except LoadError as e:
-            print(f"flake_triage: {e}", file=sys.stderr)
-            return 2
+        except (LoadError, _lanes.LaneError) as e:
+            return refused(a, str(e))
         try:
-            run = subprocess.run(strand_test_argv(cases, a.host, a.stress_count, a.wave, a.strand,
-                                                  ignored=a.run_ignored, holder=a.holder),
-                                 capture_output=True, text=True, errors="replace", env=env)
+            # GH #1199 (V2-A8): stderr passes through, stdout is read as it
+            # comes -- the pass lines `strand.sh test` writes per stress
+            # iteration (`gate.TestProgress`) reach either stream's log at once.
+            run = run_relayed(strand_test_argv(cases, a.host, a.stress_count, a.wave, a.strand,
+                                               ignored=a.run_ignored, holder=a.holder), env)
             header = check_load(load)
             if note:
                 header = note + "\n" + header
-        except LoadError as e:
-            print(f"flake_triage: {e}", file=sys.stderr)
-            return 2
+        except (LoadError, _lanes.LaneError) as e:
+            return refused(a, str(e))
         finally:
             stop_load(load)
-        text = run.stdout + run.stderr
+        text = (run.stdout or "") + (run.stderr or "")
         run_exit = run.returncode
         log = run_log(text)
         if log is not None and log.is_file():
@@ -1015,6 +1187,8 @@ def main(argv=None):
                   f"`Starting` line" + ("" if a.run_ignored else
                                         "; an #[ignore] test runs only with --run-ignored"),
                   file=sys.stderr)
+        if not a.log and not any((stats.get(c) or {}).get("runs", 0) for c in cases):
+            return no_pass(a, a.stress_count)
         if short:
             return 1   # kit find (i): not run is RED, never exit 3 (`waits or held`)
     return 1 if unexplained or any(s["red"] for s in stats.values()) else 0

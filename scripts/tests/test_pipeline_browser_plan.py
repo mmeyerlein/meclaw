@@ -303,14 +303,14 @@ class PlanWiringTest(Base):
         out = gate_plan.to_json(files, mode, repo, explain=True)
         return {"stations": [r for r in out["stations"] if r["name"] == "browser:display"]}
 
-    def build(self, mode, files, term="stage:integration narrowed since=x"):
+    def build(self, mode, files, term="stage:integration narrowed since=x", now=NOW):
         decision = (term, self.map_rev, ["no wave named"])
         with mock.patch.object(narrow, "integration_decision", return_value=decision), \
                 mock.patch.object(narrow, "newest_map", return_value=(self.cov, None)), \
                 mock.patch.dict(os.environ, ON):
             doc = plan.build_plan(self.root, mode, self.map_rev, files=files,
                                   resolver=self.resolver, metadata=self.meta, narrow=True,
-                                  db=object())
+                                  db=object(), now=now)
         st = next((s for s in doc["stations"] if s["name"] == "browser:display"), None)
         return doc, st
 
@@ -322,6 +322,14 @@ class PlanWiringTest(Base):
         rows = [{"name": "browser:display", "cmds": gate_plan.browser_cmds(colony)}]
         plan.split_alone(rows)
         return rows[0]["cmds"]
+
+    def test_the_browser_cut_judges_the_map_by_the_plans_clock(self):
+        """GH #1199: `build_plan` handed no clock to the browser cut -- the map of
+        these cases (2026-10-10) aged on the wall clock, and they went red on 17.10."""
+        self.write({SRC + "sheet.rs": "// in the wave\n"})
+        doc, st = self.build("integration", ["docs/x.md"], now=NOW + datetime.timedelta(days=30))
+        line = [n for n in doc.get("notes") or () if n.startswith("browser lock ")]
+        self.assertTrue(line and all("days old" in n for n in line), doc.get("notes"))
 
     def test_a_narrowed_integration_drops_the_untouched_locks_release_runs_all(self):
         self.write({SRC + "sheet.rs": "// in the wave\n"})

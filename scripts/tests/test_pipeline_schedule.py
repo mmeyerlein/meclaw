@@ -162,7 +162,8 @@ class TestRunners(ScheduleCase):
         # half the cores, never over the executor's Egon cap -- on any host (tb-s4
         # fix round: the pin read this host's count, build02 nproc 12 booked 6, ran 4)
         for n, want in ((4, 2), (6, 3), (8, 4), (12, 4), (24, 4)):
-            with self.subTest(nproc=n), unittest.mock.patch("os.cpu_count", return_value=n):
+            with self.subTest(nproc=n), \
+                    unittest.mock.patch.object(schedule.cpus, "threads", return_value=n):
                 schedule.sync_runners(self.db, [
                     FakeLane("mm", ssh="local", transport="local", cls="egon", threads=4)])
                 self.assertEqual(want, json.loads(self.runner("mm")["capacity"])["cpu"])
@@ -172,7 +173,7 @@ class TestRunners(ScheduleCase):
         # store without its fingerprint registered cpu 1, and the first run on
         # the lane ran every station one after another.
         schedule.sync_runners(self.db, [FakeLane("north")])
-        self.assertEqual(os.cpu_count() or 1, json.loads(self.runner("north")["capacity"])["cpu"])
+        self.assertEqual(schedule.cpus.threads(), json.loads(self.runner("north")["capacity"])["cpu"])
 
     def test_sync_runners_takes_vcpu_from_the_fingerprint_and_drains_lost_lanes(self):
         self.lanes("north", "south", threads=None)
@@ -429,8 +430,8 @@ class TestAdmission(ScheduleCase):
         self.assertEqual(1, len(self.journal("lane_power_requested")))
 
     @unittest.mock.patch.dict(os.environ, {"OMP_NUM_THREADS": "8"})
-    @unittest.mock.patch("os.cpu_count", return_value=8)
-    def test_schedule_egon_lane_only_for_test_and_measure(self, _cpu_count):
+    @unittest.mock.patch.object(schedule.cpus, "threads", return_value=8)
+    def test_schedule_egon_lane_only_for_test_and_measure(self, _threads):
         # mm-os01 (nproc 8) patched: the egon width is half the cores, never over 4, so
         # the host's own count would decide the pin (tb-s4 fix round, red at nproc 6)
         schedule.sync_runners(self.db, [FakeLane("mm", ssh="local", transport="local", cls="egon")])
@@ -789,6 +790,23 @@ class TestLeaseKitFindsWave(TestLeaseKitFinds):
         self.assertIn("idle %d min (over %d) wanted by the caller welle-x/b, no waiter in the "
                       "queue, no run and no live process"
                       % (schedule.LEASE_IDLE_MIN + 1, schedule.LEASE_IDLE_MIN), res.err)
+
+    def test_v2e2_who_counts_the_last_station_of_a_pass_that_ended(self):
+        # GH #1199 V2-E-2 (welle-validierung-2, 15.10. 03:06): after a 35-min
+        # gate on its held lease, `token who` said "no progress since take" --
+        # the stations were read only through the lease's `run`, which the end
+        # of the pass clears. The last station of the ended pass still counts.
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/a", lane="north", now=T0).code)
+        adm = self.admit(cargo_plan(), strand="welle-x/a", minutes=1)
+        self.assertFalse(adm.lease_taken, "the run rides the held lease")
+        store.journal_add(self.db, schedule._iso(T0 + 600), None, adm.run, "status", "station_ended",
+                          "GATE tests", {"station": "tests", "verdict": "RED", "secs": 500, "exit": 1})
+        pe = json.loads(ev("pass_ended", {"verdict": "RED", "secs": 600}, adm.run))
+        schedule.close(self.db, adm, pe, now=T0 + 660)
+        out = schedule.lease_who(self.db, now=T0 + 900).out
+        line = next(ln for ln in out.splitlines() if ln.startswith("  welle-x/a "))
+        self.assertIn("progress 5 min ago", line, out)
 
     def test_the_callers_own_idle_lease_is_never_reclaimed(self):
         # The holder's own call proves it alive, a waiter for its lane or not.

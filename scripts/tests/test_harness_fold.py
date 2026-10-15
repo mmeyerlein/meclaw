@@ -13,7 +13,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 import harness_fold as hf  # noqa: E402
-from scripts.tests import store_isolation  # noqa: E402
+from scripts.tests import private_tree, store_isolation  # noqa: E402
 
 
 def setUpModule():  # noqa: N802 -- unittest's name
@@ -520,16 +520,14 @@ class DocPathMentions(unittest.TestCase):
             live.write_text("#[test]\nfn t() {}\n")
             self.assertEqual([(rel, path, 1, 0)], hf.stale_frozen(tmp, {(rel, path): 1}))
 
+    @private_tree.private()   # GH #1199: the historical docs never travel
     def test_the_frozen_historical_list_is_not_stale_in_the_real_tree(self):
         repo = SCRIPTS.parent
-        if not (repo / "docs").is_dir():
-            self.skipTest("no docs/ in this tree")
         self.assertEqual([], hf.stale_frozen(str(repo)))
 
+    @private_tree.private()   # GH #1199: the export blocklists tests the READMEs name
     def test_doc_mentions_the_real_tree_names_no_dead_test_path(self):
         repo = SCRIPTS.parent
-        if not (repo / "templates").is_dir():
-            self.skipTest("no templates/ in this tree")
         dead = hf.dead_path_mentions(str(repo))
         self.assertEqual(dead, [], "%d dead, first: %r" % (len(dead), dead[:5]))
 

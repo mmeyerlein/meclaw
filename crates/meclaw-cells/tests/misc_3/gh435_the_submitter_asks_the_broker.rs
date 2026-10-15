@@ -248,26 +248,34 @@ fn the_unparked_manifest_is_submitted_with_its_attribution() {
     let rows = json!([{ "id": "p1", "manifest": decls, "requester": REQUESTER,
                         "tool_call_id": "c2", "manifest_sha256": sha }]);
     let out = unpark(&rows);
-    assert_eq!(out.len(), 3, "forget the park, remember the flight, submit");
+    // GH #1199: forgetting the park and remembering the flight are ONE store
+    // write (`insert` with `replace`) -- a failing write keeps the park instead
+    // of losing both rows, and no reader sees neither.
+    assert_eq!(
+        out.len(),
+        2,
+        "forget the park and remember the flight in one step, then submit"
+    );
 
-    let del = op_of(&out[0]);
-    assert_eq!(del["operation"], "delete");
-    assert_eq!(del["where"], json!({ "id": "p1" }));
-
-    let flight = op_of(&out[1]);
+    let flight = op_of(&out[0]);
     assert_eq!(flight["operation"], "insert");
+    assert_eq!(flight["replace"], json!({ "id": "p1" }));
+    assert!(
+        flight.get("where").is_none(),
+        "no separate delete leg: {flight}"
+    );
     assert_eq!(flight["row"]["kind"], "flight");
     assert_eq!(flight["row"]["tool_call_id"], "c2");
     assert_eq!(flight["row"]["manifest_sha256"], sha.as_str());
 
-    assert_eq!(out[2]["header"]["route"], "mutate");
-    assert_eq!(out[2]["header"]["manifest_sha256"], sha.as_str());
-    assert_eq!(out[2]["manifest"][0]["ctx"]["requester"], REQUESTER);
+    assert_eq!(out[1]["header"]["route"], "mutate");
+    assert_eq!(out[1]["header"]["manifest_sha256"], sha.as_str());
+    assert_eq!(out[1]["manifest"][0]["ctx"]["requester"], REQUESTER);
     assert_eq!(
-        out[2]["manifest"][0]["ctx"]["manifest_sha256"],
+        out[1]["manifest"][0]["ctx"]["manifest_sha256"],
         sha.as_str()
     );
-    assert_eq!(out[2]["manifest"][1]["ctx"]["requester"], REQUESTER);
+    assert_eq!(out[1]["manifest"][1]["ctx"]["requester"], REQUESTER);
 }
 
 #[test]

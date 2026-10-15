@@ -11,7 +11,10 @@ is tested, not the branch):
 
     1. lease `tree:master@<repo>` (TTL 2 h). Held by somebody else -> the merge
        is `queued` (exit 3); the release OFFERS the lease to the oldest queued
-       merge, which takes it on its next call.
+       merge, which takes it on its next call -- or at once with `--wait`,
+       which blocks on the pool's wake file the release rings and says its
+       reason and queue place at the start and on each change (`wait_s` in
+       the merge receipt, V2-A10).
     2. preconditions: the newest strand receipt is GREEN on the branch head
        (its base may be older than master -- that is what the merge gate is
        for), the strand's pre stamp is fresh, the report has its head block
@@ -28,12 +31,19 @@ is tested, not the branch):
        `plans/<wave>/straenge/<S>.json`), the corpus when docs moved, the
        `[Unreleased]` line, `ROADMAP.md` § Now without the strand's issues;
        commit `Merge <S> (#n): <title>` with the version and pin lines.
+       When the merge point's own writes touch the closure of a hash golden
+       (`GOLDENS`), the golden's generator runs on the candidate and the
+       commit is amended with what it rewrote (step `golden`, V2-A17).
     5. merge gate on the committed candidate. GREEN -> `git merge --ff-only`
        in the main tree (moves master AND its working tree; never
        `update-ref`, which would leave the checked-out tree behind as a
        backwards diff), `merges` -> `merged`, `merge_done`, lease free, issue
        close (`close`). RED/ABORTED -> candidate discarded, `merge_refused`,
        lease free, the strand gets the finding.
+
+Each step ends with a line `merge: step <name> <start> <secs>s` (lease,
+preconditions, candidate, gate, ref-update, close; ` RED` after the one that
+refused) and the merge receipt lists them as `steps` (`Steps`, V2-A10 h).
 
 `--batch S1,S2` puts several strands into ONE octopus candidate; a red batch
 bisects (halves as candidates, at most three levels). This module never
@@ -56,17 +66,21 @@ rev refuses the merge (`gate_foreign_rev`).
 
 import datetime
 import importlib.util
+import io
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 
-from . import events, lifted, store, turnaround, versions
+from . import events, lifted, schedule, store, turnaround, versions
+from .lane import GOLDEN_SWITCHES, python_argv
 
 TTL_S = 7200
 # An offer is short: a queued caller that does not come back within it (a
@@ -518,6 +532,13 @@ def plan_only(s, base, tip):
         return False
     wave = os.path.basename(s.wdir)
     _allowed, off_kw, reuse_kw = _neutral(s, mb)
+    # V2-A10 (h): one path outside the rule decides it -- the merge of
+    # v2-fix-b held tree:master 826 s before its gate (journal seq 116541 ->
+    # 116542) for the reader greps of 310 re-check files, with 53 code paths
+    # beside them. The string rule first, the greps only for a candidate.
+    rule = reuse_kw.get("rule") or turnaround.reuse_path
+    if any(rule(p, wave) for p in paths):
+        return False
     return (bool(paths) and turnaround.code_equal_revs(s.root, mb, tip, wave, **reuse_kw)[0]
             and not turnaround.offending(paths, s.root, wave, **off_kw))
 
@@ -636,6 +657,8 @@ def take_tree(db, repo, holder, at=None):
         _event(db, "merge_abandoned", mid, offered, base, reason="offer_lapsed")
     events.emit(db, "lease_taken", "note", {"resource": res, "holder": holder, "run": None,
                                             "ttl_s": TTL_S}, at=at)
+    # V2-A10: a new holder moves the waiting merges up the queue -- they say so.
+    _ring(db)
     return True
 
 
@@ -699,6 +722,10 @@ def dequeue(db, repo, strand, at=None):
     if nxt:
         events.emit(db, "lease_offered", "note", {"resource": res, "holder": nxt, "run": None,
                                                   "ttl_s": OFFER_TTL_S}, at=at)
+    if ids or nxt:
+        # V2-A10: a dropped row moves every merge behind it up the queue, and
+        # an offer passed on moves the next one to the head (re-check f+g).
+        _ring(db)
     return len(ids)
 
 
@@ -722,7 +749,100 @@ def release_tree(db, repo, holder, at=None):
     if nxt:
         events.emit(db, "lease_offered", "note", {"resource": res, "holder": nxt, "run": None,
                                                   "ttl_s": OFFER_TTL_S}, at=at)
+    _ring(db)
     return True
+
+
+def _ring(db):
+    """Wake every `merge --wait` (and every other waiter of the pool) after
+    the commit: the tree lease is free or offered now (V2-P1196-3)."""
+    schedule._wake(schedule._db_path(db))
+
+
+def wait_state(db, repo, holder):
+    """`(who, position)` of a merge waiting for the tree lease (V2-A10): who
+    holds the lease (`held by X`, `offered to X`) and the merge's place among
+    the queued rows that wait behind it -- the holder's own rows do not count
+    (they stay `queued` until its candidate is gated)."""
+    who = store.lease_who(db, resource(repo)) or {}
+    if who.get("holder"):
+        state, ahead_of = "held by %s" % who["holder"], _members(who["holder"])
+    elif who.get("offered_to"):
+        state, ahead_of = "offered to %s" % who["offered_to"], set()
+    else:
+        state, ahead_of = "free", set()
+    mine = _members(holder)
+    queue = [q["strand"] for q in _queued(db, repo) if q["strand"] not in ahead_of]
+    return state, next((i + 1 for i, n in enumerate(queue) if n in mine), len(queue) + 1)
+
+
+def wait_line(repo, holder, state):
+    return "merge: waiting -- the merge lease %s is %s; %s is #%d in the queue (queued, --wait)" % (
+        resource(repo), state[0], holder, state[1])
+
+
+def take_tree_waiting(db, repo, holder, on_queued=None, clock=None):
+    """`take_tree` until `holder` holds the lease (`merge --wait`, V2-P1196-3).
+
+    Wave validation 2: two merges at once ended with exit 3 for the second and
+    a retry by hand -- master moves before the lease is free, and a ref move
+    wakes nobody. This is the wait of `gate --wait-admission` and `token take
+    --wait` (`schedule.admit_waiting`, R-AG-1, no retry clock): the pool's wake
+    file is opened before each round and blocked on after a queued one;
+    `release_tree` and `dequeue` ring it (`_ring`). One watchdog per round
+    (`MECLAW_TOKEN_WAIT_SECS`, 30 s) covers what rings nothing (a TTL or an
+    offer running out); the whole wait ends after `MECLAW_ADMISSION_WAIT_SECS`
+    (4 h) -- False, still queued. `on_queued(first)` hears every queued
+    round (V2-A10: the merge says its wait and each change of it -- a round
+    follows a ring, or the watchdog); a `Refused` from it ends the wait as it
+    is. `clock` is the kit clock of the take (`store.now`)."""
+    secs = schedule.wait_secs(os.environ, "MECLAW_TOKEN_WAIT_SECS", "30")
+    limit = schedule.wait_secs(os.environ, "MECLAW_ADMISSION_WAIT_SECS", "14400")
+    end, path, said = time.monotonic() + limit, schedule._db_path(db), False
+    clock = clock or store.now
+    while True:
+        fd = schedule._wake_open(path)
+        try:
+            if take_tree(db, repo, holder, at=clock()):
+                return True
+            if on_queued:
+                on_queued(not said)
+            said = True
+            left = end - time.monotonic()
+            if left <= 0:
+                return False
+            select.select([fd] if fd is not None else [], [], [], min(secs, left))
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+
+def lease_resolves(strands, base, no_pre):
+    """`merge --wait` waits only when the lease can change the end: a strand
+    whose branch is gone, whose review check refuses (K-R3, `review_first`)
+    or whose own preconditions fail (strand receipt missing, RED or not on
+    the head, pre stamp, report) is refused after any wait too -- re-check
+    v2-fix-c I1: with `Verdikt: ja` a strand without receipt waited the
+    holder's whole merge (rc 3 at the limit) instead of `no_strand_receipt`.
+    A plan-only branch needs no receipt (GH #1167 d), so its refusal counts
+    only off plan-only, as under the lease. When that holds for every
+    strand, the refusal is raised here -- exit 1 at once, as without `--wait`."""
+    missing = []
+    for s in strands:
+        try:
+            tip = out(s.root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % s.branch)
+            if not tip:
+                raise Refused("no_branch", "no branch %s" % s.branch)
+            review_first(s, base, tip, no_pre)
+            try:
+                preconditions(s, tip, no_pre)
+            except Refused:
+                if not plan_only(s, base, tip):
+                    raise
+            return
+        except Refused as exc:
+            missing.append((exc.reason, exc.text))
+    raise Refused.all_of(missing)
 
 
 def _event(db, name, mid, strand, base, **extra):
@@ -792,6 +912,193 @@ def regenerate_corpus(cand):
     return [p for p in out(cand, "diff", "--name-only").split() if p in CORPUS]
 
 
+# --- the goldens that follow the cascade (V2-A17) ---------------------------------------
+#
+# A committed golden that HASHES template trees cannot follow the cascade: the
+# cascade raises pin strings, never a hash of the file that holds them. On
+# 15.10. the merge point raised `collector@5.1.1 -> 5.1.2` in
+# `templates/{talky,cogny}/collector/config.json` and the candidate gate went
+# RED in the two gh277 byte-identity tests; no strand can write those goldens
+# right beforehand (rule 6: numbers only at the merge point). So the merge
+# point runs the goldens' own generator on the candidate whenever its own
+# writes touched a golden's closure, and the rewritten goldens go into the
+# merge commit before the gate compares byte for byte.
+#
+# One row per golden directory: the generator (a nextest filterset of the
+# `#[ignore]`d writer and the nextest words it needs -- one package built,
+# ignored tests only) and the switch it refuses to run without. The closure
+# is read from the tree, never listed here: every `<name><suffix>` in `dir`
+# names `templates/<name>`, plus every template a JSON pin under a closure
+# directory names, transitively (talky -> collector, curator, dispatcher, ...).
+GOLDENS = (
+    {"dir": "plans/composition-reference/golden", "suffix": ".manifest",
+     "switch": "GH277_WRITE_GOLDEN",
+     "filter": "test(/(^|::)write_golden_manifests$/)",
+     "args": ["-p", "meclaw-colony", "--run-ignored", "only"]},
+)
+
+_JSON_PIN = re.compile(r'"([a-z][a-z0-9-]*)@[0-9]+\.[0-9]+\.[0-9]+"')
+
+
+def golden_closure(tree, spec):
+    """`["templates/<dir>/", ...]`: the template trees the goldens of `spec` stage."""
+    gdir = os.path.join(tree, spec["dir"])
+    try:
+        names = sorted(n[:-len(spec["suffix"])] for n in os.listdir(gdir)
+                       if n.endswith(spec["suffix"]))
+    except OSError:
+        return []
+    by_name = {n: d for d, n in versions.template_dirs(tree).items()}
+    seen, todo = set(), [by_name[n] for n in names if n in by_name]
+    while todo:
+        d = todo.pop()
+        if d in seen:
+            continue
+        seen.add(d)
+        for dirpath, _dirs, files in os.walk(os.path.join(tree, "templates", d)):
+            for fn in files:
+                if not fn.endswith(".json"):
+                    continue
+                try:
+                    with open(os.path.join(dirpath, fn), encoding="utf-8") as fh:
+                        text = fh.read()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                todo += [by_name[m] for m in _JSON_PIN.findall(text) if m in by_name]
+    return sorted("templates/%s/" % d for d in seen)
+
+
+def golden_hits(tree, paths):
+    """`[(spec, [path, ...])]`: the goldens whose closure a path of `paths` lies in."""
+    hits = []
+    for spec in GOLDENS:
+        closure = golden_closure(tree, spec)
+        inside = sorted(p for p in paths if any(p.startswith(c) for c in closure))
+        if inside:
+            hits.append((spec, inside))
+    return hits
+
+
+def golden_argv(tree, ctx, spec):
+    """The generator run: the lane test of the candidate, as the gate would run
+    it (`pipeline.py test`, the gate's holder and host), the ignored writer
+    only; or `MECLAW_MERGE_GOLDEN_CMD` (words {tree} {holder} {host} {filter}
+    {switch})."""
+    custom = os.environ.get("MECLAW_MERGE_GOLDEN_CMD")
+    if custom:
+        return [w.format(tree=tree, holder=ctx.get("holder") or "", host=ctx.get("host") or "",
+                         filter=spec["filter"], switch=spec["switch"])
+                for w in shlex.split(custom)]
+    # the kit's one Python (lane.PYTHON, `-I`): the narrow point refuses any other
+    argv = python_argv(os.path.join(tree, "scripts", "pipeline.py"), "test")
+    if ctx.get("holder"):
+        argv += ["--strand", ctx["holder"]]
+    if ctx.get("host"):
+        argv += ["--host", ctx["host"]]
+    return argv + [spec["filter"]] + list(spec.get("args") or [])
+
+
+def golden_speaker(db, ctx):
+    """The lease the generator runs under: the gate holder, for a batch
+    `<wave>/S1+S2` the member lease it speaks for -- the one the merge gate's
+    admission resolves too (schedule `_batch_speaker`, re-check RC-GK2 I2)."""
+    holder = ctx.get("holder") or ""
+    if db is None or not holder or not schedule._armed(db):
+        return holder
+    return schedule.lease_speaker(db, holder, ctx.get("host") or "")
+
+
+def golden_lane(db, ctx):
+    """The lane lease the generator runs under (#1199 V2-A17 follow-up, live
+    merge G-a 12:15): `pipeline.py test` binds to a held lease of the gate
+    holder, and the merge holds none -- its gate gets its lane from the
+    admission. So the merge point leases one for the generator from the same
+    armed pool (`--host`, else a lane the pool leaves it), with no queue place
+    (as its gate, kit find (h)), never past the token (no
+    MECLAW_STRAND_TOKEN_SKIP). Returns the holder to give back after the merge
+    gate (`golden_give_back`); None when the holder -- or the member a batch
+    speaks for (`golden_speaker`) -- already holds its lane (the strand's own
+    lease stays its own) or the pool is not armed (the generator's own check
+    speaks)."""
+    holder = ctx.get("holder") or ""
+    if db is None or not holder or not schedule._armed(db) \
+            or schedule.lease_lane(db, golden_speaker(db, ctx)).lane:
+        return None
+    # pid: the merge process uses the lease from the generator through the
+    # merge gate -- its life is the lease's; no `tree`: the candidate tree is
+    # the merge's own and goes away, a lane tree it is not (re-check RC-GK2 M2).
+    res = schedule.lease_take(db, holder, lane=ctx.get("host") or None, pid=os.getpid(),
+                              queue=False)
+    if res.code != 0:
+        raise Refused("golden_failed", "no lane for the generator (not judged): %s"
+                      % (res.err or res.out).strip())
+    return holder
+
+
+def golden_give_back(db, ctx, err):
+    """Give the generator's lease (`ctx["golden_lease"]`) back, once: after the
+    merge gate, or in any exit before it."""
+    taken = ctx.pop("golden_lease", None)
+    if not taken:
+        return
+    res = schedule.lease_release(db, taken)
+    if res.code != 0:
+        err.write("merge: the generator's lease of %s stays: %s\n"
+                  % (taken, (res.err or res.out).strip()))
+
+
+def follow_goldens(cand, ctx, hits, err, db=None):
+    """Run the generator of each hit golden in `cand` and amend the candidate
+    commit with what it rewrote. Returns `(sha, [path, ...])`; a generator that
+    fails refuses the merge (`golden_failed`) -- fail closed, never a guess.
+    The generator runs on the lane `golden_lane` leases. The lease stays with
+    the holder through the merge gate (`ctx["golden_lease"]`, given back by
+    `golden_give_back` after it): given back here, a strand that queued while
+    the generator ran got the lane offered and the merge gate, which takes no
+    queue place, ended without one (re-check RC-GK2 I1). A failing step gives
+    it back at once."""
+    ctx["golden_lease"] = golden_lane(db, ctx)
+    try:
+        written = _run_generators(cand, dict(ctx, holder=golden_speaker(db, ctx)), hits, err)
+        if written:
+            git(cand, "add", "--", *written, check=True)
+            body = out(cand, "log", "-1", "--format=%B").rstrip("\n")
+            msg = "%s\nGoldens: %s rewritten after the cascade (%s)\n" % (
+                body, ", ".join(written), ", ".join(spec["switch"] for spec, _ in hits))
+            # The secret guard (pre-commit hook) runs on the amended commit too.
+            git(cand, "commit", "-q", "--amend", "-m", msg, check=True)
+            err.write("merge: goldens rewritten after the cascade: %s\n" % ", ".join(written))
+            err.flush()
+    except BaseException:
+        golden_give_back(db, ctx, err)
+        raise
+    return out(cand, "rev-parse", "HEAD"), written
+
+
+def _run_generators(cand, ctx, hits, err):
+    """The generator of each hit golden, in `cand`, with its own switch only;
+    returns the paths it changed under the golden directory."""
+    written = []
+    for spec, inside in hits:
+        err.write("merge: the cascade moved %d file(s) in the closure of %s/ (%s) -- running "
+                  "its generator (%s=1)\n" % (len(inside), spec["dir"], ", ".join(inside[:4])
+                                              + (", ..." if len(inside) > 4 else ""),
+                                              spec["switch"]))
+        err.flush()
+        env = {k: v for k, v in os.environ.items() if k not in GOLDEN_SWITCHES}
+        env[spec["switch"]] = "1"
+        proc = subprocess.run(golden_argv(cand, ctx, spec), cwd=cand, env=env,
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise Refused("golden_failed", "the generator of %s/ (%s=1) exit %d: %s" % (
+                spec["dir"], spec["switch"], proc.returncode,
+                (proc.stdout + proc.stderr).strip()[-400:]))
+        changed = [l[3:] for l in git(cand, "status", "--porcelain", "--untracked-files=all",
+                                      "--", spec["dir"]).stdout.splitlines() if len(l) > 3]
+        written += sorted(changed)
+    return written
+
+
 def clean_roadmap(cand, issues):
     """`ROADMAP.md` § Now without the lines that name a closed issue (PREAMBLE § 5)."""
     path = os.path.join(cand, "ROADMAP.md")
@@ -819,7 +1126,8 @@ def message(strands, result, satellites=()):
     issues = ", ".join("#%s" % i for s in strands for i in s.issues)
     title = strands[0].title if len(strands) == 1 else "batch"
     lines = ["Merge %s (%s): %s" % (names, issues, title), "",
-             versions.version_line(result), versions.pins_line(result)]
+             versions.version_line(result), versions.pins_line(result),
+             versions.left_line(result)]
     if satellites:
         lines.append("Satellite pins needed: %s" % ", ".join(
             "%s %s@%s" % s for s in satellites))
@@ -901,6 +1209,9 @@ def build_candidate(root, base, strands, label, extra_kinds=None):
             # the caller knows the running kit's class, not the candidate's
             raise versions.VersionError(str(exc)) from exc
         clean_roadmap(cand, [i for s in strands for i in s.issues])
+        # V2-A17: what the merge point itself wrote (numbers, cascade, corpus,
+        # changelog) -- the working tree against the merged index.
+        result["merge_point"] = out(cand, "diff", "--name-only").split()
         git(cand, "add", "-u", check=True)
         # The secret guard (pre-commit hook) runs on the candidate commit too.
         git(cand, "commit", "-q", "-m", message(strands, result, satellites), check=True)
@@ -962,6 +1273,12 @@ def _lane(lane):
 
 def _lane_target(lane):
     return _lane(lane)[0]
+
+
+# What the gate says about its lane (V2-A10): its queue line on stderr
+# (`gate.py _run_lane`) and the `lock-wait` NOTE row (`executor._take_lock`).
+LANE_QUEUED = re.compile(r"^gate: queued -- (.*)$")
+LOCK_WAIT = re.compile(r"^GATE lock-wait \[[^\]]*\] (\d+(?:\.\d+)?)s NOTE\b")
 
 
 def _summary_rev(line):
@@ -1060,9 +1377,21 @@ def run_gate(tree, ctx):
         fh.write(proc.stdout + proc.stderr)
     if line:
         _check_rev(ctx, _full_rev(proc.stdout) or _summary_rev(line), "the gate summary")
-    return {"verdict": verdict,
-            "line": line or "gate exit %d without a summary (not judged)" % proc.returncode,
-            "secs": secs, "log": log}
+    # V2-A10: the candidate run's wait for its lane. The merge gate takes no
+    # queue place (kit find h): a lane it cannot have ends it at once (exit 3,
+    # `gate: queued -- <reason>` went to the gate log only); a lane whose cargo
+    # lock other runs hold makes it wait -- the gate's `lock-wait` row.
+    lane = [m.group(1) for m in map(LANE_QUEUED.match, proc.stderr.splitlines()) if m]
+    waits = [float(m.group(1)) for m in map(LOCK_WAIT.match, proc.stdout.splitlines()) if m]
+    if not line and lane:
+        text = "gate exit %d without a summary (not judged): no lane free for the candidate " \
+               "run: %s" % (proc.returncode, lane[-1])
+    elif not line:
+        text = "gate exit %d without a summary (not judged)" % proc.returncode
+    else:
+        text = line
+    return {"verdict": verdict, "line": text, "secs": secs, "log": log,
+            "lane_wait_s": int(sum(waits))}
 
 
 # --- the operation ----------------------------------------------------------------------
@@ -1105,6 +1434,71 @@ def set_aside(root, base, sha):
     return moved
 
 
+def wait_s(ctx, name):
+    """The receipt's `wait_s` (V2-A10): the strand's wait for the tree lease
+    plus the candidate runs' waits for their lane; 0 without any."""
+    return (ctx.get("wait_s") or {}).get(name, 0) + (ctx.get("lane_wait_s") or 0)
+
+
+class Steps:
+    """The steps of one merge (V2-A10 h, wave validation 2): the merge of
+    v2-fix-b held tree:master 826 s (journal seq 116541 lease_taken
+    00:03:20Z -> 116542 merge_gated 00:17:06Z) without a word -- which step
+    ate the time stood nowhere. Each step says `merge: step <name> <start>
+    <secs>s` when it ends (` RED` after a step that refused) and the merge
+    receipt lists them as `steps`. Contiguous: a step starts where the one
+    before ended, on the kit clock of the merge (`merge(clock=...)`)."""
+
+    def __init__(self, clock, err):
+        self.clock, self.err = clock, err
+        self.rows, self.current, self.mark = [], None, clock()
+
+    def at(self, name):
+        self.current = name
+
+    def done(self, verdict=None):
+        if self.current is None:
+            return
+        end = self.clock()
+        secs = int((store.parse_at(end) - store.parse_at(self.mark)).total_seconds())
+        row = {"name": self.current, "start": self.mark, "secs": secs}
+        if verdict:
+            row["verdict"] = verdict
+        self.rows.append(row)
+        self.err.write("merge: step %s %s %ds%s\n" % (self.current, self.mark, secs,
+                                                       " %s" % verdict if verdict else ""))
+        self.err.flush()
+        self.current, self.mark = None, end
+
+    def fail(self):
+        self.done("RED")
+
+
+def receipt_steps(path, rows):
+    """Set the receipt's `steps` once the merge ends (the close step runs after
+    the receipt is written)."""
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    doc["steps"] = list(rows)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+
+
+def merge_receipt(ctx, wdir, label, sha, doc):
+    """`write_receipt` with the steps so far; remembers the file for `receipt_steps`."""
+    doc["steps"] = list(ctx["steps"].rows) if ctx.get("steps") else []
+    d = write_receipt(wdir, label, sha, doc)
+    ctx.setdefault("receipt_files", []).append(
+        os.path.join(d, "%s.json" % label.split("-", 1)[0]))
+    return d
+
+
+def steps_of(ctx):
+    """The merge's `Steps`, or a silent stand-in for callers without one."""
+    return ctx.get("steps") or Steps(lambda: "1970-01-01T00:00:00Z", io.StringIO())
+
+
 def write_receipt(wdir, label, sha, doc):
     at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     d = os.path.join(wdir, "receipts", label, "%s-%s" % (at, (sha or "none")[:8]))
@@ -1136,6 +1530,8 @@ def land_plan_only(db, ctx, s, base):
     The candidate's own diff is checked again: gate-neutral or refused."""
     root = ctx["root"]
     mid = ctx["mids"][s.name]
+    steps = steps_of(ctx)
+    steps.at("candidate")
     cand = open_candidate(root, base, s.name)
     try:
         tip = out(root, "rev-parse", s.branch)
@@ -1149,19 +1545,23 @@ def land_plan_only(db, ctx, s, base):
         git(cand, "commit", "-q", "-m", "Merge %s%s: plan-only, no gate (%d gate-neutral files)\n"
             % (s.name, " (%s)" % issues if issues else "", len(paths)), check=True)
         sha = out(cand, "rev-parse", "HEAD")
+        steps.done()
+        steps.at("ref-update")
         hold_tree(db, ctx["repo"], ctx["holder"])
         fast_forward(root, base, sha)
+        steps.done()
     except Refused as exc:
+        steps.fail()
         return [(s.name, "refused", exc.reason, exc.text)]
     finally:
         close_candidate(root, cand)
     line = "MERGE-PLAN-ONLY %s %s %d files GREEN" % (s.name, sha[:9], len(paths))
     _set_merge(db, mid, state="merged", merge_sha=sha)
     _event(db, "merge_done", mid, s.name, base, merge_sha=sha, plan_only=True)
-    write_receipt(s.wdir, "merge-%s" % s.name, sha, {
+    merge_receipt(ctx, s.wdir, "merge-%s" % s.name, sha, {
         "strand": s.name, "base": base, "merge_sha": sha, "plan_only": True,
         "files": paths, "gate": {"verdict": "SKIPPED", "line": "plan-only: gate-neutral"},
-        "summary": line})
+        "wait_s": wait_s(ctx, s.name), "summary": line})
     ctx["out"].write("%s\n" % line)
     return [(s.name, "merged", None, sha)]
 
@@ -1173,13 +1573,17 @@ def land(db, ctx, strands, base, depth=0):
     root, repo = ctx["root"], ctx["repo"]
     label = "+".join(s.name for s in strands)
     mids = {s.name: ctx["mids"][s.name] for s in strands}
+    steps = steps_of(ctx)
+    steps.at("candidate")
     try:
         cand, sha, result, sats = build_candidate(root, base, strands, label)
     except Refused as exc:
+        steps.fail()
         if exc.reason == "batch_conflict" or len(strands) == 1:
             return [(s.name, "refused", exc.reason, exc.text) for s in strands]
         raise
     except versions.VersionError as exc:
+        steps.fail()
         return [(s.name, "refused", "version_conflict", str(exc)) for s in strands]
     gctx = {"rev": sha, "base": base, "label": label, "strands": [s.name for s in strands],
             "cache_from": [ctx["receipts"][s.name]["run"] for s in strands],
@@ -1187,19 +1591,47 @@ def land(db, ctx, strands, base, depth=0):
                            else None),
             "host": ctx.get("host"), "wave": os.path.basename(strands[0].wdir.rstrip("/")),
             "holder": gate_holder(strands)}
-    gctx["gate_base"], gctx["gate_reuse"] = gate_base(root, base, strands, ctx)
-    for s in strands:
-        _set_merge(db, mids[s.name], state="gating", versions=result["versions"],
-                   pins=result["pins"])
-        _event(db, "merge_gated", mids[s.name], s.name, base, merge_sha=sha,
-               versions=result["versions"])
+    hits = golden_hits(cand, result.get("merge_point") or [])
+    goldens = None
+    if hits:
+        # V2-A17: the goldens follow the merge point's own writes, in the
+        # merge commit, before the gate judges it byte for byte.
+        steps.done()
+        steps.at("golden")
+        try:
+            hold_tree(db, repo, ctx["holder"])
+            sha, goldens = follow_goldens(cand, gctx, hits, ctx["err"], db=db)
+        except Refused as exc:
+            steps.fail()
+            close_candidate(root, cand)
+            return [(s.name, "refused", exc.reason, exc.text) for s in strands]
+        gctx["rev"] = sha
     try:
+        gctx["gate_base"], gctx["gate_reuse"] = gate_base(root, base, strands, ctx)
+        for s in strands:
+            _set_merge(db, mids[s.name], state="gating", versions=result["versions"],
+                       pins=result["pins"])
+            _event(db, "merge_gated", mids[s.name], s.name, base, merge_sha=sha,
+                   versions=result["versions"])
+        steps.done()
+        steps.at("gate")
         # N3: every gate run starts on a renewed lease -- a bisection runs
         # several gates under one lease, each up to TTL_S long.
         hold_tree(db, repo, ctx["holder"])
-        verdict = run_gate(cand, gctx)
+        try:
+            # RC-GK2 I1: the generator's lane lease spans the gate -- its
+            # admission takes the held lane -- and goes back before a bisection.
+            verdict = run_gate(cand, gctx)
+        finally:
+            golden_give_back(db, gctx, ctx["err"])
         ctx["out"].write("%s\n" % verdict["line"])
+        lane_s = verdict.get("lane_wait_s") or 0
+        if lane_s:
+            ctx["lane_wait_s"] = ctx.get("lane_wait_s", 0) + lane_s
+            ctx["err"].write("merge: waited %ds for the lane of the candidate run (behind other "
+                             "runs' cargo lock)\n" % lane_s)
         if verdict["verdict"] != "GREEN":
+            steps.done(verdict["verdict"])
             reason = "gate_aborted" if verdict["verdict"] == "ABORTED" else "gate_red"
             if len(strands) > 1 and depth < MAX_BISECT and verdict["verdict"] == "RED":
                 close_candidate(root, cand)
@@ -1209,11 +1641,16 @@ def land(db, ctx, strands, base, depth=0):
                 now = out(root, "rev-parse", "master")
                 return done + land(db, ctx, strands[half:], now, depth + 1)
             return [(s.name, "refused", reason, verdict["line"]) for s in strands]
+        steps.done()
+        steps.at("ref-update")
         hold_tree(db, repo, ctx["holder"])
         fast_forward(root, base, sha)
+        steps.done()
     except Refused as exc:
+        steps.fail()
         return [(s.name, "refused", exc.reason, exc.text) for s in strands]
     finally:
+        golden_give_back(db, gctx, ctx["err"])
         if cand:
             close_candidate(root, cand)
     for s in strands:
@@ -1224,19 +1661,45 @@ def land(db, ctx, strands, base, depth=0):
             events.emit(db, "satellite_pin_needed", "finding", {
                 "merge": mids[s.name], "repo": repo_name, "template": template,
                 "version": version})
-        write_receipt(s.wdir, "merge-%s" % s.name, sha, {
+        doc = {
             "strand": s.name, "base": base, "merge_sha": sha, "versions": result["versions"],
             "workspace": result["workspace"], "pins": result["pins"], "gate": verdict,
-            "summary": "MERGE %s %s %s GREEN" % (s.name, sha[:9], versions.version_line(result))})
+            "wait_s": wait_s(ctx, s.name),
+            "summary": "MERGE %s %s %s GREEN" % (s.name, sha[:9], versions.version_line(result))}
+        if goldens is not None:
+            doc["goldens"] = goldens
+        merge_receipt(ctx, s.wdir, "merge-%s" % s.name, sha, doc)
     ctx["out"].write("%s\n" % versions.version_line(result))
     ctx["out"].write("%s\n" % versions.pins_line(result))
+    ctx["out"].write("%s\n" % versions.left_line(result))
     return [(s.name, "merged", None, sha) for s in strands]
 
 
+def waited(db, repo, mids, fresh):
+    """`{strand: seconds}` between the queue row and the tree lease just taken
+    (V2-A10, `wait_s` of the receipt): the store's own time stamps, the kit
+    clock. A row this call made and took at once (`fresh`) never waited: 0."""
+    taken = (store.lease_who(db, resource(repo)) or {}).get("taken_at")
+    out_ = {}
+    for name, mid in mids.items():
+        row = _merge_row(db, mid)
+        if name in fresh or not taken or not row:
+            out_[name] = 0
+        else:
+            out_[name] = max(0, int((store.parse_at(taken)
+                                     - store.parse_at(row["at"])).total_seconds()))
+    return out_
+
+
 def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, close=True,
-          db=None, out_=None, err=None):
-    """`pipeline.py merge`: returns the exit code (0 merged, 1 refused, 3 queued)."""
+          db=None, out_=None, err=None, wait=False, clock=None):
+    """`pipeline.py merge`: returns the exit code (0 merged, 1 refused, 3 queued).
+
+    `wait` (`--wait`) blocks in the queue instead of exit 3 (`take_tree_waiting`).
+    `clock` is the kit clock (`store.now`) of the queue row and the lease take:
+    the receipt's `wait_s` is the time between them (V2-A10)."""
     out_, err = out_ or sys.stdout, err or sys.stderr
+    clock = clock or store.now
     root = main_root(start or os.getcwd())
     own_db = db is None
     db = db or store.open()
@@ -1246,6 +1709,7 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
     base = out(root, "rev-parse", "master")
     term = trap_term()
     taken = False
+    steps = None
     try:
         strands = [Strand(root, n, wave) for n in names]
         for s in strands:
@@ -1254,11 +1718,41 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
             if row:
                 mids[s.name] = row["id"]
             else:
-                mids[s.name] = _new_merge(db, repo, s.name, base, "queued", store.now())
+                mids[s.name] = _new_merge(db, repo, s.name, base, "queued", clock())
                 created.add(s.name)
+        def queued():
+            for s in strands:
+                _event(db, "merge_queued", mids[s.name], s.name, base)
+            who = store.lease_who(db, resource(repo)) or {}
+            err.write("merge: tree:master is held by %s -- queued, %s\n" % (
+                who.get("holder") or who.get("offered_to"),
+                "waiting for its release (--wait)" if wait
+                else "the release offers it to the oldest queued merge"))
+
+        said = []
+
+        def waits(first):
+            # V2-A10 (wave validation 2): the merge of v2-fix-b waited 14 min
+            # without a word. One line when the wait starts, one per change of
+            # holder or position -- a round follows a ring, never a clock.
+            if first:
+                lease_resolves(strands, base, no_pre)
+                for s in strands:
+                    _event(db, "merge_queued", mids[s.name], s.name, base)
+            state = wait_state(db, repo, holder)
+            if not said or said[-1] != state:
+                said.append(state)
+                err.write("%s\n" % wait_line(repo, holder, state))
+                err.flush()
+        steps = Steps(clock, err)
+        steps.at("lease")
         try:
-            taken = take_tree(db, repo, holder)
+            if wait:
+                taken = take_tree_waiting(db, repo, holder, on_queued=waits, clock=clock)
+            else:
+                taken = take_tree(db, repo, holder, at=clock())
         except Refused as exc:
+            steps.fail()
             if exc.reason != "already_merging":
                 raise
             # N2: before 'gating' the running merge's row is still 'queued' and
@@ -1266,19 +1760,23 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
             # lease. Only the rows this call created are refused.
             mids = {n: m for n, m in mids.items() if n in created}
             raise
+        steps.done(None if taken else "QUEUED")
         if not taken:
-            for s in strands:
-                _event(db, "merge_queued", mids[s.name], s.name, base)
-            who = store.lease_who(db, resource(repo)) or {}
-            err.write("merge: tree:master is held by %s -- queued, the release offers it "
-                      "to the oldest queued merge\n" % (who.get("holder") or who.get("offered_to")))
+            if wait:
+                err.write("merge: no tree lease within %g s (MECLAW_ADMISSION_WAIT_SECS) -- "
+                          "still queued\n" % schedule.wait_secs(
+                              os.environ, "MECLAW_ADMISSION_WAIT_SECS", "14400"))
+            else:
+                queued()
             return QUEUED_EXIT
         # master as it stands under the lease -- the previous holder may have
         # fast-forwarded it between the first read and the take.
         base = out(root, "rev-parse", "master")
         ctx = {"root": root, "repo": repo, "host": host, "mids": mids, "out": out_,
-               "receipts": {}, "holder": holder}
+               "receipts": {}, "holder": holder, "err": err, "steps": steps,
+               "wait_s": waited(db, repo, mids, created if not said else set())}
         ready, plans_only, tips = [], [], {}
+        steps.at("preconditions")
         for s in strands:
             _set_merge(db, mids[s.name], base=base)
             try:
@@ -1316,6 +1814,7 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
                 ready.append(s)
             except Refused as exc:
                 _refuse(db, mids[s.name], s.name, base, exc.reason, exc.text, err)
+        steps.done(None if len(ready) + len(plans_only) == len(strands) else "RED")
         results = []
         for s in plans_only:
             results += land_plan_only(db, ctx, s, base)
@@ -1323,6 +1822,8 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
         results += land(db, ctx, ready, base) if ready else []
         done = len(ready) + len(plans_only)
         rc = 0 if done and done == len(strands) else REFUSE_EXIT
+        if close and any(r[1] == "merged" for r in results):
+            steps.at("close")
         for name, state, reason, text in results:
             if state == "refused":
                 _refuse(db, mids[name], name, base, reason, text, err)
@@ -1340,8 +1841,13 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
                     except Refused as exc:
                         err.write("merge: %s merged, close refused (%s): %s\n"
                                   % (name, exc.reason, exc.text))
+        steps.done()
+        for path in ctx.get("receipt_files", ()):
+            receipt_steps(path, steps.rows)
         return rc
     except Refused as exc:
+        if steps:
+            steps.fail()
         err.write("merge: refused (%s): %s\n" % (exc.reason, exc.text))
         for s in strands:
             _refuse(db, mids.get(s.name), s.name, base, exc.reason, exc.text, err, quiet=True)
@@ -1492,10 +1998,14 @@ def _cmd_merge(args):
         return 2
     try:
         return merge(names, repo=args.repo, wave=args.wave, host=args.host, no_pre=no_pre,
-                     close=not args.no_close, db=store.open(args.db) if args.db else None)
+                     close=not args.no_close, db=store.open(args.db) if args.db else None,
+                     wait=args.wait)
     except Refused as exc:
         print("merge: refused (%s): %s" % (exc.reason, exc.text), file=sys.stderr)
         return REFUSE_EXIT
+    except schedule.ScheduleError as exc:   # a broken MECLAW_*_WAIT_SECS
+        print("merge: %s" % exc, file=sys.stderr)
+        return exc.code
 
 
 def _cmd_close(args):
@@ -1534,6 +2044,9 @@ def register(sub):
     p.add_argument("--no-close", action="store_true")
     p.add_argument("--dequeue", action="store_true",
                    help="drop the strand's queued rows; an offer to it passes on")
+    p.add_argument("--wait", action="store_true",
+                   help="queued: block until the tree lease is released (no exit 3); "
+                        "MECLAW_ADMISSION_WAIT_SECS ends it")
     p.add_argument("--db")
     p.set_defaults(func=_cmd_merge)
     c = sub.add_parser("close", help="the issue's English close comment (GH #1107)")

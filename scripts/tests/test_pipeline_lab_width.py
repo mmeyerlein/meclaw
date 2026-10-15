@@ -352,12 +352,14 @@ class TestRealCores(unittest.TestCase):
 
     def test_local_fingerprint_counts_real_cores(self):
         cores = schedule.physical_cores()
-        if fake_guest_without_siblings("/"):
+        if fake_guest_without_siblings(schedule.cpus.sysroot()):
             self.assertIsNone(cores)   # a guest's flat topology says nothing (OR-TB.S3.15)
             return
         self.assertIsInstance(cores, int)
         self.assertGreaterEqual(cores, 1)
-        self.assertLessEqual(cores, os.cpu_count())
+        # never more cores than the same topology lists CPUs (GH #1199: not the
+        # machine's `os.cpu_count()` beside a sysroot's topology)
+        self.assertLessEqual(cores, schedule.cpus.topology_cpus())
 
     def test_a_guest_without_visible_siblings_has_no_real_cores(self):
         """OR-TB.S3.15 (S3-diag, build02): a KVM guest shows every vCPU as its own core

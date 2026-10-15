@@ -74,6 +74,16 @@ station would grade it anyway:
                     burst held the colony task in the worker's LIFO slot until
                     the watchdog ended the process; no behaviour test sees the
                     call site deterministically, so the form is the lock.
+    recheck-mode    a re-check script under `plans/<wave>/recheck/` this diff
+                    commits (or leaves untracked) with mode 100755. The merge
+                    keeps the strand receipt only over 100644 files (ruling
+                    "100644 on both sides", `turnaround.reuse_tree`), so an
+                    executable script written after the gate refused the merge
+                    with `receipt_not_branch_head` (GH #1199 e: 13 of 43
+                    re-check files on master 15.10. were 100755). The wave
+                    commits them 100644 and runs them with bash/python3
+                    (PREAMBLE § 6.13). A script the merge base already carries
+                    unchanged is not this diff's.
 
 NOTE -- read, do not stop. These are the review findings that repeat, and a
 note before the review is a fix round saved:
@@ -667,6 +677,45 @@ KDF_SYNC_SITES = (
 )
 
 
+_RECHECK = re.compile(r"^plans/[^/]+/recheck/")
+
+
+def check_recheck_mode(files, repo):
+    """A re-check script this diff makes 100755 (see the module docstring)."""
+    paths = [p for p in files if _RECHECK.match(p)]
+    if not paths:
+        return
+    base = _locks.merge_base(repo) if _locks is not None else None
+    for path in paths:
+        entry = _tree_entry(repo, None, path)
+        if entry is None:            # untracked (or no repository): the file decides
+            full = os.path.join(repo, path)
+            if (os.path.islink(full) or not os.path.isfile(full)
+                    or not os.stat(full).st_mode & 0o111):
+                continue
+            entry = ("100755", None)
+        if entry[0] != "100755":
+            continue
+        if base and _tree_entry(repo, base, path) == entry:
+            continue
+        yield Finding("RED", "recheck-mode",
+                      "%s is mode 100755: recheck scripts are committed 100644 and "
+                      "run with bash/python3 -- chmod -x %s (and git add it)"
+                      % (path, path))
+
+
+def _tree_entry(repo, rev, path):
+    """`(mode, blob)` of `path` in commit `rev`, or in the index for None."""
+    args = (["ls-files", "-s"] if rev is None else ["ls-tree", rev]) + ["--", path]
+    res = subprocess.run(["git", "-C", repo, "--literal-pathspecs"] + args,
+                         capture_output=True, text=True)
+    line = res.stdout.split("\n", 1)[0] if res.returncode == 0 else ""
+    if "\t" not in line:
+        return None
+    meta = line.split("\t", 1)[0].split()
+    return (meta[0], meta[1] if rev is None else meta[2])
+
+
 def _blank_comments(text):
     """Line comments out, offsets and line numbers kept; string and char
     literals stay as they are."""
@@ -872,7 +921,8 @@ NATIVE_CHECKS = (check_fmt, check_sheet_cap, check_adr_pinned_by, check_root_fil
                  check_docs_twin, check_reasoning_effort, check_test_bans,
                  check_testing_rules, check_changelog_mark,
                  check_since_sentence, check_since_doc, check_run_artefact,
-                 check_plan_cap, check_name_pattern, check_kdf_off_worker)
+                 check_plan_cap, check_name_pattern, check_kdf_off_worker,
+                 check_recheck_mode)
 
 
 def _lock_check(name, fn):

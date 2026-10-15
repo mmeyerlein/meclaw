@@ -18,7 +18,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from scripts.pipeline import cache  # noqa: E402
-from scripts.tests import store_isolation  # noqa: E402
+from scripts.tests import private_tree, store_isolation  # noqa: E402
 
 FINGERPRINT = {"rustc": "rustc 1.80.0", "cargo": "cargo 1.80.0", "nextest": "0.9.143",
                "linker": "cc 13", "python": "3.12.0", "cargo_config": "e3b0c44298fc1c14"}
@@ -183,6 +183,7 @@ class EveryCachedStation(unittest.TestCase):
         self.assertEqual(sorted(set(cache.INPUTS) - cache.NEVER - set(rows)), [])
         self.assertEqual(cache.unkeyed_reads(list(rows.values()), ctx), [])
 
+    @private_tree.private("workshop/tools")   # GH #1199: the browser drivers never travel
     def test_a_browser_station_without_the_import_closure_is_red(self):
         """Mutant: the drivers' import closure out of both browser rows -- the
         check sees `wait.mjs` and `lib/*.mjs` unkeyed (review v2-fix-b I2)."""

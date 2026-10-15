@@ -121,6 +121,21 @@ def _lanes_file_root(runner):
     return None
 
 
+def _affinity_threads():
+    """The CPUs this process may run on (its affinity), what `nproc` says.
+
+    The kit counts CPUs in `pipeline/cpus.py` (`threads()`, GH #1199); this
+    module runs alone on a lane -- as a file or over ssh stdin, with no sibling
+    to import (see the module docstring) -- so it counts the same affinity
+    inline, never `os.cpu_count()` (the machine, not the affinity). Lanes are
+    Linux, where the affinity always answers; the 1 stands only for a platform
+    without it (OR-V2.v2-fix-x.5)."""
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return 1
+
+
 class Ctx:
     """Where hygiene runs and how it touches the world.
 
@@ -155,7 +170,7 @@ class Ctx:
         self.cgroup_root = cgroup_root
         self.lock_path = lock_path or os.environ.get("MECLAW_GATE_LOCK") or \
             DEFAULT_LEGACY_LOCK
-        self.nproc = nproc or os.cpu_count() or 1
+        self.nproc = nproc or _affinity_threads()
         self.state_file = state_file or os.path.join(self.root,
                                                      ".hygiene-state.json")
 

@@ -346,11 +346,13 @@ fn an_accepted_view_is_written_under_the_envelopes_path() {
         screen.last
     );
 
-    // Delete-then-insert IS the primary key: a store schema cannot declare one. And it
-    // is ONE bundle with nothing read in it: the cell holds the rows in memory (GH #809).
+    // The insert that replaces what stood under (owner, view_id) IS the primary key: a
+    // store schema cannot declare one. It is ONE step (GH #1199: a failed write keeps the
+    // old row) in ONE bundle with nothing read in it: the cell holds the rows in memory
+    // (GH #809).
     let hop = write_hop(&screen);
     let legs = app_legs(&hop);
-    assert_eq!(operations(&legs), vec!["delete", "insert"]);
+    assert_eq!(operations(&legs), vec!["insert"]);
     assert!(
         !hop["ops"]
             .as_array()
@@ -359,14 +361,15 @@ fn an_accepted_view_is_written_under_the_envelopes_path() {
         "a write reads nothing back: {hop:#?}"
     );
 
-    let inserted = &legs[1]["row"];
+    let inserted = &legs[0]["row"];
     assert_eq!(inserted["owner"], ALICE);
     assert_eq!(inserted["view_id"], "note");
-    let deleted = &legs[0]["where"];
+    let replaced = &legs[0]["replace"];
     assert_eq!(
-        deleted["owner"], ALICE,
-        "the delete is scoped to the sender"
+        replaced["owner"], ALICE,
+        "the replacement is scoped to the sender"
     );
+    assert_eq!(replaced["view_id"], "note");
     assert_eq!(hop["request"]["write"]["owner"], ALICE);
     assert!(
         screen
@@ -394,10 +397,7 @@ fn an_accepted_view_is_written_under_the_envelopes_path() {
         "no select after the boot: {:#?}",
         screen.hops()
     );
-    assert_eq!(
-        operations(&app_legs(&write_hop(&screen))),
-        vec!["delete", "insert"]
-    );
+    assert_eq!(operations(&app_legs(&write_hop(&screen))), vec!["insert"]);
 }
 
 // ───────────────────────── (b) two owners, one deterministic order, (f) ttl

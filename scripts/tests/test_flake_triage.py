@@ -742,6 +742,27 @@ class StrandOfBranch(unittest.TestCase):
             with self.subTest(head=head, linked=linked):
                 self.assertIsNone(ft.strand_of_branch(self.tree("t%d" % i, head, linked=linked)))
 
+    def test_unittest_on_a_lane_from_a_detached_tree_names_the_way(self):
+        """GH #1199 (f): a detached tree without `--strand` names the way out
+        (exit 2); with `--strand` the strand of the call binds and pushes."""
+        wt = self.tree("d", "0123456789abcdef0123456789abcdef01234567")
+        for words, code in (((), 2), (("--strand", "s-y"), None)):
+            pushed = []
+            out, err = io.StringIO(), io.StringIO()
+            with self.subTest(words=words), mock.patch.object(ft, "REPO", wt), \
+                    mock.patch.object(ft, "lane_target", lambda lane, lanes_file=None: "b@lane.example.invalid"), \
+                    mock.patch.object(ft, "bind_lane", lambda *a: pushed.append(("bind",) + a)), \
+                    mock.patch.object(ft, "push_tree", lambda *a: pushed.append(("push",) + a) or "/x"), \
+                    mock.patch.object(ft, "start_load", side_effect=ft.LoadError("stop here")), \
+                    mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+                rc = ft.main(["--unittest", "--host", "lane-x", "--runs", "1"] + list(words) + ["ft_fixture_mod.T"])
+                self.assertEqual(2, rc, out.getvalue() + err.getvalue())
+                if code:
+                    self.assertIn("detached HEAD: pass --strand <S>", err.getvalue())
+                    self.assertEqual([], pushed)
+                else:
+                    self.assertEqual([("bind", "lane-x", None, "s-y", None), ("push", "lane-x", "s-y")], pushed)
+
     def test_unittest_on_a_lane_without_a_strand_pushes_nothing(self):
         pushed = []
         out, err = io.StringIO(), io.StringIO()
@@ -753,7 +774,7 @@ class StrandOfBranch(unittest.TestCase):
                 mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
             code = ft.main(["--unittest", "--host", "lane-x", "--runs", "1", "ft_fixture_mod.T"])
         self.assertEqual(2, code, out.getvalue() + err.getvalue())
-        self.assertIn("the lane's tree needs a strand name: --strand", err.getvalue())
+        self.assertIn("the lane's tree needs a strand name: cannot tell the strand from the branch -- pass --strand", err.getvalue())
         self.assertEqual([], pushed)
 
 
@@ -1161,6 +1182,52 @@ class HolderNotInTheStrand(unittest.TestCase):
                                lambda a, **k: seen.append(a) or subprocess.CompletedProcess(a, 0, "", "")):
             ft.bind_lane("lane-a", "welle-x", "tv-br", holder="m2")
         self.assertEqual(["--strand", "tv-br", "--holder", "m2"], seen[0][-4:])
+
+
+class ChdirOption(unittest.TestCase):
+    """GH #1199 (b): `flake_triage.py -C <dir>` acts as a `cd <dir>` first
+    (git -C). The run's `strand.sh test` takes the strand and its lease from
+    the cwd's branch; an agent shell that resets its cwd per call needed a
+    wrapper script for it (wave validation 2, strand v2-p1078)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, os.getcwd())
+
+    def run_main(self, *argv):
+        seen = []
+
+        def fake_run(a, **kw):
+            seen.append((a, kw.get("cwd") or os.getcwd()))
+            return subprocess.CompletedProcess(a, 0, RUNNER_1, "")
+
+        err = io.StringIO()
+        with mock.patch.object(ft.subprocess, "run", fake_run), \
+                mock.patch.object(ft, "start_load", return_value=None), \
+                mock.patch.object(ft, "check_load", return_value=""), \
+                mock.patch.object(ft, "stop_load"), \
+                mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", err):
+            try:
+                code = ft.main(list(argv))
+            except SystemExit as exc:
+                code = exc.code
+        return code, seen, err.getvalue()
+
+    def test_the_run_starts_in_the_named_directory(self):
+        there = pathlib.Path(self._tmp.name) / "there"
+        there.mkdir()
+        _code, seen, err = self.run_main("-C", str(there), *CASE_A, "--stress-count", "1")
+        self.assertTrue(seen, err)
+        self.assertEqual("test", seen[0][0][1])
+        self.assertEqual(os.path.realpath(there), os.path.realpath(seen[0][1]))
+
+    def test_a_missing_directory_is_a_clear_exit_2(self):
+        gone = pathlib.Path(self._tmp.name) / "gone"
+        code, seen, err = self.run_main("-C", str(gone), *CASE_A)
+        self.assertEqual(2, code, err)
+        self.assertIn("flake_triage: -C: no such directory: %s" % gone, err)
+        self.assertEqual([], seen)
 
 
 if __name__ == "__main__":

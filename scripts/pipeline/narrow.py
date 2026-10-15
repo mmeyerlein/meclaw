@@ -27,7 +27,8 @@ FAIL-CLOSED. The narrowing takes tests away, so every doubt keeps them:
                                       -> rdeps(X) of that crate kept  (NOTE)
     a crate test file no test names (rule 8 runtime `unread`)
                                       -> rdeps(X) of that crate kept  (NOTE)
-    a diff of Python/docs paths only (`NON_RUST`, no rdeps; #1160)
+    a diff without a Rust class under the kit/docs/plans roots
+    (`non_rust`, no rdeps; #1160)
                                       -> floor + graph of the diff,
                                          no map drift terms           (NOTE)
 
@@ -123,7 +124,23 @@ FUTURE_SKEW_DAYS = 1 / 24.0   # an hour of clock skew between lane and host
 # binaries -- py-only planned 79 binaries narrowed against 3 unnarrowed. A diff
 # made of these classes alone plans floor + graph of the diff; one path of any
 # other class (templates, crates, config, data) keeps today's plan.
-NON_RUST = re.compile(r"^(?:scripts/.+\.(?:py|sh)|docs/.+\.md|plans/.+|[^/]+\.md)$")
+#
+# The class is read off the resolver, not off a file extension (welle-val2
+# v2-flake-b01, kit finding a): the old list knew `.py`/`.sh` under scripts/,
+# so `scripts/pipeline/selftest_durations.json` in a scripts-only diff took the
+# map and its drift -- 239 of 247 binaries, 10800 tests. A list of non-Rust
+# extensions grows with every new file kind and fails open in the expensive
+# direction; what can shift a cover the map knows is exactly what the resolver
+# calls Rust (`_RUST`: a crate source or test, any other crate file, a
+# workspace file). A Rust test that READS a path (`include_str!`, a walked
+# directory, a spawned script) is no reason to take the map: the map sees
+# executed `.rs` lines only and names no such reader, the floor plans it by
+# rule 8 and the graph either way. NON_RUST_ROOTS bounds the class to the roots
+# #1160 accepted without the map (the kit, the docs, the plans, a top-level
+# page); templates, examples and workshop keep today's plan -- they run inside
+# Rust tests, and the integration's full suite on doubt (KR-TB-1) reads
+# `no_map`.
+NON_RUST_ROOTS = re.compile(r"^(?:scripts/|docs/|plans/|[^/]+\.md$)")
 
 
 def enabled(env=None):
@@ -156,6 +173,16 @@ def newest_map(directory=None):
 def _git(repo, *args):
     import subprocess
     return subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
+
+
+def _git_z(repo, *args):
+    """`(rc, fields)` of a `git ... -z` call: the NUL-separated fields, names
+    verbatim. Without `-z` git quotes a name with non-ASCII, `"` or `\\`
+    (`"crates/beta/src/\\303\\244.rs"`): it had no class, sat in no crate and
+    narrowed a change it never planned (re-check I-h1, wave validation 2)."""
+    import subprocess
+    res = subprocess.run(["git", "-C", repo] + list(args), capture_output=True)
+    return res.returncode, res.stdout.decode("utf-8", "surrogateescape").split("\0")[:-1]
 
 
 def _test_target_of(rel, repo, metadata):
@@ -200,14 +227,18 @@ def map_fits(cov, repo, metadata):
     if gone:
         return False, ["narrowing: coverage map %s names %d binaries HEAD does not have (%s) "
                        "-- floor + graph, rdeps kept" % (short, len(gone), ", ".join(gone[:5]))], [], []
-    res = _git(repo, "diff", "--name-status", "-M", rev, "HEAD", "--")
-    if res.returncode != 0 or _git(repo, "cat-file", "-e", "%s^{commit}" % rev).returncode != 0:
+    rc, fields = _git_z(repo, "diff", "--name-status", "-z", "-M", rev, "HEAD", "--")
+    if rc != 0 or _git(repo, "cat-file", "-e", "%s^{commit}" % rev).returncode != 0:
         return False, ["narrowing: coverage map rev %s is not in this repository -- "
                        "floor + graph, rdeps kept" % short], [], []
     files, terms, moved = [], set(), []
-    for line in res.stdout.splitlines():
-        parts = line.split("\t")
-        status, paths = parts[0], parts[1:]
+    rows, i = [], 0
+    while i < len(fields):   # `-z`: status, path, and a second path for R/C
+        status = fields[i]
+        n = 2 if status[:1] in ("R", "C") else 1
+        rows.append((status, fields[i + 1:i + 1 + n]))
+        i += 1 + n
+    for status, paths in rows:
         if not paths:
             continue
         if _TESTS.search(paths[0]) and status[:1] in ("R", "D"):
@@ -238,9 +269,13 @@ def map_fits(cov, repo, metadata):
 def non_rust(files, select):
     """True when every changed path is of a known non-Rust class and the floor
     has no rdeps(X) -- then the map has nothing to replace (fail-closed: an
-    unknown path or an rdeps keeps today's plan)."""
+    unknown path or an rdeps keeps today's plan). Known = under NON_RUST_ROOTS
+    and of none of the resolver's Rust classes (`_RUST`)."""
+    from . import impact as impact_mod
+    gp = impact_mod.gate_plan
     return bool(files) and not (select or {}).get("rdeps") \
-        and all(NON_RUST.match(f) for f in files)
+        and all(NON_RUST_ROOTS.match(f) and not gp._classes_of_path(f) & set(_RUST)
+                for f in files)
 
 
 # M-4 (OR-TB.S1b.17): a workspace file changed since the map rev that provably
@@ -406,6 +441,38 @@ def since_plan(since, files, repo, map_rev):
     return floor, sorted(terms), notes
 
 
+def drift_note(cov, since, files, since_terms, rdeps_left, res, now=None, diff_terms=()):
+    """The one loud NOTE when the map's drift alone keeps rdeps, else None.
+
+    Kit finding b (welle-val2 v2-flake-b01): map 45a463300 predated a Rust
+    merge on the base by nine hours; `since_plan` kept rdeps(meclaw-cells) for
+    files the diff did not hold, and a diff without Rust ran 239 of 247
+    binaries, said only in one NOTE per drifted file. A fresh map is a full
+    coverage run on the coverage lane -- the gate does not start it; it says,
+    first, which map, how old, how many files and which rdeps the drift
+    alone keeps, and how many binaries that makes.
+
+    `diff_terms` are the rdeps terms the diff's own files keep (a file not in the
+    map, a crate file the map cannot see): a fresh map keeps them too, so they are
+    no drift's doing and the NOTE leaves them out (re-check R2 M2)."""
+    from . import coverage as coverage_mod
+    own = set(diff_terms)
+    held = sorted(t[len("rdeps("):-1] for t in since_terms
+                  if t[len("rdeps("):-1] in set(rdeps_left) and t not in own)
+    if cov is None or not held:
+        return None
+    try:
+        age = "%.1f h old" % (coverage_mod.age_days(cov, now) * 24.0)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        age = "of unknown age"
+    drifted = len(set(since) - set(files))
+    return ("narrowing: coverage map %s is %s and predates %d file(s) changed on the base "
+            "since (not in this diff) -- rdeps(%s) kept for that drift, %d of %d "
+            "binaries; a fresh map (`scripts/pipeline.py coverage build`) narrows them"
+            % (str(cov.get("rev"))[:9], age, drifted, ", ".join(held),
+               res["binaries"]["selected"], res["binaries"]["total"]))
+
+
 def state(on, map_rev, narrowed=None):
     """The narrowing state a selection carries (the cache key reads `on` and `map`)."""
     out = {"on": bool(on), "map": str(map_rev or "") if on else ""}
@@ -475,7 +542,7 @@ def narrow(select, files, repo, graph_doc, cov, cov_why=None, now=None, metadata
     # floor + graph without the map -- its drift terms would only add.
     skip_map = non_rust(files, select)
     if skip_map:
-        notes.append("narrowing: no Rust source in the diff (python/docs only) -- floor + graph "
+        notes.append("narrowing: no Rust source in the diff (kit/docs/plans only) -- floor + graph "
                      "of the diff, no map drift terms")
         usable = None
     since, extra = [], []
@@ -526,6 +593,12 @@ def narrow(select, files, repo, graph_doc, cov, cov_why=None, now=None, metadata
         return select, notes
     out = dict(select)
     rdeps_left = sorted(t[len("rdeps("):-1] for t in terms if t.startswith("rdeps("))
+    # an rdeps a reason ties to a file of the diff stays with any map
+    diff_terms = sorted(t for t in terms if t.startswith("rdeps(")
+                        and any(p in r for r in res["reason"].get(t, ()) for p in files))
+    drift = drift_note(usable, since, files, since_terms, rdeps_left, res, now, diff_terms)
+    if drift:
+        notes.insert(0, drift)
     # Execution coverage is no compile dependency. The test
     # binaries of a replaced rdeps(X) are still BUILT (no run) -- `compile`.
     replaced = sorted(set(select.get("rdeps") or []) - set(rdeps_left))
@@ -1052,10 +1125,10 @@ def merge_decision(repo, base, strand_run, db):
     if res.returncode != 0:
         return no("the parents conflict")
     union = res.stdout.split()[0] if res.stdout.split() else ""
-    res = _git(repo, "diff", "--name-only", union, "HEAD^{tree}", "--")
-    hand = [p for p in res.stdout.splitlines()
+    rc, names = _git_z(repo, "diff", "--name-only", "-z", union, "HEAD^{tree}", "--")
+    hand = [p for p in names
             if p and set(impact_mod.gate_plan._classes_of_path(p)) & set(_RUST)]
-    if res.returncode != 0 or hand:
+    if rc != 0 or hand:
         return no("the merge tree is not the union of its parents (%s)"
                   % (", ".join(hand[:5]) or "no diff"))
     since = _git(repo, "merge-base", p1, p2).stdout.strip()

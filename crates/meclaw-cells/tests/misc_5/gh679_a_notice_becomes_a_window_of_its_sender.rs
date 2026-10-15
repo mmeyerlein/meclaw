@@ -73,10 +73,11 @@ fn accepted(screen: &mut Screen, body: Value, hop: Value, now: u64) -> (Value, V
 
 /// The row the one write bundle of the last message inserts, and its mark.
 ///
-/// Since display 2.7.0 the bundle is `delete` + `insert` and nothing before it:
-/// the cell holds the rows in memory, so no `select` asks what stood there
-/// (GH #809). Two more legs may follow -- the curator's rest row, when its
-/// content changed -- and they are the curator's, not the sender's.
+/// Since display 2.7.0 the bundle writes and reads nothing before it: the cell
+/// holds the rows in memory, so no `select` asks what stood there (GH #809).
+/// The write is ONE `insert` that replaces what stood under the name (GH #1199).
+/// One more leg may follow -- the curator's rest row, when its content changed --
+/// and it is the curator's, not the sender's.
 fn inserted(screen: &Screen) -> (Value, Value) {
     let writes: Vec<&Value> = screen
         .hops()
@@ -92,14 +93,17 @@ fn inserted(screen: &Screen) -> (Value, Value) {
         .map(|o| o.as_str().unwrap_or(""))
         .collect();
     assert_eq!(
-        ops[..2],
-        ["delete", "insert"],
+        ops[..1],
+        ["insert"],
         "the same bundle a view write builds: {ops:?}"
     );
     assert!(!ops.contains(&"select"), "nothing is read back: {ops:?}");
     let calls = hop["calls"].as_array().expect("the calls of the bundle");
-    assert_eq!(calls[0]["where"]["owner"], SENDER, "the sender's name goes");
-    let row = calls[1]["row"].clone();
+    assert_eq!(
+        calls[0]["replace"]["owner"], SENDER,
+        "the sender's name goes"
+    );
+    let row = calls[0]["row"].clone();
     assert!(
         screen
             .table()

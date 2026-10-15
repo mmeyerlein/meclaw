@@ -44,10 +44,14 @@ EGON_NPROC = (4, 6, 8, 12, 24)
 
 
 def host_nproc(n):
-    """This process's CPU count patched to `n` (cpu_count, affinity), so no
-    fallback to the real host can hide in a pin."""
+    """This process's CPU count patched to `n` (`cpus.threads` under both import
+    names of the kit, and the affinity it reads), so no fallback to the real
+    host can hide in a pin (GH #1199: the kit counts CPUs in `pipeline.cpus`)."""
+    import scripts.pipeline.cpus  # present under its package name
     stack = contextlib.ExitStack()
-    stack.enter_context(mock.patch("os.cpu_count", return_value=n))
+    for name in ("scripts.pipeline.cpus", "pipeline.cpus"):
+        if name in sys.modules:
+            stack.enter_context(mock.patch.object(sys.modules[name], "threads", return_value=n))
     stack.enter_context(mock.patch("os.sched_getaffinity", return_value=set(range(n))))
     return stack
 
@@ -704,6 +708,19 @@ class TestLaneLocal(LaneTestCase):
         self.assertEqual(5, cm.exception.code)
         self.assertFalse(self.local_root.exists())
 
+    def test_lane_push_mirrors_returns_the_mirror_a_worktree_lands_in(self):
+        # W10 KF1-Rest: a worktree's git dir is the main repository's
+        # (`--git-common-dir`), so the mirror lands under that repository's
+        # name, not the worktree's; the returned path must be the one rsync
+        # wrote, from the same derivation as `register.mirrors_spec`.
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "wt base")
+        wt = self.tmp / (self.repo.name + "-wt-x")
+        git(self.repo, "worktree", "add", "-q", str(wt), "-b", "wt-x")
+        out = lane.push_mirrors(self.local, [str(wt), str(self.repo)])
+        want = str(self.local_root / "mirrors" / self.repo.name)
+        self.assertEqual([want, want], out)
+        self.assertEqual(git(self.repo, "rev-parse", "wt-x"), git(want, "rev-parse", "wt-x"))
 
 class TestLaneExecStream(LaneTestCase):
     def dispatch(self, tree):

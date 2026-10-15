@@ -32,6 +32,15 @@ The new number is always computed from MASTER's version at the merge point,
 never from the strand's base and never from a number the strand wrote: a
 published number is never given twice (§ 4, no renumbering).
 
+A digit is raised only once per release (V2-A14): the merge point raises the
+digit of the kind from the version at the last release tag (`release_base`:
+the highest `v<x.y.z>` whose source commit is an ancestor of master; an export
+tag names its source in the subject) and only if that is above master's
+number -- otherwise the number is held. Tag -> fix -> fix is one third digit,
+tag -> fix -> feature one second digit (third reset to 0), a second feature
+nothing. A template born since the tag keeps its number. Without a reachable
+tag the baseline is master, and every merge raises as before.
+
 THE CASCADE
 ===========
 A bumped template leaves pins behind. `cascade` raises them in the same
@@ -114,6 +123,69 @@ def bump(version, kind):
 
 def _key(version):
     return tuple(int(p) for p in _SEMVER.match(version).groups())
+
+
+# --- the release baseline (V2-A14) --------------------------------------------------
+#
+# After tag v0.64.0 two fix merges gave 0.64.1 and 0.64.2 (welle-validierung-2,
+# merges of v2-flake-b01 and v2-fix-boot): every merge raised the third digit
+# again, and a public number was skipped. A digit moves only if it has not
+# moved since the last release; the baseline is the version at that release.
+
+_RELEASE_TAG = re.compile(r"^v(\d+\.\d+\.\d+)$")
+# make_export.py tags the export commit, which is not in master's history; its
+# subject names the private commit the public tree was built from. The one
+# parser of that subject (plan.py's `github-main` base reads it too); a test
+# holds it to make_export.py's `export_message` (Re-Check v2-fix-bump I1).
+_EXPORT_SUBJECT = re.compile(r"^export: public tree rebuilt from ([0-9a-f]{7,40})\b")
+# Without a reachable release the merge point raises as before -- also when the
+# export subject drifted, so the Versions line says it (OR-V2.v2-fix-bump.1).
+NO_RELEASE = "no release base found -- raising unconditionally"
+
+
+def export_source(subject):
+    """The source sha an export commit's subject names, or None."""
+    m = _EXPORT_SUBJECT.match(subject.strip())
+    return m.group(1) if m else None
+
+
+def release_base(repo, ref):
+    """`(tag, commit)` of the last release on `ref`'s line, or `(None, None)`.
+
+    A release tag is `v<x.y.z>`. Its commit is the private source an export
+    commit names in its subject, else the tagged commit itself; it counts only
+    when that commit is an ancestor of `ref`. The highest such tag wins."""
+    out = _git(repo, "for-each-ref", "--format=%(refname:short)\t%(objectname)\t"
+               "%(*objectname)\t%(subject)\t%(*subject)", "refs/tags/v*") or ""
+    found = []
+    for line in out.splitlines():
+        name, obj, peeled, subject, peeled_subject = (line.split("\t") + [""] * 5)[:5]
+        m = _RELEASE_TAG.match(name)
+        if m:
+            found.append((_key(m.group(1)), name, peeled or obj,
+                          peeled_subject if peeled else subject))
+    for _k, name, commit, subject in sorted(found, reverse=True):
+        sha = (_git(repo, "rev-parse", "--verify", "--quiet",
+                    (export_source(subject) or commit) + "^{commit}") or "").strip()
+        if sha and subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, ref],
+                                  capture_output=True).returncode == 0:
+            return name, sha
+    return None, None
+
+
+def merge_number(old, released, kind):
+    """The number the merge point gives `old` for `kind`, or None (held).
+
+    `released` is the version at the last release. The digit of `kind` is
+    raised from there, and only if that is above `old` -- a second fix (or a
+    fix after a feature) since the release raises nothing, a feature after a
+    fix raises the second digit once. `released` None (no such version at the
+    release: born since) holds every kind: its number was never published."""
+    bump(old, kind)  # an unknown kind is an error even when nothing moves
+    if released is None:
+        return None
+    target = bump(released, kind)
+    return target if _key(target) > _key(old) else None
 
 
 def _git(repo, *args):
@@ -407,6 +479,44 @@ def cascade(tree, moved, also=None):
     return out
 
 
+def left_pins(tree, moved):
+    """The mentions of a moved version the cascade did not rewrite (GH #1108).
+
+    `moved` is `{name: {versions}}`: the numbers each template left behind
+    (master's, plus the one the strand wrote). After the cascade every JSON
+    pin and every Markdown mention under PROSE_SURFACES at such a number is
+    raised; what still names one is outside its reach -- workshop Markdown, a
+    generator script, a text scaffold, a Rust comment. Each is listed, never
+    rewritten: the owner decides whether it is a record or a pin (on 08.10. a
+    pin of this kind stayed behind and eight builder scenarios booted red).
+    JSON files are left out (the pin-lock reads every JSON pin; prose inside
+    a JSON string is a history sentence) and so are generated files.
+    Returns `[{path, line, template, version}]`."""
+    if not moved:
+        return []
+    names = sorted(moved, key=len, reverse=True)
+    alt = "|".join(re.escape(n) for n in names)
+    rx = re.compile(r"(?<![A-Za-z0-9_./-])(%s)@(%s)(?![0-9.]*[0-9])" % (alt, locks._VERSION))
+    rels = [rel for top in SURFACES for rel in _files(tree, top, "")
+            if not rel.endswith(".json") and os.path.basename(rel) not in locks.GENERATED]
+    rels += [rel for top in CODE_SURFACES for rel in _files(tree, top, ".rs")]
+    out = []
+    for rel in rels:
+        try:
+            with open(os.path.join(tree, rel), encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if "@" not in text:
+            continue
+        for no, line in enumerate(text.split("\n"), 1):
+            for m in rx.finditer(line):
+                if m.group(2) in moved[m.group(1)]:
+                    out.append({"path": rel, "line": no, "template": m.group(1),
+                                "version": m.group(2)})
+    return out
+
+
 CATALOGUE = "templates/README.md"
 
 
@@ -527,7 +637,7 @@ def write_history(tree, base_ref, plan, pins, history, written, repo):
     `written` (`{name: raw sentence}`) remembers what an earlier round wrote,
     so a later round replaces it with the pins it has collected since."""
     for name, p in sorted(plan.items()):
-        if p["kind"] == "new":
+        if p["kind"] in ("new", "held"):
             continue
         path = os.path.join(tree, "templates", p["dir"], "template.json")
         try:
@@ -582,7 +692,10 @@ def assign(tree, base_ref, changed_paths, kinds, repo=None, before_round=None, h
     written = {}
     dirs = template_dirs(tree)
     by_name = {n: d for d, n in dirs.items()}
-    plan, pins, cascaded = {}, [], set()
+    plan, pins, cascaded, left_from, held = {}, [], set(), {}, {}
+    # No release on this line: every number is unpublished history of master,
+    # and the baseline is master itself -- each merge raises as it always did.
+    tag, released_at = release_base(repo, base_ref)
     todo = {n: kinds.get(n, "fix") for n in touched_templates(changed_paths, dirs)}
     for _round in range(MAX_ROUNDS):
         if before_round:
@@ -601,7 +714,18 @@ def assign(tree, base_ref, changed_paths, kinds, repo=None, before_round=None, h
             if old is None:
                 plan[name] = {"from": None, "to": None, "kind": "new", "dir": d}
                 continue
-            new = bump(old, kind)
+            released = old if released_at is None else version_at(repo, released_at, d)
+            new = merge_number(old, released, kind)
+            if new is None:
+                # held: the digit moved since the release already. A number the
+                # candidate wrote (a revert restores the pre-merge one) goes
+                # back to master's, and the pins it brought follow.
+                plan[name] = {"from": old, "to": old, "kind": "held", "dir": d}
+                held[name] = {"at": old, "kind": kind}
+                if cur and cur != old:
+                    _set_template_version(tree, d, old)
+                    moved[name], also[name] = (old, old), cur
+                continue
             if _key(new) <= _key(old):
                 raise VersionError("%s: %s -> %s renumbers" % (name, old, new))
             _set_template_version(tree, d, new)
@@ -611,6 +735,12 @@ def assign(tree, base_ref, changed_paths, kinds, repo=None, before_round=None, h
             if cur and cur not in (old, new):
                 also[name] = cur
         todo = {}
+        for name, (old, new) in moved.items():
+            left_from.setdefault(name, set())
+            if new != old:
+                left_from[name].add(old)
+            if name in also:
+                left_from[name].add(also[name])
         raised = cascade(tree, moved, also)
         pins.extend(raised)
         todo = {n: "fix" for n in touched_templates([p["path"] for p in raised], dirs)
@@ -625,28 +755,43 @@ def assign(tree, base_ref, changed_paths, kinds, repo=None, before_round=None, h
         text = _git(repo, "show", "%s:Cargo.toml" % base_ref)
         old = workspace_version(text or "")
         if old:
-            new = bump(old, kinds["workspace"])
-            _old, raised = set_workspace_version(tree, new)
-            pins.extend(raised)
-            workspace = {"from": old, "to": new, "kind": kinds["workspace"]}
+            released = old if released_at is None else workspace_version(
+                _git(repo, "show", "%s:Cargo.toml" % released_at) or "")
+            new = merge_number(old, released, kinds["workspace"])
+            if new is None:
+                held["workspace"] = {"at": old, "kind": kinds["workspace"]}
+            else:
+                _old, raised = set_workspace_version(tree, new)
+                pins.extend(raised)
+                workspace = {"from": old, "to": new, "kind": kinds["workspace"]}
     versions = {}
     for n, p in plan.items():
-        if p["kind"] == "new":
+        if p["kind"] in ("new", "held"):
             continue
         versions[n] = {k: v for k, v in p.items() if k in ("from", "to", "kind")}
         if n in cascaded:
             versions[n]["cascade"] = True
-    return {"versions": versions, "pins": pins, "workspace": workspace}
+    return {"versions": versions, "pins": pins, "workspace": workspace,
+            "left": left_pins(tree, left_from), "held": held, "release": tag}
 
 
 def version_line(result):
-    """`Versions: talky 4.1.0 -> 4.2.0 (feature), meclaw-os 2.2.4 -> 2.2.5 (fix)`."""
+    """`Versions: talky 4.1.0 -> 4.2.0 (feature), meclaw-os 2.2.4 -> 2.2.5 (fix)`.
+
+    A result of `assign` without a release base ends in `; NO_RELEASE`."""
     parts = ["%s %s -> %s (%s)" % (n, v["from"], v["to"], v["kind"])
              for n, v in sorted(result["versions"].items())]
     if result.get("workspace"):
         w = result["workspace"]
         parts.append("workspace %s -> %s (%s)" % (w["from"], w["to"], w["kind"]))
-    return "Versions: " + (", ".join(parts) if parts else "none")
+    line = "Versions: " + (", ".join(parts) if parts else "none")
+    held = result.get("held") or {}
+    if held:
+        line += "; held since %s: %s" % (result.get("release"), ", ".join(
+            "%s %s (%s)" % (n, h["at"], h["kind"]) for n, h in sorted(held.items())))
+    if "release" in result and result["release"] is None:
+        line += "; " + NO_RELEASE
+    return line
 
 
 def pins_line(result):
@@ -656,6 +801,16 @@ def pins_line(result):
     files = sorted({p["path"] for p in pins})
     return "Pins: %d raised in %d files (%s)" % (len(pins), len(files), ", ".join(files[:8])
                                                 + (", ..." if len(files) > 8 else ""))
+
+
+def left_line(result):
+    """`Pins left: 2 in 2 files (...)` -- what the cascade did not rewrite (GH #1108)."""
+    left = result.get("left") or []
+    if not left:
+        return "Pins left: none"
+    files = sorted({p["path"] for p in left})
+    return "Pins left: %d in %d files (%s)" % (len(left), len(files), ", ".join(files[:8])
+                                               + (", ..." if len(files) > 8 else ""))
 
 
 DIGIT = {"fix": "third digit", "feature": "second digit", "break": "first digit"}
@@ -740,4 +895,12 @@ def cmd_cascade(args):
         print("CASCADE %s:%d %s@%s -> %s%s" % (p["path"], p["line"], p["template"], p["from"],
                                                p["to"], "" if args.write else " (proposal)"))
     print("CASCADE %d pins %s" % (len(proposal), "raised" if args.write else "to raise"))
+    # GH #1108: the same numbers outside JSON are never rewritten -- named.
+    moved = {}
+    for p in proposal:
+        moved.setdefault(p["template"], set()).add(p["from"])
+    left = left_pins(tree, moved)
+    for p in left:
+        print("LEFT %s:%d %s@%s" % (p["path"], p["line"], p["template"], p["version"]))
+    print(left_line({"left": left}))
     return 0

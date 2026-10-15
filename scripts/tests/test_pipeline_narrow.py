@@ -6,6 +6,7 @@ The synthetic workspace and the coverage map are the ones of
 
 import contextlib
 import copy
+import datetime
 import json
 import os
 import pathlib
@@ -259,6 +260,15 @@ class NarrowTest(Base):
         self.assertIn("binary_id(=alpha::a2_template)", filter_terms(filt), (filt, notes))
         self.assert_plan_is_run(sel, filt, notes)
 
+    def test_i_h1_a_test_name_git_quotes_since_the_map_is_planned(self):
+        """Re-check I-h1 (h), the class of `git ... --name-*` without `-z`:
+        `crates/alpha/tests/\\303\\244.rs` came quoted, sat in no crate and
+        was neither a term nor a file -- the changed test planned nothing."""
+        self.commit({"crates/alpha/tests/ä.rs": "#[test]\nfn quoted() {}\n"})
+        ok, notes, files, terms = narrow.map_fits(self.cov, self.root, self.meta)
+        self.assertTrue(ok, notes)
+        self.assertIn("rdeps(alpha)", terms, (files, notes))
+
     def test_b2_the_run_guard_names_a_planned_term_the_filter_lacks(self):
         """The runtime half of the guard: a planned term missing from the
         filter is named (the narrowing then keeps the resolver's selection);
@@ -468,6 +478,39 @@ class NarrowTest(Base):
         self.assertNotIn("alpha", sel.get("compile") or [], notes)
         self.assertIn("narrowing: crates/alpha/src/net.rs changed since coverage map %s -- "
                       "the map knows the old file, rdeps(alpha) kept" % self.map_rev[:9], notes)
+
+    def test_drift_alone_keeping_rdeps_says_so_first_with_map_age_and_count(self):
+        """Kit finding b (welle-val2 v2-flake-b01): a map older than a Rust change on the
+        base keeps rdeps for a file the diff does not hold. That made a near-full suite
+        (239 of 247 binaries) and said it only in one NOTE per drifted file. The first
+        NOTE names the map's rev, its age, the drifted files and the rdeps kept, and the
+        binary count; without drift rdeps there is no such NOTE."""
+        sel, notes = self.run_narrow()
+        self.assertFalse([n for n in notes if "predates" in n], notes)
+        self.commit({"crates/alpha/src/net.rs": "pub fn net2() {}\n"})
+        sel, notes = self.run_narrow()
+        self.assertIn("alpha", sel["rdeps"], notes)
+        age = (NOW - datetime.datetime.fromisoformat(
+            self.cov["built_at"].replace("Z", "+00:00"))).total_seconds() / 3600.0
+        self.assertRegex(notes[0], r"^narrowing: coverage map %s is %.1f h old and predates "
+                         r"1 file\(s\) changed on the base since \(not in this diff\) -- "
+                         r"rdeps\(alpha\) kept for that drift, \d+ of \d+ binaries; a fresh "
+                         r"map \(`scripts/pipeline.py coverage build`\) narrows them$"
+                         % (self.map_rev[:9], age))
+
+    def test_drift_note_blames_only_rdeps_the_diff_does_not_keep_itself(self):
+        """Re-check R2 M2 (welle-val2 v2-flake-b01): rdeps(alpha) is kept by the drift
+        (net.rs changed on the base since the map) AND by the diff's own file (store.rs,
+        not in the map). A fresh map would not narrow it, so the NOTE must not say the
+        drift keeps it -- no drift NOTE at all when the diff keeps every drift rdeps."""
+        cov = copy.deepcopy(self.cov)
+        cov["parts"] = [p for p in cov["parts"] if "crates/alpha/src/store.rs" not in p["files"]]
+        self.commit({"crates/alpha/src/net.rs": "pub fn net2() {}\n"})
+        sel, notes = self.run_narrow(cov=cov)
+        self.assertIn("alpha", sel["rdeps"], notes)
+        self.assertIn("narrowing: crates/alpha/src/store.rs not in the coverage map -- "
+                      "rdeps(alpha) kept", notes)
+        self.assertFalse([n for n in notes if "kept for that drift" in n], notes)
 
     def test_m4_a_new_caller_since_the_map_plans_its_test(self):
         """Adversarial (OR-TB.S1b.16): since the map, net.rs registers a new
@@ -895,6 +938,40 @@ class NonRustDiffTest(Base):
         self.assertIn("alpha::a2_template", sel["binaries"], notes)
         self.assertIn("alpha::a1_reads_doc", sel["binaries"], notes)
 
+    def test_any_file_of_the_kit_plans_no_drift_terms(self):
+        """Kit finding a (welle-val2 v2-flake-b01): `scripts/pipeline/selftest_durations.json`
+        in a scripts-only diff missed `NON_RUST`, which knew `.py`/`.sh` under scripts/
+        only; the plan took the map and its drift -- 239 of 247 binaries, 10800 tests. A
+        file under scripts/ carries no Rust class of the resolver, whatever its extension:
+        a data file, a toml, a page. Each beside `scripts/tool.py`, whose reader edge
+        gives the diff a floor to narrow (a floor of nothing returns before the map)."""
+        for other in ("scripts/pipeline/selftest_durations.json", "scripts/lanes.toml",
+                      "scripts/pipeline/README.md"):
+            paths = ["scripts/tool.py", other]
+            with self.subTest(paths=paths):
+                sel, notes = self.run_narrow(paths=paths)
+                self.assertTrue(any("no Rust source in the diff" in n for n in notes), notes)
+                self.assertNotIn("alpha::a1_reads_doc", self.bins(sel), notes)   # cover of net.rs
+                self.assertNotIn("alpha::a2_template", self.bins(sel), notes)    # changed test
+                self.assertEqual([], (sel or {}).get("rdeps") or [])
+
+    def test_non_rust_is_the_resolvers_rust_classes_read_backwards(self):
+        """The class, not a list of extensions: a path is non-Rust when it lies under a
+        root the narrowing accepts without the map (scripts/, docs/, plans/, a top-level
+        page) and the resolver gives it none of the Rust classes (`narrow._RUST`)."""
+        for rel in ("scripts/pipeline/selftest_durations.json", "scripts/lanes.toml",
+                    "scripts/x/data.txt", "docs/guide.md", "docs/assets/a.svg",
+                    "plans/w/berichte/s.md", "README.md"):
+            with self.subTest(rel=rel):
+                self.assertTrue(narrow.non_rust([rel], {}), rel)
+        for rel in ("crates/alpha/src/net.rs", "crates/alpha/tests/a2_template.rs",
+                    "crates/alpha/schemas/x.json", "Cargo.toml", ".config/nextest.toml",
+                    "templates/talky/config.json", "workshop/tools/x.py", "Makefile"):
+            with self.subTest(rel=rel):
+                self.assertFalse(narrow.non_rust([rel], {}), rel)
+        self.assertFalse(narrow.non_rust(["scripts/x.json"], {"rdeps": ["alpha"]}))
+        self.assertFalse(narrow.non_rust([], {}))
+
 
 class PlanWiringTest(Base):
     """`build_plan(narrow=True)` -- what the gate calls -- runs the narrowing in strand only."""
@@ -939,7 +1016,13 @@ class StageBase(Base):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "map rev")
         self.map_rev = git(self.root, "rev-parse", "HEAD")
-        self.cov = dict(COVERAGE, rev=self.map_rev)
+        # A fresh map: `plan.build_plan` ages it on the wall clock when the case
+        # passes no `now` (the `*_by_the_plans_clock` pins pass one), and the fixed `COVERAGE` built_at
+        # 2026-10-08T02:00Z turned stale on 2026-10-15T02:00Z -- 9 StageBase
+        # tests went red with "coverage map ... is 7.0 days old (> 7)"
+        # (pre of v2-fix-c, fix round h). The map is built when the case starts.
+        fresh = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.cov = dict(COVERAGE, rev=self.map_rev, built_at=fresh)
         self.meta = metadata(self.root)
         self.tmpdb = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdb.cleanup)
@@ -982,15 +1065,34 @@ class StageBase(Base):
                               "cmd": ["scripts/test-tier.sh", "filter", sel["filter"]],
                               "select": sel}]}
 
-    def build(self, mode, base, **kw):
+    def build(self, mode, base, now=None, **kw):
         with mock.patch.object(narrow, "newest_map",
                                return_value=(self.cov, getattr(self, "cov_why", None))), \
                 mock.patch("pipeline.graph.load", return_value=self.doc), \
                 mock.patch.dict(os.environ, {narrow.ENV: "1"}):
-            doc = plan.build_plan(self.root, mode, base, resolver=self.resolver,
+            doc = plan.build_plan(self.root, mode, base, now=now, resolver=self.resolver,
                                   metadata=self.meta, narrow=True, db=self.db, **kw)
         tests = next((s for s in doc["stations"] if s["name"] == "tests"), None)
         return doc, tests
+
+    # GH #1199 B-3: every leg of `build_plan` hands its `now` to the
+    # narrowing. The map is built on a fixed day; the plan's clock one day
+    # later finds it fresh, 100 days later stale -- whatever the wall clock
+    # says, a leg that drops `now` misses one of the two sides.
+    CLOCK_MAP_DAY = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+
+    def assert_aged_by_the_plans_clock(self, build, assert_narrowed):
+        """`build(now)` -> (doc, tests); `assert_narrowed(doc, tests)` reads
+        the leg's verdict on a fresh map."""
+        self.cov = dict(self.cov, built_at="2026-01-01T00:00:00Z")
+        doc, tests = build(self.CLOCK_MAP_DAY + datetime.timedelta(days=1))
+        notes = doc.get("notes") or []
+        self.assertFalse(any("days old" in n or "in the future" in n for n in notes), notes)
+        assert_narrowed(doc, tests)
+        doc, tests = build(self.CLOCK_MAP_DAY + datetime.timedelta(days=100))
+        notes = doc.get("notes") or []
+        self.assertTrue(any(n.startswith("narrowing: coverage map %s is 100.0 days old (> 7)"
+                                          % self.cov["rev"][:9]) for n in notes), notes)
 
     def assert_unnarrowed(self, doc, tests, why):
         sel = tests["select"]
@@ -1054,6 +1156,23 @@ class MergeNarrowTest(StageBase):
         self.merge("welle/s")
         doc, tests = self.build("merge", moved, strand_run=run)
         self.assertNotIn("alpha", tests["select"]["rdeps"], doc.get("notes"))
+
+    def test_merge_judges_the_maps_age_by_the_plans_clock(self):
+        """GH #1199 B-3: the merge leg hands `build_plan(now=...)` to the narrowing."""
+        gated = self.strand()
+        run = self.gate_run(gated)
+        base = git(self.root, "rev-parse", "master")
+        self.merge("welle/s")
+
+        def at(now):
+            return self.build("merge", base, now=now, strand_run=run)
+
+        def narrowed(doc, tests):
+            self.assertNotIn("alpha", tests["select"]["rdeps"], doc.get("notes"))
+            self.assertTrue(tests["select"]["narrow"]["on"], tests["select"]["narrow"])
+        self.assert_aged_by_the_plans_clock(at, narrowed)
+        doc, tests = at(self.CLOCK_MAP_DAY + datetime.timedelta(days=100))
+        self.assert_unnarrowed(doc, tests, "the merge stays unnarrowed")
 
     def test_merge_plans_change_outside_reports_stays_unnarrowed(self):
         """re-check H2 m1: after the gate only reports and strand files of a
@@ -1156,6 +1275,26 @@ class MergeNarrowTest(StageBase):
         run = self.gate_run(gated)
         git(self.root, "merge", "-q", "--no-ff", "--no-commit", "welle/t")
         with open(os.path.join(self.root, "crates/beta/src/lib.rs"), "a", encoding="utf-8") as fh:
+            fh.write("// evil\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "merge")
+        gate_plan._SOURCE_CACHE.clear()
+        doc, tests = self.build("merge", base, strand_run=run)
+        self.assertTrue(any("not the union of its parents" in n for n in doc["notes"]), doc["notes"])
+        self.assertFalse((tests["select"].get("narrow") or {}).get("on"))
+
+    def test_i_h1_a_rust_edit_git_quotes_at_the_merge_point_stays_unnarrowed(self):
+        """Re-check I-h1 (h): `git diff --name-only` without `-z` quoted
+        `crates/beta/src/\\303\\244.rs`, the quoted name had no Rust class and
+        the hand edit passed as the union of the parents (fail-open)."""
+        git(self.root, "checkout", "-q", "-b", "welle/t", self.map_rev)
+        gated = self.write({"crates/alpha/src/net.rs": "pub fn n() {}\n"})
+        git(self.root, "checkout", "-q", "master")
+        base = git(self.root, "rev-parse", "master")
+        run = self.gate_run(gated)
+        git(self.root, "merge", "-q", "--no-ff", "--no-commit", "welle/t")
+        with open(os.path.join(self.root, "crates/beta/src/ä.rs"), "w",
+                  encoding="utf-8") as fh:
             fh.write("// evil\n")
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "merge")
@@ -1298,6 +1437,20 @@ class IntegrationNarrowTest(StageBase):
         self.assertFalse(tests["select"]["all"])
         self.assertIn("beta", tests["select"]["rdeps"])   # not in the map: rdeps kept
 
+    def test_integration_judges_the_maps_age_by_the_plans_clock(self):
+        """GH #1199 B-3: the integration leg hands `build_plan(now=...)` to the narrowing."""
+        self.start(self.map_rev)
+        self.edit_store("// in the wave\n")
+
+        def at(now):
+            return self.build("integration", self.map_rev, now=now, wave="welle-x")
+
+        def narrowed(doc, tests):
+            self.assertFalse(tests["select"]["all"], doc.get("notes"))
+            self.assertNotIn("alpha", tests["select"]["rdeps"], doc.get("notes"))
+            self.assertTrue(tests["select"]["narrow"]["on"], tests["select"]["narrow"])
+        self.assert_aged_by_the_plans_clock(at, narrowed)
+
     def test_integration_wave_name_matches_with_or_without_date(self):
         """re-check H2 M1 (a): `strand.sh` passes the wave without its date
         (`wave_name`), the start may carry it -- one wave."""
@@ -1428,6 +1581,23 @@ class IntegrationNarrowTest(StageBase):
         tests = next(s for s in doc["stations"] if s["name"] == "tests")
         self.assertEqual("all()", tests["select"]["filter"])
         self.assertNotIn("notes", doc)
+
+
+class StrandClockTest(StageBase):
+    def test_strand_judges_the_maps_age_by_the_plans_clock(self):
+        """GH #1199 B-3: the strand leg hands `build_plan(now=...)` to the narrowing."""
+        self.edit_store("// in the strand\n")
+
+        def at(now):
+            return self.build("strand", self.map_rev, now=now)
+
+        def narrowed(doc, tests):
+            self.assertNotIn("alpha", tests["select"]["rdeps"], doc.get("notes"))
+            self.assertIn("beta::b1_uses_alpha", tests["select"]["binaries"], doc.get("notes"))
+            self.assertTrue(tests["select"]["narrow"]["on"], tests["select"]["narrow"])
+        self.assert_aged_by_the_plans_clock(at, narrowed)
+        doc, tests = at(self.CLOCK_MAP_DAY + datetime.timedelta(days=100))
+        self.assertIn("alpha", tests["select"]["rdeps"], doc.get("notes"))
 
 
 class WaveStartTest(StageBase):

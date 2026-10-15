@@ -375,6 +375,9 @@ class Hive:
             row = call.get("row")
             if not isinstance(row, dict):
                 return "insert without a row", 0, "invalid_input", op
+            # GH #1199: `replace` removes what matches and writes the row in one step.
+            if isinstance(call.get("replace"), dict):
+                self.table = [r for r in self.table if not self._match(r, call["replace"])]
             self.table.append(copy.deepcopy(row))
             return json.dumps({"rows_affected": 1}), 1, None, op
         if op == "update":

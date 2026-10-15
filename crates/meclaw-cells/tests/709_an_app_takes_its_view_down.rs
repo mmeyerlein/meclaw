@@ -177,14 +177,14 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          (GH #1057, #1074); 2.5.20 only derives `./assistants` from \
          `assistant@3.7.11` (GH #1087); 2.5.21 only pins \
          `assistant@3.7.12`, `file-space@1.4.6`, `firewall@2.4.1`, \
-         `graph-space@1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085); 2.5.22 only pins \
+         `graph-space\u{40}1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085); 2.5.22 only pins \
          `assistant@3.7.13` and `memory-hive@3.13.3` (GH #1085, no window of a role's own); 2.5.23 only pins \
          `assistant@3.7.14` and `memory-hive@3.13.4` (GH #1094); 2.5.24 only pins \
          `memory-hive@3.14.0` (GH #1095); 2.5.25 only pins \
          `memory-hive@3.14.1` (GH #1095); 2.5.26 only pins \
          `access@2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space` 1.4.8, \
          `memory-hive@3.14.2` and `telegram-connector@2.2.0` (GH #1096, #1097, #1098, #1099); 2.5.27 only pins \
-         `affinity@3.10.3`, `assistant@3.7.16`, `firewall@2.4.2` and \
+         `affinity@3.10.3`, `assistant\u{40}3.7.16`, `firewall@2.4.2` and \
          `memory-hive` 3.14.3 (Dev-Tempo cascade, GH #1126). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the strand table of a wave receipt out of the reports' header blocks.
 
-    scripts/wave_receipt.py <wave> [--receipt <file>]
+    scripts/wave_receipt.py [-C <dir>] <wave> [--receipt <file>]
 
 WHY THIS EXISTS
 ===============
@@ -156,7 +156,17 @@ def main(argv=None):
     ap.add_argument("wave", help="the wave directory under plans/")
     ap.add_argument("--receipt", default=None,
                     help="the receipt to write (default: <wave>/receipt.md)")
+    ap.add_argument("-C", dest="chdir", action="append", metavar="DIR",
+                    help="run as if started in DIR (as git -C; GH #1199)")
     args = ap.parse_args(argv)
+    # GH #1199 (b): the repository comes from the cwd; `-C` is the `cd` an
+    # agent shell cannot keep (the one helper is `pipeline/gitenv.enter_dirs`,
+    # this tool stands alone).
+    for path in args.chdir or ():
+        if not os.path.isdir(path):
+            print("wave_receipt: -C: no such directory: %s" % path, file=sys.stderr)
+            return 2
+        os.chdir(path)
 
     repo = main_root(os.getcwd())
     wave_dir = pathlib.Path(args.wave)

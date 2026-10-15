@@ -205,7 +205,16 @@ pub struct WorkPulse {
     /// to, so an operation timeout under it can be set ABOVE it (a hang is
     /// declared stuck first). `None` for a pulse with no supervisor.
     budget: Option<std::time::Duration>,
+    /// Where the supervisor reads the CPU denial from, when it is not the
+    /// kernel ([`RunDelays::read`]) -- a test's host (GH #1199). The scan
+    /// timeout under the budget credits the denial from the same source the
+    /// supervisor deducts it from.
+    denial: Option<DenialSource>,
 }
+
+/// A host's CPU denial as the supervisor reads it ([`RunDelays`]), shared by a
+/// supervisor and the pulses that report to it.
+pub(crate) type DenialSource = std::sync::Arc<dyn Fn() -> RunDelays + Send + Sync>;
 
 impl WorkPulse {
     /// A pulse that reports to `tx` under `label`.
@@ -215,6 +224,7 @@ impl WorkPulse {
             label,
             slot: None,
             budget: None,
+            denial: None,
         }
     }
 
@@ -237,6 +247,22 @@ impl WorkPulse {
         self.budget
     }
 
+    /// GH #1199: the same pulse, reading the CPU denial where its supervisor
+    /// reads it -- a test's host instead of the kernel.
+    #[cfg(test)]
+    pub(crate) fn with_denial(mut self, denial: DenialSource) -> Self {
+        self.denial = Some(denial);
+        self
+    }
+
+    /// GH #1199: the CPU denial of this process now, from the source the
+    /// supervisor reads ([`RunDelays::read`] unless a test named another).
+    pub fn read_denial(&self) -> RunDelays {
+        self.denial
+            .as_ref()
+            .map_or_else(RunDelays::read, |read| read())
+    }
+
     /// A pulse that reports nowhere — the default for every call site with no
     /// heartbeat wired (tests, `--validate`, the boot growth, which runs before
     /// the supervisor is armed).
@@ -246,6 +272,7 @@ impl WorkPulse {
             label: WorkItem::new("<unlabelled>"),
             slot: None,
             budget: None,
+            denial: None,
         }
     }
 
@@ -272,6 +299,7 @@ impl WorkPulse {
             label,
             slot: self.slot.clone(),
             budget: self.budget,
+            denial: self.denial.clone(),
         }
     }
 
@@ -387,6 +415,18 @@ pub const WORK_ITEM_BUDGET_FACTOR: u32 = 10;
 /// work_item_budget` of silence plus at most one window where it keeps its
 /// schedule.
 pub const WORK_ITEM_DENIAL_FACTOR: u32 = 5;
+
+/// The part of `denied` a silence of `silent_for` is not charged: the denial,
+/// capped at `silent_for × (1 − 1/WORK_ITEM_DENIAL_FACTOR)` -- see
+/// [`WORK_ITEM_DENIAL_FACTOR`]. One rule for the supervisor's verdict and for
+/// the scan timeout that must stay above it (GH #1199).
+pub(crate) fn denial_deduction(
+    silent_for: std::time::Duration,
+    denied: std::time::Duration,
+) -> std::time::Duration {
+    let floor = silent_for / WORK_ITEM_DENIAL_FACTOR;
+    denied.min(silent_for.saturating_sub(floor))
+}
 
 /// What the independent, work-doing witness had to say about the same window
 /// (GH #165).
@@ -567,8 +607,7 @@ impl WatchdogTrip {
     /// capped at `silent_for × (1 − 1/WORK_ITEM_DENIAL_FACTOR)` (GH #1216, tv-br
     /// M10l). See [`WORK_ITEM_DENIAL_FACTOR`].
     pub fn denial_deduction(&self) -> std::time::Duration {
-        let floor = self.silent_for / WORK_ITEM_DENIAL_FACTOR;
-        self.cpu_denied.min(self.silent_for.saturating_sub(floor))
+        denial_deduction(self.silent_for, self.cpu_denied)
     }
 
     /// The witness's verdict on this window (GH #165).
@@ -1077,7 +1116,7 @@ pub async fn run_watchdog_with_label_slot(
 /// a pin hands in a host that denies a known amount, the one thing a unit
 /// test cannot make a real kernel do on demand.
 #[allow(clippy::too_many_arguments)]
-async fn run_watchdog_reading_denial(
+pub(crate) async fn run_watchdog_reading_denial(
     mut heartbeat_rx: tokio::sync::mpsc::Receiver<Beat>,
     trip_tx: tokio::sync::mpsc::Sender<WatchdogTrip>,
     threshold: u32,
@@ -3059,14 +3098,21 @@ mod tests {
     /// work and then went silent, and hands back every trip up to the first
     /// fatal one, or up to `until` of silence when none is fatal.
     /// [`meclaw_testing::deadline::HANG`] is the hang marker, never a verdict.
+    ///
+    /// The item enters work from inside the supervisor's first silent period,
+    /// through the seam: the first reading of the denial sends the `Working`
+    /// beat, so the next tick hears it whatever the host does to the test's
+    /// own thread. Sent from the test thread after [`supervise`], the word
+    /// raced the parked bar of 50 ms in real time: under an 80 % quota the
+    /// test thread lost the whole window before it spoke, and the supervisor
+    /// rightly judged a parked loop (`colony_loop`, `beats_seen=0`,
+    /// `cpu_denied=40ms`; scan S3 on build03, 1 of 5,
+    /// OR-V2.v2-fix-scan.C2.1).
     async fn trips_of_a_silent_item(
         read_denial: impl Fn() -> RunDelays + Send + 'static,
         until: Duration,
     ) -> Vec<WatchdogTrip> {
-        let (hb_tx, mut trip_rx) = supervise(read_denial).await;
-        hb_tx
-            .try_send(Beat::Working)
-            .expect("the supervisor must be listening");
+        let (hb_tx, mut trip_rx) = supervise_saying(read_denial, Some(Beat::Working)).await;
         let trips = std::cell::RefCell::new(Vec::<WatchdogTrip>::new());
         meclaw_testing::deadline::hang_with(
             "the supervisor neither escalated nor reached the bar",
@@ -3095,17 +3141,40 @@ mod tests {
         tokio::sync::mpsc::Sender<Beat>,
         tokio::sync::mpsc::Receiver<WatchdogTrip>,
     ) {
+        supervise_saying(read_denial, None).await
+    }
+
+    /// [`supervise`], and `first_word` -- when there is one -- said from
+    /// inside the supervisor's first silent period: its first reading of the
+    /// denial sends it, after the arming drain, so the next tick hears it.
+    /// No thread outside the supervisor has to win a race against its clock.
+    async fn supervise_saying(
+        read_denial: impl Fn() -> RunDelays + Send + 'static,
+        first_word: Option<Beat>,
+    ) -> (
+        tokio::sync::mpsc::Sender<Beat>,
+        tokio::sync::mpsc::Receiver<WatchdogTrip>,
+    ) {
         let period = Duration::from_millis(10);
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(64);
         // Beats from before arming are discarded (they describe a moment
-        // already past). Fill the channel with them: room again is the event
-        // that the armed supervisor drained them, and the next word is heard.
+        // already past): a full channel of them, which the armed supervisor
+        // must throw away before the next word is heard.
         for _ in 0..8 {
             hb_tx
                 .try_send(Beat::Parked)
                 .expect("room before the supervisor runs");
         }
+        let unsaid = std::sync::Mutex::new(first_word.map(|beat| (hb_tx.clone(), beat)));
+        let read_denial = move || {
+            if let Some((tx, beat)) = unsaid.lock().unwrap().take() {
+                tx.try_send(beat)
+                    .expect("the drained beat channel has room for the first word");
+            }
+            read_denial()
+        };
+        let (witness, drained) = a_witness_that_tells_the_end_of_the_drain();
         tokio::spawn(run_watchdog_reading_denial(
             hb_rx,
             trip_tx,
@@ -3113,24 +3182,97 @@ mod tests {
             period,
             armed(),
             WatchdogOnTrip::Exit,
-            Some(healthy_witness()),
+            Some(witness),
             None,
             read_denial,
         ));
-        // Room for all eight is the event that the armed supervisor drained
-        // them: `reserve_many` wakes on it, the permits go back at once. A
-        // 10 ms poll here ate into the supervisor's 50 ms bar before the next
-        // word (CPUQuota 80 %: the supervisor ended before it,
-        // OR-V2.v2-fix-b.G2.1).
-        drop(
-            meclaw_testing::deadline::hang(
-                "the armed supervisor drains the stale beats",
-                hb_tx.reserve_many(8),
-            )
+        // The end of the arming drain is the event, not room in the beat
+        // channel: room for all eight comes with the eighth discarded beat,
+        // while the drain is still running, and a word sent in that window was
+        // discarded as stale too (beats_seen=0, `colony_loop` instead of
+        // `stuck_work_item`; coverage run on 652aaddc6, OR-V2.v2-fix-w.1). The
+        // supervisor drains the witness only after the beats, so the witness's
+        // first room means the next word is heard. No poll: a 10 ms poll ate
+        // into the 50 ms bar (OR-V2.v2-fix-b.G2.1).
+        meclaw_testing::deadline::hang("the armed supervisor ends its arming drain", drained)
             .await
-            .expect("the supervisor must be listening"),
-        );
+            .expect("the witness feeder must report the drain");
         (hb_tx, trip_rx)
+    }
+
+    /// [`healthy_witness`] with one more word: the channel starts full, and
+    /// the feeder reports its first room. Only the armed supervisor reads the
+    /// witness, and only after it has discarded the stale beats, so that
+    /// report is the end of the arming drain. Then it refills like
+    /// [`healthy_witness`].
+    fn a_witness_that_tells_the_end_of_the_drain() -> (
+        tokio::sync::mpsc::Receiver<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<()>(64);
+        while tx.try_send(()).is_ok() {}
+        let (drained_tx, drained_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let Ok(permit) = tx.reserve().await else {
+                return;
+            };
+            permit.send(());
+            let _ = drained_tx.send(());
+            while tx.send(()).await.is_ok() {}
+        });
+        (rx, drained_rx)
+    }
+
+    /// The order [`a_witness_that_tells_the_end_of_the_drain`] stands on: on
+    /// arming, `run_watchdog_reading_denial` reads the witness only after its
+    /// stale-beat drain has ended, so the witness's first room means the beats
+    /// are gone. No production verdict depends on that order (both drains only
+    /// discard the past), and no behaviour shows a swap on its own: with the
+    /// two drains swapped every test still passed (0/9), and only with an
+    /// `await` between them did the coverage race of OR-V2.v2-fix-w.1 come
+    /// back (9/9). So the source holds it, read at stable anchors -- the
+    /// function, its `heartbeat_rx.try_recv()` drain loop, the first
+    /// `witness_rx.` use that is not a presence check.
+    #[tokio::test]
+    async fn the_stale_beats_are_drained_before_the_witness_is_read() -> Result<(), String> {
+        let src = include_str!("watchdog.rs");
+        let start = src
+            .find("\npub(crate) async fn run_watchdog_reading_denial(")
+            .ok_or("run_watchdog_reading_denial is gone")?;
+        let len = src[start + 1..]
+            .find("\n}\n")
+            .ok_or("run_watchdog_reading_denial has no end")?;
+        let body: Vec<&str> = src[start + 1..start + 1 + len].lines().collect();
+        let beat_loop = body
+            .iter()
+            .position(|l| {
+                l.trim_start().starts_with("while") && l.contains("heartbeat_rx.try_recv()")
+            })
+            .ok_or("the stale-beat drain loop is gone")?;
+        let indent = &body[beat_loop][..body[beat_loop].find("while").unwrap_or(0)];
+        let close = format!("{indent}}}");
+        let beat_end = beat_loop
+            + body[beat_loop..]
+                .iter()
+                .position(|l| *l == close)
+                .ok_or("the stale-beat drain loop has no end")?;
+        let witness_read = body
+            .iter()
+            .position(|l| {
+                l.split("witness_rx.")
+                    .skip(1)
+                    .any(|rest| !rest.starts_with("is_some()") && !rest.starts_with("is_none()"))
+            })
+            .ok_or("the witness is never read")?;
+        if witness_read <= beat_end {
+            return Err(format!(
+                "the witness is read (`{}`) before the stale-beat drain ends (`{}`): the first \
+                 room in the witness no longer tells the end of the arming drain",
+                body[witness_read].trim(),
+                body[beat_loop].trim()
+            ));
+        }
+        Ok(())
     }
 
     /// GH #1216 (tv-br M10l), the deadlock beside a host that denies the whole

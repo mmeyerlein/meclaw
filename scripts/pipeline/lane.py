@@ -950,20 +950,34 @@ def guard(lane, tree_name, cargo=True, slot=None, expected_g=None):
     return _two_paths(lane, "guard", [lane.ssh, tree_name], cargo, slot, expected_g)
 
 
-def run_test(lane, tree_name, expr, extra, log, run=""):
+def run_test(lane, tree_name, expr, extra, log, run="", on_line=None):
     """A nextest filterset on `lane` through `lane_sync.sh test` (W1: the tier
     in the build path, `--no-fail-fast`, the width and class of the lane --
     nice/ionice and the watchdog for class `egon` --, the floor, a `local`
     lane only as class `egon`, the golden switches and their way back).
     stdout and stderr go to the file `log`; returns the exit (255 = ssh lost
     the host, 5 = refused here, 2 = refused there or goldens not back).
-    `run` names the run in a `watchdog_fired` line (`MECLAW_LANE_RUN`)."""
+    `run` names the run in a `watchdog_fired` line (`MECLAW_LANE_RUN`).
+    `on_line(text)` (GH #1199): every line of the run as it arrives, after it
+    is in `log` (flushed) -- the caller's pass line per stress iteration."""
     _check_name(tree_name, "tree")
     env = sync_env(lane, MECLAW_LANE_CARGO="1", MECLAW_LANE_RUN=run or "?")
+    argv = [LANE_SYNC, "test", lane.ssh, tree_name, expr] + list(extra)
     with open(log, "ab") as fh:
-        res = subprocess.run([LANE_SYNC, "test", lane.ssh, tree_name, expr] + list(extra),
-                             env=env, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT)
-    return res.returncode if res.returncode >= 0 else 128 - res.returncode
+        if on_line is None:
+            res = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, stdout=fh,
+                                 stderr=subprocess.STDOUT)
+            rc = res.returncode
+        else:
+            proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT)
+            for raw in proc.stdout:
+                fh.write(raw)
+                fh.flush()
+                on_line(raw.decode("utf-8", "replace").rstrip("\n"))
+            proc.stdout.close()
+            rc = proc.wait()
+    return rc if rc >= 0 else 128 - rc
 
 
 class Hold:
@@ -1266,15 +1280,11 @@ def push_mirrors(lane, repos):
     dest_root = lane.root.rstrip("/") + "/mirrors"
     fail = "the mirror push to %s failed" % lane.name
     _argv_there(lane, ["mkdir", "-p", dest_root], fail)
-    out = []
-    for repo, argv in zip(repos, _register.mirrors_spec(repos, dest_root=dest_root,
-                                                        target=_target(lane))):
+    for argv in _register.mirrors_spec(repos, dest_root=dest_root, target=_target(lane)):
         res = _rsync(lane, argv[1:])
         if res.returncode != 0:
             raise LaneError(2, "%s (%s)" % (fail, _tail(res.stderr)))
-        out.append("%s/%s" % (dest_root, os.path.basename(os.path.abspath(
-            os.path.expanduser(str(repo))).rstrip("/"))))
-    return out
+    return _register.mirror_dirs(repos, dest_root=dest_root)
 
 
 def push_assets(lane, cache_root, versions=None, dest_root=None):

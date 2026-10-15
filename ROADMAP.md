@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.64.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.64.2, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,13 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.64.2: `rustls` 0.23.46 closes four advisories (lock only); a row that must exist once is written in one
+  step, and the display, the presenter and the collector keep a row when its rewrite fails; a one-shot `--apply`
+  waits out the shutdown drain and exits non-zero when it does not end cleanly; `affected_scope` no longer rescans
+  the registry per path; a clock order the timer refuses no longer leaves the display standing still; the `voice`
+  silence tail keeps its 20 ms raster under load; in the kit, a long run stops on its own once its target is lost,
+  the gate runs a pinned test on every touch of its file, the merge point raises a version digit once per release
+  and rewrites the hash goldens its own cascade made stale, and an idle connection no longer ends a lane hold.
 - v0.64.0: the gate runs on a pipeline engine with a build station, a source-closure cache and lane leases, and
   the integration tests are folded into harness binaries; the workspace builds one `meclaw` binary; `file-space` and
   `projection` run warm; an orderly shutdown no longer reports a fatal watchdog trip, and the watchdog no longer

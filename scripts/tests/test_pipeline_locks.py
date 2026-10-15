@@ -106,6 +106,15 @@ class PinLock(Tree):
         self.assertEqual("examples/demo/main/config.json:3 meclaw-os@2.2.43 not provided "
                          "-- raise to 2.2.44", locks.render(f))
 
+    def test_pin_lock_is_green_on_a_provided_pin(self):
+        # GH #1108: the counterpart of the orphan -- a scaffold and an example
+        # pinning the version the template ships at raise nothing.
+        write(self.root, "examples/demo/main/config.json",
+              '{\n  "name": "demo",\n  "template": "meclaw-os@2.2.44"\n}\n')
+        write(self.root, "workshop/scaffold/config.json",
+              '{"cells": [{"template": "meclaw-os@2.2.44"}]}\n')
+        self.assertEqual([], locks.check_pin_lock([], self.root))
+
     def test_pin_lock_accepts_since_sentence_shorthand_as_note(self):
         write(self.root, "docs/x.md", "Since `meclaw-os@2.2.40` the door is shut.\n")
         found = locks.check_pin_lock(["docs/x.md"], self.root)

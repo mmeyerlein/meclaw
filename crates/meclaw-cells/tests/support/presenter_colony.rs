@@ -835,9 +835,12 @@ impl Stage {
                     .filter_map(calls_of)
                     .flatten()
                     .any(|c| {
+                        // GH #1199: an app's topics are written as ONE insert of `rows`.
                         c["operation"] == "insert"
                             && c["table"] == "shows"
-                            && c["row"]["topic"] == "sample"
+                            && c["rows"]
+                                .as_array()
+                                .is_some_and(|rows| rows.iter().any(|r| r["topic"] == "sample"))
                     })
                     .then_some(())
             },

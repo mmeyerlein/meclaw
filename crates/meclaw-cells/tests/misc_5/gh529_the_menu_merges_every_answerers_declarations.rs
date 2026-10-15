@@ -211,24 +211,29 @@ fn an_answer_is_recorded_under_the_answerer_that_gave_it() {
     let ids: Vec<&str> = legs.iter().map(|(i, _)| i.as_str()).collect();
     assert_eq!(
         ids,
-        vec!["c-menu-del", "c-menu-put", "c-menu-all"],
-        "delete this answerer's row, insert the new one, read them all — in ONE bundle, so \
-         the select runs over the same connection after the write and sees it (GH #419): \
-         {legs:#?}"
+        vec!["c-menu-put", "c-menu-all"],
+        "replace this answerer's row with the new one in ONE write (GH #1199), read them \
+         all — in ONE bundle, so the select runs over the same connection after the write \
+         and sees it (GH #419): {legs:#?}"
     );
-    assert_eq!(legs[0].1["operation"], "delete");
+    assert_eq!(legs[0].1["operation"], "insert");
+    assert!(
+        legs[0].1.get("where").is_none(),
+        "no separate delete leg: {legs:#?}"
+    );
     assert_eq!(
-        legs[0].1["where"]["answerer"], "tools",
-        "the delete is scoped to the answerer that spoke; a delete without that scope is \
+        legs[0].1["replace"],
+        json!({"answerer": "tools"}),
+        "the replacement is scoped to the answerer that spoke; one without that scope is \
          the very overwrite this issue exists to remove: {legs:#?}"
     );
-    assert_eq!(legs[1].1["row"]["answerer"], "tools");
+    assert_eq!(legs[0].1["row"]["answerer"], "tools");
     assert_eq!(
-        legs[1].1["row"]["unknown"], "consult_cogny",
+        legs[0].1["row"]["unknown"], "consult_cogny",
         "what THIS answerer had nothing under travels with its row instead of being \
          reported here: another answerer may well deliver it: {legs:#?}"
     );
-    assert_eq!(legs[2].1["operation"], "select");
+    assert_eq!(legs[1].1["operation"], "select");
     assert!(
         stderr.is_empty(),
         "an answer with a declaration in it is not a finding: {stderr}"

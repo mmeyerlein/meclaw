@@ -540,8 +540,8 @@ fn a_rows_manifest_asks_the_one_question_topology_asks() {
     assert_eq!(op_of(&a[1])["resource"]["scope"], "/os/orgs/acme");
 
     let out = unpark("parked", &decls);
-    assert_eq!(out.len(), 3, "forget the park, remember the flight, submit");
-    assert_eq!(out[2]["header"]["route"], "mutate");
+    assert_one_step_flight(&out);
+    assert_eq!(out[1]["header"]["route"], "mutate");
 }
 
 /// The access verdict is what stands between the rows and the door. Denied, the
@@ -592,4 +592,23 @@ fn the_normaliser_admits_the_eighth_operation() {
             .all(|m| m["header"]["error_code"] != json!("declaration_malformed")),
         "the normaliser must not call the eighth operation unknown: {out:?}"
     );
+}
+
+/// GH #1199: forgetting the park and remembering the flight are ONE store
+/// write -- an `insert` with `replace` over the parked row, no separate
+/// delete leg; the un-parking is that write, then the submission.
+fn assert_one_step_flight(out: &[Value]) {
+    assert_eq!(
+        out.len(),
+        2,
+        "forget the park and remember the flight in one step, then submit: {out:?}"
+    );
+    let flight = op_of(&out[0]);
+    assert_eq!(flight["operation"], "insert");
+    assert_eq!(flight["replace"], json!({ "id": "p1" }));
+    assert!(
+        flight.get("where").is_none(),
+        "no separate delete leg: {flight}"
+    );
+    assert_eq!(flight["row"]["kind"], "flight");
 }

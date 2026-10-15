@@ -1124,12 +1124,14 @@ def ram():
     return held
 
 
+# One row per key, written in ONE step (`insert` with `replace`, GH #1199): as a delete
+# leg and an insert leg, an insert that failed left the key with no row, and after a
+# restart the turn in flight, its journal line, the app's topics or the work row was gone.
 def w_pending(rec):
     tid = rec["turn_id"]
-    return [tool_call({"operation": "delete", "table": T_PENDING,
-                       "where": {"turn_id": tid}}, "p-del-" + tid),
-            tool_call({"operation": "insert", "table": T_PENDING,
-                       "row": {"turn_id": tid, "value": rec, "at": now_ms()}},
+    return [tool_call({"operation": "insert", "table": T_PENDING,
+                       "row": {"turn_id": tid, "value": rec, "at": now_ms()},
+                       "replace": {"turn_id": tid}},
                       "p-ins-" + tid)]
 
 
@@ -1140,25 +1142,20 @@ def w_pending_gone(tid):
 
 def w_journal(rec):
     tid = rec["turn_id"]
-    return [tool_call({"operation": "delete", "table": T_JOURNAL,
-                       "where": {"turn_id": tid}}, "j-del-" + tid),
-            tool_call({"operation": "insert", "table": T_JOURNAL,
-                       "row": journal_row(rec, now_ms())}, "j-ins-" + tid)]
+    return [tool_call({"operation": "insert", "table": T_JOURNAL,
+                       "row": journal_row(rec, now_ms()), "replace": {"turn_id": tid}},
+                      "j-ins-" + tid)]
 
 
 def w_shows(owner, known):
-    legs = [tool_call({"operation": "delete", "table": T_SHOWS,
-                       "where": {"owner_app": owner}}, "s-del")]
-    for name in sorted(known):
-        v = known[name]
-        if v["owner"] != owner:
-            continue
-        legs.append(tool_call({"operation": "insert", "table": T_SHOWS,
-                               "row": {"topic": name, "owner_app": owner,
-                                       "show_at": v.get("show_at") or "",
-                                       "manifest": v["manifest"], "at": v["at"]}},
-                              "s-ins-" + name))
-    return legs
+    rows = [{"topic": name, "owner_app": owner, "show_at": known[name].get("show_at") or "",
+             "manifest": known[name]["manifest"], "at": known[name]["at"]}
+            for name in sorted(known) if known[name]["owner"] == owner]
+    if not rows:
+        return [tool_call({"operation": "delete", "table": T_SHOWS,
+                           "where": {"owner_app": owner}}, "s-del")]
+    return [tool_call({"operation": "insert", "table": T_SHOWS, "rows": rows,
+                       "replace": {"owner_app": owner}}, "s-ins")]
 
 
 def boot_read():
@@ -1700,9 +1697,8 @@ def turn_for(r, hop, ctx, key):
 
 
 def w_work_row(row):
-    return [tool_call({"operation": "delete", "table": T_WORK,
-                       "where": {"call_id": row["call_id"]}}, "w-del-" + row["call_id"]),
-            tool_call({"operation": "insert", "table": T_WORK, "row": row},
+    return [tool_call({"operation": "insert", "table": T_WORK, "row": row,
+                       "replace": {"call_id": row["call_id"]}},
                       "w-ins-" + row["call_id"])]
 
 

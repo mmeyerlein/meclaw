@@ -8,8 +8,11 @@ Stations and the unittest runs drop these variables, and the runs compare the
 repository config before and after -- any difference is RED.
 """
 
+import collections
 import os
+import re
 import subprocess
+import sys
 
 # `git rev-parse --local-env-vars`
 GIT_REPO_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
@@ -22,6 +25,77 @@ GIT_REPO_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_P
 def without_repo_env(env):
     """`env` without git's repository variables: a run's git is its tree's."""
     return {k: v for k, v in env.items() if k not in GIT_REPO_VARS}
+
+
+def enter_dirs(dirs, prog):
+    """`os.chdir` through `dirs` in order, as `git -C` does with each `-C`:
+    a relative path from the directory before. A directory that is not one is
+    `<prog>: -C: no such directory: <dir>` and exit 2 (GH #1199 (b)).
+
+    Why: an agent shell resets its cwd on every call, and a kit entry that
+    reads its tree from the cwd was reachable from there only through a
+    wrapper script (wave validation 2, strand v2-p1078)."""
+    for path in dirs or ():
+        if not os.path.isdir(path):
+            sys.stderr.write("%s: -C: no such directory: %s\n" % (prog, path))
+            raise SystemExit(2)
+        try:
+            os.chdir(path)
+        except OSError as exc:
+            sys.stderr.write("%s: -C: cannot enter %s: %s\n" % (prog, path, exc.strerror))
+            raise SystemExit(2)
+
+
+def take_leading_dirs(argv, prog):
+    """`argv` without its leading `-C <dir>` pairs, after entering them
+    (`enter_dirs`) -- the form of an entry with subcommands, where `-C`
+    stands before the command (`pipeline.py -C <dir> <cmd> ...`)."""
+    argv, dirs = list(argv), []
+    while argv and argv[0] == "-C":
+        if len(argv) < 2:
+            sys.stderr.write("%s: -C needs a directory\n" % prog)
+            raise SystemExit(2)
+        dirs.append(argv[1])
+        argv = argv[2:]
+    enter_dirs(dirs, prog)
+    return argv
+
+
+# THE STRAND OF A CALL (GH #1199 f). The strand came from the branch alone in
+# every entry that binds a token, a lease or a receipt -- in a detached tree
+# (no branch) `pipeline.py test --strand S` was refused with exit 3 although
+# its lease was held, and strand S2 of wave validation 2 made a branch by hand
+# (OR-V2.S2.2). One chain for every entry: `--strand` > the branch
+# `<wave>/<name>` > a refusal that names the way. Its shell twin is
+# `strand.sh strand_of_branch`, with the same two texts.
+DETACHED = "detached HEAD: pass --strand <S>"
+NO_STRAND = "cannot tell the strand from the branch -- pass --strand"
+
+Strand = collections.namedtuple("Strand", "name key why")
+
+
+def strand_of(branch, strand="", wave=""):
+    """`Strand(name, key, why)` of a call: `name` the strand (`<S>`), `key` its
+    lease holder `<wave>/<S>` (the bare `<S>` when no wave is known), `why`
+    the refusal when neither `--strand` nor the branch names one ("" else).
+
+    `branch` is the tree's branch as the caller read it: "HEAD" (`rev-parse
+    --abbrev-ref` on a detached HEAD) and "" count as detached, None as "no
+    branch known"."""
+    branch = "" if branch == "HEAD" else branch
+    if strand:
+        if "/" in strand:
+            return Strand(strand.rsplit("/", 1)[-1], strand, "")
+        if wave:
+            w = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", wave.rstrip("/").split("/")[-1])
+        elif branch and "/" in branch:
+            w = branch.split("/", 1)[0]
+        else:
+            return Strand(strand, strand, "")
+        return Strand(strand, "%s/%s" % (w, strand), "")
+    if branch and "/" in branch:
+        return Strand(branch.rsplit("/", 1)[-1], branch, "")
+    return Strand("", "", DETACHED if branch == "" else NO_STRAND)
 
 
 def enter_tree():

@@ -36,7 +36,10 @@ MODULES = (
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="pipeline", description="meclaw pipeline core")
+    p = argparse.ArgumentParser(
+        prog="pipeline", description="meclaw pipeline core",
+        epilog="-C <dir> before the command: run as if started in <dir> (as git -C; "
+               "scripts/pipeline.py takes it)")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in MODULES:
         importlib.import_module(f".{name}", __package__).register(sub)

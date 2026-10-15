@@ -601,7 +601,7 @@ class TestGateLocal(GateCase):
         return ex.call_args.args[1]
 
     def test_local_run_on_an_egon_machine_takes_the_egon_width(self):
-        nproc = os.cpu_count() or 2
+        nproc = gate.cpus.threads()
         d = self._local_dispatch("--no-nice")
         self.assertEqual(d["capacity"]["cpu"], max(1, nproc // 2))
         self.assertEqual(d["+cpu_overbook"], schedule.CPU_OVERBOOK)
@@ -629,7 +629,7 @@ class TestGateLocal(GateCase):
     def test_local_run_elsewhere_takes_every_core(self):
         self.lanes_file.write_text("lane-a  builder@lane-a.invalid\n")
         d = self._local_dispatch()
-        self.assertEqual(d["capacity"]["cpu"], os.cpu_count() or 2)
+        self.assertEqual(d["capacity"]["cpu"], gate.cpus.threads())
         self.assertEqual(d["+cpu_overbook"], schedule.CPU_OVERBOOK)
         self.assertNotIn("CARGO_BUILD_JOBS", d["+env"])
 
@@ -1113,7 +1113,7 @@ class TestGateLane(GateCase):
         d, jobs, err = self._class_pass("build02  builder@lane-l.invalid  class=lane")
         self.assertEqual("lane", d.get("+runner_class"))
         self.assertEqual("12", jobs)
-        self.assertEqual(os.cpu_count(), d["capacity"]["cpu"])
+        self.assertEqual(gate.cpus.threads(), d["capacity"]["cpu"])
         self.assertNotIn("Egon cap", err)
 
     def test_the_lane_pass_prints_the_full_rev_too(self):
@@ -1238,7 +1238,7 @@ class TestGateLane(GateCase):
             rc, out, err = self.gate("strand", "--no-pre", "--reason", "test")
         self.assertEqual(rc, 0, out + err)
         d = ex.call_args.args[1]
-        nproc = os.cpu_count() or 2
+        nproc = gate.cpus.threads()
         want = schedule.colony_capacity(gate.satellites.local_cores(), nproc)
         self.assertEqual(want, d["capacity"]["colony"])
         widest = max(int(n.get("colony", 0)) for n in gate.plan.NEEDS.values())
@@ -1996,7 +1996,14 @@ class TestTestCmd(GateCase):
         self.tier_log = self.tmp / "tier-log"
         self.tier_log.write_text(GREEN_LOG)
         os.environ.update({"FAKE_TIER_RECORD": str(self.record),
-                           "FAKE_TIER_LOG": str(self.tier_log), "FAKE_TIER_RC": "0"})
+                           "FAKE_TIER_LOG": str(self.tier_log), "FAKE_TIER_RC": "0",
+                           # the machine of these cases: 8 cores (GNU nproc reads
+                           # OMP_NUM_THREADS), so the class egon width is its cap of 4
+                           # threads -- the public runner's 4 vCPU gave 2 (GH #1199)
+                           "OMP_NUM_THREADS": "8"})
+        # ... and nothing caps it: GNU nproc takes the lower of OMP_NUM_THREADS
+        # and OMP_THREAD_LIMIT, so an inherited limit decided the width (B-2)
+        os.environ.pop("OMP_THREAD_LIMIT", None)
         os.environ.pop("MECLAW_STRAND_TOKEN_SKIP", None)
 
     def hold(self, lane_name="lane-l"):
@@ -2125,6 +2132,34 @@ class TestTestCmd(GateCase):
         self.assertEqual(rc, 3, out + err)
         self.assertIn("test runs on a lane", err)
         self.assertFalse(self.record.exists())
+
+    def test_test_cmd_in_a_detached_tree_takes_the_strand_from_strand(self):
+        """GH #1199 (f), OR-V2.S2.2: in a detached tree (no branch) the strand
+        came only from the branch -- `_lease_gate` refused the held lease of
+        `--strand t1 --wave <W>` with exit 3 ("binds to a held token"), and S2
+        made a branch by hand. `--strand` wins over the branch; `<wave>/<name>`
+        names the wave as well."""
+        self.hold()
+        git(self.repo, "checkout", "-q", "--detach")
+        for words in (("--strand", "t1", "--wave", "welle-x-2026-10-08"), ("--strand", "welle-x/t1")):
+            with self.subTest(words=words):
+                rc, out, err = self.run_test("binary(~gh123)", *words)
+                self.assertEqual(rc, 0, out + err)
+                self.assertRegex(out, r"(?m)^TEST \[binary\(~gh123\)\] 3/3 \d+s GREEN$")
+        logs = list((self.repo / "plans" / "welle-x-2026-10-08" / "receipts" / "t1").glob("test-*/test.log"))
+        self.assertEqual(len(logs), 2, logs)
+
+    def test_test_cmd_in_a_detached_tree_without_strand_names_the_way(self):
+        """... and without `--strand` the call ends with exit 2 and the way out,
+        before any wave or lane is asked (it read "cannot tell the wave")."""
+        self.hold()
+        git(self.repo, "checkout", "-q", "--detach")
+        for words in ((), ("--wave", "welle-x-2026-10-08")):
+            with self.subTest(words=words):
+                rc, out, err = self.run_test("binary(~gh123)", *words)
+                self.assertEqual(rc, 2, out + err)
+                self.assertIn("strand: detached HEAD: pass --strand <S>", err)
+                self.assertFalse(self.record.exists())
 
     def test_test_cmd_host_without_token_exits_3_unless_skip(self):
         rc, out, err = self.run_test("binary(~gh123)", "--host", "lane-l")

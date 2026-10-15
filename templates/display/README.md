@@ -1,4 +1,4 @@
-# `display@2.10.11`
+# `display@2.10.12`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -71,7 +71,7 @@ pass called the judge, the tree last sent -- every pass computes anew and nobody
 The store holds each application's last write per view, until the application writes
 again or withdraws; what earlier writes left standing in the state is kept in the small
 row. A view is one row,
-written as delete + insert under `(owner, view_id)`. The curator never deletes a row: an
+written as delete + insert under `(owner, view_id)` in one step (`insert` with `replace`). The curator never deletes a row: an
 expired view stays a row and stops being a window, and a withdrawn view is the
 application's own delete. Where the scenarios say a view "leaves the store", the view
 leaves the set of views the curator knows, while its row stays.

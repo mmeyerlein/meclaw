@@ -45,7 +45,7 @@ import time
 import uuid
 from typing import Optional
 
-from . import events, store
+from . import cpus, events, gitenv, store
 
 CAPACITY_KEYS = ("cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo")
 # Orga's seven exec keys (`shared/exec.py` EXEC_KEYS); everything else lives in `doc.station`.
@@ -123,6 +123,12 @@ ADDITIVE_DDL = (
     # the lease (holder, since), in a table no older core touches.
     "CREATE TABLE IF NOT EXISTS lease_holds (pool TEXT, holder TEXT, since TEXT, "
     "hold_min INTEGER, PRIMARY KEY (pool, holder, since))",
+    # GH #1199 (kit find V2-A8): the last progress line of the holder's run (or
+    # its refusal), keyed by the lease like `lease_holds` -- `who` reads it per
+    # holder by its key; the journal would be a scan over every row (113 547 on
+    # 14.10.), and a column of `lease_entries` an older core's `_save` drops.
+    "CREATE TABLE IF NOT EXISTS lease_progress (pool TEXT, holder TEXT, since TEXT, "
+    "at TEXT, state TEXT, line TEXT, PRIMARY KEY (pool, holder, since))",
 )
 # `lease_entries.hold_min`: the explicit `take --ttl` of a holder -- a lease
 # held on purpose, which the idle reclaim (R-TV-W21 b) leaves to its hold TTL.
@@ -327,40 +333,10 @@ class LeaseResult:
 
 # --- runners -------------------------------------------------------------------------------
 
-def physical_cores(root="/"):
-    """The real cores of this host: distinct sibling sets of /sys topology (6 on a
-    6-core CPU with hyper-threading, nproc 12); None when the kernel does not say.
-    A guest (`hypervisor` in /proc/cpuinfo) whose topology shows no siblings says
-    nothing either: KVM shows every vCPU as its own core (build02: 12 x 1 on an
-    E5-1660 v2, 6 cores + HT), so its count is the threads, not the cores
-    (OR-TB.S3.15). A diagnostic of the fingerprint only: the colonies come from
-    the host file's `cores=` (`colony_capacity`), never from this count."""
-    sets, cpus = set(), 0
-    base = os.path.join(root, "sys", "devices", "system", "cpu")
-    try:
-        names = os.listdir(base)
-    except OSError:
-        return None
-    for name in names:
-        if not re.fullmatch(r"cpu\d+", name):
-            continue
-        try:
-            with open(os.path.join(base, name, "topology", "thread_siblings_list")) as f:
-                sets.add(f.read().strip())
-            cpus += 1
-        except OSError:
-            continue
-    if sets and len(sets) == cpus and _is_guest(root):
-        return None
-    return len(sets) or None
-
-
-def _is_guest(root):
-    try:
-        with open(os.path.join(root, "proc", "cpuinfo")) as f:
-            return any(ln.startswith("flags") and "hypervisor" in ln.split() for ln in f)
-    except OSError:
-        return False
+# The real cores of a topology live in `cpus` (GH #1199, re-check A-I1): the kit's
+# one CPU source, read from MECLAW_FP_SYSROOT under `--kit`. Kept here by name for
+# the callers and tests that ask the scheduler.
+physical_cores = cpus.physical_cores
 
 
 def runner_capacity(lane, fingerprint):
@@ -396,10 +372,10 @@ def _runner_cpu(lane, fingerprint):
         # (`executor._book_threads`): a station books exactly what it runs. With
         # half the cores alone, an egon host of nproc 12 booked 6 and ran 4.
         from .executor import EGON_MAX_THREADS  # lazy: the executor imports schedule lazily
-        return min(max(1, int(vcpu or os.cpu_count() or 2) // 2), EGON_MAX_THREADS)
+        return min(max(1, int(vcpu or cpus.threads()) // 2), EGON_MAX_THREADS)
     # Before the lane's first `lane_fingerprint` and without `threads=` the
     # kern's own count stands in (as for egon); cpu 1 made the first run serial.
-    return int(getattr(lane, "threads", None) or vcpu or os.cpu_count() or 1)
+    return int(getattr(lane, "threads", None) or vcpu or cpus.threads())
 
 
 def colony_capacity(cores=None, vcpu=None):
@@ -410,7 +386,7 @@ def colony_capacity(cores=None, vcpu=None):
     start value, OR-DT-11) was never measured."""
     from . import plan
     widest = max([int(n.get("colony", 0)) for n in plan.NEEDS.values()] + [1])
-    real = int(cores or 0) or max(1, int(vcpu or os.cpu_count() or 2) // 2)
+    real = int(cores or 0) or max(1, int(vcpu or cpus.threads()) // 2)
     return max(real, widest)
 
 
@@ -1450,6 +1426,7 @@ def close(db, admission, pass_ended, lost=False, now=None, reason=None):
                     # last sign of life -- `seen` dated from the admission, and
                     # 3 s after a 16-min gate the idle reclaim took the lane
                     # back as "idle 16 min". The idle TTL counts from here.
+                    _keep_last_station(db, mine, admission.run)
                     mine["run"] = None
                     mine["seen"] = now
                 _save(db, st, ctx)
@@ -2344,10 +2321,10 @@ def _who(db, ctx):
     for h in st["holders"]:
         why = _stale(h, st, ctx)
         pids = ", ".join("%d (%s)" % (p, "alive" if _alive(p) else "gone") for p in h["pids"])
-        ctx.print("  %s%s  held %d min, seen %d min ago, pid %s%s"
+        ctx.print("  %s%s  held %d min, seen %d min ago, pid %s, %s%s"
                   % (h["strand"], ("  lane " + h["lane"]) if h.get("lane") else "",
                      ctx.mins(h["since"]), ctx.mins(h["seen"]), pids or "-",
-                     ("  STALE: " + why) if why else ""))
+                     _liveness(db, h, ctx), ("  STALE: " + why) if why else ""))
     if st["waiting"]:
         ctx.print("queue:")
         for n, w in enumerate(st["waiting"], 1):
@@ -2376,6 +2353,60 @@ def _who(db, ctx):
     return ctx.result(0)
 
 
+def _last_station(db, run):
+    """(epoch, `GATE <station>`) of the last station the pass `run` journaled, else None."""
+    j = db.execute("SELECT at, data FROM journal WHERE run = ? AND event IN "
+                   "('station_started', 'station_ended') ORDER BY seq DESC LIMIT 1",
+                   (run,)).fetchone()
+    if not j:
+        return None
+    return (int(store.parse_at(j["at"]).timestamp()),
+            "GATE %s" % json.loads(j["data"] or "{}").get("station", "?"))
+
+
+def _keep_last_station(db, h, run):
+    """GH #1199 V2-E-2: the end of a pass on a held lease clears `run`, the only
+    way `who` read its stations -- 15.10. 03:06 a lease said "no progress since
+    take" right after a 35-min gate. Its last station becomes the lease's
+    progress row (the row `progress.beat` writes), unless a newer one is there."""
+    last = _last_station(db, run)
+    if last is None or last[0] < h["since"]:
+        return
+    since = _iso(h["since"])
+    row = db.execute("SELECT at FROM lease_progress WHERE pool = ? AND holder = ? AND since = ?",
+                     (POOL, h["strand"], since)).fetchone()
+    if row and _epoch(row["at"]) > last[0]:
+        return
+    db.execute("INSERT OR REPLACE INTO lease_progress (pool, holder, since, at, state, line) "
+               "VALUES (?, ?, ?, ?, 'progress', ?)", (POOL, h["strand"], since, _iso(last[0]), last[1]))
+
+
+def _last_progress(db, h):
+    """(epoch, state, line) of the last progress of the lease `h`, None without
+    one: the row its run's `progress.beat` wrote (an ended pass leaves its last
+    station there, `_keep_last_station`), or the last station of the gate pass
+    the lease carries (`run`, journaled as the stream arrives)."""
+    row = db.execute("SELECT at, state, line FROM lease_progress WHERE pool = ? AND holder = ? "
+                     "AND since = ?", (POOL, h["strand"], _iso(h["since"]))).fetchone()
+    best = (_epoch(row["at"]), row["state"] or "progress", row["line"] or "") if row else None
+    last = _last_station(db, h["run"]) if h.get("run") else None
+    if last and last[0] >= h["since"] and (best is None or last[0] >= best[0]):
+        best = (last[0], "progress", last[1])
+    return best
+
+
+def _liveness(db, h, ctx):
+    """`progress N min ago`, `REFUSED N min ago: <line>` or `no progress since
+    take` (GH #1199: a run that never started showed a held lane for 4 h)."""
+    last = _last_progress(db, h)
+    if last is None:
+        return "no progress since take"
+    at, state, line = last
+    if state == "progress":
+        return "progress %d min ago" % ctx.mins(at)
+    return "%s %d min ago: %s" % (state.upper(), ctx.mins(at), line)
+
+
 def lease_lane(db, holder):
     """`lane`: the lane `holder` holds, or nothing."""
     _ensure(db)
@@ -2385,6 +2416,16 @@ def lease_lane(db, holder):
     if mine and mine.get("lane"):
         return LeaseResult(0, mine["lane"] + "\n", "", mine["lane"])
     return LeaseResult(0)
+
+
+def lease_speaker(db, holder, want=""):
+    """The lease `holder` runs on: for a batch `<wave>/S1+S2` the member lease
+    it speaks for (`_batch_speaker`, as the admission resolves it), else
+    `holder` itself (re-check RC-GK2 I2: the merge point's golden generator)."""
+    _ensure(db)
+    with _tx(db):
+        st = _load(db)
+    return _batch_speaker(st, holder, want or "") if st and holder else holder
 
 
 def lease_on_lane(db, holder, lane):
@@ -2580,12 +2621,15 @@ def _enter_pid(entry, pid):
 
 
 def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=None, run=None,
-               path="", wait=False, pid=None):
+               path="", wait=False, pid=None, queue=True):
     """`take [--lane x] [--ttl min] [--pid n]`: a token or a lane, or a place in
     the queue (exit 3). `--pid` enters the process that uses the lease (kit
     find "holder push", Welle Testing 10/12: a run on the lane of a holder
     lease `S:n` entered no PID -- `take` dropped `--pid`, only `check` took it
-    -- and the lease fell away after its TTL under the running load)."""
+    -- and the lease fell away after its TTL under the running load).
+    `queue=False` (the merge point's golden generator, #1199 V2-A17): exit 3
+    without a queue place -- like the merge gate's admission (kit find (h)),
+    a caller that never comes back for an offer must not hold one."""
     _ensure(db)
     ctx = _Ctx(db, _now(now), branch, path)
     key, want = holder, lane or ""
@@ -2637,6 +2681,12 @@ def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=Non
                 if got:
                     ctx.print("lane %s" % got)
                 return ctx.result(0, got)
+            if not queue:
+                _save(db, st, ctx)
+                ctx.say("%s -- no queue place: the caller does not wait for an offer" % (
+                    ("lane %s is leased to another strand or a waiter ahead" % want) if want
+                    else "every lane is leased to another strand or a waiter ahead"))
+                return ctx.result(3)
             msg = _enqueue(st, ctx, key, want, tree, wait=wait)
             _save(db, st, ctx)
             ctx.say(msg)
@@ -3095,25 +3145,18 @@ def _run_verb(argv, env, cwd):
     db_path, lanes_file = _paths(env)
     branch = _git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
     tree = _git(cwd, "rev-parse", "--show-toplevel")
-    strand_in, key = opts["strand"], ""
+    strand_in = opts["strand"]
     bad = strand_colon_error(strand_in)
     if bad:
         ctx.say("token %s: %s" % (verb, bad))
         return 2, "", _join(ctx.err)
-    if "/" in strand_in:
-        key = strand_in
-    elif not strand_in:
-        key = branch if "/" in branch else ""
-    else:
-        if opts["wave"]:
-            wave = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", opts["wave"].rstrip("/").split("/")[-1])
-        elif "/" in branch:
-            wave = branch.split("/", 1)[0]
-        else:
-            ctx.say("token: --strand %s needs --wave, a strand branch, or the form <wave>/<name>"
-                    % strand_in)
-            return 2, "", _join(ctx.err)
-        key = "%s/%s" % (wave, strand_in)
+    # The one chain `--strand` > branch (`gitenv.strand_of`, GH #1199 f).
+    who = gitenv.strand_of(branch, strand_in, opts["wave"])
+    key = who.key
+    if strand_in and "/" not in key:
+        ctx.say("token: --strand %s needs --wave, a strand branch, or the form <wave>/<name>"
+                % strand_in)
+        return 2, "", _join(ctx.err)
     # A second lease of one strand (GH #1146): `<strand>:<n>`, its own holder.
     if opts["holder"] is not None:     # `--holder ""` is refused, never the main lease (R2 M4)
         if not HOLDER_RE.match(opts["holder"]) or verb not in HOLDER_VERBS:
@@ -3133,7 +3176,7 @@ def _run_verb(argv, env, cwd):
                     "(a lane host file entry is one token; the count is the list)")
             return 2, "", _join(ctx.err)
     if verb in ("take", "release") and not key:
-        ctx.say("token %s: cannot tell the strand from the branch -- pass --strand" % verb)
+        ctx.say("token %s: %s" % (verb, who.why))
         return 2, "", _join(ctx.err)
 
     now = int(env.get("MECLAW_STRAND_NOW") or time.time())

@@ -42,6 +42,25 @@ fn op_of(msg: &Value) -> Value {
         .expect("the args are json")
 }
 
+/// GH #1199: forgetting the park and remembering the flight are ONE store
+/// write -- an `insert` with `replace` over the parked row, no separate
+/// delete leg; the un-parking is that write, then the submission.
+fn assert_one_step_flight(out: &[Value]) {
+    assert_eq!(
+        out.len(),
+        2,
+        "forget the park and remember the flight in one step, then submit"
+    );
+    let flight = op_of(&out[0]);
+    assert_eq!(flight["operation"], "insert");
+    assert_eq!(flight["replace"], json!({ "id": "p1" }));
+    assert!(
+        flight.get("where").is_none(),
+        "no separate delete leg: {flight}"
+    );
+    assert_eq!(flight["row"]["kind"], "flight");
+}
+
 /// A manifest that hands a `code` cell a body nobody reviewed.
 fn manifest_with_a_script() -> Value {
     json!([{
@@ -145,8 +164,8 @@ fn a_manifest_without_a_script_asks_no_second_question() {
 
     // And the un-parking goes straight through to the door.
     let out = unpark("parked", &decls);
-    assert_eq!(out.len(), 3, "forget the park, remember the flight, submit");
-    assert_eq!(out[2]["header"]["route"], "mutate");
+    assert_one_step_flight(&out);
+    assert_eq!(out[1]["header"]["route"], "mutate");
 }
 
 #[test]
@@ -191,8 +210,11 @@ fn the_derivation_does_not_fire_on_a_params_key_that_merely_looks_like_one() {
         }] }
     }]);
     let out = unpark("parked", &decls);
-    assert_eq!(out.len(), 3, "no second question: nothing here is a script");
-    assert_eq!(out[2]["header"]["route"], "mutate");
+    assert_one_step_flight(&out);
+    assert_eq!(
+        out[1]["header"]["route"], "mutate",
+        "no second question: nothing here is a script"
+    );
 }
 
 // ── the verdict, and a refusal class of its own ──────────────────────────────
@@ -248,13 +270,9 @@ fn an_enabled_rule_lets_the_same_manifest_through() {
 
     let decls = manifest_with_a_script();
     let done = unpark("authored", &decls);
-    assert_eq!(
-        done.len(),
-        3,
-        "forget the park, remember the flight, submit"
-    );
-    assert_eq!(done[2]["header"]["route"], "mutate");
-    assert_eq!(done[2]["manifest"][0]["ctx"]["requester"], REQUESTER);
+    assert_one_step_flight(&done);
+    assert_eq!(done[1]["header"]["route"], "mutate");
+    assert_eq!(done[1]["manifest"][0]["ctx"]["requester"], REQUESTER);
 }
 
 #[test]

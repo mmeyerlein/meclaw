@@ -23,7 +23,7 @@ import re
 import textwrap
 import tomllib
 import unittest
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 CONFIG = REPO / ".config" / "nextest.toml"
@@ -151,6 +151,7 @@ class TheFilterGrammar(unittest.TestCase):
         text = (REPO / ".config" / "nextest.toml").read_text(encoding="utf-8")
         self.assertFalse("A test name carries neither `::` nor a space" in text)
         self.assertTrue("test(=gh669_x::a_test)" in text)
+        private_tree.require("docs/development-rules.md")   # GH #1199
         rules = (REPO / "docs" / "development-rules.md").read_text(encoding="utf-8")
         self.assertFalse("a test once named `<stem>::<test>` in binary" in rules)
         log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -229,6 +230,7 @@ class TheFilterGrammar(unittest.TestCase):
     def test_agents_md_says_a_retry_only_detects(self):
         """Re-check B-M2: AGENTS.md states TV-F8 -- no sentence lets a retry catch a flake.
         The wording is the one of VORGABEN section 5.1 (tv-p0): no retry in the blocking path."""
+        private_tree.require("AGENTS.md")   # GH #1199: AGENTS.md does not travel
         text = (REPO / "AGENTS.md").read_text()
         self.assertNotIn("fängt nur eine gemessene, getrackte Flake ab", text)
         self.assertNotIn("Retries gibt es nur für die Quarantäne-Liste", text)

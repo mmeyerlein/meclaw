@@ -133,8 +133,10 @@ fn replayed(op: &'static str, rows_affected: Option<i64>, payload: Option<String
 /// answered (GH #1043): the same `rows_affected` and `payload`, so a caller
 /// that branches on the answer takes the same branch on a replay. Only a
 /// successful write is booked: a write that came back with an `error_code`
-/// changed nothing (every store write is a single statement), so running it
-/// again on replay is the honest answer and cannot double anything.
+/// changed nothing -- a single statement fails whole, and a write of several
+/// statements (`insert` with `rows` or `replace`, GH #1199) runs under a
+/// savepoint that a failure rolls back with everything it wrote -- so running
+/// it again on replay is the honest answer and cannot double anything.
 ///
 /// On a connection in autocommit (every store leg is its own `db.call`) the
 /// call owns the transaction and opens it `BEGIN IMMEDIATE`; inside a
@@ -223,13 +225,19 @@ pub fn dispatch_once(
         Ok(outcome)
     })();
     match &result {
-        Ok(_) => {
+        Ok(outcome) => {
             // A commit that fails leaves the transaction open; roll it back so
             // the connection is never left inside a `BEGIN` the next message
-            // would inherit.
+            // would inherit. A write that failed and that the database rolled
+            // back whole (`RAISE(ROLLBACK)`) has ended the transaction too, so
+            // the commit fails with "no transaction is active": the answer is
+            // then the write's own failure, as in `ops` (GH #1199, pin
+            // `gh1199_a_once_keyed_write_the_database_rolls_back_answers_its_own_cause`).
             if let Err(e) = conn.execute_batch(commit) {
                 let _ = conn.execute_batch(rollback);
-                return Ok(crate::store::ops::sql_error_outcome(op, &e));
+                if outcome.error_code.is_none() {
+                    return Ok(crate::store::ops::sql_error_outcome(op, &e));
+                }
             }
         }
         // A failure after the write but before the booking must take the write
@@ -621,6 +629,41 @@ mod tests {
         assert_eq!(out.error_code, Some("sql_error"), "{:?}", out.error_text);
         assert!(c.is_autocommit(), "no transaction is left open");
         reader.execute_batch("COMMIT").unwrap();
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM items"), 1);
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM meclaw_consumed"), 1);
+    }
+
+    /// GH #1199 (re-check RD-G5 m-3): a write the database rolls back whole
+    /// (`RAISE(ROLLBACK)`) also ends the `BEGIN IMMEDIATE` this call opened, so
+    /// the closing COMMIT fails with "no transaction is active". The answer is
+    /// the write's own failure, which `ops` hands up, not that COMMIT.
+    #[test]
+    fn gh1199_a_once_keyed_write_the_database_rolls_back_answers_its_own_cause() {
+        let c = conn();
+        let args = json!({"operation":"insert","table":"items","row":{"id":1,"name":"old"}});
+        dispatch_once(&c, &args, &CanonicalMap::new(), Some("m-0")).unwrap();
+        c.execute_batch(
+            "CREATE TRIGGER t_gone BEFORE INSERT ON items WHEN NEW.name = 'gone'
+               BEGIN SELECT RAISE(ROLLBACK, 'injected rollback'); END;",
+        )
+        .unwrap();
+
+        let args = json!({"operation":"insert","table":"items",
+                          "rows":[{"id":1,"name":"new"},{"id":1,"name":"gone"}],
+                          "replace":{"id":1}});
+        let out = dispatch_once(&c, &args, &CanonicalMap::new(), Some("m-1"))
+            .expect("a rolled-back write is an outcome, not Err");
+        let text = out.error_text.clone().unwrap_or_default();
+        assert!(
+            out.error_code.is_some() && text.contains("injected rollback"),
+            "the write's own failure is the answer, not the closing COMMIT: {:?} {text}",
+            out.error_code
+        );
+        assert!(c.is_autocommit(), "no transaction is left open");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM items WHERE name = 'old'"),
+            1
+        );
         assert_eq!(count(&c, "SELECT COUNT(*) FROM items"), 1);
         assert_eq!(count(&c, "SELECT COUNT(*) FROM meclaw_consumed"), 1);
     }

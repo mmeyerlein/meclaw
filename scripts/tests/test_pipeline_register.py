@@ -296,7 +296,7 @@ class PlanForm(Satellite):
         self.assertEqual("7930,7931", argv[argv.index("--slots") + 1])
         self.assertEqual(os.path.abspath(self.root), unit["cmds"][0]["cwd"])
         # default placeholders: this interpreter and this core's package
-        plan = register.build_plan(self.root, "release", None)
+        plan = register.build_plan(self.root, "release", None, **LANE)
         argv = plan["stations"][0]["cmds"][0]["argv"]
         self.assertEqual([sys.executable,
                           os.path.join(os.path.dirname(register.__file__), "unit_runner.py")],
@@ -410,11 +410,17 @@ def slot_station(name, workers, colony, **extra):
                    parallel={"by": "module", "workers": workers, "slot_env": "X_SLOT"}, **extra)
 
 
+# The lane these plans are made for. Without a pool the lane's physical cores
+# are the pool (GH #1163); the cases took this host's `lscpu` and were red on the
+# public runner, 4 vCPU on 2 cores (GH #1199).
+LANE = {"lane_cpu": 16, "lane_cores": 8}
+
+
 def _plan_of(stations, slots=None):
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "coding")
         write(root, "pipeline/stations.json", json.dumps(registry(stations)) + "\n")
-        plan = register.build_plan(root, "release", None, files=[], slots=slots)
+        plan = register.build_plan(root, "release", None, files=[], slots=slots, **LANE)
     return {s["name"]: s for s in plan["stations"]}
 
 

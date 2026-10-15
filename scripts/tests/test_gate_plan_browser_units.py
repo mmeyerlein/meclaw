@@ -20,7 +20,7 @@ import tempfile
 import unittest
 import unittest.mock
 
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
@@ -391,6 +391,11 @@ def _hits(terms, crate, unit):
     return False
 
 
+# GH #1199: the scenario class counts `slack_live.rs` (8 terms, 57 units), which the
+# export blocklists; only the three counting tests read it, the rest travel.
+SLACK_LIVE = "crates/meclaw-cells/tests/slack_live.rs"
+
+
 class TheReleasePartition(unittest.TestCase):
     """KR-TB-1 (d) "the release stays the full suite" (AGENTS.md t2), OR-TB.S4.55:
     the release subtracted the scenario class (8 terms, 57 units) from `tests` and
@@ -399,6 +404,7 @@ class TheReleasePartition(unittest.TestCase):
     stations do not split `all()`: `tests` + `browser:display` + the scenario
     station, every unit exactly once (fail-closed)."""
 
+    @private_tree.private(SLACK_LIVE)
     def test_the_release_plans_the_scenario_class_as_a_station(self):
         scen = gp.scenario_for(None)
         self.assertEqual(8, len(scen.split(" + ")))
@@ -417,6 +423,7 @@ class TheReleasePartition(unittest.TestCase):
                              by_name(gp.plan(["crates/meclaw-cells/src/lib.rs"], mode, repo=None)),
                              mode)
 
+    @private_tree.private(SLACK_LIVE)
     def test_the_release_stations_split_all_of_it(self):
         """Read from the planned commands alone: every unit in exactly one part."""
         st = by_name(gp.plan(["docs/x.md"], "release", repo=None))
@@ -521,6 +528,7 @@ class TheReleasePartition(unittest.TestCase):
             pl.release_guard(rows, None)
         self.assertIn("KR-TB-1", str(cm.exception))
 
+    @private_tree.private(SLACK_LIVE)
     def test_the_explain_row_names_the_scenario_binaries(self):
         rows = {r["name"]: r for r in gp.to_json(["docs/x.md"], "release", explain=True)["stations"]}
         row = rows[gp.SCENARIO_STATION]

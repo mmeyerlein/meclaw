@@ -81,14 +81,21 @@ CLASSES (a path can carry several)
                   scripts/precheck.py, scripts/pipeline/pre.py, scripts/pipeline/locks.py,
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
-                  scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py (the strand kit and the receipt
-                  builder carry their tests in `gate-selftest`), scripts/pipeline.py,
+                  scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py,
+                  scripts/stop_watch.py, scripts/check_required_pins.py,
+                  .config/required-pins.toml (the strand kit, the receipt builder, the stop
+                  watch of long runs and the required-pin check carry their tests in
+                  `gate-selftest`), scripts/pipeline.py,
                   scripts/pipeline/** and workshop/grafana/** (the pipeline core and
                   its dashboard), .config/nextest.toml
                   (the profile that decides what may be retried is gate
                   infrastructure too)
     unwrap_infra  .github/gates/unwrap_budget.{py,txt}, .github/gates/clock-bans/clippy.toml
-    export_infra  plans/export-fixtures/**
+    export_infra  every path outside FORBIDDEN_PREFIX of make_export.py (the
+                  export self-tests read the shipping tree: ROOT_FILES, DOCS_MAP,
+                  templates, real-file pins, MUST tests), plans/export-fixtures/**,
+                  plans/p5.5-fixtures/german_scan.py and the R16 seed generator
+                  workshop/tools/build_librarian_seed.py (V2-A13, GH #1199)
     shell         **/*.sh
     ci            .github/workflows/**
 
@@ -131,6 +138,9 @@ STATIONS (S strand, I integration, R release, C ci)
                     the whole tree, where the artefact notes grade files
                     nobody changed. An empty diff plans nothing to check
     roadmap-anchors adr-anchors claims tree-rules   always
+                    (`adr-anchors` runs `scripts/check_required_pins.py` as its
+                    second command: the required-pin table against its
+                    markers and the tree, GH #1199 -- rule 12 of `test_filter`)
     test-bans-inventory  I/R/C always: `scripts/testing_bans.py --inventory
                     --check` counts every testing ban over the whole tree;
                     NOTE with the count, RED when a ban's count rose over
@@ -317,8 +327,9 @@ STATIONS (S strand, I integration, R release, C ci)
     export-selftest export_infra; I/R always (seconds, pure Python). Two
                     commands: the drift fixtures and the lock of
                     `export-tree-tests` (`test_export_tree_tests.py`)
-    export-tree-tests  R always, right before `export-audit` (GH #1101).
-                    Builds the export tree of HEAD dry (the index of
+    export-tree-tests  R always, right before `export-audit` (GH #1101); S gate_infra
+                    or make_export (the kit half only, see below).
+                    Builds the export tree of the gated tree dry (the index of
                     `make_export.py`), selects IN IT every integration test
                     that reads the shipped catalogue (`_is_catalogue_wide` or
                     `_names_the_shipped_root` -- this module's rules, no hand
@@ -326,7 +337,24 @@ STATIONS (S strand, I integration, R release, C ci)
                     call per crate. cargo:1. A test green in the private tree
                     and red in the export -- a count or a floor over the
                     templates that ship (0.62.1) -- is RED here instead of in
-                    the public CI. Never in C: plans/ does not travel, and the
+                    the public CI. Second command `--kit` (GH #1199): the
+                    export tree's own `gate.sh ci --only` over every station
+                    of its ci plan without cargo (gate-selftest and the other
+                    kit stations) -- a kit self-test that reads a file the
+                    export does not carry is RED here, not in the public CI.
+                    S on a diff at a kit input -- `gate_infra` (the kit and
+                    its tests, `scripts/tests/**` included) or `make_export.py`
+                    (what travels) -- the `--kit` command alone, cargo 0
+                    (GH #1199, release 0.64.2 run 4: four kit self-tests
+                    were green in the strand and merge gate and red in the
+                    export tree; the release was the first gate that ran
+                    them there; re-check RC-KX: a diff at gate_plan.py
+                    alone turns unchanged kit tests red there). Every
+                    command exports `--worktree`, HEAD plus the overlay:
+                    the tree the gate gates and the cache keys the station
+                    on (`--rev HEAD` judged the base of an uncommitted diff
+                    and the cache took that GREEN over for the commit).
+                    Never in C: plans/ does not travel, and the
                     public tree IS the export tree
     export-audit    I/R always, after the four stations whose receipt
                     verdicts it reads (`plan.AUDIT_READS`, GH #1162 -- no
@@ -343,7 +371,18 @@ STATIONS (S strand, I integration, R release, C ci)
                     findings of R2b/R2c/R5/R10 -- dead template references
                     in tests, tests reaching into a never-exported root,
                     name/domain patterns, relative links -- in the
-                    integration pass instead of an hour later in the release
+                    integration pass instead of an hour later in the release.
+                    S (V2-A18, GH #1199) on a diff at an exported test source
+                    (`make_export._is_exported_test`: `crates/*/tests/**`,
+                    `*_test.rs`), at `templates/**` or at `make_export.py`:
+                    the dry audit over the gated tree (`--worktree`, HEAD plus
+                    the overlay) with `--no-gate-receipt` -- a strand gate has
+                    no I/R receipt, so R11/R12/R14/R17 are dropped (reported
+                    as not run), every other rule judges; `--parent HEAD`, so
+                    no stale or missing `github-main` (ls-remote check) can
+                    turn it red; scope `R1-R17 dry,
+                    no gate receipt`, cargo:0. The merge gate runs mode S and
+                    plans it from its own diff
 
 USAGE
 =====
@@ -390,7 +429,9 @@ TSV:   EXACTLY FIVE tab-separated columns on every row, in this order:
        every station gains `reason`: why it is planned, as `<label>: <path>`
        entries -- the label is a class of the path (`rust_src`, `docs`, ...)
        or one of `diff` (any path), `template:<name>`, `example:<name>`,
-       `recall_src`, `read` (rule 8 of `test_filter`); a station the MODE
+       `recall_src`, `make_export` (`plans/export-fixtures/make_export.py`),
+       `read` (rule 8 of
+       `test_filter`); a station the MODE
        plans says `mode: <mode>`, one every mode plans says `always`,
        `slow-tests` says `station: tests`, the empty-diff floor `floor: empty
        diff`. At most `REASON_CAP` path entries, then `+<n> more`. The table
@@ -926,6 +967,76 @@ def _crate_of(path):
     return None
 
 
+GERMAN_SCAN = "plans/p5.5-fixtures/german_scan.py"
+MAKE_EXPORT = "plans/export-fixtures/make_export.py"
+_EXPORT_RULES = []
+_EXPORT_MODULE = []
+
+
+def _export_module():
+    """`make_export.py` of this tree as a module, or None where the tree has
+    no plans/ (the export tree, where ci drops the stations anyway). Loaded
+    once (~20 ms, pure)."""
+    if not _EXPORT_MODULE:
+        import importlib.util
+        path = os.path.join(REPO_ROOT, MAKE_EXPORT)
+        mx = None
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("make_export_rules", path)
+            mx = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mx)
+        _EXPORT_MODULE.append(mx)
+    return _EXPORT_MODULE[0]
+
+
+def _export_rules():
+    """(FORBIDDEN_PREFIX, seed generator) of `make_export.py` of this tree --
+    what never ships and the one private file `build_index` reads (R16). One
+    list: loaded, not copied. None where the tree has no plans/."""
+    if not _EXPORT_RULES:
+        mx = _export_module()
+        rules = None
+        if mx is not None:
+            rules = (mx.FORBIDDEN_PREFIX,
+                     os.path.relpath(str(mx.SEED_GENERATOR), str(mx.REPO)).replace(os.sep, "/"))
+        _EXPORT_RULES.append(rules)
+    return _EXPORT_RULES[0]
+
+
+def _feeds_the_export_selftest(path):
+    """True when the export self-tests read `path` from the real tree: every
+    path that may ship (outside FORBIDDEN_PREFIX) and the private inputs they
+    load -- the fixtures, the string scan of p5.5, the seed generator."""
+    if path.startswith("plans/export-fixtures/") or path == GERMAN_SCAN:
+        return True
+    rules = _export_rules()
+    if rules is None:
+        return False
+    forbidden, seed_generator = rules
+    return path == seed_generator or not forbidden.match(path)
+
+
+def _is_exported_test(path):
+    """The files R2b/R2c/R2e judge: `make_export._is_exported_test` of this
+    tree (one rule, loaded); False where the tree has no plans/."""
+    mx = _export_module()
+    return mx is not None and mx._is_exported_test(path)
+
+
+def _feeds_the_strand_audit(path):
+    """V2-A18: what the cheap export rules judge -- an exported test source,
+    anything under `templates/` -- or the rules themselves (`make_export.py`).
+    S runs the dry `export-audit` on it."""
+    return path == MAKE_EXPORT or path.startswith("templates/") or _is_exported_test(path)
+
+
+def _feeds_the_kit_stations(path):
+    """A kit input: `gate_infra` (the kit and its self-tests, which travel and
+    run in the public CI) or `make_export.py` (what travels). S runs the kit
+    half of `export-tree-tests` on it."""
+    return path == MAKE_EXPORT or "gate_infra" in _classes_of_path(path)
+
+
 def _classes_of_path(path):
     """Every class this single path carries."""
     cls = set()
@@ -1082,6 +1193,8 @@ def _classes_of_path(path):
                  "scripts/display_sync.py", "scripts/strand.sh",
                  "scripts/wave_receipt.py", "scripts/slow_tests.py",
                  "scripts/flake_triage.py", "scripts/testing_bans.py",
+                 "scripts/stop_watch.py",
+                 "scripts/check_required_pins.py", REQUIRED_PINS,
                  ".config/nextest.toml", ".config/slow-debt.toml",
                  ".config/testing-bans.toml", ".config/testing-bans.baseline.json",
                  ".config/flaky-legacy.toml", ".config/testing-rulings.toml", "ruff.toml")
@@ -1091,7 +1204,16 @@ def _classes_of_path(path):
             or path.startswith("workshop/grafana/")):
         cls.add("gate_infra")
 
-    if path.startswith("plans/export-fixtures/"):
+    # `export-selftest` reads the real tree, not only its fixtures (V2-A13, GH
+    # #1199): `test_drift_gate.py` scans ROOT_FILES and every tracked scripts/
+    # file with its imports, pins real files by path and checks each declared
+    # string exemption; `test_export_tree_tests.py` resolves the MUST tests and
+    # ci.yml and runs `make_export.build_index("HEAD")` over ROOT_FILES,
+    # DOCS_MAP, the public templates and R16. A list of those inputs would be
+    # the next drift, so the rule is by construction: whatever may ship plans
+    # the station. The plan sees paths, not statuses -- a new file, a rename, a
+    # deletion and a new `import` in a kept file all reach it as a path here.
+    if _feeds_the_export_selftest(path):
         cls.add("export_infra")
 
     if path.endswith(".sh"):
@@ -1963,31 +2085,52 @@ def _closing(code, i):
     raise crate_root.Doubt("unclosed %s" % code[i])
 
 
-# --- the text rule 8 scans: no prose comments (#1160) -----------------------
+# --- the text rule 8 scans: no comments (#1160, V2-R1-1) ----------------
 #
-# A path in a prose comment reads nothing: `gh617`/`gh623` named
+# A path in a comment reads nothing: `gh617`/`gh623` named
 # `scripts/gate_plan.py` in a `//!` paragraph about their file name and ran
-# 22 tests (40.9 s) on every resolver diff. Rule 8 therefore scans code,
-# literals and the code of doc comments -- fenced blocks (``` or ~~~) and
-# indented lines, rustdoc's doctests -- and blanks the rest of every comment.
-# A hand lexer, not a regex: block comments nest, and a regex that
+# 22 tests (40.9 s) on every resolver diff. Rule 8 therefore scans code and
+# literals and blanks every comment whole -- `//`, `///`, `//!`, `/* */`,
+# `/** */`, `/*! */`, their code blocks too: a test file under
+# `crates/*/tests/` is no library, rustdoc never runs its doc-comment code
+# and nextest neither (V2-R1-1: `docs/development-rules.md` in comments
+# planned 14 Rust tests for a docs-only diff). A hand lexer, not a regex: block comments nest, and a regex that
 # closed `/* a /* b */ "x */` early would open a phantom string and could take
 # a real `"http://.."` for a comment. Doubt keeps the text: an unterminated
 # literal or comment returns it unchanged.
+#
+# The reason of `#[ignore = "..."]` is prose as well (re-check r1-kit M5):
+# gh867/gh961/gh1028 named `scripts/gate_plan.py` in it and planned
+# browser:display on every resolver diff. So is the message of an assert,
+# panic or expect: nine tests named `docs/development-rules.md` only there.
+# Such a literal is blanked like a comment -- only when it is the whole
+# message argument; a literal in the condition or a format argument reads.
 _READER_TOKEN_RE = re.compile(r'[bc]?r#*"|[bc]?"|b?\'|//|/\*')
 _READER_STR_RE = re.compile(r'(?:\\.|[^"\\])*"', re.S)
 _READER_CHAR_RE = re.compile(r"(?:\\(?:u\{[0-9A-Fa-f_]{1,8}\}|x[0-9A-Fa-f]{2}|.)|[^'\\\n])'")
 _READER_BLOCK_RE = re.compile(r"/\*|\*/")
-_READER_FENCE_RE = re.compile(r"`{3,}|~{3,}")
+_READER_IGNORE_RE = re.compile(r"#\[\s*ignore\s*=\s*\Z")
+# message argument index: macros (`name!(`) and methods (`.name(`)
+_READER_MESSAGE_MACROS = {
+    "panic": 0, "unreachable": 0, "todo": 0, "unimplemented": 0,
+    "assert": 1, "debug_assert": 1,
+    "assert_eq": 2, "assert_ne": 2, "debug_assert_eq": 2, "debug_assert_ne": 2,
+}
+_READER_MESSAGE_METHODS = {"expect": 0, "expect_err": 0}
+_READER_MESSAGE_HINT_RE = re.compile(
+    r"\b(?:%s)\b" % "|".join(sorted(set(_READER_MESSAGE_MACROS) | set(_READER_MESSAGE_METHODS))))
+_READER_MACRO_NAME_RE = re.compile(r"(?<![\w:])(\w+)\s*!\s*\Z")
+_READER_METHOD_NAME_RE = re.compile(r"\.\s*(\w+)\s*\Z")
 _READER_CACHE = {}
 
 
 def _reader_text(text):
-    """`text` with its prose comments blanked -- what rule 8 scans.
+    """`text` with every comment blanked -- what rule 8 scans.
 
-    Offsets and newlines stay those of `text`. Kept: code, every literal, and
-    in a doc comment (`///`, `//!`, `/**`, `/*!`) the fenced blocks and the
-    indented lines. A plain comment is prose whole."""
+    Offsets and newlines stay those of `text`. Kept: code and every literal but
+    the reason of `#[ignore = "..."]` and the message of an assert, panic or
+    expect (`_reader_message`). A comment of any form, doc comments and their
+    code blocks included, is prose whole."""
     got = _READER_CACHE.get(text)
     if got is None:
         try:
@@ -1999,7 +2142,10 @@ def _reader_text(text):
 
 
 def _reader_lex(text):
-    comments = []   # (start, end, doc)
+    comments = []   # (start, end)
+    reasons = []    # (start, end) of `#[ignore = "..."]` literals
+    strings = []    # (start, end) of every string literal
+    chars = []      # (start, end) of every char literal
     pos, n = 0, len(text)
     while True:
         m = _READER_TOKEN_RE.search(text, pos)
@@ -2015,21 +2161,26 @@ def _reader_lex(text):
             if end < 0:
                 return text
             pos = end + 1 + hashes
+            strings.append((i, pos))
+            if _READER_IGNORE_RE.search(text, max(0, i - 64), i):
+                reasons.append((i, pos))
         elif tok.endswith('"'):
             s = _READER_STR_RE.match(text, m.end())
             if not s:
                 return text
             pos = s.end()
+            strings.append((i, pos))
+            if _READER_IGNORE_RE.search(text, max(0, i - 64), i):
+                reasons.append((i, pos))
         elif tok.endswith("'"):
             c = _READER_CHAR_RE.match(text, m.end())
             pos = c.end() if c else m.end()   # no char: a lifetime or a label
+            if c:
+                chars.append((i, pos))
         elif tok == "//":
             end = text.find("\n", i)
             end = n if end < 0 else end
-            body = text[i:end]
-            doc = (body.startswith("///") and not body.startswith("////")) \
-                or body.startswith("//!")
-            comments.append((i, end, doc))
+            comments.append((i, end))
             pos = end
         else:
             depth, j = 1, m.end()
@@ -2039,94 +2190,60 @@ def _reader_lex(text):
                     return text
                 depth += 1 if b.group(0) == "/*" else -1
                 j = b.end()
-            body = text[i:j]
-            doc = (body.startswith("/**") and not body.startswith("/***")
-                   and body != "/**/") or body.startswith("/*!")
-            comments.append((i, j, doc))
+            comments.append((i, j))
             pos = j
-    if not comments:
+    if strings and _READER_MESSAGE_HINT_RE.search(text):
+        mask = list(text)   # code only: literals and comments blanked
+        for start, end in strings + chars:
+            _reader_blank(mask, start, end)
+        for start, end in comments:
+            _reader_blank(mask, start, end)
+        mask = "".join(mask)
+        reasons += [(a, b) for a, b in strings if _reader_message(mask, a, b)]
+    if not comments and not reasons:
         return text
     out = list(text)
-    fence = None   # the open fence (its marker run), or None
-    prev_end = None
-    for start, end, doc in comments:
-        # Only an item ends a doc block's open fence: rustdoc joins the doc
-        # attributes across plain comments, attributes and `/** */`, and in
-        # doubt the line counts (re-check tb-s2 Zusatz-Check m-1).
-        if prev_end is not None and not _reader_only_attrs(text[prev_end:start]):
-            fence = None
-        prev_end = end
-        if not doc:
-            _reader_blank(out, start, end)
-            continue
-        line_start = start
-        for line in text[start:end].split("\n"):
-            line_end = line_start + len(line)
-            content = _reader_doc_content(line)
-            f = _READER_FENCE_RE.match(content.lstrip())
-            if fence is not None:
-                # CommonMark: the same character, at least as long, nothing after
-                if f and f.group(0)[0] == fence[0] and len(f.group(0)) >= len(fence) \
-                        and not content.lstrip()[f.end():].strip():
-                    fence = None
-            elif f and not (f.group(0)[0] == "`" and "`" in content.lstrip()[f.end():]):
-                fence = f.group(0)
-            elif not _reader_indented(content):
-                _reader_blank(out, line_start, line_end)
-            line_start = line_end + 1
+    for start, end in reasons + comments:
+        _reader_blank(out, start, end)
     return "".join(out)
 
 
-def _reader_only_attrs(code):
-    """Is `code` (the text between two comments) blank or attributes only?
-    An attribute whose brackets do not close is doubt: True."""
-    i, n = 0, len(code)
-    while True:
-        while i < n and code[i].isspace():
-            i += 1
-        if i == n:
-            return True
-        if code.startswith("#[", i):
-            i += 1
-        elif code.startswith("#![", i):
-            i += 2
-        else:
-            return False
-        depth = 0
-        while i < n:
-            c = code[i]
-            if c == '"':
-                s = _READER_STR_RE.match(code, i + 1)
-                if not s:
-                    return True
-                i = s.end()
-                continue
-            depth += 1 if c == "[" else -1 if c == "]" else 0
-            i += 1
+def _reader_message(mask, start, end):
+    """Is the literal at `start:end` the whole message argument of an assert,
+    panic or expect? `mask` is the text with literals and comments blanked.
+    Bounded walk back to the opening bracket; no bracket found is doubt (no)."""
+    commas, depth, i = 0, 0, start - 1
+    limit = max(0, start - 20000)
+    while i >= limit:
+        c = mask[i]
+        if c in ")]}":
+            depth += 1
+        elif c in "([{":
             if depth == 0:
                 break
-        else:
-            return True
-
-
-def _reader_doc_content(line):
-    """The markdown of one doc-comment line: marker and ` * ` decoration off."""
-    s = line
-    for marker in ("///", "//!", "/**", "/*!"):
-        if s.startswith(marker):
-            return s[len(marker):]
-    if s.rstrip().endswith("*/"):
-        s = s.rstrip()[:-2]
-    t = s.lstrip()
-    if t.startswith("*"):
-        return t[1:]
-    return s
-
-
-def _reader_indented(content):
-    """An indented code line (4 spaces or a tab past the usual one space)."""
-    c = content[1:] if content.startswith(" ") else content
-    return bool(c.strip()) and (c.startswith("    ") or c.startswith("\t"))
+            depth -= 1
+        elif depth == 0:
+            if c == ",":
+                commas += 1
+                if commas > 2:
+                    return False
+            elif commas == 0 and not c.isspace():
+                return False   # the literal does not start its argument
+        i -= 1
+    else:
+        return False
+    head = mask[max(0, i - 64):i]
+    m = _READER_MACRO_NAME_RE.search(head)
+    want = _READER_MESSAGE_MACROS.get(m.group(1)) if m else None
+    if want is None and mask[i] == "(":
+        m = _READER_METHOD_NAME_RE.search(head)
+        want = _READER_MESSAGE_METHODS.get(m.group(1)) if m else None
+    if want is None or commas != want:
+        return False
+    j = end
+    while j < len(mask) and mask[j].isspace():
+        j += 1
+    return j < len(mask) and mask[j] in ",)]}"   # the literal is the whole argument
 
 
 def _reader_blank(out, start, end):
@@ -2713,71 +2830,17 @@ def _tests_reading_path(repo, path):
     that workflow that did not run it left the lock unrun. The rule generalises
     the template and example rules to every path outside `crates/`: docs, plans,
     workflows, CONTRIBUTING.md, README.md, workshop material.
-    A path a prose comment names reads nothing (`_reader_text`, #1160); in a
-    doctest block or a literal it reads. Doubt counts: a prose mention by a
-    unit that walks an ancestor directory of the path reads (`_walks_ancestor`).
+    A path a comment names reads nothing (`_reader_text`, #1160, V2-R1-1);
+    in code it reads. A walk of an ancestor directory is the runtime rule's
+    (`_tests_reading_at_runtime`), never a reason to read a comment.
     """
     literals = _path_literals(path)
     out = set()
     for crate, stem, text in _reader_sources(repo):
         if any(lit in text for lit in literals) \
-                and (any(lit in _reader_text(text) for lit in literals)
-                     or _walks_ancestor(repo, crate, stem, path)):
+                and any(lit in _reader_text(text) for lit in literals):
             out |= _unit_users(repo, crate, stem)   # a helper reads for its users (M-8)
     return out
-
-
-def _walks_ancestor(repo, crate, unit, path):
-    """Does the test unit name an ancestor directory of `path` as a directory
-    literal (`_runtime_index`)? Then a prose mention of `path` is no prose:
-    `gh311`/`gh408` walk `templates/` and read `templates/README.md`, and their
-    only edge to it is their `//!` paragraph -- the dir shape leaves
-    templates/ to rules 4/5 (re-check tb-s2 Zusatz-Check B-1).
-
-    The index misses walks spelled otherwise -- `glob("D/**/*.md")`,
-    `format!("{}/D/{}")`, `concat!(env!(..), "/../../D")`, `const X = "D"`
-    (re-check tb-s2 m-N9) -- so any code literal that names an ancestor as a
-    directory counts as well (`_names_dir_in_code`): in doubt more readers."""
-    lits = _runtime_index(repo)
-    ancestors = _ancestors(path)
-    if any((crate, unit) in lits.get(a, ()) for a in ancestors):
-        return True
-    text = _unit_texts(repo).get((crate, unit))
-    return text is not None and _names_dir_in_code(text, ancestors)
-
-
-_UNIT_TEXTS = {}
-
-
-def _unit_texts(repo):
-    """`{(crate, unit): text}` over `_reader_sources`, rebuilt when they are."""
-    sources = _reader_sources(repo)
-    got = _UNIT_TEXTS.get(id(sources))
-    if got is None or got[0] is not sources:
-        got = _UNIT_TEXTS[id(sources)] = (sources, {(c, u): t for c, u, t in sources})
-    return got[1]
-
-
-_ANY_LITERAL_RE = re.compile(r'"([^"\\\n]*)"')
-_OPEN_SEGMENT = frozenset("*?[{")
-
-
-def _names_dir_in_code(text, ancestors):
-    """Does a string literal in the code of `text` (prose blanked) name one of
-    `ancestors` as a directory: its segments, then the literal's end, an empty
-    segment (`D/`) or one with a glob or format hole (`*`, `?`, `[`, `{`)?
-    `"D/x.md"` names a file, not a walk; any prefix counts (`{}/`, `../`)."""
-    want = [a.split("/") for a in ancestors]
-    for m in _ANY_LITERAL_RE.finditer(_reader_text(text)):
-        segs = m.group(1).split("/")
-        for a in want:
-            for i in range(len(segs) - len(a) + 1):
-                if segs[i:i + len(a)] != a:
-                    continue
-                rest = segs[i + len(a):]
-                if not rest or not rest[0] or _OPEN_SEGMENT & set(rest[0]):
-                    return True
-    return False
 
 
 # --- rule 8 runtime: paths a test reads without naming them (GH #1138) ------
@@ -3090,6 +3153,15 @@ def _linked_keys(root, lit, crate, links):
     return keys
 
 
+def is_catalogue_top(path):
+    """A top-level file of templates/ (`templates/README.md`): no template owns
+    it, so rules 4/5 do not plan it and the dir shape leaves templates/ to
+    them. A test that enumerates the catalogue (`_is_catalogue_wide`) walks
+    the directory and reads it -- gh408 sweeps every `.md` below templates/;
+    until V2-R1-1 its only edge to the README was a `//!` paragraph."""
+    return path.startswith("templates/") and path.count("/") == 1
+
+
 def _runtime_dir_applies(lit, path):
     """Does a walk of the directory `lit` read `path`? (the dir shape's filter)"""
     if path.startswith(("templates/", "examples/")):
@@ -3182,10 +3254,12 @@ def _runtime_readers_named(repo, path):
     # a whole file spelled with `..` (`docs/sub/../x.md`): the literal rule
     # looks for the path as written and misses it (tb-s1c-b)
     add(_runtime_spelled(repo).get(path, ()), "rule:8 runtime dotdot file:%s" % path)
-    if not path.startswith(("templates/", "examples/")):
-        for lit in _ancestors(path):
-            if lit in lits and _runtime_dir_applies(lit, path):
-                add(lits[lit], "rule:8 runtime dir:%s file:%s" % (lit, path))
+    for lit in _ancestors(path):
+        if lit in lits and _runtime_dir_applies(lit, path):
+            add(lits[lit], "rule:8 runtime dir:%s file:%s" % (lit, path))
+    if is_catalogue_top(path):
+        add({(c, u) for c, u, text in _reader_sources(repo) if _is_catalogue_wide(text)},
+            "rule:8 runtime catalogue file:%s" % path)
     for script, globs in SCRIPT_READS:
         if any(_matches(path, g) for g in globs):
             add({(c, u) for c, u, text in _reader_sources(repo)
@@ -3293,6 +3367,8 @@ def _term_rules(files, repo):
             if "workspace" in _classes_of_path(p):
                 out.append(("workspace", p, "rule:1 file:%s" % p, {"all()"}))
         return out
+    # Rule 12 first, so `--explain` never caps a pin away (REASON_CAP).
+    out.extend(_required_pin_rules(files, repo))
     for crate in crates_of(files, repo):
         for p in files:
             if "rust_src" in _classes_of_path(p) and _crate_of(p) == crate:
@@ -3362,6 +3438,95 @@ def _term_rules(files, repo):
     return out
 
 
+# --- required pins (GH #1199) ------------------------------------------------
+#
+# A test that must run whenever a file is touched, whatever the coverage map
+# says. AUDIT-PRE14-001 did not run in the strand gate of v2-p1082 although
+# `cell_task.rs` was in its diff: rule 2 planned `rdeps(meclaw-colony)`, the
+# narrowing (`pipeline/narrow.py`) replaced it by the parts the map saw, and
+# the pin was not among them. The mapping file -> test lives in ONE table,
+# `REQUIRED_PINS`, and nowhere else (the prose that asks for a pin carries a
+# marker `(required-pin: <id>)` instead of a copy). `_term_rules` reads it, so
+# a pin is a floor term: `impact` plans its floor from `test_terms`, and the
+# narrowing replaces `rdeps` only. `scripts/check_required_pins.py` holds the
+# table against the markers and the tree.
+REQUIRED_PINS = ".config/required-pins.toml"
+_PIN_FN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def required_pins(repo=None):
+    """The rows of `REQUIRED_PINS` (`[[pin]]`: `id`, `paths`, `tests`, `why`),
+    or [] when the file is absent. A table that does not parse is a
+    `GatePlanError`: a plan that dropped every pin in silence is the defect the
+    table exists against."""
+    import tomllib
+    path = os.path.join(REPO_ROOT if repo is None else repo, REQUIRED_PINS)
+    try:
+        with open(path, "rb") as fh:
+            rows = tomllib.load(fh).get("pin", [])
+    except FileNotFoundError:
+        return []
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise GatePlanError("%s: %s" % (REQUIRED_PINS, exc)) from exc
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def required_pin_term(test, repo=None):
+    """The nextest term of one pinned test `{file, fn}`, or None when `file` is
+    no test unit of the tree or `fn` no identifier.
+
+    The term is derived from the file, never written into the table, so a
+    harness fold (`harness_fold.py`) moves it along: a flat `tests/<s>.rs` is
+    `binary_id(=<c>::<s>)`, a folded `tests/<h>/<m>.rs` the harness narrowed to
+    `<m>::<fn>` (`_folded_unit`), an unfolded module the harness narrowed to
+    the function name at any depth. Without `fn` the whole unit runs."""
+    if not isinstance(test, dict):
+        return None
+    rel, name = str(test.get("file") or ""), test.get("fn")
+    if name is not None and not (isinstance(name, str) and _PIN_FN_RE.match(name)):
+        return None
+    parts = rel.split("/")
+    if (len(parts) not in (4, 5) or parts[0] != "crates" or parts[2] != "tests"
+            or not rel.endswith(".rs")):
+        return None
+    crate, root = parts[1], REPO_ROOT if repo is None else repo
+    if len(parts) == 4 or parts[4] == "main.rs":
+        stem = parts[3].removesuffix(".rs")
+        if not _test_binary_exists(repo, crate, stem):
+            return None
+        base = "binary_id(=%s::%s)" % (crate, stem)
+        return "(%s & test(=%s))" % (base, name) if name else base
+    harness, mod = parts[3], parts[4].removesuffix(".rs")
+    if not _test_binary_exists(repo, crate, harness + "/" + mod):
+        return None
+    unit = _folded_unit(_read_text(os.path.join(root, *parts[:4], "main.rs")), harness, mod)
+    if not name:
+        return _binary_id(crate, unit)
+    base = "binary_id(=%s::%s)" % (crate, harness)
+    if unit.endswith("/main"):
+        return "(%s & test(/(^|::)%s$/))" % (base, name)
+    return "(%s & test(=%s::%s))" % (base, mod, name)
+
+
+def _required_pin_rules(files, repo):
+    """Rule 12 of `test_filter`: `[(label, path, reason, terms)]` -- one entry
+    per touched path a pin's `paths` glob matches, label `required-pin:<id>`."""
+    out = []
+    for pin in required_pins(repo):
+        pid = pin.get("id")
+        globs = [g for g in pin.get("paths") or [] if isinstance(g, str)]
+        hit = {t for t in (required_pin_term(x, repo) for x in pin.get("tests") or []) if t}
+        if not hit:
+            continue
+        for p in files:
+            # A changed table runs every row: a new or moved term has to
+            # prove itself in nextest, not first in the next diff it fires on.
+            if p == REQUIRED_PINS or any(_matches(p, g) for g in globs):
+                out.append(("required-pin:%s" % pid, p,
+                            "required-pin:%s file:%s" % (pid, p), hit))
+    return out
+
+
 def test_terms(paths, repo=None):
     """`{term: [reason, ...]}` -- the terms of `test_filter` and the rule that chose each.
 
@@ -3405,7 +3570,6 @@ is_helper = _is_helper
 test_files = _test_files
 includers = _includers
 reader_text = _reader_text
-walks_ancestor = _walks_ancestor
 
 
 # --- browser units (GH #1161, re-check M-3) ----------------------------------
@@ -3590,6 +3754,13 @@ def _selects_unit(term, crate, unit, users):
     if m:
         return (m.group(1) == crate and "/" in unit
                 and unit.split("/") in ([m.group(2), m.group(3)], [m.group(2), "main"]))
+    # A required pin (`required_pin_term`, GH #1199): one binary narrowed to
+    # tests by name -- it reaches that binary's units at most. Read as unknown
+    # it reached every browser unit and planned `browser:display` for a pin.
+    m = re.fullmatch(r"\(binary_id\(=([^:)]+)::([^)]+)\) & test\((?:=[A-Za-z0-9_:]+"
+                     r"|/\(\^\|::\)[A-Za-z0-9_]+\$/)\)\)", term)
+    if m:
+        return m.group(1) == crate and m.group(2) == unit.split("/")[0]
     return True
 
 
@@ -3671,6 +3842,8 @@ def test_filter(paths, mode, repo=None):
                                      that one value into `test-tier.sh t0`
     8. any path outside `crates/`, and every crate_file
                                   -> the binaries that name it as a literal
+                                     in code -- never in a comment, an ignore
+                                     reason or an assert/panic/expect message
                                      (`_tests_reading_path`). A test that reads
                                      a file is that file's drift lock, so the
                                      file's diff must run it. Additive: it
@@ -3683,7 +3856,9 @@ def test_filter(paths, mode, repo=None):
                                      an ancestor directory as a literal (a
                                      walk, `crates` and `crates/<c>` too;
                                      not under templates/ or examples/,
-                                     rules 4/5 own those), a SCRIPT_READS
+                                     rules 4/5 own those), for a top-level
+                                     file of templates/ the catalogue-wide
+                                     binaries (`is_catalogue_top`), a SCRIPT_READS
                                      generator they run whose sources match
                                      the path, a crate fixture named relative
                                      to the crate. A crate test file no test
@@ -3720,6 +3895,17 @@ def test_filter(paths, mode, repo=None):
                                      gives the ones the diff reaches
                                      (`browser_reached`) to `browser:display`,
                                      which books the engines. In ci they stay.
+   12. a path a row of `REQUIRED_PINS` (`.config/required-pins.toml`) matches
+                                  -> that row's tests, reason
+                                     `required-pin:<id> file:<p>` (GH #1199),
+                                     the table itself -> every row's tests.
+                                     A pin is a test the prose asks to run on
+                                     every touch of a file; as a floor term it
+                                     stands beside rule 2, so the coverage
+                                     narrowing (`pipeline/narrow.py`), which
+                                     replaces `rdeps` only, never drops it.
+                                     AUDIT-PRE14-001 fell out of a `cell_task.rs`
+                                     diff that way (v2-p1082)
 
     Over-selection is allowed here, under-selection is not: a missed binary is
     a gate that passes over an untested change.
@@ -3965,7 +4151,10 @@ def plan(paths, mode, repo=None):
         [["python3", "scripts/check_roadmap_anchors.py"] + check])
     out["adr-anchors"] = station(
         "adr-anchors", "plans/adr", False,
-        [["python3", "scripts/check_adr_anchors.py"] + check])
+        [["python3", "scripts/check_adr_anchors.py"] + check,
+         # GH #1199: the required pins are anchors of the same kind -- prose
+         # (AGENTS.md) names a test the tree must carry; seconds, every mode
+         ["python3", "scripts/check_required_pins.py"] + check])
     out["claims"] = station(
         "claims", "claims.tsv", False,
         [["python3", "scripts/check_claims.py"] + check])
@@ -4072,6 +4261,7 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_flake_triage",
               "scripts.tests.test_clock_bans",
               "scripts.tests.test_roadmap_anchors",
+              "scripts.tests.test_required_pins",
               "scripts.tests.test_pipeline_store",
               "scripts.tests.test_pipeline_events",
               "scripts.tests.test_pipeline_receipt",
@@ -4125,13 +4315,19 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_pipeline_lanes_release",
               "scripts.tests.test_pipeline_selftest_shard",
               "scripts.tests.test_meclaw_bin_owner",
+              # GH #1199: the one mechanism for private-tree inputs
+              "scripts.tests.test_private_tree",
               # GH #1162: the I/R path's tests stood in no station (the kit
               # ran them, no gate did); every test_pipeline_* module is
               # listed here (test_every_runner_test_module_is_in_gate_selftest).
               "scripts.tests.test_pipeline_ir_path",
               "scripts.tests.test_pipeline_two_phase_build",
               # tb-s7 (#1167): the turnaround module, under the same lock
-              "scripts.tests.test_pipeline_turnaround"]])
+              "scripts.tests.test_pipeline_turnaround",
+              # #1075 (lo-funde, taken over in r1-kit): the stop watch of long runs
+              "scripts.tests.test_stop_watch",
+              # GH #1199: the kit's progress lines, loud refusals and liveness
+              "scripts.tests.test_pipeline_progress"]])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that
@@ -4418,7 +4614,21 @@ def plan(paths, mode, repo=None):
         # cargo:1 -- a fresh target inside the export tree, like R9.
         out["export-tree-tests"] = station(
             "export-tree-tests", "catalogue tests in the export tree", True,
-            [["python3", "plans/export-fixtures/export_tree_tests.py", "--rev", "HEAD"]])
+            # `--worktree` (RC-KX I1): the tree the cache keys the station on
+            [["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree"],
+             # GH #1199: the kit half -- the public CI's cargo-free stations
+             # (gate-selftest first of all) in the export tree, with its own
+             # gate.sh ci; 0.64.0's public CI was red there and nowhere else
+             ["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree", "--kit"]])
+    elif mode == "strand" and any(_feeds_the_kit_stations(p) for p in files):
+        # GH #1199 (release 0.64.2, run 4): four kit self-tests read a file the
+        # export does not carry; the strand gate ran them only in the private
+        # tree and the release found them red. A diff at a kit input runs the
+        # cargo-free kit half where the public CI runs it -- over the working
+        # tree the strand gate gates before the commit (RC-KX I1).
+        out["export-tree-tests"] = station(
+            "export-tree-tests", "kit stations in the export tree", False,
+            [["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree", "--kit"]])
 
     if ir:
         # `{receipt}` is a placeholder the runner substitutes with the path it
@@ -4456,6 +4666,24 @@ def plan(paths, mode, repo=None):
         out["export-audit"] = station(
             "export-audit", "R1-R17 dry" if dry else "R1-R17", not dry,
             [argv + ["--gate-receipt", "{receipt}"]])
+    elif mode == "strand" and any(_feeds_the_strand_audit(p) for p in files):
+        # V2-A18 (GH #1199, release 0.64.2 run 5): two g855 tests with a bare
+        # `../../templates` root reached master through strand and merge gates;
+        # R2b saw them first in the release. A diff at what the cheap rules
+        # judge plans the DRY audit here. `--no-gate-receipt`: a strand gate
+        # writes no I/R receipt, and R11/R12/R14/R17 (read from one) would be
+        # red on every strand -- the switch drops exactly them, visibly.
+        # `--worktree` instead of `--rev HEAD` (RC-KX I1): the gate gates the
+        # working tree before the commit. `--parent HEAD` (RC-XA I1): the
+        # default `github-main` is checked against `ls-remote origin main` and
+        # aborts on drift; that ref moves by hand after an export, so a stale
+        # or missing one would turn the strand red regardless of its diff.
+        # `--keep-going` builds no commit and never reads the parent. I/R keep
+        # the default -- there the check is wanted.
+        out["export-audit"] = station(
+            "export-audit", "R1-R17 dry, no gate receipt", False,
+            [["python3", MAKE_EXPORT, "--keep-going", "--skip-cargo", "--worktree",
+              "--no-gate-receipt", "--parent", "HEAD"]])
 
     if ci:
         # One rule, not eight conditions spread through the builder above:
@@ -4610,8 +4838,9 @@ STATION_TRIGGERS = {
     "persona-cases": (("evals_persona",), IR_MODES),
     "persona-receipt": (("persona_source", "evals_persona"), IR_MODES),
     "export-selftest": (("export_infra",), IR_MODES),
-    "export-tree-tests": ((), ("release",)),
-    "export-audit": ((), IR_MODES),
+    "export-tree-tests": (("gate_infra", "make_export"), ("release",)),
+    "export-audit": (("export_test", "template", "template_root", "catalogue", "make_export"),
+                     IR_MODES),
 }
 
 # How many `<label>: <path>` entries one station lists before `+<n> more`: a ci
@@ -4625,10 +4854,18 @@ def _trigger_labels(path):
     parts = path.split("/")
     if parts[0] == "templates" and len(parts) >= 3:
         labels.add("template:" + parts[1])
+    if parts[0] == "templates" and len(parts) == 2 and path != "templates/README.md":
+        # A file directly under templates/ is no template (`template` starts
+        # at three segments), but the strand audit judges it (RC-XA M3).
+        labels.add("template_root")
     if parts[0] == "examples" and len(parts) >= 3:
         labels.add("example:" + parts[1])
     if path.startswith("crates/meclaw-cells/src/") and "recall" in path:
         labels.add("recall_src")
+    if path == MAKE_EXPORT:
+        labels.add("make_export")
+    if _is_exported_test(path):
+        labels.add("export_test")
     return labels
 
 

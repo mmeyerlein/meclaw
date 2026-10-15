@@ -298,8 +298,8 @@ fn the_flight_row_remembers_the_diff_the_colony_will_not_carry() {
     for (decls, expected) in [(&registering, 1), (&plain, 0)] {
         let sha = digest_of(decls);
         let out = unpark(decls, &sha);
-        assert_eq!(out.len(), 3, "forget the park, remember the flight, submit");
-        let flight = op_of(&out[1]);
+        assert_one_step_flight(&out);
+        let flight = op_of(&out[0]);
         assert_eq!(flight["row"]["kind"], "flight");
         assert_eq!(
             flight["row"]["registers"], expected,
@@ -485,16 +485,16 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // `builder-librarian@2.2.57` (GH #1095); 1.26.37 re-pins it at
         // `builder-librarian@2.2.58` (GH #1103); 1.26.38 re-pins it at
         // `builder-librarian@2.2.59` (GH #1096, #1097, #1098, #1099).
-        "builder@1.26.50"
+        "builder@1.26.52"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],
-        "operator@1.2.6"
+        "operator@1.2.7"
     );
     assert_eq!(
         read("templates/operator/submit/config.json")["cell"]["template"],
         // 2.4.1 holds an announced requirement to the carrier ceiling (GH #1085).
-        "submit@2.4.1"
+        "submit@2.4.2"
     );
 }
 
@@ -751,4 +751,23 @@ fn the_librarian_readme_names_the_wiring_that_can_actually_be_drawn() {
         "and lets the report back out, which is the half the README calls the \
          subscription"
     );
+}
+
+/// GH #1199: forgetting the park and remembering the flight are ONE store
+/// write -- an `insert` with `replace` over the parked row, no separate
+/// delete leg; the un-parking is that write, then the submission.
+fn assert_one_step_flight(out: &[Value]) {
+    assert_eq!(
+        out.len(),
+        2,
+        "forget the park and remember the flight in one step, then submit: {out:?}"
+    );
+    let flight = op_of(&out[0]);
+    assert_eq!(flight["operation"], "insert");
+    assert_eq!(flight["replace"], json!({ "id": "p1" }));
+    assert!(
+        flight.get("where").is_none(),
+        "no separate delete leg: {flight}"
+    );
+    assert_eq!(flight["row"]["kind"], "flight");
 }

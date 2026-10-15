@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -29,7 +30,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
 
 from pipeline import merge, pre, store  # noqa: E402
-from scripts.tests import kit_tree, store_isolation  # noqa: E402
+from scripts.tests import kit_time, kit_tree, store_isolation  # noqa: E402
 
 WAVE = "welle-test-2026-01-01"
 SCAFFOLD = "workshop/evals/builder-scenarios/scaffolds/x/main/os/config.json"
@@ -492,6 +493,383 @@ class LeaseTest(MergeCase):
             rc, _, err = f.merge(["S1"])
         self.assertEqual(rc, 0, err)
         self.assertEqual(f.parents(), [moved["sha"], s["tip"]])
+
+
+class _Said(io.StringIO):
+    """An err stream that sets `queued` when the merge says its queue line --
+    the event the tests of `--wait` synchronise on (no clock, no poll)."""
+
+    def __init__(self):
+        super().__init__()
+        self.queued = threading.Event()
+        self.waits = []                     # the `merge: waiting` lines, in order
+        self._cond = threading.Condition()
+
+    def write(self, text):
+        n = super().write(text)
+        if "queued" in text:
+            self.queued.set()
+        with self._cond:
+            self.waits += [l for l in text.splitlines() if l.startswith("merge: waiting")]
+            self._cond.notify_all()
+        return n
+
+    def said(self, n):
+        """The first `n` wait lines once they are there (the event, no poll);
+        fewer after the hang marker."""
+        with self._cond:
+            self._cond.wait_for(lambda: len(self.waits) >= n, kit_time.HANG)
+            return list(self.waits)
+
+
+class _Clock:
+    """The injected kit clock of a merge (`merge(clock=...)`): RFC 3339 like
+    `store.now()`, seven seconds further on every call -- a wait has a length
+    without a wall clock."""
+
+    def __init__(self):
+        self.t = store.parse_at(store.now())
+        self.lock = threading.Lock()
+
+    def __call__(self):
+        with self.lock:
+            self.t += datetime.timedelta(seconds=7)
+            return self.t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def merge_receipt(f, name):
+    """The merge receipt of strand `name` (the only one of the test)."""
+    d = os.path.join(f.wdir, "receipts", "merge-%s" % name)
+    runs = sorted(os.listdir(d))
+    with open(os.path.join(d, runs[-1], "merge.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+class MergeWaitTest(MergeCase):
+    """V2-P1196-3 (wave validation 2, GH #1199): two merges at once ended in
+    exit 3 for the second and a retry by hand -- master moves before the lease
+    is free, and a ref move wakes nobody. `merge --wait` blocks on the pool's
+    wake file (`schedule._wake_open`, the wait of `gate --wait-admission` and
+    `token take --wait`), which the release of the tree lease now rings."""
+
+    def setUp(self):
+        super().setUp()
+        # Only a wake can end a round: the watchdog of a round is an hour here.
+        env = mock.patch.dict(os.environ, {"MECLAW_TOKEN_WAIT_SECS": "3600"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def waiting_merge(self, names, **kw):
+        """`merge(names, wait=True)` in a thread on its own store connection."""
+        got, out_, err = [], io.StringIO(), _Said()
+        path = os.path.join(self.f.tmp, "p.db")
+
+        def run():
+            db = store.open(path)
+            try:
+                got.append(merge.merge(names, start=self.f.root, wave=WAVE, db=db, out_=out_,
+                                       err=err, wait=True, **kw))
+            except Exception as exc:  # noqa: BLE001 -- the test reads it
+                got.append(exc)
+            finally:
+                store.close(db)
+        return threading.Thread(target=run, daemon=True), got, out_, err
+
+    def test_a_waiting_merge_lands_after_the_release_without_exit_3(self):
+        f = self.f
+        self.a_strand()
+        s2 = f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        th, got, out2, err2 = self.waiting_merge(["S2"])
+        real = merge.run_gate
+        seen = {}
+
+        def gate(tree, ctx):
+            if ctx["label"] == "S1":
+                th.start()
+                seen["queued"] = err2.queued.wait(kit_time.HANG)
+                seen["alive"] = th.is_alive()
+            return real(tree, ctx)
+
+        with mock.patch.object(merge, "run_gate", side_effect=gate):
+            rc, _, err = f.merge(["S1"])
+            self.assertEqual(rc, 0, err)
+            s1_merge = f.head()
+            # Only the release of the tree lease can end the wait before its
+            # one-hour watchdog.
+            th.join(kit_time.HANG)
+        self.assertTrue(seen["queued"], "HANG: the second merge never queued")
+        self.assertTrue(seen["alive"], "merge --wait returned while S1 held the tree")
+        self.assertFalse(th.is_alive(), "HANG: the release did not wake merge --wait after "
+                         "%.0f s" % kit_time.HANG)
+        self.assertEqual(got, [0], err2.getvalue())
+        self.assertIn("MERGED S2", out2.getvalue())
+        self.assertEqual(f.state_of("S2"), "merged")
+        # The waiter read master anew under the lease: S1's merge is its base.
+        self.assertEqual(f.parents(), [s1_merge, s2["tip"]])
+        self.assertIsNone(f.lease())
+        self.assertEqual([e["strand"] for e in f.events("merge_queued")], ["S2"])
+
+    def test_a_missing_review_verdict_ends_the_wait_at_once(self):
+        # A cause no release resolves ends `--wait` as today: exit 1, no wait.
+        f = self.f
+        self.a_strand(report=False)
+        f.report("S1", "welle-test/S1", 101, [], review=False)
+        self.assertTrue(merge.take_tree(f.db, "meclaw", "S9"))
+        th, got, _, err = self.waiting_merge(["S1"])
+        th.start()
+        th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "merge --wait waits on a missing review")
+        self.assertEqual(got, [merge.REFUSE_EXIT], err.getvalue())
+        self.assertIn("no_review", err.getvalue())
+        self.assertEqual(f.state_of("S1"), "refused")
+        self.assertEqual(f.lease()["holder"], "S9")
+
+    def ends_at_once(self, reason):
+        """`merge --wait` on S1 (approved review) behind S9's lease: exit 1 with
+        `reason` before any wait -- the limit is a minute, a wait would end
+        queued (exit 3) only after it (re-check v2-fix-c I1)."""
+        f = self.f
+        self.assertTrue(merge.take_tree(f.db, "meclaw", "S9"))
+        with mock.patch.dict(os.environ, {"MECLAW_ADMISSION_WAIT_SECS": "60",
+                                          "MECLAW_TOKEN_WAIT_SECS": "60"}):
+            th, got, _, err = self.waiting_merge(["S1"])
+            th.start()
+            th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "HANG: merge --wait waits on %s" % reason)
+        self.assertEqual(got, [merge.REFUSE_EXIT], err.getvalue())
+        self.assertIn(reason, err.getvalue())
+        self.assertNotIn("waiting for its release", err.getvalue())
+        self.assertEqual(f.state_of("S1"), "refused")
+        self.assertEqual(f.lease()["holder"], "S9")
+
+    def test_a_missing_strand_receipt_ends_the_wait_at_once(self):
+        # Re-check v2-fix-c I1: with `Verdikt: ja` the strand receipt was read
+        # only under the lease -- rc 3 after the whole wait, not `no_strand_receipt`.
+        self.a_strand(receipt=False)
+        self.ends_at_once("no_strand_receipt")
+
+    def test_a_red_strand_receipt_ends_the_wait_at_once(self):
+        self.a_strand(verdict="RED")
+        self.ends_at_once("strand_gate_not_green")
+
+    def test_a_stale_pre_stamp_ends_the_wait_at_once(self):
+        s = self.a_strand()
+        write(s["wt"], "templates/a/untracked.txt", "dirty\n")
+        self.ends_at_once("pre_stamp")
+
+    def test_a_plan_only_branch_without_receipt_still_waits(self):
+        # A plan-only branch merges without receipt (GH #1167 d): the lease
+        # can change its end, so the pre-check lets it wait as before.
+        f = self.f
+        self.a_strand(receipt=False)
+        self.assertTrue(merge.take_tree(f.db, "meclaw", "S9"))
+        with mock.patch.object(merge, "plan_only", return_value=True), \
+                mock.patch.dict(os.environ, {"MECLAW_ADMISSION_WAIT_SECS": "0.3",
+                                             "MECLAW_TOKEN_WAIT_SECS": "0.05"}):
+            th, got, _, err = self.waiting_merge(["S1"])
+            th.start()
+            th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "HANG: merge --wait ignores its limit")
+        self.assertEqual(got, [merge.QUEUED_EXIT], err.getvalue())
+        self.assertEqual(f.state_of("S1"), "queued")
+
+    def test_a_dequeue_that_passes_the_offer_on_wakes_the_waiter(self):
+        # Re-check v2-fix-c M1: `dequeue` hands an offer to the next queued
+        # merge; without its ring the waiter sleeps until its watchdog (an
+        # hour here) although the lease is offered to it.
+        f = self.f
+        self.a_strand()
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        f.strand("S3", 103, {"templates/c/baz.txt": "baz\n"})
+        self.assertTrue(merge.take_tree(f.db, "meclaw", "S9"))
+        rc, _, err = f.merge(["S2"])
+        self.assertEqual(rc, merge.QUEUED_EXIT, err)
+        self.assertTrue(merge.release_tree(f.db, "meclaw", "S9"))
+        self.assertEqual(f.lease()["offered_to"], "S2")
+        th, got, out3, err3 = self.waiting_merge(["S3"])
+        th.start()
+        self.assertTrue(err3.queued.wait(kit_time.HANG), "HANG: S3 never queued")
+        self.assertEqual(merge.dequeue(f.db, "meclaw", "S2"), 1)
+        th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "HANG: dequeue's offer did not wake merge --wait")
+        self.assertEqual(got, [0], err3.getvalue())
+        self.assertIn("MERGED S3", out3.getvalue())
+        self.assertEqual(f.state_of("S3"), "merged")
+
+    def test_an_offer_passed_on_without_a_row_of_its_own_rings(self):
+        # Re-check f+g minor: `dequeue` rang only when it dropped a row of its
+        # own; the offer it passes on (`nxt`) moves the next merge to the head
+        # as well -- without a ring that waiter sleeps until its watchdog.
+        f = self.f
+        self.a_strand()
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        f.strand("S3", 103, {"templates/c/baz.txt": "baz\n"})
+        self.assertTrue(merge.take_tree(f.db, "meclaw", "S9"))
+        for name in ("S2", "S3"):
+            rc, _, err = f.merge([name])
+            self.assertEqual(rc, merge.QUEUED_EXIT, err)
+        self.assertTrue(merge.release_tree(f.db, "meclaw", "S9"))
+        self.assertEqual(f.lease()["offered_to"], "S2")
+        with f.db:
+            f.db.execute("UPDATE merges SET state='abandoned' WHERE strand='S2'")
+        with mock.patch.object(merge, "_ring") as ring:
+            self.assertEqual(merge.dequeue(f.db, "meclaw", "S2"), 0)
+        self.assertEqual(f.lease()["offered_to"], "S3")
+        self.assertEqual(ring.call_count, 1)
+
+    def test_the_wait_has_a_limit_and_ends_queued(self):
+        # MECLAW_ADMISSION_WAIT_SECS is the hang marker of the wait (as for
+        # `gate --wait-admission`): past it the merge ends queued, exit 3.
+        f = self.f
+        self.a_strand()
+        self.assertTrue(merge.take_tree(f.db, "meclaw", "S9"))
+        with mock.patch.dict(os.environ, {"MECLAW_ADMISSION_WAIT_SECS": "0.3",
+                                          "MECLAW_TOKEN_WAIT_SECS": "0.05"}):
+            th, got, _, err = self.waiting_merge(["S1"])
+            th.start()
+            th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "HANG: merge --wait ignores its limit")
+        self.assertEqual(got, [merge.QUEUED_EXIT], err.getvalue())
+        self.assertIn("MECLAW_ADMISSION_WAIT_SECS", err.getvalue())
+        self.assertEqual(f.state_of("S1"), "queued")
+
+    def test_a_waiting_merge_says_its_reason_and_each_new_position(self):
+        # V2-A10 (wave validation 2): the merge of v2-fix-b waited 14 min
+        # without a word. One line when the wait starts (reason, position),
+        # one per change -- the change rings the wake file (`dequeue`, the
+        # release, a take), no clock prints a line: the watchdog is an hour.
+        f = self.f
+        self.a_strand()
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        clock = _Clock()
+        self.assertTrue(merge.take_tree(f.db, "meclaw", "S9"))
+        rc, _, err = f.merge(["S2"])
+        self.assertEqual(rc, merge.QUEUED_EXIT, err)
+        th, got, out1, err1 = self.waiting_merge(["S1"], clock=clock)
+        th.start()
+        first = err1.said(1)
+        self.assertEqual(first, ["merge: waiting -- the merge lease tree:master@meclaw is held "
+                                 "by S9; S1 is #2 in the queue (queued, --wait)"], err1.getvalue())
+        self.assertEqual(merge.dequeue(f.db, "meclaw", "S2"), 1)
+        second = err1.said(2)
+        self.assertEqual(second[1:], ["merge: waiting -- the merge lease tree:master@meclaw is "
+                                      "held by S9; S1 is #1 in the queue (queued, --wait)"],
+                         err1.getvalue())
+        self.assertTrue(merge.release_tree(f.db, "meclaw", "S9"))
+        th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "HANG: the release did not wake merge --wait")
+        self.assertEqual(got, [0], err1.getvalue())
+        self.assertEqual(len(err1.waits), 2, err1.getvalue())
+        # wait_s: from the queued row to the lease take, both on the kit clock.
+        row = f.db.execute("SELECT at FROM merges WHERE strand='S1'").fetchone()
+        taken = [r["at"] for r in f.db.execute(
+            "SELECT at, data FROM journal WHERE event='lease_taken' ORDER BY seq")
+            if json.loads(r["data"])["holder"] == "S1"]
+        want = (store.parse_at(taken[0]) - store.parse_at(row["at"])).total_seconds()
+        self.assertGreater(want, 0)
+        self.assertEqual(merge_receipt(f, "S1")["wait_s"], want)
+
+    def test_a_merge_that_never_waits_has_wait_s_0_and_no_wait_line(self):
+        f = self.f
+        self.a_strand()
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        for name, wait in (("S1", True), ("S2", False)):
+            rc, _, err = f.merge([name], wait=wait, clock=_Clock())
+            self.assertEqual(rc, 0, err)
+            self.assertNotIn("merge: waiting", err)
+            self.assertEqual(merge_receipt(f, name)["wait_s"], 0, name)
+
+    def gate_cmd(self, extra):
+        return mock.patch.dict(os.environ, {"MECLAW_PIPELINE_FAKE_GATE": "",
+                                            "MECLAW_MERGE_GATE_CMD": extra})
+
+    def test_the_candidate_runs_wait_for_its_lane_is_said_and_counted(self):
+        # The second wait: the candidate run on its lane behind other runs'
+        # cargo lock (the gate's `lock-wait` row) -- said, and part of wait_s.
+        f = self.f
+        self.a_strand()
+        cmd = ("sh -c 'echo gate: rev = $(git -C {tree} rev-parse HEAD); "
+               "echo \"GATE lock-wait [42s behind other runs] 42s NOTE\"; "
+               "echo GATE-SUMMARY strand $(git -C {tree} rev-parse --short=7 HEAD) 1/1 1s GREEN'")
+        with self.gate_cmd(cmd):
+            rc, _, err = f.merge(["S1"], clock=_Clock())
+        self.assertEqual(rc, 0, err)
+        self.assertIn("merge: waited 42s for the lane of the candidate run (behind other "
+                      "runs' cargo lock)", err)
+        self.assertEqual(merge_receipt(f, "S1")["wait_s"], 42)
+
+    def test_no_lane_for_the_candidate_run_names_the_reason(self):
+        # The merge gate takes no queue place (kit find h): queued -> exit 3,
+        # the reason went into the gate log only.
+        f = self.f
+        self.a_strand()
+        cmd = ("sh -c 'echo \"gate: queued -- lane build01: busy -- no queue place: a merge "
+               "gate does not wait for an offer\" >&2; exit 3'")
+        with self.gate_cmd(cmd):
+            rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("no lane free for the candidate run: lane build01: busy", err)
+
+    def test_wait_on_the_command_line(self):
+        parser = argparse.ArgumentParser()
+        merge.register(parser.add_subparsers())
+        for argv, want in ((["merge", "--strand", "S1", "--wait"], True),
+                           (["merge", "--strand", "S1"], False)):
+            args = parser.parse_args(argv)
+            with mock.patch.object(merge, "merge", return_value=0) as call:
+                self.assertEqual(args.func(args), 0)
+            self.assertEqual(call.call_args.kwargs["wait"], want, argv)
+
+
+class MergeStepsTest(MergeCase):
+    """V2-A10 (h, wave validation 2): the merge of v2-fix-b held tree:master
+    826 s (journal seq 116541 lease_taken 00:03:20Z -> 116542 merge_gated
+    00:17:06Z) and said nothing in between -- which step ate the time stood
+    nowhere. Each step now says one line when it ends, and the merge receipt
+    lists them; the kit clock is injected (`_Clock`, +7 s a call), so every
+    duration is exact: the lease step reads the clock three times (its start,
+    the take, its end), every later one once (its end = the next start)."""
+
+    STEPS = ["lease", "preconditions", "candidate", "gate", "ref-update", "close"]
+
+    def step_lines(self, err):
+        return [l for l in err.splitlines() if l.startswith("merge: step ")]
+
+    def test_every_step_says_its_line_in_order_and_the_receipt_lists_them(self):
+        f = self.f
+        self.a_strand()
+        rc, _, err = f.merge(["S1"], clock=_Clock())
+        self.assertEqual(rc, 0, err)
+        steps = merge_receipt(f, "S1")["steps"]
+        self.assertEqual([s["name"] for s in steps], self.STEPS, err)
+        self.assertEqual([s["secs"] for s in steps], [14, 7, 7, 7, 7, 7], err)
+        self.assertEqual(self.step_lines(err), ["merge: step %s %s %ds" % (
+            s["name"], s["start"], s["secs"]) for s in steps])
+        for a, b in zip(steps, steps[1:]):
+            # contiguous: no second of the merge falls between two steps
+            self.assertEqual(store.parse_at(b["start"]) - store.parse_at(a["start"]),
+                             datetime.timedelta(seconds=a["secs"]), (a, b))
+
+    def test_a_red_step_is_the_last_line(self):
+        f = self.f
+        self.a_strand(receipt=False)
+        rc, _, err = f.merge(["S1"], clock=_Clock())
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        lines = self.step_lines(err)
+        self.assertEqual([l.split()[2] for l in lines], ["lease", "preconditions"], err)
+        self.assertRegex(lines[0], r"^merge: step lease \S+Z 14s$")
+        self.assertRegex(lines[1], r"^merge: step preconditions \S+Z 7s RED$")
+
+    def test_a_red_candidate_gate_is_the_last_line(self):
+        f = self.f
+        self.a_strand()
+        with mock.patch.object(merge, "run_gate", return_value={
+                "verdict": "RED", "line": "GATE-SUMMARY strand x 0/1 1s RED"}):
+            rc, _, err = f.merge(["S1"], clock=_Clock())
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertEqual([l.split()[2:3] + l.split()[4:] for l in self.step_lines(err)],
+                         [["lease", "14s"], ["preconditions", "7s"], ["candidate", "7s"],
+                          ["gate", "7s", "RED"]], err)
 
 
 class PreconditionTest(MergeCase):
@@ -1376,6 +1754,405 @@ class BatchTest(MergeCase):
         self.assertIsNone(f.lease())
 
 
+GOLDEN = "plans/composition-reference/golden/g.manifest"
+REF = "templates/g/sub/config.json"
+
+# The fake generator: refuses without its switch (as `write_golden_manifests`
+# does), logs each call, and writes the golden from the tree it was handed --
+# one line per ref marker, `<rel>\t<sha256>`, like the gh277 manifest.
+GENERATOR = """import hashlib, json, os, sys
+tree, log = sys.argv[1], sys.argv[2]
+with open(log, "a") as fh:
+    fh.write(json.dumps({"tree": tree, "argv": sys.argv[3:],
+                         "switch": os.environ.get("GH277_WRITE_GOLDEN"),
+                         "other": os.environ.get("MECLAW_GH935_BLESS")}) + "\\n")
+if os.environ.get("GH277_WRITE_GOLDEN") != "1":
+    sys.exit("refusing to re-baseline the goldens without GH277_WRITE_GOLDEN=1")
+if os.environ.get("FAKE_GENERATOR_FAILS"):
+    sys.exit("the generator broke")
+with open(os.path.join(tree, %r), "rb") as fh:
+    digest = hashlib.sha256(fh.read()).hexdigest()
+with open(os.path.join(tree, %r), "w") as fh:
+    fh.write("sub/config.json\\t%%s\\n" %% digest)
+""" % (REF, GOLDEN)
+
+
+def golden_of(root):
+    """What the fake generator writes for `root`."""
+    import hashlib
+    with open(os.path.join(root, REF), "rb") as fh:
+        return "sub/config.json\t%s\n" % hashlib.sha256(fh.read()).hexdigest()
+
+
+def golden_fixture(case):
+    """The composite `g` (its `sub/` cell a ref to `a@1.0.0`), its committed
+    golden and the fake generator on disk; `case.gen_log` its call log."""
+    f = case.f
+    case.gen_log = os.path.join(f.tmp, "generator.jsonl")
+    write(f.tmp, "generator.py", GENERATOR)
+    f.master_commit({
+        "templates/g/template.json": template_json("g", "4.0.0"),
+        REF: json.dumps({"cell": {"type": "ref", "template": "a@1.0.0"}}, indent=2) + "\n",
+        "templates/g/brain/config.json": json.dumps({"cell": {"type": "llm"}}) + "\n",
+    }, msg="composite g")
+    f.master_commit({GOLDEN: golden_of(f.root)}, msg="golden g")
+
+
+class GoldenTest(MergeCase):
+    """V2-A17 (wave validation 2): the merge point's cascade raised
+    `collector@5.1.1 -> 5.1.2` in `templates/{talky,cogny}/collector/config.json`,
+    and the hash goldens `plans/composition-reference/golden/*.manifest` did
+    not follow -- candidate gate ac1e8c3 17/18 RED in the two byte-identity
+    tests. A strand can never write them right (rule 6: numbers only at the
+    merge point), so the merge point runs the goldens' own generator on the
+    candidate when its cascade moved a file inside a golden's closure, and the
+    rewritten goldens go into the merge commit before the gate judges it byte
+    for byte.
+
+    Fixture: a composite `g` whose `sub/` cell is a ref to `a@1.0.0` and a
+    committed golden `g.manifest`; the generator is a fake behind
+    `MECLAW_MERGE_GOLDEN_CMD`."""
+
+    plans_tracked = True
+
+    def setUp(self):
+        super().setUp()
+        golden_fixture(self)
+        self.cmd = "%s %s {tree} %s {switch} {filter}" % (
+            sys.executable, os.path.join(self.f.tmp, "generator.py"), self.gen_log)
+
+    def calls(self):
+        try:
+            with open(self.gen_log, encoding="utf-8") as fh:
+                return [json.loads(line) for line in fh if line.strip()]
+        except OSError:
+            return []
+
+    def merge_with(self, names, **env):
+        values = {"MECLAW_MERGE_GOLDEN_CMD": self.cmd, "MECLAW_GH935_BLESS": "1"}
+        values.update(env)
+        with mock.patch.dict(os.environ, values):
+            return self.f.merge(names)
+
+    def test_a_cascade_into_a_golden_closure_rewrites_the_golden_in_the_merge_commit(self):
+        f = self.f
+        old = read(f.root, GOLDEN)
+        base = f.head()
+        s = self.a_strand(in_branch=True)
+        rc, _, err = self.merge_with(["S1"])
+        self.assertEqual(rc, 0, err)
+        # the cascade raised the ref pin -- the golden's input moved
+        self.assertIn('"a@1.0.1"', read(f.root, REF))
+        # ... and the golden followed, in the ONE merge commit the gate judged
+        self.assertNotEqual(read(f.root, GOLDEN), old)
+        self.assertEqual(read(f.root, GOLDEN), golden_of(f.root))
+        self.assertEqual(f.parents(), [base, s["tip"]])
+        self.assertIn(GOLDEN, git(f.root, "show", "--name-only", "--format=", "HEAD").split())
+        self.assertIn("Goldens: %s rewritten after the cascade (GH277_WRITE_GOLDEN)" % GOLDEN,
+                      f.body())
+        self.assertEqual([c["rev"] for c in f.gate_calls()], [f.head()])
+        # the generator ran once, in the candidate, with its own switch only
+        calls = self.calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertEqual(calls[0]["tree"], os.path.join(f.state, "meclaw", "pipeline", "merge",
+                                                        "S1"))
+        self.assertEqual(calls[0]["switch"], "1")
+        self.assertIsNone(calls[0]["other"])
+        self.assertEqual(calls[0]["argv"][0], "GH277_WRITE_GOLDEN")
+        self.assertIn("write_golden_manifests", calls[0]["argv"][1])
+        self.assertIn("merge: goldens rewritten after the cascade: %s" % GOLDEN, err)
+        self.assertEqual(merge_receipt(f, "S1")["goldens"], [GOLDEN])
+
+    def test_a_cascade_outside_every_golden_closure_runs_no_generator(self):
+        f = self.f
+        old = read(f.root, GOLDEN)
+        f.strand("S1", 101, {"templates/b/foo.txt": "foo\n"}, in_branch=True)
+        rc, _, err = self.merge_with(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(version_of(f.root, "b"), "2.0.1")
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(read(f.root, GOLDEN), old)
+        self.assertNotIn("Goldens:", f.body())
+        self.assertNotIn("goldens", merge_receipt(f, "S1"))
+
+    def test_a_generator_that_writes_the_same_bytes_leaves_the_commit_alone(self):
+        # `g` itself is bumped (its template.json moves, a file the manifest
+        # drops): the generator runs, writes the same golden, nothing to amend.
+        f = self.f
+        old = read(f.root, GOLDEN)
+        f.strand("S1", 101, {"templates/g/notes.txt": "n\n"}, in_branch=True)
+        rc, _, err = self.merge_with(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(version_of(f.root, "g"), "4.0.1")
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(read(f.root, GOLDEN), old)
+        self.assertNotIn("Goldens:", f.body())
+        self.assertEqual(merge_receipt(f, "S1")["goldens"], [])
+
+    def test_a_failing_generator_refuses_the_merge(self):
+        f = self.f
+        base = f.head()
+        self.a_strand(in_branch=True)
+        rc, _, err = self.merge_with(["S1"], FAKE_GENERATOR_FAILS="1")
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("golden_failed", err)
+        self.assertIn("the generator broke", err)
+        self.assertEqual(f.head(), base)
+        self.assertEqual(f.gate_calls(), [])
+        self.assertEqual(f.state_of("S1"), "refused")
+        self.assertIsNone(f.lease())
+
+    def test_the_closure_follows_the_refs_of_the_golden_names(self):
+        f = self.f
+        closure = merge.golden_closure(f.root, merge.GOLDENS[0])
+        self.assertEqual(closure, ["templates/a/", "templates/g/"])
+
+    def test_the_default_generator_is_the_lane_test_of_the_candidate(self):
+        argv = merge.golden_argv("/c", {"holder": "welle-x/S1", "host": "build03"},
+                                 merge.GOLDENS[0])
+        # the kit's one Python with -I: the narrow point refuses a bare python3
+        # (measured: `lane build02 unreachable ... started without -I`)
+        self.assertEqual(argv, [
+            "/usr/bin/python3", "-I", "/c/scripts/pipeline.py", "test",
+            "--strand", "welle-x/S1", "--host", "build03",
+            "test(/(^|::)write_golden_manifests$/)",
+            "-p", "meclaw-colony", "--run-ignored", "only"])
+
+
+# The token check of `pipeline.py test` in front of the fake generator: the
+# real `gate._lease_gate` against the fixture's store (MECLAW_PIPELINE_DB) --
+# the step a lane run of the generator passes before anything travels --
+# then the fake writer (GENERATOR) with the words it gets in GoldenTest.
+LEASED_GENERATOR = """import json, os, subprocess, sys
+scripts, tree, log, holder, host = sys.argv[1:6]
+sys.path.insert(0, scripts)
+from pipeline import gate, schedule, store
+if os.environ.get("GOLDEN_TEST_WAITER"):
+    # a strand queues for a lane while the generator runs (re-check RC-GK2 I1)
+    schedule.lease_take(store.open(), os.environ["GOLDEN_TEST_WAITER"], pid=os.getppid())
+try:
+    lane = gate._lease_gate(store.open(), tree, holder, host, sys.stdout, sys.stderr)
+except gate._TestExit as ex:
+    sys.stderr.write(str(ex) + "\\n")
+    sys.exit(ex.code)
+with open(log, "a") as fh:
+    fh.write(json.dumps({"lane": lane, "holder": holder}) + "\\n")
+sys.exit(subprocess.run([sys.executable, sys.argv[6], tree] + sys.argv[7:]).returncode)
+"""
+
+
+# The merge gate's admission, real: `schedule.admit` as `gate._run_lane` calls
+# it (no queue place under MECLAW_GATE_MODE=merge), against the fixture's
+# store; queued -> exit 3 without a summary (as the engine), else the run is
+# closed GREEN on the lane it got.
+ADMIT_GATE = """import json, os, subprocess, sys
+scripts, tree, holder, log = sys.argv[1:5]
+sys.path.insert(0, scripts)
+from pipeline import schedule, store
+db = store.open()
+st = {"name": "precheck", "scope": "precheck", "cargo": 0, "stage": ["S", "I", "R"],
+      "needs": {"cpu": 1, "cargo": 0}, "inputs": [], "cmds": [{"argv": ["true"], "cwd": ""}],
+      "env": "none", "reason": [], "timeout_min": 10, "after": [], "run": True, "keep_ws": True}
+plan = {"mode": "strand", "rev": "a" * 40, "base": "b" * 40, "stations": [st],
+        "plan_reason": {"precheck": ["t"]}}
+adm = schedule.admit(db, plan, repo="meclaw", mode="strand", strand=holder,
+                     wave=holder.split("/")[0], base="b" * 40, lane_pref=None, now=None,
+                     wait=False, queue=os.environ.get("MECLAW_GATE_MODE", "") != "merge")
+if isinstance(adm, schedule.Queued):
+    with open(log, "a") as fh:
+        fh.write(json.dumps({"queued": adm.reason, "holder": holder}) + "\\n")
+    sys.stderr.write("gate: queued -- %s\\n" % adm.reason)
+    sys.exit(3)
+with open(log, "a") as fh:
+    fh.write(json.dumps({"lane": adm.lane, "holder": holder}) + "\\n")
+schedule.close(db, adm, {"verdict": "GREEN"})
+rev = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"], capture_output=True,
+                     text=True).stdout.strip()
+print("gate: rev = %s" % rev)
+print("GATE-SUMMARY strand %s 1/1 1s GREEN" % rev[:7])
+"""
+
+
+class _Runner:
+    """A registered runner of the pool (`schedule.sync_runners`)."""
+
+    def __init__(self, name):
+        self.name, self.ssh, self.bmc, self.root = name, "t@%s.invalid" % name, None, "/srv/target"
+        self.transport, self.cls, self.threads, self.jobs = "ssh", "lane", 24, None
+        self.slots, self.cores = None, 0
+
+class GoldenLaneTest(MergeCase):
+    """V2-A17 follow-up (#1199, live merge G-a 12:15): a merge WITHOUT `--host`
+    found the golden hits and ran the generator `pipeline.py test --strand
+    <holder>` -- whose token check refused it with exit 3 ("test runs on a
+    lane -- take one"): the merge holds no lane lease, its gate gets its lane
+    from the admission. The generator now runs on a lane the merge point
+    leases for it from the same armed pool (`--host`, else a lane the pool
+    leaves it; no queue place, like the merge gate) and gives back after the
+    run -- never past the token (`MECLAW_STRAND_TOKEN_SKIP`)."""
+
+    plans_tracked = True
+    HOLDER = "welle-test/S1"
+
+    def setUp(self):
+        super().setUp()
+        f = self.f
+        from pipeline import schedule
+        self.schedule = schedule
+        golden_fixture(self)
+        write(f.tmp, "lanes", "lane-a test@lane-a.invalid\nlane-b test@lane-b.invalid\n")
+        res = schedule.lease_init(f.db, lanes=["lane-a", "lane-b"],
+                                  lanes_file=os.path.join(f.tmp, "lanes"))
+        self.assertEqual(res.code, 0, res.err)
+        self.lane_log = os.path.join(f.tmp, "lanes.jsonl")
+        write(f.tmp, "leased.py", LEASED_GENERATOR)
+        self.cmd = "%s %s %s {tree} %s {holder} {host} %s %s {switch} {filter}" % (
+            sys.executable, os.path.join(f.tmp, "leased.py"), SCRIPTS, self.lane_log,
+            os.path.join(f.tmp, "generator.py"), self.gen_log)
+
+    def merge_with(self, names, **kw):
+        with mock.patch.dict(os.environ, {"MECLAW_MERGE_GOLDEN_CMD": self.cmd}):
+            return self.f.merge(names, **kw)
+
+    def lanes_seen(self):
+        try:
+            with open(self.lane_log, encoding="utf-8") as fh:
+                return [json.loads(line) for line in fh if line.strip()]
+        except OSError:
+            return []
+
+    def pool(self):
+        st = self.schedule._load(self.f.db)
+        return ([(h["strand"], h.get("lane")) for h in st["holders"]],
+                [w["strand"] for w in st["waiting"]])
+
+    def test_a_merge_without_host_runs_the_generator_on_a_lane_it_leases(self):
+        f = self.f
+        base = f.head()
+        s = self.a_strand(in_branch=True)
+        self.assertEqual(self.pool(), ([], []))
+        rc, _, err = self.merge_with(["S1"])
+        self.assertEqual(rc, 0, err)
+        # the token check of the generator found the gate holder's lease
+        seen = self.lanes_seen()
+        self.assertEqual(len(seen), 1, err)
+        self.assertEqual(seen[0]["holder"], self.HOLDER)
+        self.assertIn(seen[0]["lane"], ("lane-a", "lane-b"))
+        # ... the golden followed in the ONE merge commit
+        self.assertEqual(read(f.root, GOLDEN), golden_of(f.root))
+        self.assertEqual(f.parents(), [base, s["tip"]])
+        self.assertEqual(merge_receipt(f, "S1")["goldens"], [GOLDEN])
+        # ... and the lease went back: no holder, no queue place
+        self.assertEqual(self.pool(), ([], []))
+
+    def test_a_merge_with_host_runs_the_generator_on_that_lane(self):
+        self.a_strand(in_branch=True)
+        rc, _, err = self.merge_with(["S1"], host="lane-b")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([c["lane"] for c in self.lanes_seen()], ["lane-b"])
+        self.assertEqual(self.pool(), ([], []))
+
+    def test_a_lease_the_holder_already_holds_stays_after_the_merge(self):
+        self.a_strand(in_branch=True)
+        res = self.schedule.lease_take(self.f.db, self.HOLDER, lane="lane-a")
+        self.assertEqual(res.code, 0, res.err)
+        rc, _, err = self.merge_with(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([c["lane"] for c in self.lanes_seen()], ["lane-a"])
+        self.assertEqual(self.pool(), ([(self.HOLDER, "lane-a")], []))
+
+    def test_no_free_lane_refuses_the_merge_and_takes_no_queue_place(self):
+        f = self.f
+        base = f.head()
+        self.a_strand(in_branch=True)
+        for other, ln in (("welle-test/X", "lane-a"), ("welle-test/Y", "lane-b")):
+            res = self.schedule.lease_take(f.db, other, lane=ln, pid=os.getpid())
+            self.assertEqual(res.code, 0, res.err)
+        rc, _, err = self.merge_with(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("golden_failed", err)
+        self.assertEqual(self.lanes_seen(), [])
+        self.assertEqual(f.head(), base)
+        self.assertEqual(f.gate_calls(), [])
+        self.assertEqual(self.pool(), ([("welle-test/X", "lane-a"), ("welle-test/Y", "lane-b")],
+                                       []))
+
+    def admit_gate(self):
+        """The merge gate as the engine admits it (ADMIT_GATE), its log."""
+        f = self.f
+        self.schedule.sync_runners(f.db, [_Runner("lane-a"), _Runner("lane-b")],
+                                   states={"lane-a": "idle", "lane-b": "idle"})
+        write(f.tmp, "admit_gate.py", ADMIT_GATE)
+        self.admit_log = os.path.join(f.tmp, "admit.jsonl")
+        return "%s %s %s {tree} {holder} %s" % (
+            sys.executable, os.path.join(f.tmp, "admit_gate.py"), SCRIPTS, self.admit_log)
+
+    def admitted(self):
+        try:
+            with open(self.admit_log, encoding="utf-8") as fh:
+                return [json.loads(line) for line in fh if line.strip()]
+        except OSError:
+            return []
+
+    def test_the_golden_lease_spans_the_merge_gate_while_a_strand_queues(self):
+        # Re-check RC-GK2 I1: the lease went back after the generator, a strand
+        # that queued meanwhile got the lane offered, and the merge gate (no
+        # queue place) ended without a lane -- gate_aborted. The lease now
+        # spans the gate: the gate is admitted on it, then it goes back.
+        f = self.f
+        self.a_strand(in_branch=True)
+        res = self.schedule.lease_take(f.db, "welle-test/X", lane="lane-a", pid=os.getpid())
+        self.assertEqual(res.code, 0, res.err)
+        env = {"MECLAW_MERGE_GOLDEN_CMD": self.cmd, "GOLDEN_TEST_WAITER": "welle-test/W",
+               "MECLAW_PIPELINE_FAKE_GATE": "", "MECLAW_MERGE_GATE_CMD": self.admit_gate()}
+        with mock.patch.dict(os.environ, env):
+            rc, _, err = f.merge(["S1"])
+        self.assertEqual([c["lane"] for c in self.lanes_seen()], ["lane-b"])
+        self.assertEqual(self.admitted(), [{"lane": "lane-b", "holder": self.HOLDER}], err)
+        self.assertEqual(rc, 0, err)
+        holders, waiting = self.pool()
+        self.assertEqual(holders, [("welle-test/X", "lane-a")])
+        self.assertEqual(waiting, ["welle-test/W"])
+
+    def test_a_batch_runs_the_generator_on_the_lane_a_member_holds(self):
+        # Re-check RC-GK2 I2: a batch `<wave>/S1+S2` speaks for the lease of a
+        # member (schedule `_batch_speaker`) -- the merge gate is admitted on
+        # S1's lane, so the generator runs there too, under S1's lease, and
+        # takes no second lane (none was free: golden_failed before).
+        f = self.f
+        self.a_strand(in_branch=True)
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"}, in_branch=True)
+        for holder, ln in ((self.HOLDER, "lane-a"), ("welle-test/Z", "lane-b")):
+            res = self.schedule.lease_take(f.db, holder, lane=ln, pid=os.getpid())
+            self.assertEqual(res.code, 0, res.err)
+        env = {"MECLAW_MERGE_GOLDEN_CMD": self.cmd, "MECLAW_PIPELINE_FAKE_GATE": "",
+               "MECLAW_MERGE_GATE_CMD": self.admit_gate()}
+        with mock.patch.dict(os.environ, env):
+            rc, _, err = f.merge(["S1", "S2"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.lanes_seen(), [{"lane": "lane-a", "holder": self.HOLDER}])
+        self.assertEqual(self.admitted(), [{"lane": "lane-a", "holder": "welle-test/S1+S2"}])
+        self.assertEqual(self.pool(), ([(self.HOLDER, "lane-a"), ("welle-test/Z", "lane-b")],
+                                       []))
+
+    def test_a_failing_generator_gives_the_lane_back(self):
+        # Re-check RC-GK2 I3: the release in every exit of the golden step --
+        # a generator that fails refuses the merge and leaves no lease.
+        f = self.f
+        base = f.head()
+        self.a_strand(in_branch=True)
+        with mock.patch.dict(os.environ, {"MECLAW_MERGE_GOLDEN_CMD": self.cmd,
+                                          "FAKE_GENERATOR_FAILS": "1"}):
+            rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("golden_failed", err)
+        self.assertEqual(len(self.lanes_seen()), 1, err)
+        self.assertEqual(f.head(), base)
+        self.assertEqual(f.gate_calls(), [])
+        self.assertEqual(self.pool(), ([], []))
+
+
+
 class GateRevTest(MergeCase):
     """F1: the merge gate must have gated THE candidate -- fail closed otherwise."""
 
@@ -1863,7 +2640,8 @@ class MergeGateUnnarrowedTest(unittest.TestCase):
 
 class ReportAfterGateTest(MergeCase):
     """(4) The report commit comes after the strand gate: a diff that only
-    touches `plans/<wave>/{berichte,straenge}` between receipt and tip passes."""
+    touches `turnaround.POST_GATE` of its wave (`plans/<wave>/` berichte/,
+    straenge/, RESTLISTE.md, recheck/) between receipt and tip passes."""
 
     plans_tracked = True
 
@@ -1897,6 +2675,65 @@ class ReportAfterGateTest(MergeCase):
         rc, _, err = f.merge(["S1"])
         self.assertEqual(rc, merge.REFUSE_EXIT, err)
         self.assertIn("receipt_not_branch_head", err)
+
+    # GH #1199 (e): v2-p1082 refused `receipt_not_branch_head` with only
+    # plans/<wave>/RESTLISTE.md changed after the gate -- the delta check of
+    # Konvergenz A (PREAMBLE § 6.13) writes it there, as it writes recheck/.
+    # The ONE post-gate list (`turnaround.POST_GATE`) carries both.
+    def test_merge_accepts_a_restliste_commit_after_the_gate(self):
+        f = self.f
+        s = self.a_strand(in_branch=True)
+        tip = self.report_commit(s, "plans/%s/RESTLISTE.md" % WAVE, "# Restliste\n- N1\n")
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(f.parents()[1], tip)
+
+    def test_merge_accepts_a_recheck_script_after_the_gate(self):
+        f = self.f
+        s = self.a_strand(in_branch=True)
+        tip = self.report_commit(s, "plans/%s/recheck/skripte/S1/klasse.py" % WAVE,
+                                 "import sys\nsys.exit(0)\n")
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(f.parents()[1], tip)
+
+    # GH #1199 (e), Koordinator-3 ruling "100644 on both sides": a re-check
+    # script committed 100755 after the gate re-gates. The wave commits them
+    # 100644 and runs them with bash/python3 (PREAMBLE § 6.13); `strand.sh pre`
+    # says so first (precheck `recheck-mode`). This pin locks the ruling.
+    def test_merge_refuses_an_executable_recheck_script_after_the_gate(self):
+        f = self.f
+        s = self.a_strand(in_branch=True)
+        rel = "plans/%s/recheck/skripte/S1/run_all.sh" % WAVE
+        write(s["wt"], rel, "#!/usr/bin/env bash\nexit 0\n")
+        os.chmod(os.path.join(s["wt"], rel), 0o755)
+        git(s["wt"], "add", "-A")
+        git(s["wt"], "commit", "-q", "-m", "S1: recheck script after the gate")
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("receipt_not_branch_head", err)
+        self.assertIn("mode 100755", err)
+
+    def test_merge_refuses_a_script_commit_after_the_gate(self):
+        f = self.f
+        s = self.a_strand(in_branch=True)
+        self.report_commit(s, "scripts/later.py", "X = 1\n")
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("receipt_not_branch_head", err)
+
+    def test_merge_refuses_a_plans_file_outside_the_post_gate_list(self):
+        for rel in ("plans/PREAMBLE.md", "plans/%s/README.md" % WAVE,
+                    "plans/%s/RESTLISTE.md.bak" % WAVE):
+            with self.subTest(rel=rel):
+                self.f = f = Fixture(self.gate, self.plans_tracked)  # a fresh repo per case
+                self.addCleanup(f.close)
+                s = self.a_strand(in_branch=True)
+                self.report_commit(s, rel, "later\n")
+                rc, _, err = f.merge(["S1"])
+                self.assertEqual(rc, merge.REFUSE_EXIT, err)
+                self.assertIn("receipt_not_branch_head", err)
+                self.assertIn(rel, err)
 
 
 if __name__ == "__main__":

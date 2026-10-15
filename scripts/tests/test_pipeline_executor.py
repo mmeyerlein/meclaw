@@ -26,7 +26,7 @@ import unittest
 from unittest import mock
 
 from scripts.pipeline import events, receipt, schedule
-from scripts.tests import kit_time, kit_tree, store_isolation
+from scripts.tests import kit_time, kit_tree, private_tree, store_isolation
 from scripts import gate_plan
 
 try:
@@ -1839,6 +1839,9 @@ class TestExportCaches(unittest.TestCase):
         import importlib
         import sys
         from unittest import mock
+        # GH #1199: both scripts live under plans/, which never travels
+        private_tree.require("plans/export-fixtures/export_tree_tests.py",
+                             "plans/export-fixtures/make_export.py")
         for p in (REPO / "scripts", REPO / "plans" / "export-fixtures"):
             if str(p) not in sys.path:
                 sys.path.insert(0, str(p))

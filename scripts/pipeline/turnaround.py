@@ -14,8 +14,8 @@ GATE-NEUTRAL PATHS
 ==================
 A path is gate-neutral when BOTH hold (fail-closed: anything else is code):
 
-  1. it lies in the allowlist `NEUTRAL` -- the strand reports and strand
-     files of a wave (`plans/welle-*/berichte|straenge/**`); `plans/**` as a
+  1. it lies in the allowlist `NEUTRAL` -- `POST_GATE` of a wave (reports,
+     strand files, RESTLISTE.md, re-check scripts); `plans/**` as a
      whole is NOT neutral: the corridor drift lock reads
      `plans/**/expected_*_body.txt`, `check_adr_anchors.py` reads `plans/adr/`;
   2. no reader rule knows a reader of it: the classes of `gate_plan.py` are
@@ -33,8 +33,9 @@ link resolution and no tree materialisation (Koordinator-3, fix round 7, after
 six rounds of reader-rule leaks B-N1..B-N4 around symlinks, attributes and
 `..`): every path of `a..b`
 
-  * lies under `plans/<wave>/berichte/` or `plans/<wave>/straenge/` of the
-    strand's own wave, with no `.`/`..`/empty component;
+  * lies on `POST_GATE` of the strand's own wave (`plans/<wave>/`
+    berichte/, straenge/, RESTLISTE.md, recheck/), with no `.`/`..`/empty
+    component;
   * is a regular 100644 file in the tip, and a regular 100644 file or
     absent in the gated rev and master, and no component above it is
     anything but a directory there -- a symlink, a submodule or a mode
@@ -69,18 +70,24 @@ import re
 import subprocess
 import sys
 
-NEUTRAL = (
-    "plans/welle-*/berichte/**",
-    "plans/welle-*/straenge/**",
-)
+# The ONE list of what the chain writes, documented, after the strand gate,
+# relative to `plans/<wave>/` (GH #1199 (e)): the reports, the strand files,
+# and since Konvergenz A (PREAMBLE § 6.13) the RESTLISTE.md and the re-check
+# scripts the delta check writes. Two copies (`NEUTRAL` globs, a
+# `REUSE_DIRS` of names) knew only the first two: v2-p1082 refused
+# `receipt_not_branch_head` on 14.10. with RESTLISTE.md alone changed after
+# its gate. Globs of `gate_plan._matches` (`**` crosses `/`, `*` does not);
+# nothing outside `plans/<wave>/`.
+POST_GATE = ("berichte/**", "straenge/**", "RESTLISTE.md", "recheck/**")
 
-# Receipt reuse (`code_equal_revs`): the directories of `plans/<wave>/` a
-# receipt survives, and the committed files whose naming a changed path
+NEUTRAL = tuple("plans/welle-*/" + g for g in POST_GATE)
+
+# Receipt reuse (`code_equal_revs`): a receipt survives `POST_GATE` of its
+# wave (above); the committed files whose naming a changed path
 # re-gates (rule 8 python plus every crate file -- integration tests and the
 # `#[cfg(test)]` modules of `src/` alike; `git grep` reads the commit, no
 # symlink is followed, no attribute applies). Measured on master 10.10.:
 # one such `git grep` over all 1 982 crate files takes 0.9 s.
-REUSE_DIRS = ("berichte", "straenge")
 REUSE_TESTS = (":(glob)crates/**",)
 
 OWNER_ENV = "MECLAW_OWNER"
@@ -93,9 +100,13 @@ PY_READERS = (":(glob)scripts/**/*.py", ":(glob)scripts/**/*.sh", ":(glob)worksh
 # DISPATCH-BAU.md of the build session, HANDOVER-PLANUNG.md of the planning
 # session (`retro.transcripts.PLANNING`) -- a prompt naming another wave's
 # marker reads no file of this one.
+# GH #1199 (e): `RESTLISTE.md` (PREAMBLE § 6.13) and the re-check entry
+# `run_all.sh` (DISPATCH-BAU § 1; 6 on master 15.10.) are wave-generic too --
+# `POST_GATE` itself names RESTLISTE.md, which made this module its reader.
 GENERIC_NAMES = frozenset(("ledger.md", "README.md", "summary.txt", "receipt.json",
                            "plan.json", "events.jsonl", "latest",
-                           "DISPATCH-BAU.md", "HANDOVER-PLANUNG.md"))
+                           "DISPATCH-BAU.md", "HANDOVER-PLANUNG.md",
+                           "RESTLISTE.md", "run_all.sh"))
 
 # A gate run's archive directory (`<ts>-<sha8>`, `gate.py` `archive`).
 RUN_DIR = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
@@ -144,8 +155,12 @@ def veto(path, repo, wave=None, python=True, allow=None):
         return "outside the allowlist"
     gp = _gate_plan()
     try:
-        classes = gp.classify([path])
-        if set(classes) != {"docs"}:
+        classes = set(gp.classify([path]))
+        # GH #1199 (e): `shell` plans shellcheck over `SHELL_GLOBS` alone; a
+        # re-check's `run_all.sh` under plans/<wave>/recheck/ is none of them.
+        if "shell" in classes and not any(gp._matches(path, g) for g in gp.SHELL_GLOBS):
+            classes = (classes - {"shell"}) or {"docs"}
+        if classes != {"docs"}:
             return "classes %s" % ",".join(sorted(classes))
         lit = gp._tests_reading_path(repo, path)
         if lit:
@@ -205,8 +220,13 @@ def python_readers(repo, path, rev=None, specs=PY_READERS):
     that name `path` (`_needles`, each at a path boundary, `_bounded`); with
     `rev`, the files of that commit; `specs` the pathspecs searched; `path`
     may be a list (the files naming any of them). A
-    failing `git grep` raises -- `veto` turns that into a veto."""
-    args = ["grep", "-l", "-E"] + ([] if rev else ["--untracked"])
+    failing `git grep` raises -- `veto` turns that into a veto.
+
+    Names come verbatim (`-z`): without it git quotes a name with non-ASCII,
+    `"` or `\\` (`"HEAD:scripts/\\303\\244.py"`), the `rev:` prefix stayed on
+    and the `:(literal)<hit>` grep of `offending`/`reuse_readers` matched
+    nothing -- the reader fell through (re-check I-h1, wave validation 2)."""
+    args = ["grep", "-l", "-z", "-E"] + ([] if rev else ["--untracked"])
     for n, whole in sorted({n for q in ([path] if isinstance(path, str) else path)
                             for n in _needles(q)}):
         args += ["-e", _bounded(n, whole)]
@@ -215,7 +235,7 @@ def python_readers(repo, path, rev=None, specs=PY_READERS):
         return []
     if rc != 0:
         raise ValueError("git grep for readers of %s failed (rc %d)" % (path, rc))
-    got = [l for l in raw.decode("utf-8", "surrogateescape").split("\n") if l]
+    got = [l for l in raw.decode("utf-8", "surrogateescape").split("\0") if l]
     if rev:
         got = [l[len(rev) + 1:] if l.startswith(rev + ":") else l for l in got]
     return sorted(got)
@@ -290,9 +310,15 @@ def reuse_path(path, wave):
     parts = path.split("/")
     if any(c in ("", ".", "..") for c in parts):
         return "a '.', '..' or empty path component"
-    if not wave or len(parts) < 4 or parts[:2] != ["plans", wave] or parts[2] not in REUSE_DIRS:
-        return "outside plans/%s/{%s}/" % (wave or "<no wave>", ",".join(REUSE_DIRS))
+    if not wave or parts[:2] != ["plans", wave] or not post_gate(parts[2:]):
+        return "outside plans/%s/{%s}" % (wave or "<no wave>", ",".join(POST_GATE))
     return None
+
+
+def post_gate(rest):
+    """Is `rest` (the components below `plans/<wave>/`) on `POST_GATE`?"""
+    gp = _gate_plan()
+    return bool(rest) and any(gp._matches("/".join(rest), g) for g in POST_GATE)
 
 
 # Fund V-1 (welle-validierung, GH #1203): the plan of a NEW wave -- a wave
@@ -362,14 +388,21 @@ def reuse_tree(repo, rev, paths, label, present=False):
 def reuse_readers(repo, paths, revs):
     """`{path: why}` of the `paths` a committed script or test of a commit in
     `revs` names (`python_readers` over `PY_READERS` + `REUSE_TESTS`, read off
-    the commit; one `git grep` per commit, per path only on a hit). Raises
-    ValueError when `git grep` fails."""
+    the commit; one `git grep` per commit, per path only on a hit and only
+    over the hit files). Raises ValueError when `git grep` fails.
+
+    V2-A10 (h, wave validation 2): the per-path grep read every script and
+    test of the rev -- 614 greps, 984 s for the 310 re-check files of v2-fix-b
+    (`/tmp/claude-v2fixc-h/probe2.log`). A file that names one path is a hit
+    of the grep over all of them, so the hit files are the whole search."""
     out, specs = {}, PY_READERS + REUSE_TESTS
     for rev, label in revs:
-        if not paths or not python_readers(repo, paths, rev, specs):
+        hits = python_readers(repo, paths, rev, specs) if paths else []
+        if not hits:
             continue
+        only = tuple(":(literal)" + h for h in hits)
         for p in paths:
-            got = python_readers(repo, [p], rev, specs)
+            got = python_readers(repo, [p], rev, only)
             if got:
                 out.setdefault(p, "read by %s in %s" % (", ".join(got[:3]), label))
     return out
@@ -641,12 +674,16 @@ def main_tree_check(repo, paths):
         return "RED", "the main tree of %s is unknown (git rev-parse failed)" % repo
     if os.path.realpath(root) == os.path.realpath(repo):
         return "GREEN", ""
-    status = _lines(root, "status", "--porcelain=v1", "--untracked-files=all", "--no-renames")
-    if status is None:
+    # `-z`: names verbatim; quoted (`"templates/a/\\303\\244.txt"`) a strand
+    # path never met its status key and the check stayed GREEN (I-h1).
+    rc, raw = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+                   "--no-renames")
+    if rc != 0:
         return "RED", "git status in the main tree %s failed" % root
     dirty = {}
-    for line in status:
-        dirty[line[3:]] = line[:2]
+    for line in raw.decode("utf-8", "surrogateescape").split("\0"):
+        if line:
+            dirty[line[3:]] = line[:2]
     want = set(paths)
     bad, tracked = [], []
     for rel in sorted(want & set(dirty)):

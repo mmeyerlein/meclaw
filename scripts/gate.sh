@@ -1,7 +1,7 @@
 #!/bin/bash -p
 # meclaw -- the gate entry point. Since W3 (GH #1117) a shell over two runners:
 #
-#     scripts/gate.sh <strand|integration|release|ci> [options]
+#     scripts/gate.sh [-C <dir>] <strand|integration|release|ci> [options]
 #
 #   strand|integration|release
 #       -> python3 scripts/pipeline.py gate --mode <mode> [options]
@@ -23,7 +23,8 @@
 #          refuses an unknown mode with exit 2.
 #
 # Both runners are found next to this file, never under the caller's working
-# directory. The exit code is the runner's (exec).
+# directory. The exit code is the runner's (exec). `-C <dir>`: a `cd <dir>`
+# first, as `git -C` -- the runners read the tree from the cwd (GH #1199).
 
 set -uo pipefail
 
@@ -32,6 +33,13 @@ set -uo pipefail
 case "${BASH_SOURCE[0]}" in */*) here=${BASH_SOURCE[0]%/*}/ ;; *) here=./ ;; esac
 here=$(cd -- "$here" && pwd) || exit 2
 legacy="$here/gate_legacy.sh"
+
+while [ "${1:-}" = "-C" ]; do
+    [ $# -ge 2 ] || { echo "gate: -C needs a value" >&2; exit 2; }
+    [ -d "$2" ] || { echo "gate: -C: no such directory: $2" >&2; exit 2; }
+    cd -- "$2" || exit 2
+    shift 2
+done
 
 case "${1:-}" in
     strand|integration|release) ;;

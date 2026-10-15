@@ -46,22 +46,22 @@ use crate::road; // harness_fold: mod road;
 
 use meclaw_cells::WebCellFactory;
 use meclaw_cells::vault::VaultCellFactory;
+use meclaw_colony::api_dto::{MessageLogDto, MessageLogFilter};
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, MutationDoorOutcome, bootstrap_from_filesystem,
 };
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
-use meclaw_testing::{ColonyHandle, NEVER_CRON};
+use meclaw_testing::{ColonyHandle, LogMark, NEVER_CRON, deadline, wait};
 use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
 use road::{Stubs, as_map, configs_under, read_json, write_json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::oneshot;
 
-/// Failure marker (the 30 s convention would cut a cold builder render short on
-/// a loaded host; nothing below waits for it unless an event never comes).
-const DEADLINE: Duration = Duration::from_secs(90);
+/// The seconds a log mark reads back before its newest row (see `Lab::mark`):
+/// a bound on the rows each poll reads, not a wait.
+const MARK_SLACK_S: i64 = 2;
 const ORG: &str = "lab";
 const MEMBER: &str = "member";
 const AGENT: &str = "agent";
@@ -144,8 +144,15 @@ fn probe_channel(dir: &std::path::Path) {
     );
     write_json(
         &dir.join("config.json"),
-        &json!({"cell": {"type": "code"},
-                "params": {"runner": "python3", "external_timeout_ms": 15000,
+        // The channel's own operation timeout (A) and backstop (B) are the
+        // test's product deadlines on its success path (TV-Z9): one source,
+        // scaled by the one time factor, far above every hang mark below. A
+        // literal 15 s A was a clock this file set itself, unscaled, on the
+        // python3 runner every answer of the round reaches.
+        &json!({"cell": {"type": "code",
+                         "message_timeout": meclaw_testing::deadline::product_backstop_ms()},
+                "params": {"runner": "python3",
+                           "external_timeout_ms": meclaw_testing::deadline::product_wait_ms(),
                            "script_inline": "import sys\nsys.stdin.read()\nsys.stdout.write('[]')\n"},
                 "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
                              "emits": {"body": {"messages": {"type": "array", "required": false}}},
@@ -277,7 +284,8 @@ impl Dead {
 }
 
 struct Lab {
-    td: tempfile::TempDir,
+    /// Held: the colony root lives as long as the lab.
+    _td: tempfile::TempDir,
     h: ColonyHandle,
     /// Held: a dropped stub stops answering.
     _stub: MockOpenAI,
@@ -356,16 +364,12 @@ impl Lab {
             .await
             .expect("the empty root must boot");
         Lab {
-            td,
+            _td: td,
             h,
             _stub: stub,
             _closer: closer,
             _brain: brain,
         }
-    }
-
-    fn root(&self) -> &std::path::Path {
-        self.td.path()
     }
 
     async fn drain(&self) -> Vec<Dead> {
@@ -425,42 +429,166 @@ impl Lab {
         ack_rx.await.expect("manifest ack")
     }
 
-    /// The highest rowid of `message_log`, the mark a wait reads after.
-    fn mark(&self) -> i64 {
-        let conn = rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
-        conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM message_log", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0)
+    /// The point in the message log a wait reads after.
+    ///
+    /// Read through the colony (`ColonyHandle::log_mark`, TV-A3), never from
+    /// `colony.db`. `since` bounds every later read to the rows of the last
+    /// seconds: the newest row's `created_at` (seconds) when the mark was
+    /// taken, less [`MARK_SLACK_S`]. A row's `created_at` is its message's
+    /// creation stamp, not the writer's commit time, so the bound holds for the
+    /// rows of messages created after the mark -- every row a wait here looks
+    /// for, since the test sends the message that starts the round only after
+    /// taking the mark. An older message committed late can fall below it;
+    /// `round_of` in a hang diagnosis may miss such a row. The slack only
+    /// covers a host clock that steps back a little. Without it each poll
+    /// would read the whole log through the colony's own task, under load,
+    /// and slow down the very round it waits for.
+    async fn mark(&self) -> Mark {
+        // The newest row through the paged reader (`read_log`, newest first):
+        // a raw one-row `ReadMessages` would be a page read as the whole (809
+        // `no_reader_takes_one_page_of_the_log_for_the_whole`).
+        let newest = self
+            .h
+            .read_log(MessageLogFilter::default())
+            .await
+            .first()
+            .map_or(0, |row| row.created_at);
+        Mark {
+            log: self.h.log_mark().await,
+            since: newest - MARK_SLACK_S,
+        }
     }
 
-    /// `(to_path, route, body_payload)` of every delivery after `mark`.
-    fn since(&self, mark: i64) -> Vec<(String, String, String)> {
-        let conn = rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
-        let Ok(mut st) = conn.prepare(
-            "SELECT to_path, headers, COALESCE(body_payload, '') FROM message_log \
-             WHERE rowid > ?1 ORDER BY rowid",
-        ) else {
-            return Vec::new();
-        };
-        st.query_map([mark], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
+    /// Every delivery after `mark`, oldest first; only those to `to_prefix`
+    /// when one is given.
+    async fn since(&self, mark: &Mark, to_prefix: Option<&str>) -> Vec<MessageLogDto> {
+        let mut rows = self
+            .h
+            .log_since(
+                &mark.log,
+                MessageLogFilter {
+                    since: Some(mark.since),
+                    to_path_prefix: to_prefix.map(str::to_string),
+                    ..Default::default()
+                },
+            )
+            .await;
+        rows.reverse();
+        rows
+    }
+
+    /// The deliveries after `mark` that satisfy `pick`, read whenever the log
+    /// moved (`log_seq`, the writer's commit counter: the event "rows were
+    /// committed"), under the hang mark (`wait::until_some_with`, 30 s scaled
+    /// by `MECLAW_TEST_TIME_FACTOR`). On a hang the failure names what was
+    /// awaited, the dead letters so far and the round `under` the given
+    /// subtrees -- never a verdict on speed.
+    async fn wait_for<T>(
+        &self,
+        mark: &Mark,
+        to_prefix: Option<&str>,
+        what: &str,
+        under: &[&str],
+        pick: impl Fn(&[MessageLogDto]) -> Option<T>,
+    ) -> T {
+        let seq = self.h.subscribe_log_seq();
+        let read_at = std::cell::Cell::new(None);
+        let (seq, read_at, pick) = (&seq, &read_at, &pick);
+        wait::until_some_with(
+            what,
+            move || async move {
+                let now = *seq.borrow();
+                if read_at.get() == Some(now) {
+                    return None;
+                }
+                read_at.set(Some(now));
+                pick(&self.since(mark, to_prefix).await)
+            },
+            || async move {
+                format!(
+                    "dead letters so far: {:#?}; the round under {under:?}: {:#?}",
+                    say(&self.drain().await),
+                    self.round_of(mark, under).await
+                )
+            },
+        )
+        .await
+    }
+
+    /// Wait until a delivery after `mark` satisfies `pred`; returns it as
+    /// `(to_path, route, body_payload)`.
+    async fn wait(
+        &self,
+        mark: &Mark,
+        what: &str,
+        under: &[&str],
+        pred: impl Fn(&(String, String, String)) -> bool,
+    ) -> (String, String, String) {
+        self.wait_for(mark, None, what, under, |rows| {
+            rows.iter().map(delivery).find(|d| pred(d))
         })
-        .map(|rows| {
-            rows.filter_map(Result::ok)
-                .map(|(to, headers, body)| {
-                    let h: Value =
-                        meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
-                    let route = h["hop"]["route"].as_str().unwrap_or_default().to_string();
-                    (to, route, body)
-                })
-                .collect()
+        .await
+    }
+
+    /// GH #1092: wait until a delivery after `mark` satisfies `pred` on its
+    /// target and its whole hop (a receipt's `error_code` rides there).
+    async fn wait_hop(
+        &self,
+        mark: &Mark,
+        what: &str,
+        under: &[&str],
+        pred: impl Fn(&str, &Value) -> bool,
+    ) {
+        self.wait_for(mark, None, what, under, |rows| {
+            rows.iter()
+                .any(|row| pred(&row.to_path, &headers(row)["hop"]))
+                .then_some(())
         })
-        .unwrap_or_default()
+        .await
+    }
+
+    /// Wait until at least `n` deliveries after `mark` satisfy `pred`.
+    async fn wait_count(
+        &self,
+        mark: &Mark,
+        n: usize,
+        what: &str,
+        pred: impl Fn(&(String, String, String)) -> bool,
+    ) {
+        self.wait_for(mark, None, what, &["/os"], |rows| {
+            (rows.iter().map(delivery).filter(|d| pred(d)).count() >= n).then_some(())
+        })
+        .await
+    }
+
+    /// GH #1092: the deliveries after `mark` from or to these subtrees --
+    /// `from -> to route [error_code] context keys` -- for a failure message.
+    async fn round_of(&self, mark: &Mark, under: &[&str]) -> Vec<String> {
+        self.since(mark, None)
+            .await
+            .iter()
+            .filter(|row| {
+                under
+                    .iter()
+                    .any(|u| row.from_path.starts_with(u) || row.to_path.starts_with(u))
+            })
+            .map(|row| {
+                let h = headers(row);
+                let keys: Vec<String> = h["context"]
+                    .as_object()
+                    .map(|c| c.keys().cloned().collect())
+                    .unwrap_or_default();
+                format!(
+                    "{} -> {} {} [{}] grant={} op={} ctx={keys:?}",
+                    row.from_path,
+                    row.to_path,
+                    h["hop"]["route"].as_str().unwrap_or_default(),
+                    h["hop"]["error_code"].as_str().unwrap_or_default(),
+                    h["hop"]["grant_id"].as_str().unwrap_or_default(),
+                    h["hop"]["operation"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect()
     }
 
     /// Deliveries after `mark` that bring the brain's own tool call's result
@@ -468,190 +596,63 @@ impl Lab {
     /// answers on `tool_result`, the member hands it down on `in_tool`) with
     /// `TOOL_CALL_ID` on the hop. Other results reach a generation too (a
     /// start-up schema answer); only this one is the call's.
-    fn results_of_the_call(&self, mark: i64) -> usize {
-        let conn = rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
-        conn.query_row(
-            "SELECT COUNT(*) FROM message_log WHERE rowid > ?1 AND to_path LIKE ?2 \
-             AND (headers LIKE ?3 OR COALESCE(body_payload, '') LIKE ?3) \
-             AND headers LIKE '%\"in_tool\"%'",
-            rusqlite::params![
-                mark,
-                format!("{GENERATION_PATH}%"),
-                format!("%{TOOL_CALL_ID}%")
-            ],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n as usize)
-        .unwrap_or(0)
-    }
-
-    /// `from -> to route` of every delivery after `mark` that names the
-    /// brain's tool call -- the call's own trace, for a failure message.
-    fn trace_of_the_call(&self, mark: i64) -> Vec<String> {
-        let conn = rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
-        let Ok(mut st) = conn.prepare(
-            "SELECT from_path, to_path, headers FROM message_log WHERE rowid > ?1 \
-             AND (headers LIKE ?2 OR COALESCE(body_payload, '') LIKE ?2 \
-                  OR headers LIKE ?3 OR COALESCE(body_payload, '') LIKE ?3) ORDER BY rowid",
-        ) else {
-            return Vec::new();
-        };
-        st.query_map(
-            rusqlite::params![mark, format!("%{TOOL_CALL_ID}%"), format!("%{TOOL}%")],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .map(|rows| {
-            rows.filter_map(Result::ok)
-                .map(|(from, to, headers)| {
-                    let h: Value =
-                        meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
-                    format!(
-                        "{from} -> {to} route={} hop={}",
-                        h["hop"]["route"], h["hop"]
-                    )
-                    .chars()
-                    .take(400)
-                    .collect()
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-    }
-
-    /// Wait until a delivery after `mark` satisfies `pred`; returns it.
-    async fn wait(
-        &self,
-        mark: i64,
-        what: &str,
-        pred: impl Fn(&(String, String, String)) -> bool,
-    ) -> (String, String, String) {
-        let end = std::time::Instant::now() + DEADLINE;
-        loop {
-            if let Some(hit) = self.since(mark).into_iter().find(|d| pred(d)) {
-                return hit;
-            }
-            if std::time::Instant::now() > end {
-                let dead: Vec<String> = self.drain().await.iter().map(Dead::say).collect();
-                panic!("{what} never arrived; dead letters so far: {dead:#?}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// GH #1092: wait until a delivery after `mark` satisfies `pred` on its
-    /// target and its whole hop (a receipt's `error_code` rides there).
-    async fn wait_hop(&self, mark: i64, what: &str, pred: impl Fn(&str, &Value) -> bool) {
-        let end = std::time::Instant::now() + DEADLINE;
-        loop {
-            let conn =
-                rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
-            let hit = conn
-                .prepare("SELECT to_path, headers FROM message_log WHERE rowid > ?1")
-                .and_then(|mut st| {
-                    st.query_map([mark], |r| {
-                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                    })
-                    .map(|rows| {
-                        rows.filter_map(Result::ok).any(|(to, headers)| {
-                            let h: Value =
-                                meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
-                            pred(&to, &h["hop"])
-                        })
-                    })
-                })
-                .unwrap_or(false);
-            if hit {
-                return;
-            }
-            if std::time::Instant::now() > end {
-                let dead: Vec<String> = self.drain().await.iter().map(Dead::say).collect();
-                panic!("{what} never arrived; dead letters so far: {dead:#?}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// GH #1092: the deliveries after `mark` from or to these subtrees --
-    /// `from -> to route [error_code] context keys` -- for a failure message.
-    fn round_of(&self, mark: i64, under: &[&str]) -> Vec<String> {
-        let conn = rusqlite::Connection::open(self.root().join("colony.db")).expect("colony.db");
-        let Ok(mut st) = conn.prepare(
-            "SELECT from_path, to_path, headers FROM message_log WHERE rowid > ?1 ORDER BY rowid",
-        ) else {
-            return Vec::new();
-        };
-        st.query_map([mark], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .map(|rows| {
-            rows.filter_map(Result::ok)
-                .filter(|(from, to, _)| {
-                    under
-                        .iter()
-                        .any(|u| from.starts_with(u) || to.starts_with(u))
-                })
-                .map(|(from, to, headers)| {
-                    let h: Value =
-                        meclaw_core::serde_json::from_str(&headers).unwrap_or(Value::Null);
-                    let keys: Vec<String> = h["context"]
-                        .as_object()
-                        .map(|c| c.keys().cloned().collect())
-                        .unwrap_or_default();
-                    format!(
-                        "{from} -> {to} {} [{}] grant={} op={} ctx={keys:?}",
-                        h["hop"]["route"].as_str().unwrap_or_default(),
-                        h["hop"]["error_code"].as_str().unwrap_or_default(),
-                        h["hop"]["grant_id"].as_str().unwrap_or_default(),
-                        h["hop"]["operation"].as_str().unwrap_or_default(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-    }
-
-    /// Wait until at least `n` deliveries after `mark` satisfy `pred`.
-    async fn wait_count(
-        &self,
-        mark: i64,
-        n: usize,
-        what: &str,
-        pred: impl Fn(&(String, String, String)) -> bool,
-    ) {
-        let end = std::time::Instant::now() + DEADLINE;
-        loop {
-            let seen = self.since(mark).iter().filter(|d| pred(d)).count();
-            if seen >= n {
-                return;
-            }
-            if std::time::Instant::now() > end {
-                let dead: Vec<String> = self.drain().await.iter().map(Dead::say).collect();
-                panic!("{what}: {seen} of {n} arrived; dead letters so far: {dead:#?}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+    fn is_the_calls_result(row: &MessageLogDto) -> bool {
+        let body = row.body_payload.as_deref().unwrap_or_default();
+        row.to_path.starts_with(GENERATION_PATH)
+            && (row.headers_json.contains(TOOL_CALL_ID) || body.contains(TOOL_CALL_ID))
+            && row.headers_json.contains("\"in_tool\"")
     }
 
     /// A person's turn on the grown channel, waited until its answer arrived
     /// on that channel.
     async fn turn(&self, text: &str) {
-        let mark = self.mark();
+        let mark = self.mark().await;
         self.h
             .send(person(MEMBER_PATH, text, Some(GROWN_CHANNEL)))
             .await;
-        self.wait(mark, "the answer on the grown channel", |(to, route, _)| {
-            to.starts_with(&format!("{MEMBER_PATH}/channels/{GROWN_CHANNEL}")) && route == "answer"
-        })
+        // The answer's delivery to the channel node is the event; the
+        // channel's own python3 run on it comes after that row and cannot
+        // turn it into an error. An error the channel raised on an earlier
+        // delivery travels up its `error` lane and is a dead letter or a
+        // refusal the class table never declares (a refusal is never a
+        // class), so the dead-letter check, not this wait, reads it.
+        //
+        // A turn is a whole round of the grown organism (the brain's tool
+        // call, the recall, the channel's code cell), so it waits under its
+        // own mark (`deadline::TURN_HANG`, whose doc carries the measured
+        // basis and why `HANG` does not carry a turn). The wait reads
+        // the log whenever the writer committed rows (`log_seq`), never on a
+        // clock of its own.
+        let channel = format!("{MEMBER_PATH}/channels/{GROWN_CHANNEL}");
+        let mut seq = self.h.subscribe_log_seq();
+        deadline::turn_hang_with(
+            "the answer on the grown channel",
+            async {
+                loop {
+                    seq.borrow_and_update();
+                    let rows = self.since(&mark, None).await;
+                    if rows
+                        .iter()
+                        .map(delivery)
+                        .any(|(to, route, _)| to.starts_with(&channel) && route == "answer")
+                    {
+                        return;
+                    }
+                    if seq.changed().await.is_err() {
+                        // The writer is gone: nothing commits again, the mark names it.
+                        std::future::pending::<()>().await;
+                    }
+                }
+            },
+            || async {
+                format!(
+                    "dead letters so far: {:#?}; the round under {:?}: {:#?}",
+                    say(&self.drain().await),
+                    [MEMBER_PATH],
+                    self.round_of(&mark, &[MEMBER_PATH]).await
+                )
+            },
+        )
         .await;
     }
 
@@ -659,7 +660,7 @@ impl Lab {
     /// `turn_write` per participant turn (the person's and the model's), handed
     /// up to the top. They are the background a turn leaves behind its answer;
     /// the sentinel is sent only after they all arrived.
-    async fn echoes(&self, mark: i64, turns: usize) {
+    async fn echoes(&self, mark: &Mark, turns: usize) {
         self.wait_count(
             mark,
             2 * turns,
@@ -696,7 +697,7 @@ impl Lab {
 
     /// The shell with these `override_params` (`{}` = as shipped).
     async fn shell_as(&self, override_params: Value) {
-        let mark = self.mark();
+        let mark = self.mark().await;
         let out = self
             .apply(json!({"manifest": [{"scope": "/", "diff": {
                 "add_nodes": [{"name": "os", "template": pin("meclaw-os"),
@@ -705,16 +706,19 @@ impl Lab {
             .await;
         assert!(out.is_committed(), "the shell must commit; got {out:?}");
         // The shell's own receipt is the first one /os can take.
-        self.wait(mark, "the shell's receipt at /os", |(to, route, _)| {
-            to == "/os" && route == "mutation_committed"
-        })
+        self.wait(
+            &mark,
+            "the shell's receipt at /os",
+            &[],
+            |(to, route, _)| to == "/os" && route == "mutation_committed",
+        )
         .await;
     }
 
     /// One level, as the lab grows it: the `grow_level` WISH to `/os/builder`,
     /// its draft read off the trace, the draft applied at the mutation door.
     async fn grow(&self, level: &str, params: Value) {
-        let mark = self.mark();
+        let mark = self.mark().await;
         let wish = json!({"request": format!("grow a {level}"), "recipe": "grow_level",
                           "params": params});
         let msg = MessageBuilder::new(Path::new("/os/builder"))
@@ -727,9 +731,12 @@ impl Lab {
         // The draft as the lab reads it off the trace: the builder's
         // `in_build_result`, wherever the shell's graph carries it.
         let (_, _, body) = self
-            .wait(mark, &format!("the {level} draft"), |(_, route, body)| {
-                route == "in_build_result" && body.contains("manifest")
-            })
+            .wait(
+                &mark,
+                &format!("the {level} draft"),
+                &["/os/builder"],
+                |(_, route, body)| route == "in_build_result" && body.contains("manifest"),
+            )
             .await;
         let draft: Value = meclaw_core::serde_json::from_str(&body).expect("the draft is json");
         let manifest = draft["manifest"].clone();
@@ -737,15 +744,16 @@ impl Lab {
             manifest.is_array(),
             "the builder drafted no manifest for the {level}: {draft}"
         );
-        let mark = self.mark();
+        let mark = self.mark().await;
         let out = self.apply(json!({"manifest": manifest})).await;
         assert!(
             out.is_committed(),
             "the {level} draft must commit; got {out:?}"
         );
         self.wait(
-            mark,
+            &mark,
             &format!("the {level} receipt at /os"),
+            &[],
             |(to, route, _)| to == "/os" && route == "mutation_committed",
         )
         .await;
@@ -791,23 +799,54 @@ impl Lab {
     async fn sentinel(&self, dead: &mut Vec<Dead>) -> Vec<Dead> {
         let nobody = "/os/orgs/lab/members/nobody";
         self.h.send(person(nobody, "is anybody there", None)).await;
-        let end = std::time::Instant::now() + DEADLINE;
-        loop {
-            dead.extend(self.drain().await);
-            let (hits, rest): (Vec<Dead>, Vec<Dead>) = dead
-                .drain(..)
-                .partition(|d| d.target.starts_with(nobody) || d.original.starts_with(nobody));
-            *dead = rest;
-            if !hits.is_empty() {
-                return hits;
-            }
-            assert!(
-                std::time::Instant::now() < end,
-                "the misroute to {nobody} never dead-lettered"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        // Polled: a dead letter has no hook of its own. Drained letters are
+        // kept for the class table, the sentinel's own are returned.
+        let pool = std::cell::RefCell::new(std::mem::take(dead));
+        let pool_ref = &pool;
+        let hits = wait::until_some_with(
+            &format!("the misroute to {nobody} dead-letters"),
+            move || async move {
+                let pool = pool_ref;
+                let fresh = self.drain().await;
+                let mut pool = pool.borrow_mut();
+                pool.extend(fresh);
+                let (hits, rest): (Vec<Dead>, Vec<Dead>) = pool
+                    .drain(..)
+                    .partition(|d| d.target.starts_with(nobody) || d.original.starts_with(nobody));
+                *pool = rest;
+                (!hits.is_empty()).then_some(hits)
+            },
+            move || async move { format!("dead letters so far: {:#?}", say(&pool_ref.borrow())) },
+        )
+        .await;
+        *dead = pool.into_inner();
+        hits
     }
+}
+
+/// `(to_path, route, body_payload)` of one delivery.
+fn delivery(row: &MessageLogDto) -> (String, String, String) {
+    let route = headers(row)["hop"]["route"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    (
+        row.to_path.clone(),
+        route,
+        row.body_payload.clone().unwrap_or_default(),
+    )
+}
+
+/// The headers of one delivery as JSON (`Null` if they do not parse).
+fn headers(row: &MessageLogDto) -> Value {
+    meclaw_core::serde_json::from_str(&row.headers_json).unwrap_or(Value::Null)
+}
+
+/// A point in the colony's message log (`Lab::mark`).
+struct Mark {
+    log: LogMark,
+    /// Every read after the mark starts at this `created_at` second.
+    since: i64,
 }
 
 /// A person's words at a member's door, in the lab's form: no channel (spoken),
@@ -897,7 +936,7 @@ async fn a_person_round_leaves_only_declared_dead_letters() {
     report("channel", &dead);
 
     // Two turns on the grown channel; the first asks a tool.
-    let round = lab.mark();
+    let round = lab.mark().await;
     lab.turn("the plumber came").await;
     lab.turn("and the roofer").await;
     let turns = lab.drain().await;
@@ -906,7 +945,7 @@ async fn a_person_round_leaves_only_declared_dead_letters() {
 
     // The session closes (idle_ms 1): the close pass, the memory's writes and
     // the close report.
-    let mark = lab.mark();
+    let mark = lab.mark().await;
     lab.h
         .send(
             MessageBuilder::new(Path::new(GENERATION_PATH))
@@ -916,17 +955,23 @@ async fn a_person_round_leaves_only_declared_dead_letters() {
                 .build(),
         )
         .await;
-    lab.wait(mark, "the close report at /os", |(to, route, _)| {
-        to == "/os" && route == "close_report"
-    })
+    lab.wait(
+        &mark,
+        "the close report at /os",
+        &[GENERATION_PATH],
+        |(to, route, _)| to == "/os" && route == "close_report",
+    )
     .await;
     // The last step's last events: the close's batch echo and every turn's
     // archive echo. Only then the sentinel.
-    lab.wait(mark, "the close batch's echo at /os", |(to, route, _)| {
-        to == "/os" && route == "write"
-    })
+    lab.wait(
+        &mark,
+        "the close batch's echo at /os",
+        &[GENERATION_PATH],
+        |(to, route, _)| to == "/os" && route == "write",
+    )
     .await;
-    lab.echoes(round, 2).await;
+    lab.echoes(&round, 2).await;
 
     let hits = lab.sentinel(&mut dead).await;
     assert_eq!(hits.len(), 1, "the sentinel: {:#?}", say(&hits));
@@ -958,25 +1003,19 @@ async fn the_ways_own_messages_never_dead_letter() {
 
     // A turn on the channel the member grew: the turn, the brain's tool call,
     // its result and the answer travel the road a person's words take.
-    let mark = lab.mark();
+    let mark = lab.mark().await;
     lab.turn("what is on today").await;
     // The tool's result HAS to arrive at the asker, or the absence below
     // would say nothing about it.
-    let end = std::time::Instant::now() + DEADLINE;
-    while lab.results_of_the_call(mark) == 0 {
-        if std::time::Instant::now() > end {
-            let dead: Vec<String> = lab.drain().await.iter().map(Dead::say).collect();
-            let asked = lab._brain.recorded_requests().await.len();
-            panic!(
-                "the result of the brain's {TOOL} call ({TOOL_CALL_ID}) never reached \
-                 the asker; brain requests {asked}; the call's trace: {:#?}; dead \
-                 letters so far: {dead:#?}",
-                lab.trace_of_the_call(mark)
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    lab.echoes(mark, 1).await;
+    lab.wait_for(
+        &mark,
+        Some(GENERATION_PATH),
+        &format!("the result of the brain's {TOOL} call ({TOOL_CALL_ID}) reaches the asker"),
+        &[MEMBER_PATH],
+        |rows| rows.iter().any(Lab::is_the_calls_result).then_some(()),
+    )
+    .await;
+    lab.echoes(&mark, 1).await;
     let hits = lab.sentinel(&mut dead).await;
     assert_eq!(hits.len(), 1, "the sentinel: {:#?}", say(&hits));
     report("way", &dead);
@@ -1028,11 +1067,12 @@ async fn a_shell_with_no_vault_deposit_leaves_only_declared_dead_letters() {
     }
     let lab = Lab::boot_with(true).await;
     let mut dead = lab.drain().await;
-    let mark = lab.mark();
+    let mark = lab.mark().await;
     lab.shell_as(json!({})).await;
     lab.wait_hop(
-        mark,
+        &mark,
         "the translator's credential_pending receipt",
+        &["/os/access", "/os/llm-registry"],
         |to, hop| to.starts_with("/os/llm-registry/") && hop["error_code"] == "credential_pending",
     )
     .await;
@@ -1044,7 +1084,8 @@ async fn a_shell_with_no_vault_deposit_leaves_only_declared_dead_letters() {
         bad.is_empty(),
         "a shell with no vault deposit left dead letters no class declares \
          (fixtures/gh974_dead_letter_classes.json): {bad:#?}\nthe round: {:#?}",
-        lab.round_of(mark, &["/os/access", "/os/llm-registry"])
+        lab.round_of(&mark, &["/os/access", "/os/llm-registry"])
+            .await
     );
     lab.h.shutdown().await;
 }

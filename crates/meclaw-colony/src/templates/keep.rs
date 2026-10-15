@@ -753,6 +753,12 @@ mod tests {
     /// five: a 50 ms window and a 500 ms work-item budget. The returned pulse
     /// has already declared the mutation as the work item -- after the
     /// supervisor armed, because it drops the beats from before its arming.
+    ///
+    /// The supervisor and the pulse read the CPU denial through the seam,
+    /// from a host that denies nothing (GH #1199): read from the kernel, the
+    /// denial of the machine running the test was deducted from a silence on
+    /// the virtual clock, and the verdict was that machine's (80 % quota on
+    /// build01: the hung copy judged with `cpu_denied` > 0 in 2 of 5 runs).
     async fn supervised() -> (
         crate::watchdog::WorkPulse,
         tokio::sync::mpsc::Receiver<crate::watchdog::WatchdogTrip>,
@@ -761,7 +767,10 @@ mod tests {
         let (trip_tx, trip_rx) = tokio::sync::mpsc::channel(1024);
         let (armed_tx, armed_rx) = tokio::sync::oneshot::channel();
         let _ = armed_tx.send(());
-        tokio::spawn(crate::watchdog::run_watchdog(
+        let host: crate::watchdog::DenialSource =
+            std::sync::Arc::new(|| crate::watchdog::RunDelays::from_rows([(1, 0)]));
+        let read = host.clone();
+        tokio::spawn(crate::watchdog::run_watchdog_reading_denial(
             hb_rx,
             trip_tx,
             5,
@@ -769,11 +778,14 @@ mod tests {
             armed_rx,
             crate::watchdog::WatchdogOnTrip::Exit,
             None,
+            None,
+            move || read(),
         ));
         let pulse = crate::watchdog::WorkPulse::new(
             Some(hb_tx),
             crate::watchdog::WorkItem::new("mutation test scope=/t"),
-        );
+        )
+        .with_denial(host);
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         pulse.tick();
         (pulse, trip_rx)
@@ -877,6 +889,11 @@ mod tests {
         .await;
         held.release_all();
         assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+        assert_eq!(
+            fatal.cpu_denied,
+            std::time::Duration::ZERO,
+            "the copy is judged on a host that denies nothing -- the verdict of every machine: {fatal}"
+        );
         assert_eq!(
             fatal.work_item.as_ref().map(|w| w.as_str()),
             Some("mutation test scope=/t op=keep template=t1@1.0.0"),

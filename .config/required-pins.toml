@@ -1,0 +1,49 @@
+# Required pins (GH #1199): tests that run whenever a file is touched.
+#
+# This table is the ONE place the mapping file -> test is written down. The
+# gate's resolver (`scripts/gate_plan.py`, rule 12 of `test_filter`) plans the
+# tests of every row whose `paths` glob matches a path of the diff, in every
+# mode, whatever the coverage map says: the narrowing of a strand gate replaces
+# `rdeps(<crate>)` by the parts the map saw, and a pin it did not see would not
+# run (AUDIT-PRE14-001 in a diff on `cell_task.rs`, GH #1199).
+#
+# Prose that asks for such a pin (AGENTS.md, docs/development-rules.md) carries
+# the marker `(required-pin: <id>)` and no copy of the mapping;
+# `scripts/check_required_pins.py` holds the markers, this table and the tree
+# together (every marker has a row, every row a marker, every test exists).
+#
+# Schema, one table per pin:
+#
+#   [[pin]]
+#   id = "<lowercase-words>"        # stable; the marker names it
+#   paths = ["<glob>", ...]         # repo-relative; `*` stays in a segment, `**` crosses `/`
+#   why = "<one English sentence>"
+#
+#   [[pin.tests]]                   # one or more
+#   file = "crates/<c>/tests/<harness>/<stem>.rs"   # or crates/<c>/tests/<stem>.rs
+#   fn = "<test function>"          # optional; without it the whole unit runs
+#
+# The nextest term is derived from `file` and `fn` (`gate_plan.required_pin_term`),
+# never written here, so a harness fold moves it along.
+
+[[pin]]
+id = "audit-pre14-001"
+paths = ["crates/meclaw-colony/src/cell_task.rs"]
+why = "A panic on either side of the long-running double task must reach the supervisor whichever select! arm fires first, and only this test drives the handler-side panic."
+
+[[pin.tests]]
+file = "crates/meclaw-colony/tests/phase/phase_10a_cell_task_lr.rs"
+fn = "cell_task_long_running_propagates_handler_task_panic_to_outer_join"
+
+[[pin]]
+id = "colony-hot-path-panic-free"
+paths = [
+    "crates/meclaw-colony/src/colony.rs",
+    "crates/meclaw-colony/src/colony_dispatch.rs",
+    "crates/meclaw-colony/src/cel_eval.rs",
+    "crates/meclaw-colony/src/edge_table.rs",
+]
+why = "Routing and dispatch in the colony task must not panic on pathological input, because a panic there takes down every cell of the colony at once."
+
+[[pin.tests]]
+file = "crates/meclaw-colony/tests/misc/colony_hot_path_panic_free.rs"

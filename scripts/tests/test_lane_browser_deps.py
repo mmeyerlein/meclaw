@@ -18,13 +18,28 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from scripts.tests import kit_time, store_isolation
+from scripts.tests import kit_time, private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "pipeline" / "lane_browser_deps.sh"
 LANE_SYNC = REPO / "scripts" / "lane_sync.sh"
-PIN = json.loads((REPO / "workshop" / "tools" / "package.json").read_text())[
-    "dependencies"]["playwright"]
+
+
+def playwright_pin():
+    """The playwright pin of the browser drivers. GH #1199: read inside the
+    test, never at import -- `workshop/` does not travel, and a module-level
+    read killed a whole gate-selftest shard of the public CI before its first
+    test (exit 1 without a unittest summary)."""
+    private_tree.require("workshop/tools/package.json")
+    return json.loads((REPO / "workshop" / "tools" / "package.json").read_text())[
+        "dependencies"]["playwright"]
+
+
+# The pin the recipe is handed when the test drives `lane_browser_deps.sh` itself:
+# the recipe reads the pin from its argument, never from the tree, so these tests
+# need a version, not the tree's (GH #1199: they travel with the export). Only
+# what goes through `lane_sync.sh`, which reads the tree's pin, takes `playwright_pin()`.
+FIXTURE_PIN = "1.50.1"
 
 FAKE_NODE = r"""#!/bin/sh
 # plays `node <cli.js> install-deps [--dry-run] <engine...>` of the pinned playwright
@@ -99,7 +114,7 @@ class _Lane(unittest.TestCase):
         self.base = base
         self.browsers = base / "ms-playwright"
         (self.state / "syslib").mkdir()
-        self.playwright(PIN)
+        self.playwright(FIXTURE_PIN)
         (self.state / "dry_run").write_text(MISSING)
         self.env = dict(os.environ, HOME=str(base), FAKE_PW_STATE=str(self.state),
                         FAKE_BROWSERS=str(self.browsers),
@@ -121,7 +136,8 @@ class _Lane(unittest.TestCase):
         (d / "cli.js").write_text("// the fake node plays it\n")
         return d
 
-    def run_script(self, mode, *engines, stdin=False, pin=PIN, cwd=None):
+    def run_script(self, mode, *engines, stdin=False, pin=None, cwd=None):
+        pin = FIXTURE_PIN if pin is None else pin
         args = [str(self.root), pin, mode] + list(engines or ("webkit",))
         if stdin:
             return subprocess.run(["sh", "-s", "--"] + args, input=SCRIPT.read_text(),
@@ -199,9 +215,9 @@ class TestBrowserDeps(_Lane):
         self.playwright("0.0.1")
         res = self.run_script("install")
         self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("not the pinned %s" % PIN, res.stderr)
+        self.assertIn("not the pinned %s" % FIXTURE_PIN, res.stderr)
         self.assertEqual([], self.lines("argv"))
-        self.playwright(PIN)
+        self.playwright(FIXTURE_PIN)
         # output the recipe does not know: no list, a count that does not match
         for out in ("BEWARE: your OS is not officially supported\n",
                     "Missing system dependencies (3):\n  libgl1\n  libgles2\n"):
@@ -218,7 +234,7 @@ class TestBrowserDeps(_Lane):
         self.assertEqual(2, res.returncode)
         self.assertIn("no playwright", res.stderr)
         (self.fakes / "node").unlink()
-        self.playwright(PIN)
+        self.playwright(FIXTURE_PIN)
         res = self.run_script("check")
         if shutil.which("node", path=store_isolation.trapped_path()) is None:
             self.assertEqual(2, res.returncode, res.stdout + res.stderr)
@@ -251,6 +267,8 @@ class TestBrowserDeps(_Lane):
         self.assertIn("browser-deps ok webkit", res.stdout)
 
     def test_lane_sync_sends_it_with_the_pin_of_the_tree(self):
+        pin = playwright_pin()
+        self.playwright(pin)
         res = subprocess.run(["bash", str(LANE_SYNC), "browsers", "local", "check", "webkit"],
                              capture_output=True, text=True, timeout=2 * kit_time.HANG,
                              env=dict(self.env, MECLAW_LANE_ROOT=str(self.root)))
@@ -261,14 +279,14 @@ class TestBrowserDeps(_Lane):
                              capture_output=True, text=True, timeout=2 * kit_time.HANG,
                              env=dict(self.env, MECLAW_LANE_ROOT=str(self.root)))
         self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("not the pinned %s" % PIN, res.stderr)
+        self.assertIn("not the pinned %s" % pin, res.stderr)
         self.assertEqual([], self.lines("install"))
 
     def test_lane_sync_never_installs_on_the_owners_machine(self):
         """Re-check tb-s3 h2 M-1: `local` is this machine and `class=egon` the owner's
         -- `install` (apt as root) is refused there before the recipe is sent, even
         with a lane root that would let it run through. `check` stays allowed."""
-        self.playwright(PIN)
+        self.playwright(FIXTURE_PIN)
         for target, cls in (("local", ""), ("builder@egon.example.invalid", "egon")):
             with self.subTest(target=target):
                 res = subprocess.run(
@@ -348,6 +366,7 @@ class TestBundleShadowsTheSystem(_Lane):
         self.assertEqual([], self.lines("bundle_install"))
 
     def test_lane_sync_reports_a_shadowed_bundle(self):
+        self.playwright(playwright_pin())   # lane_sync sends the tree's pin
         res = subprocess.run(["bash", str(LANE_SYNC), "browsers", "local", "check", "webkit"],
                              capture_output=True, text=True, timeout=2 * kit_time.HANG,
                              env=dict(self.env, MECLAW_LANE_ROOT=str(self.root)))
@@ -435,7 +454,7 @@ class TestChromiumSandbox(_Lane):
         """tb-s10 deckel 17: `strand.sh lanes browsers <lane> check` without an engine
         asked webkit alone -- a lane without the userns profile read "ok" and fell only
         in `browser:display` with "No usable sandbox!"."""
-        res = subprocess.run(["sh", str(SCRIPT), str(self.root), PIN, "check"],
+        res = subprocess.run(["sh", str(SCRIPT), str(self.root), FIXTURE_PIN, "check"],
                              capture_output=True, text=True, timeout=2 * kit_time.HANG, env=self.env)
         self.assertEqual(1, res.returncode, res.stdout + res.stderr)
         self.assertIn("browser-deps sandbox chromium: %s" % self.shell, res.stdout)
@@ -444,7 +463,7 @@ class TestChromiumSandbox(_Lane):
         self.assertEqual([], self.lines("sudo"))
         # with the profile loaded the same bare check is ok, for both engines
         (self.state / "userns").touch()
-        res = subprocess.run(["sh", str(SCRIPT), str(self.root), PIN, "check"],
+        res = subprocess.run(["sh", str(SCRIPT), str(self.root), FIXTURE_PIN, "check"],
                              capture_output=True, text=True, timeout=2 * kit_time.HANG, env=self.env)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertIn("browser-deps ok chromium webkit", res.stdout)

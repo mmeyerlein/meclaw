@@ -302,6 +302,35 @@ class TestToken(TokenTestCase):
             self.assertEqual(3, cm.exception.code)
             self.assertIn("no cargo token for %s/kit -- " % WAVE, refused.getvalue())
 
+    def test_a_test_run_from_a_detached_tree_binds_the_lease_of_strand(self):
+        """GH #1199 (f), OR-V2.S2.2: `_lease_gate` bound a lane run to a token
+        only when the BRANCH had a `/` -- a detached tree with `--strand` was
+        refused with exit 3 although its lease was held. The lease key decides."""
+        from scripts.pipeline import gate, store
+        self.lanes_file.write_text(LANES_FILE)
+        self.arm("--lanes", "north,south")
+        subprocess.run(GIT + ["-C", str(self.tree), "checkout", "-q", "--detach"], check=True)
+        res = self.token("take", "--strand", "%s/kit" % WAVE, "--lane", "south", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stderr)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, self.env()):
+            db = store.open()
+            self.addCleanup(db.close)
+            host = gate._lease_gate(db, str(self.tree), "%s/kit" % WAVE, "south", out, err)
+        self.assertEqual("south", host, err.getvalue())
+        self.assertEqual([os.getpid()], self.pids_of("%s/kit" % WAVE))
+
+    def test_take_in_a_detached_tree_without_a_strand_names_the_way(self):
+        """... and `take`/`release` there without `--strand`: exit 2 with the way."""
+        self.arm("--max", "1")
+        subprocess.run(GIT + ["-C", str(self.tree), "checkout", "-q", "--detach"], check=True)
+        for verb in ("take", "release"):
+            with self.subTest(verb=verb):
+                res = self.token(verb, cwd=self.tree)
+                self.assertEqual(2, res.returncode, res.stderr)
+                self.assertIn("token %s: detached HEAD: pass --strand <S>" % verb, res.stderr)
+        self.assertEqual([], self.holders())
+
     def test_take_with_a_dead_pid_enters_nothing(self):
         """The mutant beside it: a dead PID keeps nothing alive."""
         self.lanes_file.write_text(LANES_FILE)

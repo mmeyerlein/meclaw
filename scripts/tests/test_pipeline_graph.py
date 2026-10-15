@@ -204,9 +204,10 @@ class GraphTest(Base):
                 self.assertTrue(want & {"binary_id(=alpha::h)", "binary_id(=alpha::h2)"}, want)
 
     def test_graph_reads_skip_prose_comments_like_the_resolver(self):
-        """#1160: a path a prose comment names is no `reads` edge; in a
-        doctest block or a literal (also after a `//` inside a literal) it is
-        -- and the graph agrees with `_tests_reading_path` on every case."""
+        """#1160, V2-R1-1: a path a comment of any form names -- doc-comment
+        code blocks and a unit that walks an ancestor included -- is no `reads`
+        edge; in code (a literal, also after a `//` inside one, `include_str!`)
+        it is -- and the graph agrees with `_tests_reading_path` on every case."""
         extra = {
             "crates/alpha/tests/c1_prose.rs":
                 "//! not named `*_e2e`: `docs/guide.md` says why\n"
@@ -216,10 +217,26 @@ class GraphTest(Base):
             "crates/alpha/tests/c3_url.rs":
                 'const U: &str = "http://h"; const R: &str = "docs/guide.md";\n'
                 "#[test]\nfn t() {}\n",
-            # re-check tb-s2 Zusatz-Check B-1: prose + a walk of an ancestor reads
+            # V2-R1-1 (was tb-s2 B-1): prose + a walk of an ancestor reads nothing
             "crates/alpha/tests/c4_walk.rs":
                 "//! walks the pages; `docs/guide.md` is one\n"
                 '#[test]\nfn t() { let _ = std::fs::read_dir(root().join("docs")); }\n',
+            # re-check r1-kit M5: an ignore reason is prose as well
+            "crates/alpha/tests/c5_ignore.rs":
+                '#[ignore = "browser lock: (docs/guide.md)"]\n#[test]\nfn t() {}\n',
+            "crates/alpha/tests/c6_message.rs":
+                '#[test]\nfn t() { assert!(1 == 1, "see docs/guide.md"); }\n',
+            # V2-R1-1: `//`, `///` and `/* */`, an indented doc line -- prose
+            "crates/alpha/tests/c7_comments.rs":
+                "// docs/guide.md\n/// docs/guide.md\n///\n///     docs/guide.md\n"
+                "/* docs/guide.md */\n#[test]\nfn t() {}\n",
+            # the same comments plus code that opens or embeds the path: reads
+            "crates/alpha/tests/c8_read.rs":
+                "// docs/guide.md\n/// docs/guide.md\n/* docs/guide.md */\n"
+                '#[test]\nfn t() { let _ = std::fs::read_to_string("docs/guide.md"); }\n',
+            "crates/alpha/tests/c9_include.rs":
+                "// docs/guide.md\n/// docs/guide.md\n/* docs/guide.md */\n"
+                'const G: &str = include_str!("../../../docs/guide.md");\n#[test]\nfn t() {}\n',
         }
         make_tree(self.root, extra)
         gate_plan._SOURCE_CACHE.clear()
@@ -229,9 +246,35 @@ class GraphTest(Base):
                 for t in gate_plan._tests_reading_path(self.root, "docs/guide.md")}
         self.assertEqual(got, want)
         self.assertNotIn("bin:alpha::c1_prose", got)
-        self.assertIn("bin:alpha::c2_doctest", got)
+        self.assertNotIn("bin:alpha::c5_ignore", got)
+        self.assertNotIn("bin:alpha::c6_message", got)
+        self.assertNotIn("bin:alpha::c2_doctest", got)
+        self.assertNotIn("bin:alpha::c4_walk", got)
+        self.assertNotIn("bin:alpha::c7_comments", got)
         self.assertIn("bin:alpha::c3_url", got)
-        self.assertIn("bin:alpha::c4_walk", got)
+        self.assertIn("bin:alpha::c8_read", got)
+        self.assertIn("bin:alpha::c9_include", got)
+
+    def test_graph_catalogue_walkers_read_the_top_level_files(self):
+        """V2-R1-1: a test that enumerates the catalogue reads templates/README.md
+        (no template owns it) -- the same set as the resolver's runtime rule."""
+        extra = {
+            "templates/README.md": "# Library\n",
+            "crates/alpha/tests/k1_wide.rs":
+                '#[test]\nfn t() { for e in std::fs::read_dir(root().join("templates")) {} }\n',
+            "crates/alpha/tests/k2_one.rs":
+                '#[test]\nfn t() { let _ = root().join("templates").join("talky"); }\n',
+        }
+        make_tree(self.root, extra)
+        gate_plan._SOURCE_CACHE.clear()
+        doc, _ = self.build()
+        got = {src for src, dst in self.edges(doc, "reads") if dst == "file:templates/README.md"}
+        self.assertIn("bin:alpha::k1_wide", got)
+        self.assertNotIn("bin:alpha::k2_one", got)
+        want = {"bin:%s" % graph.binary_id_of_term(t)
+                for t in gate_plan._tests_reading_at_runtime(self.root, "templates/README.md")}
+        self.assertIn("bin:alpha::k1_wide", want)
+        self.assertLessEqual(want, got)
 
     def test_graph_pins_find_scaffold_versions(self):
         doc, _ = self.build()

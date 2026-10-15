@@ -105,6 +105,32 @@ class WaveReceiptTestCase(unittest.TestCase):
             cwd=str(self.repo), env=env, capture_output=True, text=True)
 
 
+class TestChdirOption(WaveReceiptTestCase):
+    """GH #1199 (b): `wave_receipt.py -C <dir>` acts as a `cd <dir>` first
+    (git -C): the tool finds the repository from its cwd."""
+
+    def run_from(self, cwd, *args):
+        env = dict(os.environ)
+        env.update(GIT_ENV)
+        return subprocess.run(
+            ["python3", str(self.repo / "scripts" / SCRIPT.name)] + list(args),
+            cwd=str(cwd), env=env, capture_output=True, text=True)
+
+    def test_the_tool_runs_as_if_started_in_the_directory(self):
+        self.report("kit", "[#756]", "GATE-SUMMARY strand aaaaaaa 7/7 12s GREEN", "fb22b543")
+        path = self.receipt()
+        outside = pathlib.Path(self._tmp.name)
+        res = self.run_from(outside, "-C", str(self.repo), WAVE_DIR)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("fb22b543", path.read_text())
+
+    def test_a_missing_directory_is_a_clear_exit_2(self):
+        gone = pathlib.Path(self._tmp.name) / "gone"
+        res = self.run_from(self._tmp.name, "-C", str(gone), WAVE_DIR)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("wave_receipt: -C: no such directory: %s" % gone, res.stderr)
+
+
 class TestTable(WaveReceiptTestCase):
     def test_two_reports_become_two_rows_between_the_markers(self):
         self.report("kit", "[#756, #755]",

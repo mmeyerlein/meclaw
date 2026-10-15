@@ -120,6 +120,42 @@ fn listed(csp: &Value, directive: &str) -> Vec<String> {
         .collect()
 }
 
+/// The display colony of the two page locks: linger and fade far past every hang mark.
+///
+/// These locks read the pages a window composes, not the curator's fade. With the helper's
+/// defaults (2 s + 3 s, made for locks that wait FOR the fade) the note's presence ended
+/// five seconds after its first pass; the stroke the clock orders for that moment took it
+/// into its leaving pass and the next pass out of the tree. Under the 80 % quota at F=3 in
+/// the full set (scan S3 on build03, again on build01) the settle between the store write
+/// and the first tree read outlasted that, the window was never seen in the tree, and `put`
+/// failed with `HANG: ... the window is not in the tree` (welle-val2 v2-fix-scan). The
+/// shape of `gh867_a_display_runs_under_a_strict_csp_browser.rs` and gh767.
+fn past_the_fade() -> Boot {
+    Boot {
+        linger_ms: 900_000,
+        fade_ms: 900_000,
+        ..Boot::default()
+    }
+}
+
+/// The windows of the page locks outlive every wait they sit in: linger and fade each hold
+/// three hang marks at the largest time factor, so no settle under any quota reaches the
+/// fade (welle-val2 v2-fix-scan).
+#[test]
+fn the_page_locks_read_their_windows_before_any_fade() {
+    let boot = past_the_fade();
+    let longest = (meclaw_testing::deadline::HANG_MS as f64
+        * meclaw_testing::deadline::MAX_TIME_FACTOR) as u64;
+    assert!(
+        boot.linger_ms >= 3 * longest && boot.fade_ms >= 3 * longest,
+        "linger {} ms and fade {} ms must each hold three hang marks at the largest time \
+         factor ({} ms): a shorter fade ends the window inside a settle under load",
+        boot.linger_ms,
+        boot.fade_ms,
+        3 * longest
+    );
+}
+
 /// GET until the listener answers with something other than `503 starting`.
 ///
 /// Re-check tv-bn M7 M1 (TV-S3, TV-Z3): the kit's wait under the scaled hang mark (it was a
@@ -281,7 +317,7 @@ async fn every_inline_script_of_the_display_is_listed() {
     let csp = csp_json();
     let script_src = listed(&csp, "script-src");
 
-    let colony = boot_with_voice_echo(Boot::default()).await;
+    let colony = boot_with_voice_echo(past_the_fade()).await;
     // One window, so the screen composes and publishes its own page with both hooks.
     colony
         .put(
@@ -1146,7 +1182,7 @@ impl WebPage {
 /// draws (`code_views`) as its own layout emits it over a small graph, and every exit
 /// of the screens it is booted with plus the switch.
 async fn render_display(views: &[String]) -> Vec<(String, String)> {
-    let colony = boot_with_voice_echo(Boot::default()).await;
+    let colony = boot_with_voice_echo(past_the_fade()).await;
     colony
         .put(
             APP,
@@ -1719,6 +1755,40 @@ fn a_lock_body_is_its_own_braces_and_nothing_else() {
         "fn lock();\n",
     ] {
         assert_eq!(fn_body(gone, "lock"), None, "no body of `lock` in: {gone}");
+    }
+}
+
+/// The two locks that read a window's page boot past the fade by their own code, not only
+/// by the values of [`past_the_fade`]: one fallen back to `Boot::default()` reads its window
+/// inside the fade again and is red under load, while the value pin stays green
+/// (welle-val2 v2-fix-scan, re-check A-M1). Read as code ([`fn_body`]), so a comment or a
+/// string naming the helper proves nothing.
+#[test]
+fn the_window_locks_boot_past_the_fade() {
+    let text = std::fs::read_to_string(repo(
+        "crates/meclaw-cells/tests/gh867_no_surface_page_carries_unlisted_inline_script.rs",
+    ))
+    .expect("this file reads");
+    for lock in [
+        "every_inline_script_of_the_display_is_listed",
+        "render_display",
+    ] {
+        let body = fn_body(&text, lock)
+            .unwrap_or_else(|| panic!("`{lock}` is not in this file (or twice)"))
+            .split_whitespace()
+            .collect::<String>();
+        assert_eq!(
+            body.matches("boot_with_voice_echo(").count(),
+            1,
+            "`{lock}` boots one colony"
+        );
+        assert_eq!(
+            body.matches("boot_with_voice_echo(past_the_fade())")
+                .count(),
+            1,
+            "`{lock}` boots its colony with `past_the_fade()`: the helper's default fade ends \
+             its window inside a settle under load"
+        );
     }
 }
 

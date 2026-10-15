@@ -22,7 +22,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -455,6 +455,76 @@ class SinceInDocs(unittest.TestCase):
         self.assertEqual([], of(pc.run(["templates/voice/README.md",
                                         "templates/voice/template.json"], repo=root),
                                 "since-doc"))
+
+
+class RecheckMode(unittest.TestCase):
+    """GH #1199 (e): re-check scripts are committed 100644 (Koordinator-3
+    ruling "100644 on both sides"); the merge refuses a 100755 one after the
+    gate (`receipt_not_branch_head`). `pre` says so before the merge does."""
+
+    SCRIPT = "plans/welle-x-2026-01-01/recheck/skripte/S1/run_all.sh"
+
+    def git(self, root, *args):
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+                       + list(args), check=True, capture_output=True)
+
+    def repo(self, base_files=None):
+        """A repository: `master` with `base_files` ({path: mode}), then branch `s`."""
+        root = tree(self, {"README.md": "x\n"})
+        self.git(root, "init", "-q", "-b", "master")
+        for rel, mode in (base_files or {}).items():
+            self.put(root, rel, mode)
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-q", "-m", "base")
+        self.git(root, "checkout", "-q", "-b", "s")
+        return root
+
+    def put(self, root, rel, mode, text="#!/usr/bin/env bash\nexit 0\n"):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        path.chmod(mode)
+
+    def commit(self, root, rel, mode, text="#!/usr/bin/env bash\nexit 0\n"):
+        self.put(root, rel, mode, text)
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-q", "-m", "strand")
+
+    def test_a_recheck_script_committed_100755_is_red(self):
+        root = self.repo()
+        self.commit(root, self.SCRIPT, 0o755)
+        found = of(pc.run([self.SCRIPT], repo=root), "recheck-mode")
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.SCRIPT, found[0].message)
+        self.assertIn("committed 100644 and run with bash/python3 -- chmod -x %s"
+                      % self.SCRIPT, found[0].message)
+
+    def test_a_recheck_script_committed_100644_is_green(self):
+        root = self.repo()
+        self.commit(root, self.SCRIPT, 0o644)
+        self.assertEqual([], of(pc.run([self.SCRIPT], repo=root), "recheck-mode"))
+
+    def test_an_untracked_executable_recheck_script_is_red(self):
+        root = self.repo()
+        self.put(root, self.SCRIPT, 0o755)
+        self.assertEqual(["RED"], levels(pc.run([self.SCRIPT], repo=root), "recheck-mode"))
+
+    def test_a_script_the_base_already_carries_unchanged_is_silent(self):
+        # Another strand's script on master: not this diff's to answer for.
+        root = self.repo({self.SCRIPT: 0o755})
+        self.commit(root, "plans/welle-x-2026-01-01/berichte/S1.md", 0o644, "x\n")
+        self.assertEqual([], of(pc.run([self.SCRIPT], repo=root), "recheck-mode"))
+
+    def test_a_base_script_this_diff_changes_is_red(self):
+        root = self.repo({self.SCRIPT: 0o755})
+        self.commit(root, self.SCRIPT, 0o755, "#!/usr/bin/env bash\nexit 1\n")
+        self.assertEqual(["RED"], levels(pc.run([self.SCRIPT], repo=root), "recheck-mode"))
+
+    def test_an_executable_outside_recheck_is_silent(self):
+        root = self.repo()
+        for rel in ("scripts/x.sh", "plans/welle-x-2026-01-01/berichte/run_all.sh"):
+            self.commit(root, rel, 0o755)
+            self.assertEqual([], of(pc.run([rel], repo=root), "recheck-mode"), rel)
 
 
 class RunArtefacts(unittest.TestCase):
@@ -919,6 +989,7 @@ class Cli(unittest.TestCase):
             self.assertTrue(rest, line)
 
 
+@private_tree.private()   # GH #1199: the committed private tree (its harness plan)
 class TheRealTreeIsGreen(unittest.TestCase):
     """The station must be green on the tree it is committed into.
 

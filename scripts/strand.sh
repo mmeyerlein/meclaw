@@ -2,8 +2,10 @@
 # meclaw -- the strand kit. One command for the four steps every strand of a
 # wave repeats by hand.
 #
+#     scripts/strand.sh -C <worktree> <subcommand> ...
+#         (as `git -C`: a `cd <worktree>` first, for every subcommand)
 #     scripts/strand.sh new <name> --issue <nr> [options]
-#     scripts/strand.sh pre [--no-lane] [--host <lane>] [--holder <n>] [--allow-bump <reason>]
+#     scripts/strand.sh pre [--strand <S>] [--no-lane] [--host <lane>] [--holder <n>] [--allow-bump <reason>]
 #         (the pre-run before a strand gate: form, locks, cargo check; writes the stamp)
 #     scripts/strand.sh gate [<mode>] [--host <lane>] [--holder <n>] [--no-pre --reason <text>] [gate.sh options]
 #         (--wait-admission: block while queued instead of exit 3, woken by a lease end)
@@ -12,10 +14,12 @@
 #         (GH277_WRITE_GOLDEN=1 / MECLAW_GH935_BLESS=1 travel; the goldens come back)
 #     scripts/strand.sh report [--strand <name>]
 #     scripts/strand.sh close [--strand <name>] [--wave <dir>] [--do]
-#     scripts/strand.sh merge --strand <name> | --batch <s1,s2> [--wave <dir>] [--host <lane>]
-#         [--no-pre --reason <text>] [--no-close] [--dequeue]
+#     scripts/strand.sh merge [--strand <name> | --batch <s1,s2>] [--wave <dir>] [--host <lane>]
+#         [--no-pre --reason <text>] [--no-close] [--dequeue] [--wait]
+#         (in a strand worktree the strand comes from the branch, as for gate/report)
 #         (the one way into master: lease tree:master, tested candidate, versions
-#          at the merge point; exit 3 = queued behind another merge)
+#          at the merge point; exit 3 = queued behind another merge;
+#          --wait blocks in the queue until the lease is released instead)
 #     scripts/strand.sh revert <merge-sha|name> --reason <text> [--wave <dir>] [--host <lane>]
 #     scripts/strand.sh token take|release|who|check|init|off|lane [options]
 #     scripts/strand.sh lanes status [<lane>]
@@ -636,14 +640,30 @@ PROMPT
 
 # --- gate -------------------------------------------------------------------
 
-# The strand this tree belongs to: `<wave>/<name>` -> `<name>`.
+# THE strand of a call (GH #1199 f): `strand_of_branch [<--strand value>]`
+# -- `--strand` > the branch `<wave>/<name>` -> `<name>` > a refusal on stderr
+# that names the way, return 1. A detached tree has no branch: S2 of wave
+# validation 2 made one by hand to bind its token (OR-V2.S2.2). The Python
+# twin is `pipeline/gitenv.py strand_of`, with the same two texts and the same
+# name: `--strand <wave>/<S>` is `<S>` (re-check f+g: the value passed on
+# whole archived under `receipts/<wave>/<S>`, `pipeline.py test` under `<S>`).
 strand_of_branch() {
     local branch
-    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+    if [ -n "${1:-}" ]; then
+        printf '%s\n' "${1##*/}"
+        return 0
+    fi
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
     case "$branch" in
-        */*) printf '%s\n' "${branch##*/}" ;;
-        *)   return 1 ;;
+        */*)  printf '%s\n' "${branch##*/}" ;;
+        HEAD) echo "strand: detached HEAD: pass --strand <S>" >&2; return 1 ;;
+        *)    echo "strand: cannot tell the strand from the branch -- pass --strand" >&2; return 1 ;;
     esac
+}
+
+# A detached HEAD: no branch names the strand or its wave.
+detached_head() {
+    [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = HEAD ]
 }
 
 # ONE DIRECTORY PER RUN, and a `latest` pointer beside them.
@@ -689,6 +709,34 @@ restore_latest() {
 # Red, asking and aborted stations of a run log -- the lines a report needs
 # (ABORTED: a watchdog stopped the station, C-M2).
 red_lines() { grep -E '^GATE [^ ]+ \[.*\] [0-9]+s (RED|ASK|ABORTED)' "$1" || true; }
+
+# GH #1199 (kit find V2-A8): a wrapper keeps one stream -- `> log` keeps
+# stdout, a bare background start may keep stderr. A line for the caller goes
+# onto both, once when fd 1 and fd 2 are one file (`> log 2>&1`).
+one_stream() { [ /dev/stdout -ef /dev/stderr ]; }
+say_both() {
+    local text
+    text=$(cat)
+    printf '%s\n' "$text"
+    one_stream || printf '%s\n' "$text" >&2
+}
+
+# The runner's output into the temp log `$1` as it comes (a tee), and each
+# `GATE <station>` line onto the caller's streams at once: before, the caller
+# saw nothing until the pass ended (re-check v2-fix-e I1, a stdout-only log
+# held no station line while a 20-30 min pass ran).
+gate_tee() {
+    local ln both=1
+    one_stream && both=0
+    while IFS= read -r ln || [ -n "$ln" ]; do
+        printf '%s\n' "$ln" >&3
+        case "$ln" in
+            "GATE "*)
+                printf '%s\n' "$ln"
+                if [ "$both" = 1 ]; then printf '%s\n' "$ln" >&2; fi ;;
+        esac
+    done 3>"$1"
+}
 
 # --- the lanes of the host file (THE LANES) ------------------------------------
 
@@ -806,9 +854,7 @@ cmd_gate_legacy() {
     root=$(main_root) || exit 2
     plans="$root/plans"
     wdir=$(wave_dir "$plans" "$wave_in") || exit 2
-    name="$strand_in"
-    [ -n "$name" ] || name=$(strand_of_branch) \
-        || die "cannot tell the strand from the branch -- pass --strand"
+    name=$(strand_of_branch "$strand_in") || exit 2
 
     archive_root="$plans/$wdir/receipts/$name"
 
@@ -927,7 +973,7 @@ PY
 }
 
 cmd_pre() {
-    local host="" held="" no_lane=0 allow="" target="" holder="" args=()
+    local host="" held="" no_lane=0 allow="" target="" holder="" strand_in="" wave_in="" args=()
     while [ $# -gt 0 ]; do
         case "$1" in
             -h|--help) usage; return 0 ;;
@@ -937,6 +983,8 @@ cmd_pre() {
                           # lease, a bad suffix lost the rc 2 of `token lane`.
                           [[ "$holder" =~ ^[A-Za-z0-9_-]{1,32}$ ]] \
                               || die "pre: --holder takes a short suffix ([A-Za-z0-9_-], 1-32), got '$holder'" ;;
+            --strand)     need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
+            --wave)       need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
             --no-lane)    no_lane=1; shift ;;
             --fast)       no_lane=1; args+=(--fast); shift ;;
             --allow-bump) need_value "$1" "$#"; allow="$2"; shift 2 ;;
@@ -945,9 +993,10 @@ cmd_pre() {
     done
     local top name
     top=$(git rev-parse --show-toplevel 2>/dev/null) || die "pre: not in a git tree"
-    name=$(strand_of_branch 2>/dev/null) || name=""
+    name=$(strand_of_branch "$strand_in" 2>/dev/null) || name=""
     args+=(--repo "$top")
-    [ -n "$name" ] && args+=(--strand "$name")
+    # The lease key stays the caller's: `--strand <wave>/<S>` binds `<wave>/<S>`.
+    [ -n "$name" ] && args+=(--strand "${strand_in:-$name}")
     [ -n "$allow" ] && args+=(--allow-bump "$allow")
     if [ "$no_lane" = 1 ]; then
         args+=(--no-lane)
@@ -955,7 +1004,8 @@ cmd_pre() {
         # A held lane and an explicit --host must agree (kit find (a)): the
         # gate's admission refuses the mismatch, so pre refuses it first.
         # `--holder <n>`: the lane of the strand's second lease (GH #1146, Review Z-A2 R3).
-        held=$(cmd_token lane ${holder:+--holder "$holder"} 2>/dev/null) || held=""
+        held=$(cmd_token lane ${strand_in:+--strand "$strand_in"} ${wave_in:+--wave "$wave_in"} \
+            ${holder:+--holder "$holder"} 2>/dev/null) || held=""
         [ -z "$host" ] || [ -z "$held" ] || [ "$host" = "$held" ] \
             || die "pre: ${name:-this strand} holds lane $held, not $host -- the gate would refuse" \
                 "--host $host; pre on $held, or release and take $host"
@@ -980,12 +1030,11 @@ cmd_pre() {
 # `strand_paths <strand-in> <wave-in>` sets REPORT and ARCHIVE.
 strand_paths() {
     local strand_in="$1" wave_in="$2" root plans wdir name
+    # The strand first (GH #1199 f): a detached tree hears the way out.
+    name=$(strand_of_branch "$strand_in") || exit 2
     root=$(main_root) || exit 2
     plans="$root/plans"
     wdir=$(wave_dir "$plans" "$wave_in") || exit 2
-    name="$strand_in"
-    [ -n "$name" ] || name=$(strand_of_branch) \
-        || die "cannot tell the strand from the branch -- pass --strand"
     REPORT="$plans/$wdir/berichte/$name.md"
     S_REL="plans/$wdir/berichte/$name.md"
     ARCHIVE=$(latest_run "$plans/$wdir/receipts/$name")
@@ -1237,6 +1286,20 @@ cmd_close() {
 # the arguments through and passes the exit on unchanged: 0 merged, 1 refused,
 # 2 usage, 3 queued behind the `tree:master` lease of another merge.
 cmd_merge() {
+    # GH #1199 (a): `gate` and `report` read the strand from the branch
+    # `<wave>/<S>`, and `merge` in the very same tree ended with "merge: name
+    # the strand" (wave validation 2, strand v2-p1078). The same function
+    # names it here; the main tree is no strand tree (as for `report`), so
+    # there the merge still asks for `--strand`/`--batch`.
+    local arg named=0 name top
+    for arg in "$@"; do
+        case "$arg" in --strand|--strand=*|--batch|--batch=*|-h|--help) named=1 ;; esac
+    done
+    if [ "$named" = 0 ] && top=$(git rev-parse --show-toplevel 2>/dev/null) \
+            && [ "$top" != "$(main_root 2>/dev/null)" ] \
+            && name=$(strand_of_branch 2>/dev/null); then
+        set -- --strand "$name" "$@"
+    fi
     "${KIT_PY[@]}" "$(kit_dir)/pipeline.py" merge "$@"
 }
 
@@ -1380,12 +1443,11 @@ cmd_gate() {
         return $?
     fi
 
+    # The strand first (GH #1199 f): a detached tree hears the way out.
+    name=$(strand_of_branch "$strand_in") || exit 2
     root=$(main_root) || exit 2
     plans="$root/plans"
     wdir=$(wave_dir "$plans" "$wave_in") || exit 2
-    name="$strand_in"
-    [ -n "$name" ] || name=$(strand_of_branch) \
-        || die "cannot tell the strand from the branch -- pass --strand"
     archive_root="$plans/$wdir/receipts/$name"
     [ "$have_archive" = 1 ] || args+=(--archive "$archive_root")
 
@@ -1395,13 +1457,15 @@ cmd_gate() {
     # without it (lease holder, schedule). A wave set by hand still wins.
     MECLAW_GATE_WAVE="${MECLAW_GATE_WAVE:-$wdir}" \
         "$gate" "$mode" --strand "$name" --wave "$(wave_name "$wdir")" \
-        ${args[@]+"${args[@]}"} >"$log" 2>&1
-    rc=$?
+        ${args[@]+"${args[@]}"} 2>&1 | gate_tee "$log"
+    rc=${PIPESTATUS[0]}
     red_lines "$log"
     summary=$(grep -E '^GATE-SUMMARY ' "$log" | tail -1)
     if [ -z "$summary" ]; then
-        echo "strand: the gate wrote no summary line -- last lines of its output:" >&2
-        tail -20 "$log" >&2
+        # GH #1199: a refusal of the runner (pre stamp, admission, lane)
+        # reaches a stdout log too, not only stderr.
+        { echo "strand: the gate wrote no summary line -- last lines of its output:"
+          tail -20 "$log"; } | say_both
         rm -f "$log"
         return "$rc"
     fi
@@ -1422,7 +1486,21 @@ cmd_gate() {
 # `test '<filterset>' [options]`: `pipeline.py test`, every argument as given.
 cmd_test() {
     case "${1:-}" in -h|--help) usage; return 0 ;; esac
-    "${KIT_PY[@]}" "$(pipeline_py)" test "$@"
+    # A detached tree (GH #1199 f): the wave of `--strand <name>` comes from
+    # the context as for `gate`/`token` (`wave_dir`); every word goes on as given.
+    local prev="" arg strand_in="" wave_in="" root wave extra=()
+    for arg in "$@"; do
+        [ "$arg" = -- ] && break    # nextest's own words follow
+        case "$prev" in --strand) strand_in="$arg" ;; --wave) wave_in="$arg" ;; esac
+        prev="$arg"
+    done
+    if [ -n "$strand_in" ] && [ -z "$wave_in" ] && [ "${strand_in#*/}" = "$strand_in" ] \
+            && detached_head; then
+        root=$(main_root) || exit 2
+        wave=$(wave_dir "$root/plans" "") || exit 2
+        extra=(--wave "$wave")
+    fi
+    "${KIT_PY[@]}" "$(pipeline_py)" test ${extra[@]+"${extra[@]}"} "$@"
 }
 
 # `token <verb> [options]`: `pipeline.py lanes <verb> [options]`. The one thing
@@ -1443,7 +1521,10 @@ cmd_token_store() {
             *)        args+=("$1"); shift ;;
         esac
     done
-    if [ -n "$strand_in" ] && [ -n "$wave_in" ] && [ "${strand_in#*/}" = "$strand_in" ]; then
+    # A detached tree (GH #1199 f) has no branch to name the wave of
+    # `--strand <name>`: it comes from the context as for `gate` (`wave_dir`).
+    if [ -n "$strand_in" ] && [ "${strand_in#*/}" = "$strand_in" ] \
+            && { [ -n "$wave_in" ] || detached_head; }; then
         root=$(main_root) || exit 2
         wave=$(wave_dir "$root/plans" "$wave_in") || exit 2
         strand_in="$(wave_name "$wave")/$strand_in"
@@ -1628,6 +1709,20 @@ cmd_wave() {
 }
 
 # --- main -------------------------------------------------------------------
+
+# `-C <dir>` in front of the subcommand: a `cd <dir>` first, as `git -C` --
+# for every subcommand, a relative path from the caller's directory, several
+# in a row each from the one before (GH #1199 (b), class V2-A4). An agent
+# shell that resets its cwd on every call reached a worktree only through a
+# wrapper script (wave validation 2, strand v2-p1078: one line per use in its
+# log of manual steps). The kit stays the one this file belongs to (KIT_DIR
+# above), as git stays the git that was called.
+while [ "${1:-}" = "-C" ]; do
+    need_value "$1" "$#"
+    [ -d "$2" ] || die "-C: no such directory: $2"
+    cd -- "$2" || die "-C: cannot enter $2"
+    shift 2
+done
 
 if [ $# -lt 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     usage

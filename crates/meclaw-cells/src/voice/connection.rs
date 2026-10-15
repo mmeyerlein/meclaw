@@ -898,6 +898,10 @@ pub async fn run_connection(
                                     tail_until = Some(
                                         now + Duration::from_millis(shared.release_grace_ms),
                                     );
+                                    // The origin of the tail's raster (GH #1199):
+                                    // every later frame is due a whole number of
+                                    // `TAIL_FRAME`s after this one, see
+                                    // [`next_tail_slot`].
                                     tail_next = Some(now + TAIL_FRAME);
                                 }
                                 // The one line a lost take is reconstructed from:
@@ -972,7 +976,11 @@ pub async fn run_connection(
                                  recognition queue is full"
                             );
                         }
-                        tail_next = Some(now + TAIL_FRAME);
+                        // On the raster, not from the wake (GH #1199): the
+                        // next frame is due one `TAIL_FRAME` after the one
+                        // that was due now, whenever this arm got to run.
+                        let due = tail_next.unwrap_or(now);
+                        tail_next = Some(next_tail_slot(due, now));
                     }
                     // The grace has run out, or there is nothing left to feed.
                     // The cap closes the boundary (`turns.rs`, `ProviderDebt`),
@@ -3316,6 +3324,36 @@ async fn next_stt_event(stt: &mut Option<SttSession>) -> Option<SttEvent> {
     }
 }
 
+/// When the next frame of the silence tail is due, after the one due at `due`
+/// went out at `now` (GH #1199).
+///
+/// The tail runs on a fixed raster from the release, one slot every
+/// [`TAIL_FRAME`], and a late wake moves nothing after it. It used to re-arm
+/// from the wake (`now + TAIL_FRAME`), so every late wake shifted every later
+/// frame and the delays added up: the provider needs 90 frames (1.8 s
+/// measured, GH #743) before it ends the turn, the grace caps the drain at
+/// 2.5 s, and that leaves 28 ms a frame. Under CPUQuota 80 % that was not
+/// enough: the #743 lock lost the end of the sentence in 1 of 5 runs on
+/// build01 and 2 of 5 on build04, and a loaded host loses it the same way.
+///
+/// A wake a whole frame or more late does NOT catch up: it sends its one
+/// frame and the next is due on the first slot after `now`. The provider
+/// counts the tail as audio arriving in real time, so ten frames in one
+/// instant would be 200 ms of silence that never took 200 ms, and the
+/// recognition queue (`AUDIO_QUEUE`) would take the burst instead of the
+/// provider. A skipped slot is the same frame the old re-arming lost; a wake
+/// late by less than a frame loses nothing any more.
+fn next_tail_slot(due: Instant, now: Instant) -> Instant {
+    let next = due + TAIL_FRAME;
+    if next > now {
+        return next;
+    }
+    // `now` is past the next slot already: the first slot after it.
+    let behind = now.saturating_duration_since(due).as_nanos();
+    let into_slot = behind % TAIL_FRAME.as_nanos();
+    now + TAIL_FRAME - Duration::from_nanos(into_slot as u64)
+}
+
 /// Wait for a deadline, or forever when there is none.
 async fn sleep_until_opt(at: Option<Instant>) {
     match at {
@@ -3870,5 +3908,173 @@ mod tests {
             .await
             .expect("the connection task ends with its channel")
             .expect("no panic");
+    }
+
+    /// The grace `VoiceIoShared::for_test_with_stt` ships: the tail stops at the
+    /// first wake on or after this many milliseconds past the release.
+    const TAP_GRACE: Duration = Duration::from_millis(1500);
+
+    /// A recogniser that only listens (GH #1199): every frame it is handed is
+    /// stamped with the moment it arrived and passed on to the test. It never
+    /// ends a turn, so a released boundary drains for its whole grace and the
+    /// stamps ARE the silence tail's cadence.
+    struct TapStt {
+        inner: crate::voice::providers::echo::EchoStt,
+        taps: mpsc::UnboundedSender<Instant>,
+    }
+
+    impl crate::voice::contract::SttProvider for TapStt {
+        fn name(&self) -> &'static str {
+            "tap"
+        }
+        fn input_format(&self) -> crate::voice::contract::AudioFormat {
+            self.inner.input_format()
+        }
+        fn input_rates(&self) -> Vec<u32> {
+            self.inner.input_rates()
+        }
+        fn negotiate_input(&self, sample_rate: u32) -> Option<crate::voice::contract::AudioFormat> {
+            self.inner.negotiate_input(sample_rate)
+        }
+        fn run_session(
+            &self,
+            _format: crate::voice::contract::AudioFormat,
+            mut audio: mpsc::Receiver<Vec<u8>>,
+            events: mpsc::Sender<crate::voice::contract::SttEvent>,
+            _liveness: meclaw_colony::io_liveness::IoLivenessMark,
+        ) -> crate::voice::contract::BoxFuture<Result<(), crate::voice::contract::SttError>>
+        {
+            let taps = self.taps.clone();
+            Box::pin(async move {
+                // Held, not dropped: a closed event channel reads to the
+                // connection as a session that ended, and the tail with it.
+                let _events = events;
+                while audio.recv().await.is_some() {
+                    let _ = taps.send(Instant::now());
+                }
+                Ok(())
+            })
+        }
+    }
+
+    /// Wait for the handler's copy of one control frame, skipping whatever
+    /// else the connection reports on the way.
+    async fn control(h: &mut Hand, wanted: ClientFrame) {
+        loop {
+            if let VoiceEvent::Control { frame, .. } = h.event().await
+                && frame == wanted
+            {
+                return;
+            }
+        }
+    }
+
+    /// Open a take on a [`TapStt`], release it, and return when each frame of
+    /// the silence tail reached the provider, in ms after the release.
+    ///
+    /// `starve` is the load the flake was about (GH #1199): right after the
+    /// `n`-th frame the clock jumps by `by` while the connection is not polled,
+    /// which is what a runner with no CPU to spare does to a task whose timer
+    /// is due. Virtual time, so every stamp is exact: the only waits on this
+    /// path are tokio channels and the tail's own `sleep_until`.
+    async fn tail_offsets(starve: Option<(usize, Duration)>) -> Vec<u64> {
+        let (taps_tx, mut taps) = mpsc::unbounded_channel();
+        let mut h = hand_on(
+            Mode::Hold,
+            MARKER,
+            Arc::new(TapStt {
+                inner: crate::voice::providers::echo::EchoStt::new(),
+                taps: taps_tx,
+            }),
+        );
+        let mut connected = h.event().await;
+        connected.acknowledge();
+        let hello = h.frame().await;
+        assert!(is_hello(&hello), "the hello comes first: {hello:?}");
+        h.to_cell
+            .send(meclaw_colony::LinkFrame::Text(r#"{"type":"hold"}"#.into()))
+            .await
+            .expect("the link takes the hold");
+        control(&mut h, ClientFrame::Hold).await;
+        h.to_cell
+            .send(meclaw_colony::LinkFrame::Text(
+                r#"{"type":"release"}"#.into(),
+            ))
+            .await
+            .expect("the link takes the release");
+        control(&mut h, ClientFrame::Release).await;
+        // The connection arms the tail in the same poll that reported the
+        // release, and the paused clock only moves when every task is idle:
+        // this IS the release instant.
+        let released = Instant::now();
+        let end = released + TAP_GRACE + TAIL_FRAME;
+        let mut offsets = Vec::new();
+        while let Ok(Some(at)) = tokio::time::timeout_at(end, taps.recv()).await {
+            offsets.push(at.duration_since(released).as_millis() as u64);
+            if let Some((n, by)) = starve
+                && offsets.len() == n
+            {
+                tokio::time::advance(by).await;
+            }
+        }
+        drop(h.to_cell);
+        let _ = tokio::time::timeout(MARKER, h.conn).await;
+        offsets
+    }
+
+    /// The raster the tail is due on: one frame every `TAIL_FRAME` from the
+    /// release, `from..=to` in ms.
+    fn raster(from: u64, to: u64) -> Vec<u64> {
+        (from..=to)
+            .step_by(TAIL_FRAME.as_millis() as usize)
+            .collect()
+    }
+
+    /// GH #1199 (b): undisturbed, the tail is exactly what it was before the
+    /// fix, a frame every 20 ms from the release, the last one on the wake
+    /// before the 1500 ms grace, 74 in all. Green on the old code as well: it
+    /// is the control that the fix changed nothing where nothing was late.
+    #[tokio::test(start_paused = true)]
+    async fn gh1199_an_undisturbed_tail_keeps_its_twenty_millisecond_raster() {
+        let got = tail_offsets(None).await;
+        assert_eq!(got, raster(20, 1480), "one frame every 20 ms, 74 in all");
+    }
+
+    /// GH #1199 (a): a wake 7 ms late sends its frame late and shifts nothing
+    /// after it. The old tail re-armed from the wake (`now + TAIL_FRAME`), so
+    /// every late wake moved all later frames; measured, 1 of 5 (build01) and
+    /// 2 of 5 (build04) runs of the #743 lock lost the end of the sentence
+    /// under CPUQuota 80 %.
+    #[tokio::test(start_paused = true)]
+    async fn gh1199_a_late_wake_does_not_shift_the_frames_after_it() {
+        let got = tail_offsets(Some((10, Duration::from_millis(27)))).await;
+        let mut want = raster(20, 200);
+        want.push(227);
+        want.extend(raster(240, 1480));
+        assert_eq!(
+            got, want,
+            "the frame after a late one is due on the raster, not 20 ms after the wake"
+        );
+        assert_eq!(got.len(), 74, "a late wake costs no frame");
+    }
+
+    /// GH #1199 (c): a wake ten frames late sends ONE frame and resumes on the
+    /// next slot of the raster. The missed slots are gone, never sent in a
+    /// burst: a provider reads the tail as audio arriving in real time, and ten
+    /// frames in one instant are 200 ms of audio that never took 200 ms.
+    #[tokio::test(start_paused = true)]
+    async fn gh1199_a_long_sleep_skips_the_missed_frames_instead_of_bursting() {
+        let got = tail_offsets(Some((10, Duration::from_millis(213)))).await;
+        assert!(
+            got.windows(2).all(|w| w[0] < w[1]),
+            "no two frames of the tail leave in the same instant: {got:?}"
+        );
+        let mut want = raster(20, 200);
+        want.push(413);
+        want.extend(raster(420, 1480));
+        assert_eq!(
+            got, want,
+            "one frame on the late wake, then the next raster slot after it"
+        );
     }
 }

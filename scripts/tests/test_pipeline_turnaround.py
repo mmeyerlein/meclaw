@@ -156,7 +156,34 @@ class CodeTreeTest(Case):
                 self.stamp(s["wt"])
                 err = self.refused()
                 self.assertIn("receipt_not_branch_head", err)
-                self.assertIn("%s (outside plans/%s/{berichte,straenge}/)" % (rel, WAVE), err)
+                self.assertIn("%s (outside plans/%s/{%s})" % (
+                    rel, WAVE, ",".join(turnaround.POST_GATE)), err)
+
+    def test_post_gate_is_one_list_for_receipt_and_stamp(self):
+        # GH #1199 (e): `reuse_path` (merge receipt) and `allowlisted` (pre
+        # stamp, plan-only) read the ONE list `POST_GATE` -- RESTLISTE.md and
+        # recheck/ of Konvergenz A on both, nothing else of plans/.
+        for rel in (REPORT, "plans/%s/straenge/S1.json" % WAVE,
+                    "plans/%s/RESTLISTE.md" % WAVE,
+                    "plans/%s/recheck/skripte/S1/run_all.sh" % WAVE):
+            with self.subTest(rel=rel):
+                self.assertIsNone(turnaround.reuse_path(rel, WAVE))
+                self.assertTrue(turnaround.allowlisted(rel, WAVE))
+        # Every wave carries RESTLISTE.md and run_all.sh: a script naming the
+        # bare name (this module's `POST_GATE`) reads no wave's file; the path does.
+        for rel in ("plans/%s/RESTLISTE.md" % WAVE,
+                    "plans/%s/recheck/skripte/S1/run_all.sh" % WAVE):
+            with self.subTest(needle=rel):
+                needles = turnaround._needles(rel)
+                self.assertNotIn((rel.rsplit("/", 1)[-1], False), needles)
+                self.assertIn((rel, False), needles)
+        for rel in ("plans/PREAMBLE.md", LEDGER, "plans/%s/README.md" % WAVE,
+                    "plans/%s/RESTLISTE.md/x" % WAVE, "plans/%s/recheck" % WAVE,
+                    "plans/%s/sub/RESTLISTE.md" % WAVE, "scripts/pipeline/merge.py",
+                    "plans/welle-other-2026-01-02/RESTLISTE.md"):
+            with self.subTest(rel=rel):
+                self.assertIsNotNone(turnaround.reuse_path(rel, WAVE))
+                self.assertFalse(turnaround.allowlisted(rel, WAVE))
 
     def test_r7_a_dot_dot_component_is_never_reused(self):
         for rel in ("plans/%s/berichte/../ledger.md" % WAVE,
@@ -376,6 +403,38 @@ class CodeTreeTest(Case):
         err = self.refused()
         self.assertIn("receipt_not_branch_head", err)
         self.assertIn("read by scripts/tests/test_late.py in master", err)
+
+    def test_v2a10_the_per_path_reader_grep_reads_only_the_hit_files(self):
+        # V2-A10 (h): after a hit of the one grep over every path, each path
+        # was grepped again over every script and test of the rev -- 614
+        # greps, 984 s for the 310 re-check files of v2-fix-b (probe
+        # 15.10., /tmp/claude-v2fixc-h/probe2.log). A file naming one path
+        # is a hit of the grep over all of them: the per-path grep reads the
+        # hit files alone (`offending` does it so since K-R1).
+        self.f.master_commit({"scripts/tests/test_x.py": 'REPORT = "%s"\n' % REPORT})
+        with mock.patch.object(turnaround, "python_readers",
+                               wraps=turnaround.python_readers) as pr:
+            got = turnaround.reuse_readers(self.f.root, [REPORT, NOTES], (("HEAD", "master"),))
+        self.assertEqual(got, {REPORT: "read by scripts/tests/test_x.py in master"})
+        per_path = [c for c in pr.call_args_list if len(c.args[1]) == 1]
+        self.assertEqual(len(per_path), 2, pr.call_args_list)
+        for c in per_path:
+            self.assertEqual(tuple(c.args[3]), (":(literal)scripts/tests/test_x.py",), c)
+
+    def test_i_h1_a_reader_name_git_quotes_is_found_by_both_reader_rules(self):
+        # Re-check I-h1 (h): `git grep -l` without `-z` quotes a name with
+        # non-ASCII, `"` or `\` (`"HEAD:scripts/\303\244.py"`); the per-path
+        # grep over `:(literal)<hit>` then matched nothing and the path counted
+        # as unread -- fail-open in `reuse_readers` and in `offending` (K-R1).
+        readers = {"scripts/ä.py": REPORT, 'scripts/a"b.py': NOTES}
+        self.f.master_commit({r: "open(%r)\n" % p for r, p in readers.items()})
+        got = turnaround.reuse_readers(self.f.root, [REPORT, NOTES], (("HEAD", "master"),))
+        bad = turnaround.offending([REPORT, NOTES], self.f.root, WAVE)
+        for reader, path in readers.items():
+            self.assertEqual(got.get(path), "read by %s in master" % reader, got)
+            self.assertEqual(bad.get(path), "rule 8 python: %s" % reader, bad)
+        self.assertEqual(sorted(readers), turnaround.python_readers(
+            self.f.root, [REPORT, NOTES], "HEAD"))
 
     def own_reader_then_report(self, reader, text, extra=None):
         """Re-check B-N1: the strand brings its OWN reader of its report (not
@@ -706,6 +765,21 @@ class CodeTreeTest(Case):
         ok, line = pre.stamp_status(s["wt"])
         self.assertTrue(ok, line)
 
+    def test_h_a_shellcheck_path_an_allowlist_admits_stays_shell(self):
+        # GH #1199 (e): the `shell` exception of `veto` holds only off
+        # `gate_plan.SHELL_GLOBS` -- shellcheck reads those. The plan of a new
+        # wave named like `plans/meclaw-os/` admits one of them
+        # (`plan_allowlisted`); it must keep its `shell` class.
+        sh = "plans/meclaw-os/x.sh"
+        tm.write(self.f.root, sh, "#!/usr/bin/env bash\nexit 0\n")
+        why = turnaround.veto(sh, self.f.root, wave="meclaw-os",
+                              allow=turnaround.plan_allowlisted)
+        self.assertEqual("classes docs,shell", why)
+        # Off SHELL_GLOBS the same file name is docs (the re-check entry).
+        rc = "plans/%s/recheck/skripte/S1/run_all.sh" % WAVE
+        tm.write(self.f.root, rc, "#!/usr/bin/env bash\nexit 0\n")
+        self.assertIsNone(turnaround.veto(rc, self.f.root))
+
     def test_h_neutral_is_the_allowlist_only(self):
         repo = self.f.root
         for p in (REPORT, STRAENGE):
@@ -867,6 +941,19 @@ class PlanOnlyTest(Case):
         self.assertEqual(self.f.gate_calls(), [])
         self.assertEqual(self.f.parents()[1], tip)
         self.assertEqual(tm.read(self.f.root, NOTES), "ruling\n")
+
+    def test_v2a10_a_branch_with_a_code_path_asks_no_reader_rule(self):
+        # V2-A10 (h): the merge of v2-fix-b held tree:master 826 s before its
+        # gate (journal seq 116541 -> 116542); `plan_only` ran the reader
+        # greps of `code_equal_revs` over 310 re-check files (984 s in the
+        # probe) although 53 code paths had already ruled plan-only out.
+        self.strand()
+        st = merge.Strand(self.f.root, "S1", tm.WAVE)
+        tip = tm.git(self.f.root, "rev-parse", st.branch)
+        with mock.patch.object(turnaround, "python_readers",
+                               wraps=turnaround.python_readers) as pr:
+            self.assertFalse(merge.plan_only(st, self.f.head(), tip))
+        self.assertEqual(pr.call_count, 0, pr.call_args_list)
 
     def test_r7_a_plan_branch_editing_the_ledger_is_gated(self):
         # Fix round 7: the ledger left the allowlist -- a ledger line takes
@@ -1079,6 +1166,17 @@ class PreChecksTest(Case):
         verdict, why = turnaround.main_tree_check(s["wt"], ["templates/a/foo.txt"])
         self.assertEqual(verdict, "RED")
         self.assertIn("templates/a/foo.txt", why)
+
+    def test_i_h1_a_main_tree_file_git_quotes_is_red(self):
+        # Re-check I-h1 (h), the same class: `git status --porcelain` without
+        # `-z` quotes `templates/a/\303\244.txt`, the strand's path never
+        # matched the status key and the check stayed GREEN.
+        s = self.strand()
+        rel = "templates/a/ä.txt"
+        tm.write(self.f.root, rel, "stale copy\n")
+        verdict, why = turnaround.main_tree_check(s["wt"], [rel])
+        self.assertEqual(verdict, "RED", why)
+        self.assertIn(rel, why)
 
     def test_f_a_foreign_commit_is_red_with_its_sha(self):
         s = self.strand()

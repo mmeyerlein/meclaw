@@ -4,6 +4,8 @@
 pub mod gh116_orphan_reap;
 pub mod gh116_tool_children_are_journalled;
 pub mod gh118_system_gate;
+pub mod gh1199_a_row_is_replaced_in_one_step;
+pub mod gh1199_b_a_failed_write_keeps_the_row_it_replaces;
 pub mod gh1209_the_product_carries_no_test_switch;
 pub mod gh135_happened_at_over_ubf;
 pub mod gh138_affinity_firewall_params;
@@ -56,8 +58,6 @@ pub mod gh298_the_queue_is_an_exception_list;
 pub mod gh299_the_contract_asks_for_both_parts;
 pub mod gh300_the_close_pass_has_a_lane;
 pub mod gh300_the_close_pass_reads_the_whole_session;
-pub mod gh300_the_four_point_contract;
-pub mod gh302_assistant_wires_channels_once;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

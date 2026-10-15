@@ -177,6 +177,7 @@ pub struct Screen {
     pub last: Vec<Value>,
     said: Value,
     hops: Vec<Value>,
+    stderr: String,
     sent: Value,
     child: Child,
     input: Option<ChildStdin>,
@@ -206,6 +207,7 @@ impl Screen {
             last: Vec::new(),
             said: json!([]),
             hops: Vec::new(),
+            stderr: String::new(),
             child,
             input: Some(input),
             out,
@@ -243,6 +245,7 @@ impl Screen {
         self.said = answer["said"].clone();
         self.hops = answer["hops"].as_array().cloned().unwrap_or_default();
         self.last = answer["out"].as_array().cloned().unwrap_or_default();
+        self.stderr = answer["stderr"].as_str().unwrap_or("").to_string();
         answer
     }
 
@@ -366,6 +369,12 @@ impl Screen {
     /// every emission to the store (`views`), the tree (`read`) and the display (`patch`).
     pub fn hops(&self) -> &[Value] {
         &self.hops
+    }
+
+    /// What the cell wrote on stderr while it handled the last message -- in a colony the
+    /// `code` cell puts it into `log.jsonl` as a warn line, so it is what an operator sees.
+    pub fn stderr(&self) -> &str {
+        &self.stderr
     }
 
     /// The `views` store as it stands.

@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-api"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cells"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "argon2",
  "axum 0.8.9",
@@ -1668,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cli"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-colony"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "cel",
  "meclaw-core",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-core"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1719,14 +1719,14 @@ dependencies = [
 
 [[package]]
 name = "meclaw-surface"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "meclaw-core",
 ]
 
 [[package]]
 name = "meclaw-testing"
-version = "0.64.0"
+version = "0.64.2"
 dependencies = [
  "futures-util",
  "meclaw-colony",
@@ -2432,9 +2432,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",

@@ -17,7 +17,7 @@ import tempfile
 import types
 import unittest
 from unittest import mock
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -129,10 +129,17 @@ class Classify(unittest.TestCase):
         """... but only while no test READS the file (rule 8)."""
         repo = reader_repo(self, {"unrelated": 'fn main() { let _ = 1; }\n'})
         st = gp.plan(["docs/memory.en.md", "README.md"], "strand", repo=repo)
+        # `export-selftest` is pure Python: both paths ship (README.md is a
+        # ROOT_FILES row, docs/ a DOCS_MAP source), V2-A13. It is planned from
+        # `make_export.py` (the resolver's `_export_rules`), which never
+        # travels: the export tree rightly plans no such station (GH #1199,
+        # release 0.64.2, export-audit R15). Only that part depends on the
+        # private tree -- "docs-only plans no cargo" holds in both (RC-KX M1).
+        private = {"export-selftest"} if private_tree.is_private() else set()
         self.assertEqual(
             {s.name for s in st},
             {"precheck", "roadmap-anchors", "adr-anchors", "claims", "tree-rules",
-             "corpus-committed", "corpus"})
+             "corpus-committed", "corpus"} | private)
         self.assertFalse(any(s.cargo for s in st))
 
     def test_a_doc_its_test_reads_is_not_docs_only(self):
@@ -1584,10 +1591,16 @@ class Classify(unittest.TestCase):
         self.assertEqual(names[-2:], ["export-tree-tests", "export-audit"])
         ett = by_name(st)["export-tree-tests"]
         self.assertTrue(ett.cargo)
+        # GH #1199 (RC-KX I1): `--worktree`, the tree the cache key describes
         self.assertEqual(ett.cmds, [["python3", "plans/export-fixtures/export_tree_tests.py",
-                                     "--rev", "HEAD"]])
+                                     "--worktree"],
+                                    # GH #1199: and the public CI's kit stations there
+                                    ["python3", "plans/export-fixtures/export_tree_tests.py",
+                                     "--worktree", "--kit"]])
 
-    def test_export_tree_tests_is_release_only_and_never_ci(self):
+    def test_a_template_diff_plans_export_tree_tests_in_release_only_never_ci(self):
+        """Release always; S only on a kit input (`KitExportTreeSelection`),
+        which a template is not; I never, C never."""
         for mode in ("strand", "integration", "ci"):
             names = [s.name for s in gp.plan(["templates/x/config.json"], mode, repo=None)]
             self.assertNotIn("export-tree-tests", names, mode)
@@ -2096,6 +2109,7 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_flake_triage",
             "scripts.tests.test_clock_bans",
             "scripts.tests.test_roadmap_anchors",
+            "scripts.tests.test_required_pins",
             "scripts.tests.test_pipeline_store",
             "scripts.tests.test_pipeline_events",
             "scripts.tests.test_pipeline_receipt",
@@ -2149,9 +2163,12 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_pipeline_lanes_release",
             "scripts.tests.test_pipeline_selftest_shard",
             "scripts.tests.test_meclaw_bin_owner",
+            "scripts.tests.test_private_tree",
             "scripts.tests.test_pipeline_ir_path",
             "scripts.tests.test_pipeline_two_phase_build",
-            "scripts.tests.test_pipeline_turnaround"]])
+            "scripts.tests.test_pipeline_turnaround",
+            "scripts.tests.test_stop_watch",
+            "scripts.tests.test_pipeline_progress"]])
 
     def test_every_runner_test_module_is_in_gate_selftest(self):
         """GH #1162: the runner's own tests (`scripts/tests/test_pipeline_*.py`)
@@ -5035,10 +5052,10 @@ TESTFN = "#[test]\nfn t() {}\n"
 
 
 class ProseCommentsReadNothing(unittest.TestCase):
-    """Rule 8 scans code, literals and doctest blocks -- never prose comments.
+    """Rule 8 scans code and literals -- never a comment of any form, its
+    code blocks included (r1-kit Fix-Runde 1b, V2-R1-1).
 
-    In doubt (an unterminated literal or comment, an indented line of a doc
-    comment) the text counts as it is."""
+    In doubt (an unterminated literal or comment) the text counts as it is."""
 
     def readers(self, sources, path=P):
         repo = reader_repo(self, sources)
@@ -5080,7 +5097,94 @@ class ProseCommentsReadNothing(unittest.TestCase):
                 self.assertEqual(self.readers({"r": text + TESTFN}),
                                  ["binary_id(=meclaw-cells::r)"], name)
 
-    def test_a_doctest_block_in_a_doc_comment_reads(self):
+    def test_an_ignore_reason_alone_makes_no_reader(self):
+        """Re-check r1-kit M5: the reason of `#[ignore = "..."]` says why a
+        test is skipped -- prose, it opens nothing. gh867/gh961/gh1028 named
+        `scripts/gate_plan.py` there and planned browser:display on every
+        resolver diff."""
+        for name, text in {
+            "reason": '#[ignore = "browser lock: (%s BROWSER_LOCKS)"]\n' % P,
+            "tight": '#[ignore="%s"]\n' % P,
+            "raw": '#[ignore = r#"%s"#]\n' % P,
+            "spread": '#[\n    ignore =\n        "%s"\n]\n' % P,
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.readers({"r": text + TESTFN}), [], name)
+
+    def test_a_literal_beside_an_ignore_reason_still_reads(self):
+        for name, text in {
+            "binding": 'fn f() { let ignore = "%s"; }\n' % P,
+            "after_the_reason": '#[ignore = "slow"]\nconst R: &str = "%s";\n' % P,
+            "bare_ignore": '#[ignore]\nconst R: &str = "%s";\n' % P,
+            "both": '#[ignore = "see %s"]\nconst R: &str = "%s";\n' % (P, P),
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.readers({"r": text + TESTFN}),
+                                 ["binary_id(=meclaw-cells::r)"], name)
+
+    def test_a_failure_message_alone_makes_no_reader(self):
+        """Re-check r1-kit M5 (same class): the message of an assert, panic or
+        expect says what went wrong -- prose. A reader opens the file in code."""
+        for name, text in {
+            "assert": 'fn f() { assert!(x, "see %s", y); }\n' % P,
+            "assert_lines": 'fn f() {\n    assert!(\n        a == b,\n        "{v}: see %s \\\n         § 4"\n    );\n}\n' % P,
+            "assert_eq": 'fn f() { assert_eq!(a, b, "drifted (%s)"); }\n' % P,
+            "assert_ne": 'fn f() { assert_ne!(g(a, b), c, "%s"); }\n' % P,
+            "debug_assert": 'fn f() { debug_assert!(h(1, (2, 3)), "%s"); }\n' % P,
+            "panic": 'fn f() { panic!("see %s"); }\n' % P,
+            "panic_closure": 'fn f() { x.unwrap_or_else(|| panic!("{rel}: %s")); }\n' % P,
+            "panic_raw": 'fn f() { panic!(r#"see "%s""#); }\n' % P,
+            "expect": 'fn f() { x.expect("rules in %s"); }\n' % P,
+            "unreachable": "fn f() { unreachable!(\"%s\") }\n" % P,
+            "char_paren": "fn f() { let c = '('; assert!(x, \"%s\"); }\n" % P,
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.readers({"r": text + TESTFN}), [], name)
+
+    def test_a_path_in_the_code_of_an_assert_still_reads(self):
+        for name, text in {
+            "read_in_cond": 'fn f() { assert_eq!(std::fs::read_to_string("%s").unwrap(), x); }\n' % P,
+            "exists_in_cond": 'fn f() { assert!(exists("%s"), "missing"); }\n' % P,
+            "read_in_args": 'fn f() { assert!(x, "{}", read("%s")); }\n' % P,
+            "eq_value": 'fn f() { assert_eq!(a, "%s"); }\n' % P,
+            "panic_arg": 'fn f() { panic!("{}", "%s"); }\n' % P,
+            "concat": 'fn f() { assert!(x, concat!("a ", "%s")); }\n' % P,
+            "binding_and_message": 'const R: &str = "%s";\nfn f() { assert!(x, "see %s"); }\n' % (P, P),
+            "free_expect": 'fn f() { expect("%s"); }\n' % P,
+            "message_then_code": 'fn f() { panic!("a" + "%s"); }\n' % P,
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.readers({"r": text + TESTFN}),
+                                 ["binary_id(=meclaw-cells::r)"], name)
+
+    def test_the_real_assert_prose_reads_no_rules_page(self):
+        """The 9 measured messages: they name docs/development-rules.md only
+        in an assert/panic message."""
+        gp._SOURCE_CACHE.clear()
+        self.addCleanup(gp._SOURCE_CACHE.clear)
+        terms = gp._tests_reading_path(str(REPO), "docs/development-rules.md")
+        got = " ".join(terms)
+        for stem in ("709_an_app_takes_its_view_down", "gh823_no_recall_key",
+                     "gh302_assistant_wires", "gh458_the_pack_slots",
+                     "gh488_the_agent_record", "gh527_the_member_writes",
+                     "a3_spec_claims_gate_drift"):
+            with self.subTest(stem):
+                self.assertNotIn(stem, got)
+        # gh458/gh488 pulled their harness misc_4 in whole
+        self.assertNotIn("binary_id(=meclaw-cells::misc_4)", terms)
+
+    def test_the_real_browser_tests_read_no_resolver(self):
+        """The measured case of M5: the three browser tests name the resolver
+        only in their ignore reasons."""
+        gp._SOURCE_CACHE.clear()
+        self.addCleanup(gp._SOURCE_CACHE.clear)
+        got = gp._tests_reading_path(str(REPO), "scripts/gate_plan.py")
+        self.assertEqual([], [t for t in got if t.endswith("_browser)")], got)
+
+    def test_a_code_block_in_a_doc_comment_reads_nothing(self):
+        """A test file under `crates/*/tests/` is no library: rustdoc never runs
+        its doc-comment code, nextest neither -- a path there is prose like any
+        other comment (V2-R1-1)."""
         for name, text in {
             "outer": "/// ```\n/// let p = \"%s\";\n/// ```\nfn f() {}\n" % P,
             "inner": "//! Prose.\n//!\n//! ```rust\n//! std::fs::read(\"%s\");\n//! ```\n" % P,
@@ -5095,8 +5199,20 @@ class ProseCommentsReadNothing(unittest.TestCase):
             "over_block_doc": "/** ``` */\n/// %s\n/// ```\nfn f() {}\n" % P,
         }.items():
             with self.subTest(name):
-                self.assertEqual(self.readers({"r": text + TESTFN}),
-                                 ["binary_id(=meclaw-cells::r)"], name)
+                self.assertEqual(self.readers({"r": text + TESTFN}), [], name)
+
+    def test_a_comment_path_that_code_also_opens_reads(self):
+        """The same path in a `//`, `///` or `/* */` comment AND in code that
+        opens or embeds it: the code reads (V2-R1-1 control)."""
+        comments = {"line": "// %s\n" % P, "doc": "/// %s\nfn g() {}\n" % P,
+                    "block": "/* %s */\n" % P}
+        codes = {"read": 'fn h() { let _ = std::fs::read_to_string("%s"); }\n' % P,
+                 "include": 'const R: &str = include_str!("../../../%s");\n' % P}
+        for c, comment in comments.items():
+            for k, code in codes.items():
+                with self.subTest(comment=c, code=k):
+                    self.assertEqual(self.readers({"r": comment + code + TESTFN}),
+                                     ["binary_id(=meclaw-cells::r)"])
 
     def test_a_double_slash_inside_a_literal_is_no_comment(self):
         for name, text in {
@@ -5161,22 +5277,46 @@ class ProseCommentsReadNothing(unittest.TestCase):
             self.assertEqual(text, gp._reader_text(text))
         gp._READER_CACHE.pop(text, None)
 
-    def test_prose_and_a_walk_of_an_ancestor_read(self):
-        """Re-check tb-s2 Zusatz-Check B-1: gh311/gh408 walk templates/ and
-        read templates/README.md; their one edge to it was a `//!` paragraph."""
-        gp._SOURCE_CACHE.clear()
-        self.addCleanup(gp._SOURCE_CACHE.clear)
-        got = gp._tests_reading_path(str(REPO), "templates/README.md")
-        for stem in ("gh311_ports_slot_addresses", "gh408_prose_names_a_template_without_a_version"):
-            self.assertIn("(binary_id(=meclaw-cells::misc_3) & test(/^%s::/))" % stem, got)
+    def test_prose_and_a_walk_of_an_ancestor_make_no_literal_reader(self):
+        """V2-R1-1 (replaces re-check tb-s2 B-1): a comment names nothing, also
+        in a unit that walks an ancestor directory. The walk is the runtime
+        rule's: gh408 walks templates/ and reads templates/README.md by the
+        directory rule, its `//!` paragraph plays no part; gh482/gh496 name
+        `docs/development-rules.md` only in comments (their `"docs"` is a
+        table name) and read it not at all."""
         walk = 'fn w() { let _ = std::fs::read_dir(root().join("%s")); }\n'
         self.assertEqual(self.readers({"w": "//! see %s\n" % P + walk % "scripts" + TESTFN,
-                                       "o": "//! see %s\n" % P + walk % "docs" + TESTFN}),
-                         ["binary_id(=meclaw-cells::w)"])
+                                       "o": "//! see %s\n" % P + walk % "docs" + TESTFN}), [])
+        gp._SOURCE_CACHE.clear()
+        self.addCleanup(gp._SOURCE_CACHE.clear)
+        rt = gp._tests_reading_at_runtime(str(REPO), "templates/README.md")
+        self.assertIn("(binary_id(=meclaw-cells::misc_3) & "
+                      "test(/^gh408_prose_names_a_template_without_a_version::/))", rt)
+        lit = gp._tests_reading_path(str(REPO), "docs/development-rules.md")
+        self.assertFalse([t for t in lit if "gh482" in t or "gh496" in t], lit)
 
-    def test_prose_and_a_walk_in_any_spelling_read(self):
-        """Re-check tb-s2 m-N9: a walk spelled as glob, format!, concat!(env!)
-        or a constant is a walk too -- in doubt more readers, never fewer."""
+    def test_a_walk_of_the_catalogue_reads_its_top_level_files(self):
+        """A top-level file of templates/ belongs to no template, so rules 4/5
+        do not plan it: a test that enumerates the catalogue reads it (V2-R1-1,
+        the B-1 shape without prose). A path into one template stays rule 4's,
+        examples/ keeps its contract (no reader by a walk)."""
+        repo = reader_repo(self, {
+            "wide": 'fn w() { for e in std::fs::read_dir(root().join("templates")) {} }\n' + TESTFN,
+            "one": 'fn w() { let _ = root().join("templates").join("talky"); }\n' + TESTFN,
+            "ex": 'fn w() { for e in std::fs::read_dir(root().join("examples")) {} }\n' + TESTFN})
+        for d in ("templates/talky", "examples/organism"):
+            (pathlib.Path(repo) / d).mkdir(parents=True)
+        self.addCleanup(gp._SOURCE_CACHE.clear)
+        got = gp._tests_reading_at_runtime(repo, "templates/README.md")
+        self.assertEqual({"binary_id(=meclaw-cells::wide)": "rule:8 runtime catalogue "
+                          "file:templates/README.md"}, got)
+        self.assertEqual(gp._tests_reading_at_runtime(repo, "examples/README.md"), {})
+        self.assertEqual(gp._tests_reading_at_runtime(repo, "templates/talky/system.md"), {})
+
+    def test_prose_and_a_walk_in_any_spelling_read_nothing(self):
+        """V2-R1-1 (replaces re-check tb-s2 m-N9): prose next to a walk spelled
+        as glob, format!, concat!(env!) or a constant makes no literal reader;
+        the path named in code does."""
         path = "docs/sub/page.md"
         prose = "//! see %s\n" % path
         walks = {
@@ -5194,9 +5334,9 @@ class ProseCommentsReadNothing(unittest.TestCase):
             "prose_only": "",
             "prose_walk": '// a walk in prose: glob::glob("docs/**/*.md")\n',
         }
-        sources = {n: prose + t + TESTFN for n, t in {**walks, **controls}.items()}
-        self.assertEqual(self.readers(sources, path),
-                         sorted("binary_id(=meclaw-cells::%s)" % n for n in walks))
+        code = {"named": 'fn w() { let _ = std::fs::read_to_string("%s"); }\n' % path}
+        sources = {n: prose + t + TESTFN for n, t in {**walks, **controls, **code}.items()}
+        self.assertEqual(self.readers(sources, path), ["binary_id(=meclaw-cells::named)"])
 
     def test_the_real_gh617_and_gh623_read_no_resolver(self):
         """The measured case: neither reads `scripts/gate_plan.py`."""
@@ -5320,6 +5460,322 @@ class TestBansInventoryIsAPassStation(ExecutorCase):
             with self.subTest(mode=mode):
                 st = by_name(gp.plan(["scripts/gate_plan.py"], mode, repo=None))
                 self.assertEqual(planned, "test-bans-inventory" in st)
+
+
+def _load_private(rel, name):
+    """A module of plans/ in this tree, loaded by path (the export tree has none)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, REPO / rel)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class ExportSelftestSelection(unittest.TestCase):
+    """V2-A13 (GH #1199): every path the export self-tests read from the real
+    tree plans `export-selftest` -- in the strand gate and in the merge gate,
+    which plans with the same `gate_plan.plan` from its `gate_base` (the strand
+    tip when the strand receipt covers it, master otherwise).
+
+    The self-tests read far beyond scripts/: real-file pins, the MUST tests,
+    `make_export.build_index("HEAD")` over ROOT_FILES, DOCS_MAP, the public
+    templates and R16. So the rule is by construction: every path outside
+    `make_export.FORBIDDEN_PREFIX` (what never ships) plans the station, plus
+    the private inputs the self-tests load (the fixtures, `german_scan.py`, the
+    seed generator of R16).
+
+    v2-fix-e added `scripts/pipeline/progress.py` and its test without a
+    `ROOT_FILES` row; strand gate and merge gate were green, and master
+    e0b24bdc4 was red in `test_drift_gate.py`. Its diff touched nothing under
+    `plans/export-fixtures/`, the only path that planned the station.
+    """
+
+    # `git diff --name-only --no-renames e0b24bdc4^1 e0b24bdc4`, the merge of v2-fix-e.
+    V2_FIX_E = [
+        "CHANGELOG.md", "plans/PREAMBLE.md",
+        "plans/welle-validierung-2-2026-10-14/RESTLISTE.md",
+        "plans/welle-validierung-2-2026-10-14/berichte/v2-fix-e.md",
+        "plans/welle-validierung-2-2026-10-14/straenge/v2-fix-e.json",
+        "scripts/flake_triage.py", "scripts/gate_plan.py", "scripts/pipeline/coverage.py",
+        "scripts/pipeline/gate.py", "scripts/pipeline/lane.py", "scripts/pipeline/progress.py",
+        "scripts/pipeline/schedule.py", "scripts/pipeline/selftest_durations.json",
+        "scripts/strand.sh", "scripts/tests/test_gate_plan.py",
+        "scripts/tests/test_pipeline_progress.py", "scripts/tests/test_pipeline_schedule.py",
+        "scripts/tests/test_strand_sh.py",
+    ]
+
+    def planned(self, paths, mode="strand"):
+        return by_name(gp.plan(paths, mode, repo=None))
+
+    # GH #1199: a shipping path plans the station through `_export_rules`,
+    # i.e. `make_export.py`, which never travels -- private tree only.
+    @private_tree.private(gp.MAKE_EXPORT)
+    def test_the_v2_fix_e_diff_plans_the_export_selftest(self):
+        self.assertIn("export-selftest", self.planned(self.V2_FIX_E))
+
+    @private_tree.private(gp.MAKE_EXPORT)
+    def test_a_new_scripts_file_alone_plans_the_drift_fixtures(self):
+        """A new module and its test, nothing else: the ROOT_FILES scan of
+        `test_drift_gate.py` is what turns a missing row red."""
+        st = self.planned(["scripts/pipeline/brand_new.py", "scripts/tests/test_brand_new.py"])
+        self.assertIn("export-selftest", st)
+        self.assertEqual(st["export-selftest"].cmds[0],
+                         ["python3", "plans/export-fixtures/test_drift_gate.py"])
+
+    @private_tree.private(gp.MAKE_EXPORT)
+    def test_a_changed_import_in_a_kept_scripts_file_plans_it_too(self):
+        """A new `import` in an exported file widens the closure the scan
+        checks; the plan sees paths, not statuses, so every scripts/ path counts."""
+        for path in ("scripts/pipeline/gate.py", "scripts/precheck.py",
+                     "scripts/tests/test_strand_sh.py"):
+            self.assertIn("export-selftest", self.planned([path]), path)
+
+    def test_the_string_scan_the_self_test_loads_plans_it(self):
+        self.assertIn("export-selftest",
+                      self.planned(["plans/p5.5-fixtures/german_scan.py"]))
+
+    @unittest.skipUnless((REPO / "plans").is_dir(),
+                         "the export tree carries no plans/ (german_scan.py, make_export.py)")
+    def test_a_moved_exemption_path_plans_it(self):
+        """`test_drift_gate.py` checks that each declared string exemption
+        names one tracked file (harness-free). A rename or deletion of that
+        file lists its old path in the diff; a twin in another harness lists
+        a new path with the same fold key."""
+        gs = _load_private("plans/p5.5-fixtures/german_scan.py", "german_scan_pin")
+        key = next(p for p in sorted(p for p, _ in gs.DECLARED_STRING_EXEMPTIONS)
+                   if gs.fold_key(p) != p)  # one inside a test harness
+        parts = key.split("/")
+        twin = "/".join(parts[:-2] + ["zz_other_harness", parts[-1]])
+        for path in (key, twin):
+            self.assertEqual(gs.fold_key(path), gs.fold_key(key))
+            self.assertIn("export-selftest", self.planned([path]), path)
+
+    # The two cases the re-check measured on 7b0684ff6: a rename of a file the
+    # drift fixtures pin by path (`FileNotFoundError` in `test_drift_gate.py`)
+    # and a rename of a DOCS_MAP source (`build_index` raises in
+    # `test_export_tree_tests.py`). Strand plan without the station, station red.
+    GH230 = "crates/meclaw-colony/tests/gh_1/gh230_corpus_constraint_claims.rs"
+
+    @unittest.skipUnless((REPO / "plans").is_dir(),
+                         "the export tree carries no plans/ (make_export.py)")
+    def test_a_renamed_pinned_crate_test_plans_it(self):
+        """Pin 1 of I-1: `git mv` lists the old and the new path."""
+        for path in (self.GH230, "crates/meclaw-colony/tests/gh_1/gh230_renamed_probe.rs"):
+            self.assertIn("export-selftest", self.planned([path]), path)
+
+    @unittest.skipUnless((REPO / "plans").is_dir(),
+                         "the export tree carries no plans/ (make_export.py)")
+    def test_a_renamed_docs_map_source_plans_it(self):
+        """Pin 2 of I-1: a DOCS_MAP source `build_index` resolves in HEAD."""
+        for path in ("docs/costs.en.md", "docs/costs-renamed.en.md"):
+            self.assertIn("export-selftest", self.planned([path]), path)
+
+    @unittest.skipUnless((REPO / "plans").is_dir(),
+                         "the export tree carries no plans/ (make_export.py)")
+    def test_every_shipping_root_plans_it(self):
+        """One path per kind of input: ROOT_FILES outside scripts/ (.github,
+        .config, .cargo, root files), the TREE_DIRS, a public template, the
+        librarian seed of R16, and a path nothing lists yet."""
+        for path in (".github/workflows/ci.yml", ".config/nextest.toml", ".cargo/config.toml",
+                     "Cargo.toml", "README.md", "templates/README.md",
+                     "crates/meclaw-cells/tests/misc_7/zz_unrelated_test.rs",
+                     "tests/zz_probe.rs", "examples/zz_probe.rs",
+                     "templates/builder-librarian/store/seed/docs.jsonl",
+                     "zz_new_root_file.txt"):
+            self.assertIn("export-selftest", self.planned([path]), path)
+
+    @unittest.skipUnless((REPO / "plans").is_dir(),
+                         "the export tree carries no plans/ (make_export.py)")
+    def test_the_seed_generator_of_r16_plans_it(self):
+        """`build_index` reads R16 from `workshop/tools/build_librarian_seed.py`,
+        a private path under FORBIDDEN_PREFIX."""
+        self.assertIn("export-selftest",
+                      self.planned(["workshop/tools/build_librarian_seed.py"]))
+
+    @unittest.skipUnless((REPO / "plans").is_dir(),
+                         "the export tree carries no plans/ (make_export.py)")
+    def test_the_never_shipping_prefixes_come_from_make_export(self):
+        """One list: the planner reads FORBIDDEN_PREFIX from `make_export.py`
+        of its own tree, it does not copy it."""
+        mx = _load_private("plans/export-fixtures/make_export.py", "make_export_pin")
+        rules = gp._export_rules()
+        self.assertIsNotNone(rules)
+        self.assertEqual(mx.FORBIDDEN_PREFIX.pattern, rules[0].pattern)
+        self.assertEqual("workshop/tools/build_librarian_seed.py", rules[1])
+
+    def test_a_never_shipping_path_does_not_plan_it(self):
+        """Counter-pin: plans/, ideas/, archive/ and workshop/ never ship and
+        none of these is read by the self-tests."""
+        for path in ("plans/welle-validierung-2-2026-10-14/berichte/zz_probe.md",
+                     "ideas/zz_probe.md", "archive/zz_probe.md",
+                     "workshop/evals/persona/zz_probe.md"):
+            self.assertNotIn("export-selftest", self.planned([path]), path)
+
+    def test_ci_still_drops_it(self):
+        """The published tree carries no plans/: ci plans what it holds."""
+        self.assertNotIn("export-selftest", self.planned(self.V2_FIX_E, mode="ci"))
+
+
+class KitExportTreeSelection(unittest.TestCase):
+    """GH #1199 (release 0.64.2, run 4): four kit self-tests of v2-fix-drift
+    read `make_export.py` through the resolver and were red in the export tree
+    only. The strand gate never ran the kit stations there -- `export-tree-tests`
+    was release-only -- so the class reached the release. A diff at a kit input
+    (`gate_infra`: the kit and its tests; `make_export.py`: what travels) now
+    plans the station's cargo-free kit half in S, over the gated tree."""
+
+    KIT = ["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree", "--kit"]
+
+    def test_the_strand_station_judges_the_gated_tree_not_head(self):
+        """RC-KX I1: the strand gate gates the working tree before the commit
+        and the cache keys the station on that tree; `--rev HEAD` judged the
+        base without the diff and the cache took the GREEN over. No command of
+        the station in any mode names a revision."""
+        for mode in ("strand", "release"):
+            st = by_name(gp.plan(["scripts/tests/test_zz_probe.py"], mode, repo=None))
+            for cmd in st["export-tree-tests"].cmds:
+                self.assertIn("--worktree", cmd, mode)
+                self.assertNotIn("--rev", cmd, mode)
+
+    def test_a_gate_infra_or_export_rules_diff_plans_it_too(self):
+        """RC-KX class probe: a diff at `scripts/gate_plan.py` alone turned two
+        unchanged kit tests red in the export tree only."""
+        for path in ("scripts/gate_plan.py", "scripts/pipeline/cache.py", "scripts/strand.sh",
+                     ".config/nextest.toml", gp.MAKE_EXPORT):
+            st = by_name(gp.plan([path], "strand", repo=None))
+            self.assertIn("export-tree-tests", st, path)
+            self.assertEqual(st["export-tree-tests"].cmds, [self.KIT], path)
+
+    def test_integration_and_ci_do_not_plan_it(self):
+        """OR-V2.v2-fix-kitexp.1: the integration pass follows merged strands
+        that ran the station in S and at the merge; release runs it in full;
+        the public CI IS the export tree."""
+        paths = ["scripts/tests/test_zz_probe.py", "scripts/gate_plan.py", gp.MAKE_EXPORT]
+        for mode in ("integration", "ci"):
+            self.assertNotIn("export-tree-tests", by_name(gp.plan(paths, mode, repo=None)), mode)
+
+    def test_a_kit_test_diff_plans_the_kit_half_in_the_export_tree(self):
+        st = by_name(gp.plan(["scripts/tests/test_zz_probe.py"], "strand", repo=None))
+        self.assertIn("export-tree-tests", st)
+        self.assertEqual(st["export-tree-tests"].cmds, [self.KIT])
+        self.assertFalse(st["export-tree-tests"].cargo)
+
+    def test_a_diff_without_a_kit_input_does_not_plan_it(self):
+        for path in ("docs/x.md", "templates/x/config.json", "scripts/check_adr_anchors.py",
+                     "plans/export-fixtures/test_drift_gate.py"):
+            self.assertNotIn("export-tree-tests",
+                             by_name(gp.plan([path], "strand", repo=None)), path)
+
+    def test_the_reason_names_the_kit_test(self):
+        """`--explain`: the station names the path that planned it."""
+        out = gp.to_json(["scripts/tests/test_zz_probe.py"], "strand", None, explain=True)
+        rows = {r["name"]: r for r in out["stations"]}
+        self.assertEqual(rows["export-tree-tests"]["reason"],
+                         ["gate_infra: scripts/tests/test_zz_probe.py"])
+        out = gp.to_json([gp.MAKE_EXPORT], "strand", None, explain=True)
+        rows = {r["name"]: r for r in out["stations"]}
+        self.assertEqual(rows["export-tree-tests"]["reason"], ["make_export: " + gp.MAKE_EXPORT])
+
+
+
+# The trigger is `make_export._is_exported_test` (loaded, never copied), and
+# `make_export.py` does not travel -- private tree only (GH #1199).
+@private_tree.private(gp.MAKE_EXPORT)
+class StrandExportAuditSelection(unittest.TestCase):
+    """V2-A18 (GH #1199, release 0.64.2 run 5): two g855 tests with a bare
+    `.join("../../templates").join(name)` reached master through strand and
+    merge gates, and R2b first saw them in the release -- `export-audit` ran
+    in I/R only. A diff at what R2b/R2c/R2e judge (exported test sources,
+    `templates/**`) or at the rules themselves (`make_export.py`) now plans
+    the DRY audit in S, over the gated tree, without the rules that read an
+    I/R receipt (R11/R12/R14/R17 -- a strand gate has none)."""
+
+    AUDIT = ["python3", "plans/export-fixtures/make_export.py", "--keep-going",
+             "--skip-cargo", "--worktree", "--no-gate-receipt", "--parent", "HEAD"]
+    TRIGGERS = ("crates/meclaw-cells/tests/misc_2/gh1199_a_row_is_replaced_in_one_step.rs",
+                "crates/meclaw-cells/tests/common/mod.rs",
+                "crates/meclaw-core/src/blob_test.rs",
+                "templates/operator/template.json",
+                "templates/README.md",
+                gp.MAKE_EXPORT)
+    QUIET = ("scripts/gate_plan.py", "scripts/tests/test_zz_probe.py", "docs/x.md",
+             "docs/x.en.md", "README.md", "crates/meclaw-cells/src/lib.rs",
+             "plans/export-fixtures/test_drift_gate.py")
+
+    def test_a_test_or_template_diff_plans_the_dry_audit_in_strand(self):
+        for path in self.TRIGGERS:
+            st = by_name(gp.plan([path], "strand", repo=None))
+            self.assertIn("export-audit", st, path)
+            self.assertEqual(st["export-audit"].cmds, [self.AUDIT], path)
+            self.assertFalse(st["export-audit"].cargo, path)
+
+    def test_a_scripts_or_docs_only_diff_does_not_plan_it(self):
+        for path in self.QUIET:
+            self.assertNotIn("export-audit", by_name(gp.plan([path], "strand", repo=None)),
+                             path)
+
+    def test_the_strand_audit_reads_no_gate_receipt(self):
+        """Without an I/R receipt R11/R12/R14/R17 are red on every strand
+        (v2-fix-r2b, standalone dry run): the switch drops exactly them, and
+        no `{receipt}` placeholder asks the runner for one."""
+        cmd = by_name(gp.plan([self.TRIGGERS[0]], "strand", repo=None))["export-audit"].cmds[0]
+        self.assertIn("--no-gate-receipt", cmd)
+        self.assertNotIn("{receipt}", cmd)
+        self.assertNotIn("--gate-receipt", cmd)
+
+    def test_the_strand_audit_judges_the_gated_tree_not_head(self):
+        """RC-KX I1: the strand gate gates the working tree before the commit;
+        `--rev HEAD` would judge the base without the diff."""
+        cmd = by_name(gp.plan([self.TRIGGERS[0]], "strand", repo=None))["export-audit"].cmds[0]
+        self.assertIn("--worktree", cmd)
+        self.assertNotIn("--rev", cmd)
+
+    def test_the_strand_audit_needs_no_github_main(self):
+        """RC-XA I1: under the default `--parent github-main` make_export
+        compares the local ref with `ls-remote origin main` and aborts on drift.
+        That ref is moved by hand after an export, so a stale or missing one
+        turned every strand gate with a test diff red, unrelated to the diff.
+        `--keep-going` builds no commit and never reads the parent: HEAD."""
+        cmd = by_name(gp.plan([self.TRIGGERS[0]], "strand", repo=None))["export-audit"].cmds[0]
+        self.assertIn("--parent", cmd)
+        self.assertEqual(cmd[cmd.index("--parent") + 1], "HEAD")
+
+    def test_the_trigger_is_the_scope_of_the_export_rules(self):
+        """One list, loaded: R2b/R2c judge `make_export._is_exported_test`."""
+        mx = gp._export_module()
+        for path in self.TRIGGERS[:3] + ("crates/meclaw-cells/src/lib.rs",
+                                         "scripts/tests/test_zz_probe.py"):
+            self.assertEqual(gp._feeds_the_strand_audit(path), mx._is_exported_test(path), path)
+
+    def test_integration_and_release_keep_their_shapes(self):
+        for mode, scope in (("integration", "R1-R17 dry"), ("release", "R1-R17")):
+            st = by_name(gp.plan([self.TRIGGERS[0]], mode, repo=None))
+            self.assertEqual(st["export-audit"].scope, scope, mode)
+            self.assertIn("{receipt}", st["export-audit"].cmds[0], mode)
+            self.assertNotIn("--no-gate-receipt", st["export-audit"].cmds[0], mode)
+            # The parent check against origin/main stays where it is wanted.
+            self.assertNotIn("--parent", st["export-audit"].cmds[0], mode)
+
+    def test_ci_never_plans_it(self):
+        self.assertNotIn("export-audit", by_name(gp.plan(list(self.TRIGGERS), "ci", repo=None)))
+
+    def test_the_reason_names_the_path(self):
+        out = gp.to_json([self.TRIGGERS[0]], "strand", None, explain=True)
+        rows = {r["name"]: r for r in out["stations"]}
+        self.assertEqual(rows["export-audit"]["reason"], ["export_test: " + self.TRIGGERS[0]])
+        out = gp.to_json(["templates/operator/template.json"], "strand", None, explain=True)
+        rows = {r["name"]: r for r in out["stations"]}
+        self.assertEqual(rows["export-audit"]["reason"],
+                         ["template: templates/operator/template.json"])
+
+    def test_a_file_directly_under_templates_names_itself_in_the_reason(self):
+        """RC-XA M3: `template` starts at three segments, so a file directly
+        under `templates/` (not README.md) planned the station with an empty
+        reason."""
+        path = "templates/x.json"
+        out = gp.to_json([path], "strand", None, explain=True)
+        rows = {r["name"]: r for r in out["stations"]}
+        self.assertEqual(rows["export-audit"]["reason"], ["template_root: " + path])
 
 
 if __name__ == "__main__":

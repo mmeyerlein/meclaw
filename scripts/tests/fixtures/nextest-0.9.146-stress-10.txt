@@ -1,0 +1,35 @@
+────────────
+ Nextest run ID 28a532db-8342-4b98-9afd-a34e78fdb8d0 with nextest profile: default
+    Starting 1 test across 1 binary (121 tests and 247 binaries skipped)
+────────────
+ Stress test iteration 1/10 (00:00:00 elapsed so far, 10 iterations remaining)
+ Stress test [   0.010s] iteration 1/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 2/10 (00:00:00 elapsed so far, 9 iterations remaining)
+ Stress test [   0.009s] iteration 2/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 3/10 (00:00:00 elapsed so far, 8 iterations remaining)
+ Stress test [   0.009s] iteration 3/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 4/10 (00:00:00 elapsed so far, 7 iterations remaining)
+ Stress test [   0.008s] iteration 4/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 5/10 (00:00:00 elapsed so far, 6 iterations remaining)
+ Stress test [   0.008s] iteration 5/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 6/10 (00:00:00 elapsed so far, 5 iterations remaining)
+ Stress test [   0.009s] iteration 6/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 7/10 (00:00:00 elapsed so far, 4 iterations remaining)
+ Stress test [   0.008s] iteration 7/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 8/10 (00:00:00 elapsed so far, 3 iterations remaining)
+ Stress test [   0.009s] iteration 8/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 9/10 (00:00:00 elapsed so far, 2 iterations remaining)
+ Stress test [   0.008s] iteration 9/10: 1 test run: 1 passed, 121 skipped
+────────────
+ Stress test iteration 10/10 (00:00:00 elapsed so far, 1 iteration remaining)
+ Stress test [   0.008s] iteration 10/10: 1 test run: 1 passed, 121 skipped
+────────────
+     Summary [   0.087s] 10/10 stress run iterations: 10 passed

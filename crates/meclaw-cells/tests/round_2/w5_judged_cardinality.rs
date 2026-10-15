@@ -850,18 +850,19 @@ fn a_cardinality_verdict_becomes_an_attributed_row() {
     let ops = ops_on(&msgs, "predicate_cardinality");
     assert_eq!(
         ops.len(),
-        2,
-        "the upsert of a store without joins is a delete plus an insert: {ops:?}"
+        1,
+        "the upsert of a store without joins is ONE insert that replaces the old \
+         verdict (GH #1199) -- never a delete leg a failing write could strand: {ops:?}"
+    );
+    assert_eq!(
+        ops[0]["replace"],
+        serde_json::json!({"canonical_predicate": "collects"}),
+        "the old verdict goes in the same write, or two rows would answer one question"
     );
     assert_eq!(
         ops[0],
-        serde_json::json!({"operation": "delete", "table": "predicate_cardinality",
-                           "where": {"canonical_predicate": "collects"}}),
-        "the old verdict goes first, or two rows would answer one question"
-    );
-    assert_eq!(
-        ops[1],
         serde_json::json!({"operation": "insert", "table": "predicate_cardinality",
+                           "replace": {"canonical_predicate": "collects"},
                            "row": {"canonical_predicate": "collects", "verdict": "multi",
                                    "source": "judge:r1", "decided_at": TO}}),
         "`source` is the mandatory column of ruling Q3: it names the author AND the \

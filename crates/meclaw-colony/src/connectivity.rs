@@ -29,7 +29,8 @@
 use crate::edge_table::EdgeTable;
 use crate::hive_scope::HiveScopeTable;
 use meclaw_core::Path;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::ops::Bound;
 
 /// Returns true if `path` participates in at least one edge — as `from`
 /// **or** as `to`.
@@ -165,34 +166,45 @@ pub fn affected_scope(
     known_paths: &[Path],
     hive_paths: &[Path],
 ) -> HashSet<Path> {
+    // Boot profile K10 (welle-validierung-2, `v2-flake-b01.md` § Boot-Profil):
+    // the quadratic form of this function was 21 % of the CPU of manifest
+    // entries 2–3 of the organism seed (0.69 of 3.36 CPU-s). It scanned every
+    // registry path per involved path, recomputed `crossed` over all of
+    // `involved` for every parent of every involved path, and rescanned the
+    // registry for each crossed hive — and a member subtree brings the same
+    // hive ancestors back hundreds of times. Three changes, same answer
+    // (pinned against the old form by
+    // `affected_scope_equals_the_quadratic_reference_on_generated_graphs`):
+    // subtree members come from a sorted prefix range instead of a scan, each
+    // ancestor is visited once, and so `crossed` is computed once per hive
+    // ancestor.
+    let index: BTreeMap<&str, &Path> = known_paths.iter().map(|p| (p.as_str(), p)).collect();
+    let hives: HashSet<&str> = hive_paths.iter().map(Path::as_str).collect();
     let mut scope: HashSet<Path> = HashSet::new();
+    let mut subtrees_taken: HashSet<Path> = HashSet::new();
+    let mut ancestors_seen: HashSet<Path> = HashSet::new();
     for path in involved {
-        // The involved path itself.
+        // The involved path itself, and its subtree members.
         scope.insert(path.clone());
-        // Subtree members: known paths equal to or under `path`.
-        for known in known_paths {
-            if is_self_or_descendant(known, path) {
-                scope.insert(known.clone());
-            }
-        }
+        insert_subtree(&index, path, &mut subtrees_taken, &mut scope);
         // Parent chain up to the root. R12: a registered-hive parent whose
         // boundary the mutation crosses contributes its subtree (its activity
-        // may flip via the crossing edge).
+        // may flip via the crossing edge). An ancestor already seen has had
+        // its whole chain walked from there, so the walk stops at it.
         let mut cur = path.clone();
         loop {
             let parent = cur.parent();
             if parent.as_str() == cur.as_str() {
                 break; // reached root (`/`) or a fixed point
             }
+            if !ancestors_seen.insert(parent.clone()) {
+                break;
+            }
             scope.insert(parent.clone());
-            let is_hive = hive_paths.iter().any(|h| h == &parent);
-            let crossed = is_hive && involved.iter().any(|p| !is_self_or_descendant(p, &parent));
+            let crossed = hives.contains(parent.as_str())
+                && involved.iter().any(|p| !is_self_or_descendant(p, &parent));
             if crossed {
-                for known in known_paths {
-                    if is_self_or_descendant(known, &parent) {
-                        scope.insert(known.clone());
-                    }
-                }
+                insert_subtree(&index, &parent, &mut subtrees_taken, &mut scope);
             }
             if parent.as_str() == "/" {
                 break;
@@ -201,6 +213,47 @@ pub fn affected_scope(
         }
     }
     scope
+}
+
+/// Inserts every key of `index` that is `root` or nested under it (the
+/// [`is_self_or_descendant`] predicate), once per `root`.
+///
+/// The members are one contiguous run of the sorted keys: `root` itself plus
+/// the keys in `[root + "/", root + "0")` — `'0'` is the byte after `'/'`, so
+/// that half-open range is exactly the keys with the prefix `root/` and
+/// leaves `root-x` or `root0` outside. For the root `/` it is every key that
+/// starts with `/`.
+fn insert_subtree(
+    index: &BTreeMap<&str, &Path>,
+    root: &Path,
+    taken: &mut HashSet<Path>,
+    scope: &mut HashSet<Path>,
+) {
+    if !taken.insert(root.clone()) {
+        return;
+    }
+    let r = root.as_str();
+    let (lo, hi) = if r == "/" {
+        ("/".to_string(), "0".to_string())
+    } else {
+        (format!("{r}/"), format!("{r}0"))
+    };
+    if let Some(own) = index.get(r) {
+        insert_known(scope, own);
+    }
+    for (_, known) in
+        index.range::<str, _>((Bound::Included(lo.as_str()), Bound::Excluded(hi.as_str())))
+    {
+        insert_known(scope, known);
+    }
+}
+
+/// Clones `known` into `scope` only when it is not there yet — the same
+/// member comes back from several involved paths of one subtree.
+fn insert_known(scope: &mut HashSet<Path>, known: &Path) {
+    if !scope.contains(known) {
+        scope.insert(known.clone());
+    }
 }
 
 /// Returns true if `candidate` is `ancestor` itself or a path strictly nested
@@ -750,5 +803,141 @@ mod tests {
         // /lonely must NOT be recomputed (no colony-wide walk).
         let scope = affected_scope(&paths(&["/t", "/c"]), &known, &paths(&["/"]));
         assert!(!scope.contains(&Path::new("/lonely")));
+    }
+
+    /// The pre-memo `affected_scope`, kept verbatim as the oracle of the
+    /// equivalence pin below: per involved path a full scan of `known_paths`,
+    /// per parent a fresh `crossed` over all of `involved` and, for a crossed
+    /// hive, a second full scan. Quadratic, and correct by long use — the new
+    /// one must answer exactly this.
+    fn affected_scope_reference(
+        involved: &[Path],
+        known_paths: &[Path],
+        hive_paths: &[Path],
+    ) -> HashSet<Path> {
+        let mut scope: HashSet<Path> = HashSet::new();
+        for path in involved {
+            scope.insert(path.clone());
+            for known in known_paths {
+                if is_self_or_descendant(known, path) {
+                    scope.insert(known.clone());
+                }
+            }
+            let mut cur = path.clone();
+            loop {
+                let parent = cur.parent();
+                if parent.as_str() == cur.as_str() {
+                    break;
+                }
+                scope.insert(parent.clone());
+                let is_hive = hive_paths.iter().any(|h| h == &parent);
+                let crossed =
+                    is_hive && involved.iter().any(|p| !is_self_or_descendant(p, &parent));
+                if crossed {
+                    for known in known_paths {
+                        if is_self_or_descendant(known, &parent) {
+                            scope.insert(known.clone());
+                        }
+                    }
+                }
+                if parent.as_str() == "/" {
+                    break;
+                }
+                cur = parent;
+            }
+        }
+        scope
+    }
+
+    /// xorshift64 — a seeded, dependency-free generator, so a failing graph is
+    /// reproducible from the seed printed in the assertion.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+        fn chance(&mut self, percent: u64) -> bool {
+            self.next() % 100 < percent
+        }
+    }
+
+    /// One generated colony: a tree of up to depth 5 whose segment names sit on
+    /// both sides of `/` in byte order (`a-`, `a.` sort before `a/`, `a0`, `ab`
+    /// after it), nested hives at random inner nodes (the root included now and
+    /// then), registry keys that are the non-hive nodes, and an involved set
+    /// drawn from cells, hives and paths the registry does not know.
+    fn generated_graph(rng: &mut Rng) -> (Vec<Path>, Vec<Path>, Vec<Path>) {
+        const SEGMENTS: [&str; 7] = ["a", "a-", "a.", "a0", "ab", "h", "house"];
+        let mut nodes: Vec<String> = vec!["/".to_string()];
+        let mut frontier: Vec<(String, usize)> = vec![("/".to_string(), 0)];
+        while let Some((parent, depth)) = frontier.pop() {
+            if depth >= 5 {
+                continue;
+            }
+            for seg in SEGMENTS {
+                if !rng.chance(if depth == 0 { 60 } else { 35 }) {
+                    continue;
+                }
+                let child = if parent == "/" {
+                    format!("/{seg}")
+                } else {
+                    format!("{parent}/{seg}")
+                };
+                nodes.push(child.clone());
+                frontier.push((child, depth + 1));
+            }
+        }
+        let mut hives = Vec::new();
+        let mut known = Vec::new();
+        for n in &nodes {
+            let inner = nodes
+                .iter()
+                .any(|m| m.len() > n.len() && m.starts_with(n.as_str()));
+            if inner && rng.chance(45) {
+                hives.push(Path::new(n));
+            } else if n != "/" {
+                known.push(Path::new(n));
+            }
+        }
+        let mut involved = Vec::new();
+        for _ in 0..1 + rng.below(12) {
+            let pick = match rng.below(10) {
+                0 if !hives.is_empty() => hives[rng.below(hives.len())].clone(),
+                1 => Path::new(&format!("/{}/fresh", SEGMENTS[rng.below(SEGMENTS.len())])),
+                _ if !known.is_empty() => known[rng.below(known.len())].clone(),
+                _ => Path::new("/a"),
+            };
+            involved.push(pick);
+        }
+        (involved, known, hives)
+    }
+
+    /// Boot profile K10 (welle-validierung-2, `v2-flake-b01.md` § Boot-Profil):
+    /// `affected_scope` was 21 % of the CPU of manifest entries 2–3. The
+    /// memoised form must return exactly the scope of the quadratic one — over
+    /// generated graphs with nested hives, crossing and all-internal
+    /// mutations, and segment names that test the prefix-range bounds.
+    #[test]
+    fn affected_scope_equals_the_quadratic_reference_on_generated_graphs() {
+        for seed in 1..=1500u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let (involved, known, hives) = generated_graph(&mut rng);
+            let got = affected_scope(&involved, &known, &hives);
+            let want = affected_scope_reference(&involved, &known, &hives);
+            let missing: Vec<&Path> = want.difference(&got).collect();
+            let extra: Vec<&Path> = got.difference(&want).collect();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "seed {seed}: missing {missing:?}, extra {extra:?} (involved {involved:?})"
+            );
+        }
     }
 }

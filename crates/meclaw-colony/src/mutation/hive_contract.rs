@@ -804,25 +804,34 @@ pub(crate) const LANE_CHECK_SLICE: std::time::Duration = std::time::Duration::fr
 pub(crate) struct LanePacer<'a> {
     pulse: &'a crate::watchdog::WorkPulse,
     since: Option<tokio::time::Instant>,
-    pace: &'a (dyn Fn(&str) + Sync),
+    pace: Option<&'a UnitPace>,
 }
+
+/// What a test runs inside every unit of a paced lane check
+/// ([`LanePacer::with_pace`]), with the hive the unit judges: a future, so a
+/// unit can take virtual time or hang until the test releases it (welle-val2
+/// v2-fix-scan, #1199). The colony runs none.
+pub(crate) type UnitPace =
+    dyn Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync;
 
 impl<'a> LanePacer<'a> {
     /// A pacer that beats on `pulse`.
     pub(crate) fn new(pulse: &'a crate::watchdog::WorkPulse) -> Self {
-        Self::with_pace(pulse, &|_| {})
+        Self {
+            pulse,
+            since: None,
+            pace: None,
+        }
     }
 
     /// [`Self::new`] with `pace` run inside every unit -- the seam a test uses
     /// to make a unit as slow as a loaded host makes it, or to make one hang.
-    pub(crate) fn with_pace(
-        pulse: &'a crate::watchdog::WorkPulse,
-        pace: &'a (dyn Fn(&str) + Sync),
-    ) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_pace(pulse: &'a crate::watchdog::WorkPulse, pace: &'a UnitPace) -> Self {
         Self {
             pulse,
             since: None,
-            pace,
+            pace: Some(pace),
         }
     }
 
@@ -840,7 +849,9 @@ impl<'a> LanePacer<'a> {
                 .tick();
             self.since = Some(tokio::time::Instant::now());
         }
-        (self.pace)(hive);
+        if let Some(pace) = self.pace {
+            pace(hive).await;
+        }
     }
 }
 

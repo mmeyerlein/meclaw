@@ -43,7 +43,7 @@ _SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
-from pipeline import browser_cover, spawn_closure  # noqa: E402
+from pipeline import browser_cover, cpus, spawn_closure  # noqa: E402
 
 SCHEMA = "meclaw.pipeline.coverage/1"
 STALE_DAYS = 7
@@ -165,7 +165,7 @@ def aggregate(base, objects, root, jobs=None, profdata="llvm-profdata", llvm_cov
     work = os.path.join(base, "_merged")
     os.makedirs(work, exist_ok=True)
     out, errors = [], []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs or os.cpu_count() or 4) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs or cpus.threads()) as pool:
         futs = {pool.submit(_export_part, k, v, objects, work, profdata, llvm_cov, root): k
                 for k, v in sorted(parts.items())}
         for f in concurrent.futures.as_completed(futs):
@@ -488,6 +488,29 @@ def lane_up(ssh):
 
 # --- CLI --------------------------------------------------------------------
 
+def _holder(args):
+    """The lease key of the build's strand: `--strand` in its `<wave>/<strand>`
+    form (the night's and the kit's), "" otherwise -- no git process (the
+    build's own subprocess calls stay the only ones)."""
+    return args.strand if args.strand and "/" in args.strand else ""
+
+
+def _refused(args, msg, code):
+    """GH #1199 (kit find V2-A8): a build refused before its lane run says so
+    on stderr AND stdout and at the lease; `code` is never 0."""
+    from . import progress
+    return progress.refuse("coverage build", msg, out=sys.stdout, err=sys.stderr,
+                           holder=_holder(args), code=code)
+
+
+def _pass(args, done, red):
+    """`HH:MM:SS pass <done>/1 ...` flushed into the log and noted at the lease."""
+    from . import progress
+    line = progress.pass_line(done, 1, done, red)
+    progress.emit(line, sys.stderr, sys.stdout)
+    progress.beat(_holder(args), line)
+
+
 def _cmd_coverage(args):
     if args.op == "aggregate":
         with open(args.objects, encoding="utf-8") as fh:
@@ -534,26 +557,24 @@ def _cmd_coverage(args):
     ssh, opts = lane_entry(args.lane)
     why = lane_refused(ssh, opts)
     if why:
-        print("coverage: refused -- %s; the coverage run goes to a build lane of the wave only"
-              % why, file=sys.stderr)
-        return 5
+        return _refused(args, "lane refused: %s; the coverage run goes to a build lane of the wave "
+                              "only" % why, 5)
     if not lane_up(ssh):
         _finding("coverage_skipped_no_lane", args.lane, 0, 1,
                  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), db_path=args.db)
-        print("coverage: lane %s is not up -- skipped (process_finding coverage_skipped_no_lane)"
-              % args.lane, file=sys.stderr)
-        return 3
+        return _refused(args, "lane %s is not up -- skipped (process_finding "
+                              "coverage_skipped_no_lane)" % args.lane, 3)
     # the cargo token of the wave, through the kit (review I1): an armed wave
     # without a token for this strand and lane never starts the build
     tok = subprocess.run(["scripts/strand.sh", "token", "check", "--pid", str(os.getpid()),
                           "--lane", args.lane], cwd=os.path.dirname(_SCRIPTS))
     if tok.returncode != 0:
-        print("coverage: no cargo token for lane %s (strand.sh token check exit %d) -- not built"
-              % (args.lane, tok.returncode), file=sys.stderr)
-        return _foreign_exit(tok.returncode)
+        return _refused(args, "no cargo token for lane %s (strand.sh token check exit %d) -- not built"
+                        % (args.lane, tok.returncode), _foreign_exit(tok.returncode))
     cmd = ["timeout", "--kill-after=60", str(DEADLINE_S), "scripts/pipeline/coverage_lane.sh",
            ssh, args.strand, args.out_dir] + (["browser"] if args.scope == "browser" else [])
     print("coverage: %s" % " ".join(shlex.quote(c) for c in cmd), file=sys.stderr)
+    _pass(args, 0, 0)   # GH #1199: the one pass of a build, said before the lane runs
     try:
         r = subprocess.run(cmd, cwd=os.path.dirname(_SCRIPTS))
     finally:
@@ -565,6 +586,7 @@ def _cmd_coverage(args):
         subprocess.run(["scripts/strand.sh", "token", "check", "--pid", "0", "--lane", args.lane],
                        cwd=os.path.dirname(_SCRIPTS), stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL)
+    _pass(args, 1, int(r.returncode != 0))
     if r.returncode == TOOL_EXIT:
         _finding("coverage_tool_missing", args.lane, 0, 1,
                  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), db_path=args.db,

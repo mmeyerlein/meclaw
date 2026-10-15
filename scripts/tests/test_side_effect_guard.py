@@ -23,7 +23,7 @@ import unittest
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-from scripts.tests import kit_time, side_effect_guard, store_isolation  # noqa: E402
+from scripts.tests import kit_time, private_tree, side_effect_guard, store_isolation  # noqa: E402
 
 
 def setUpModule():  # noqa: N802 -- unittest's name
@@ -185,10 +185,12 @@ class Guard(unittest.TestCase):
         scanned = {p.relative_to(REPO).as_posix()
                    for pattern in _SCANNED for p in REPO.glob(pattern)}
         for rel in ("scripts/pipeline/pool.py", "scripts/strand.sh", "scripts/gate.sh",
-                    "workshop/evals/scenarios/run_scenarios.py",
                     # M0 (#1120): the measurement pipeline and its tests
                     "scripts/pipeline/measure.py", "scripts/tests/test_pipeline_measure.py"):
             self.assertIn(rel, scanned)
+        # GH #1199: the scenario runner lives under workshop/, which never travels
+        private_tree.require("workshop/evals/scenarios/run_scenarios.py")
+        self.assertIn("workshop/evals/scenarios/run_scenarios.py", scanned)
 
     def test_every_test_module_installs_the_guard(self):
         """Every Python test module puts the fakes on PATH before its tests

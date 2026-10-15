@@ -19,11 +19,38 @@ fn sealed_hives(root: &std::path::Path, n: usize) -> Vec<Path> {
         .collect()
 }
 
+/// A host that keeps `share` of every nanosecond of one thread off the CPU,
+/// on the tokio clock (GH #1199) -- the watchdog tests' `denied`, as ONE
+/// source the supervisor and the pulse share. `denied(0.0)` is a host that
+/// denies nothing: the verdicts of before GH #1216, whatever the kernel of
+/// the machine running the test does meanwhile.
+fn denied(share: f64) -> crate::watchdog::DenialSource {
+    let since = tokio::time::Instant::now();
+    std::sync::Arc::new(move || {
+        let ns = since.elapsed().as_nanos() as f64 * share;
+        crate::watchdog::RunDelays::from_rows([(1, ns as u64)])
+    })
+}
+
 /// A supervisor with a `threshold` × `period` window and a work-item budget
-/// of ten windows, and a pulse that reports to it and knows that budget.
+/// of ten windows, and a pulse that reports to it and knows that budget, on a
+/// host that denies nothing.
 async fn supervised_with(
     threshold: u32,
     period: Duration,
+) -> (
+    WorkPulse,
+    tokio::sync::mpsc::Receiver<crate::watchdog::WatchdogTrip>,
+) {
+    supervised_on(threshold, period, denied(0.0)).await
+}
+
+/// [`supervised_with`] on `host`: the supervisor and the pulse read the CPU
+/// denial from the same source.
+async fn supervised_on(
+    threshold: u32,
+    period: Duration,
+    host: crate::watchdog::DenialSource,
 ) -> (
     WorkPulse,
     tokio::sync::mpsc::Receiver<crate::watchdog::WatchdogTrip>,
@@ -32,7 +59,8 @@ async fn supervised_with(
     let (trip_tx, trip_rx) = tokio::sync::mpsc::channel(1024);
     let (armed_tx, armed_rx) = tokio::sync::oneshot::channel();
     let _ = armed_tx.send(());
-    tokio::spawn(crate::watchdog::run_watchdog(
+    let read = host.clone();
+    tokio::spawn(crate::watchdog::run_watchdog_reading_denial(
         hb_rx,
         trip_tx,
         threshold,
@@ -40,10 +68,13 @@ async fn supervised_with(
         armed_rx,
         crate::watchdog::WatchdogOnTrip::Exit,
         None,
+        None,
+        move || read(),
     ));
     let budget = period * threshold * crate::watchdog::WORK_ITEM_BUDGET_FACTOR;
-    let pulse =
-        WorkPulse::new(Some(hb_tx), WorkItem::new("mutation test scope=/t")).with_budget(budget);
+    let pulse = WorkPulse::new(Some(hb_tx), WorkItem::new("mutation test scope=/t"))
+        .with_budget(budget)
+        .with_denial(host);
     tokio::time::sleep(period).await;
     pulse.tick();
     (pulse, trip_rx)
@@ -454,6 +485,221 @@ async fn under_any_watchdog_a_hung_read_trips_before_the_scan_times_out() {
     );
     held.release_all();
     drop(pulse);
+}
+
+/// GH #1199 (K10), pin a: under a host that keeps the whole silence off the
+/// CPU the supervisor deducts that denial (GH #1216) and declares the hung
+/// read stuck only after up to five budgets -- and the scan timeout credits
+/// the SAME denial, read from the same source, so the verdict still comes
+/// first. The timeout grows by the denial factor and no further: 5 × 1.2 s.
+#[tokio::test(start_paused = true)]
+async fn under_a_host_denying_the_whole_silence_a_hung_read_trips_before_the_scan_times_out() {
+    let td = tempfile::TempDir::new().unwrap();
+    let paths = sealed_hives(td.path(), 4);
+    let (pulse, mut trips) = supervised_on(3, Duration::from_millis(20), denied(1.0)).await;
+    let root = td.path().to_path_buf();
+    let (pace, mut held) = hold(|hive| hive == "/h1");
+
+    let scan = tokio::spawn(async move {
+        let timeout = scan_timeout(&pulse);
+        let got = scan_hives_paced(
+            &mut HiveScanGate::default(),
+            &root,
+            paths,
+            &pulse,
+            "hive-scan",
+            timeout,
+            pace,
+            |scan| collect_sealed_hives(scan.root(), scan.paths()),
+        )
+        .await;
+        (got, pulse)
+    });
+
+    assert_eq!(held.begun().await, "/h1");
+    let fatal = run_clock(
+        "a fatal trip while the read of /h1 hangs on a denying host",
+        first_fatal(&mut trips),
+    )
+    .await;
+    assert!(
+        !scan.is_finished(),
+        "the supervisor declares the hang before the scan's own timeout: {fatal}"
+    );
+    assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+    let (got, pulse) = run_clock("the scan's own timeout on the hung read", scan)
+        .await
+        .unwrap();
+    let err = got.expect_err("then the timeout ends it");
+    assert_eq!(err.hive.as_deref(), Some("/h1"));
+    assert_eq!(
+        err.after,
+        Duration::from_millis(6_000),
+        "the timeout credits the denial up to the factor of the supervisor"
+    );
+    held.release_all();
+    drop(pulse);
+}
+
+/// GH #1199 (K10), pin b: on a host that denies nothing the scan timeout is
+/// what it was -- twice the budget, to the tick, and the scan ends there.
+#[tokio::test(start_paused = true)]
+async fn on_a_host_denying_nothing_the_scan_times_out_at_twice_the_budget() {
+    let td = tempfile::TempDir::new().unwrap();
+    let paths = sealed_hives(td.path(), 4);
+    let (pulse, _trips) = supervised_on(3, Duration::from_millis(20), denied(0.0)).await;
+    assert_eq!(scan_timeout(&pulse), Duration::from_millis(1_200));
+    let (pace, mut held) = hold(|hive| hive == "/h2");
+    let mut gate = HiveScanGate::default();
+    let started = tokio::time::Instant::now();
+
+    let scan = scan_hives_paced(
+        &mut gate,
+        td.path(),
+        paths,
+        &pulse,
+        "post-state",
+        scan_timeout(&pulse),
+        pace,
+        |scan| collect_sealed_hives(scan.root(), scan.paths()),
+    );
+    tokio::pin!(scan);
+    assert_eq!(held.begun_under(&mut scan).await, "/h2");
+    let got = run_clock("the read timeout of the hung read of /h2", scan).await;
+
+    let err = got.expect_err("a read past the timeout ends the scan");
+    assert_eq!(err.hive.as_deref(), Some("/h2"));
+    assert_eq!(err.after, Duration::from_millis(1_200));
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_millis(1_200),
+        "without a denial the scan waits exactly twice the budget"
+    );
+    held.release_all();
+}
+
+/// A first scan, on no supervisor, given up on after 100 ms while its read of
+/// `/h2` hangs: `gate` keeps it in flight, the returned [`Held`] keeps the read.
+async fn give_up_on_a_hung_scan(
+    gate: &mut HiveScanGate,
+    root: &std::path::Path,
+    paths: Vec<Path>,
+) -> Held {
+    let (pace, mut held) = hold(|hive| hive == "/h2");
+    let silent = WorkPulse::silent();
+    let scan = scan_hives_paced(
+        gate,
+        root,
+        paths,
+        &silent,
+        "hive-scan",
+        Duration::from_millis(100),
+        pace,
+        |scan| collect_sealed_hives(scan.root(), scan.paths()),
+    );
+    tokio::pin!(scan);
+    assert_eq!(held.begun_under(&mut scan).await, "/h2");
+    let first = run_clock("the first scan's read timeout on /h2", scan)
+        .await
+        .expect_err("the first scan times out on /h2");
+    assert_eq!(first.hive.as_deref(), Some("/h2"));
+    held
+}
+
+/// GH #1199 (K10), pin c (re-check I1): the wait BEHIND a scan an earlier
+/// caller gave up on credits the same denial as a read of its own. Under a
+/// host that keeps the whole silence off the CPU, a second scan behind a hung
+/// one is declared stuck by the supervisor while it still waits, and gives up
+/// at the denial factor and no later: 5 × 1.2 s.
+#[tokio::test(start_paused = true)]
+async fn under_a_host_denying_the_whole_silence_a_scan_behind_a_hung_one_trips_before_it_times_out()
+{
+    let td = tempfile::TempDir::new().unwrap();
+    let paths = sealed_hives(td.path(), 4);
+    let (pulse, mut trips) = supervised_on(3, Duration::from_millis(20), denied(1.0)).await;
+    let mut gate = HiveScanGate::default();
+    let mut held = give_up_on_a_hung_scan(&mut gate, td.path(), paths.clone()).await;
+    let root = td.path().to_path_buf();
+
+    let scan = tokio::spawn(async move {
+        let timeout = scan_timeout(&pulse);
+        let got = scan_hives_paced(
+            &mut gate,
+            &root,
+            paths,
+            &pulse,
+            "post-state",
+            timeout,
+            |_| {},
+            |scan| collect_sealed_hives(scan.root(), scan.paths()),
+        )
+        .await;
+        (got, pulse)
+    });
+
+    let fatal = run_clock(
+        "a fatal trip while the second scan waits behind the hung read of /h2",
+        first_fatal(&mut trips),
+    )
+    .await;
+    assert!(
+        !scan.is_finished(),
+        "the supervisor declares the hang before the wait behind it times out: {fatal}"
+    );
+    assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+    let (got, pulse) = run_clock("the second scan's wait behind the hung read", scan)
+        .await
+        .unwrap();
+    let err = got.expect_err("a scan behind a stuck one ends with the timeout");
+    assert_eq!(err.behind, Some("hive-scan"), "{err:?}");
+    assert_eq!(err.hive.as_deref(), Some("/h2"));
+    assert_eq!(
+        err.after,
+        Duration::from_millis(6_000),
+        "the wait behind credits the denial up to the factor of the supervisor"
+    );
+    held.release_all();
+    drop(pulse);
+}
+
+/// GH #1199 (K10), pin d (re-check I1): on a host that denies nothing the
+/// wait behind a hung scan is what it was -- the scan's own timeout, twice the
+/// budget, to the tick.
+#[tokio::test(start_paused = true)]
+async fn on_a_host_denying_nothing_a_scan_behind_a_hung_one_waits_exactly_twice_the_budget() {
+    let td = tempfile::TempDir::new().unwrap();
+    let paths = sealed_hives(td.path(), 4);
+    let (pulse, _trips) = supervised_on(3, Duration::from_millis(20), denied(0.0)).await;
+    assert_eq!(scan_timeout(&pulse), Duration::from_millis(1_200));
+    let mut gate = HiveScanGate::default();
+    let mut held = give_up_on_a_hung_scan(&mut gate, td.path(), paths.clone()).await;
+
+    let started = tokio::time::Instant::now();
+    let got = run_clock(
+        "the second scan's wait behind the hung read of /h2",
+        scan_hives_paced(
+            &mut gate,
+            td.path(),
+            paths,
+            &pulse,
+            "post-state",
+            scan_timeout(&pulse),
+            |_| {},
+            |scan| collect_sealed_hives(scan.root(), scan.paths()),
+        ),
+    )
+    .await;
+
+    let err = got.expect_err("a scan behind a stuck one ends with the timeout");
+    assert_eq!(err.behind, Some("hive-scan"), "{err:?}");
+    assert_eq!(err.hive.as_deref(), Some("/h2"));
+    assert_eq!(err.after, Duration::from_millis(1_200));
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_millis(1_200),
+        "without a denial the wait behind lasts exactly twice the budget"
+    );
+    held.release_all();
 }
 
 fn timed_out(hive: &str) -> Result<(), HiveScanTimeout> {

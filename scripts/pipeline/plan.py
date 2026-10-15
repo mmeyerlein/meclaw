@@ -359,14 +359,15 @@ def _dirty_files(root):
 
 
 def _github_main_base(root):
+    from . import versions   # the one parser of the export subject (Re-Check v2-fix-bump M2)
     subject = _git(root, "log", "-1", "--format=%s", "github-main", check=False).stdout
-    m = re.match(r"^export: public tree rebuilt from ([0-9a-f]{7,40})", subject.strip())
-    if not m:
+    source = versions.export_source(subject)
+    if not source:
         raise ValueError("cannot read the export base from the github-main ref; "
                          "pass --base <sha>")
-    proc = _git(root, "rev-parse", "--verify", "--quiet", m.group(1) + "^{commit}", check=False)
+    proc = _git(root, "rev-parse", "--verify", "--quiet", source + "^{commit}", check=False)
     if proc.returncode != 0:
-        raise ValueError("github-main names %s, which is not a commit here" % m.group(1))
+        raise ValueError("github-main names %s, which is not a commit here" % source)
     return proc.stdout.strip()
 
 
@@ -849,8 +850,11 @@ def _narrow_on():
 
 def build_plan(repo_root, mode, base, files=None, only=None, calibration=None, *,
                resolver=None, metadata=None, narrow=False, stage=None, strand_run=None,
-               wave=None, db=None, full=None):
+               wave=None, db=None, full=None, now=None):
     """The enriched plan of one pass (see the module docstring).
+
+    `now` is the clock the narrowing judges a coverage map's age by (default:
+    the wall clock); the kit's self-tests hand their fixture time (GH #1199).
 
     `mode` "merge" (or `stage="merge"`) is the merge gate: a strand pass on
     the merge commit that narrows only after `narrow.merge_decision`
@@ -892,11 +896,11 @@ def build_plan(repo_root, mode, base, files=None, only=None, calibration=None, *
             wide = sorted(set(files) | set(changed_files(repo_root, "strand", since)))
             notes = narrow_mod.apply(raw.get("stations") or [], wide, repo_root,
                                      metadata=metadata, stage="merge", narrowed=term,
-                                     graph_info=graph_info)
+                                     graph_info=graph_info, now=now)
     elif narrow and mode == "strand":  # OR-DT.W6.5 / #1138: the gate's run switch
         from . import narrow as narrow_mod
         notes = narrow_mod.apply(raw.get("stations") or [], list(files), repo_root,
-                                 metadata=metadata, graph_info=graph_info)
+                                 metadata=metadata, graph_info=graph_info, now=now)
     elif narrow and mode == "integration" and _narrow_on():  # welle-tb S1 part C, KR-TB-1
         from . import narrow as narrow_mod
         db = db if db is not None else narrow_mod._open_store()
@@ -926,9 +930,9 @@ def build_plan(repo_root, mode, base, files=None, only=None, calibration=None, *
                         narrow_mod._swap_filter(row, old, wrow["select"].get("filter"))
                 notes = narrow_mod.apply(rows, list(wfiles), repo_root, metadata=metadata,
                                          stage="integration", narrowed=term,
-                                         graph_info=graph_info)
+                                         graph_info=graph_info, now=now)
             from . import browser_plan   # S1b ruling 10.10. point 2: locks the wave reaches
-            notes += browser_plan.apply(rows, list(wfiles), repo_root, metadata=metadata)
+            notes += browser_plan.apply(rows, list(wfiles), repo_root, metadata=metadata, now=now)
             # tb-s3-b: the cut station takes the wave's units only -- a unit the
             # narrowed `tests` reaches beyond them joins it again; a lock it cut
             # is the ruling's (locks=False)

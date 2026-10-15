@@ -247,3 +247,297 @@ fn an_empty_screen_orders_nothing_and_takes_its_order_back() {
     );
     assert_ne!(standing, "", "there was an order to take back");
 }
+
+/// The clock's answer to an op it refused, as the hive hands it to the curator: the timer
+/// names the code and the order back in its header (`timer/emit.rs`, `emit_op_error_for`,
+/// GH #904) and the template's edge sets the lane `in_tick_error`.
+fn refusal(code: &str, schedule_id: &str) -> Value {
+    json!({
+        "body": {"messages": [], "meta": {"detail": format!("{code}: refused")}},
+        "envelope": {"header": {"hop": {
+            "route": "in_tick_error", "msg_type": "timer_op_error",
+            "error_code": code, "schedule_id": schedule_id,
+        }, "context": {}}},
+    })
+}
+
+/// The id of the one `add` of the last pass.
+fn added(screen: &Screen) -> String {
+    orders(screen)
+        .into_iter()
+        .find(|o| o.0 == "add")
+        .expect("an order was added")
+        .1
+}
+
+#[test]
+fn an_order_refused_as_past_runs_its_pass_at_once() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    // Wave validation 2, strand v2-flake-b01: the fresh second leaves with one second of
+    // lead; under a full suite on a 12-vCPU lane it reached the clock late, the clock
+    // refused it (`at_in_past`) and the curator dropped the refusal -- no order stood, no
+    // pass came, and the fresh window never settled (710 red, "the note settles").
+    let mut screen = Screen::new(params());
+    screen.write(
+        note("n1", json!({"context": "system", "relevance": "0.9"})),
+        100_000,
+    );
+    let refused = added(&screen);
+    assert_eq!(screen.curator("view.alex.n1", "age"), json!("fresh"));
+
+    screen.send(refusal("at_in_past", &refused), 102_500);
+    assert_eq!(
+        screen.curator("view.alex.n1", "age"),
+        json!("settled"),
+        "the refused moment has come, so its pass runs now"
+    );
+    let next = orders(&screen);
+    assert!(
+        next.iter().any(|o| o.0 == "add" && o.1 != refused),
+        "the pass orders what is due next: {next:?}"
+    );
+    assert!(
+        !next.iter().any(|o| o.0 == "remove" && o.1 == refused),
+        "the clock never stored the refused order, so nothing takes it back: {next:?}"
+    );
+    assert!(
+        screen.stderr().contains(&refused),
+        "the refusal is said, not swallowed: {:?}",
+        screen.stderr()
+    );
+}
+
+#[test]
+fn an_order_refused_as_past_twice_is_not_ordered_a_third_time() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    // A pass that runs before the refused second (`relevant_until` inside it) orders the
+    // same second again -- the same order (GH #681). Refused once more, it is not ordered a
+    // third time: a host too loaded for any lead must not turn refusals into a loop.
+    let mut screen = Screen::new(params());
+    screen.write(
+        note(
+            "n1",
+            json!({"context": "system", "relevance": "0.9", "relevant_until": "100500"}),
+        ),
+        100_000,
+    );
+    let refused = added(&screen);
+
+    screen.send(refusal("at_in_past", &refused), 100_000);
+    assert_eq!(
+        added(&screen),
+        refused,
+        "the pass of the refusal orders the same second once more"
+    );
+
+    screen.send(refusal("at_in_past", &refused), 100_000);
+    assert!(
+        orders(&screen).is_empty() && screen.patch().is_empty(),
+        "the second refusal of one order orders nothing: {:?}",
+        orders(&screen)
+    );
+    assert!(
+        screen.stderr().contains(&refused),
+        "and it is a finding on stderr, not silence: {:?}",
+        screen.stderr()
+    );
+}
+
+#[test]
+fn the_expected_refusals_stay_silent_and_the_orders_stay_as_they_were() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    // The normal path is the same order sequence as before the fix -- one `add` per pass,
+    // the same second, no extra message, nothing on stderr -- and the refusals the curator
+    // expects stay silent: a `remove` of an order that already struck
+    // (`schedule_not_found`) and a repeated `add` of a standing order (`schedule_id_exists`).
+    let mut screen = Screen::new(params());
+    screen.write(
+        note("n1", json!({"context": "system", "relevance": "0.9"})),
+        100_000,
+    );
+    let first = orders(&screen);
+    assert_eq!(first.len(), 1, "one op: {first:?}");
+    assert_eq!(first[0].0, "add");
+    assert_eq!(
+        at(&screen),
+        "1970-01-01T00:01:41Z",
+        "the lead is one second"
+    );
+    assert_eq!(screen.stderr(), "");
+
+    screen.pass(
+        json!({"kind": "stroke", "struck": first[0].1.as_str()}),
+        101_000,
+    );
+    let second = orders(&screen);
+    assert_eq!(second.len(), 1, "one op: {second:?}");
+    assert_eq!(second[0].0, "add");
+    assert_eq!(at(&screen), "1970-01-01T00:02:00Z");
+    assert_eq!(screen.stderr(), "");
+
+    for (code, id) in [
+        ("schedule_not_found", first[0].1.as_str()),
+        ("schedule_id_exists", second[0].1.as_str()),
+    ] {
+        screen.send(refusal(code, id), 101_200);
+        assert!(
+            screen.last.is_empty() && screen.hops().is_empty(),
+            "`{code}` sends nothing: {:?}",
+            screen.last
+        );
+        assert_eq!(screen.stderr(), "", "`{code}` is expected and says nothing");
+    }
+}
+
+#[test]
+fn an_add_the_clock_timed_out_is_ordered_once_more_and_no_further() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    // Wave validation 2, strand v2-flake-b01 (B2): an `add` the clock answers with
+    // `query_timeout` was not applied (`timer/cell.rs`, the add lane; `cell-types.md`), and
+    // the curator dropped it like any refusal -- under database load no order stood and the
+    // screen stood still exactly as with `at_in_past`. The pass runs at once and orders
+    // whatever is due then; if that order fails as well, it is a finding and nothing is
+    // ordered again, so a loaded host cannot turn timeouts into a loop.
+    let mut screen = Screen::new(params());
+    screen.write(
+        note("n1", json!({"context": "system", "relevance": "0.9"})),
+        100_000,
+    );
+    let refused = added(&screen);
+
+    screen.send(refusal("query_timeout", &refused), 100_200);
+    assert_eq!(
+        screen.curator("view.alex.n1", "age"),
+        json!("settled"),
+        "the pass of the lost order runs now, and from the next pass on the window is \
+         settled, whatever triggered it (display-hive.md § 4.35)"
+    );
+    let again = orders(&screen);
+    assert!(
+        again.iter().any(|o| o.0 == "add"),
+        "the order that was not applied is ordered once more: {again:?}"
+    );
+    assert!(
+        !again.iter().any(|o| o.0 == "remove" && o.1 == refused),
+        "the clock never stored it, so nothing takes it back: {again:?}"
+    );
+    assert!(
+        screen.stderr().contains(&refused) && screen.stderr().contains("query_timeout"),
+        "the timeout is said, not swallowed: {:?}",
+        screen.stderr()
+    );
+
+    let second = added(&screen);
+    screen.send(refusal("query_timeout", &second), 100_400);
+    assert!(
+        orders(&screen).is_empty() && screen.patch().is_empty(),
+        "the order of the rescue failed too, so nothing is ordered a third time: {:?}",
+        orders(&screen)
+    );
+    assert!(
+        screen.stderr().contains(&second),
+        "and it is a finding on stderr, not silence: {:?}",
+        screen.stderr()
+    );
+}
+
+#[test]
+fn an_add_timed_out_after_its_moment_runs_its_pass_at_once() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    // The same answer as `at_in_past` once the moment has come: the pass runs now.
+    let mut screen = Screen::new(params());
+    screen.write(
+        note("n1", json!({"context": "system", "relevance": "0.9"})),
+        100_000,
+    );
+    let refused = added(&screen);
+
+    screen.send(refusal("query_timeout", &refused), 102_500);
+    assert_eq!(
+        screen.curator("view.alex.n1", "age"),
+        json!("settled"),
+        "the moment of the order that was not applied has come, so its pass runs now"
+    );
+    assert!(
+        !orders(&screen)
+            .iter()
+            .any(|o| o.0 == "remove" && o.1 == refused),
+        "nothing takes back an order the clock never stored: {:?}",
+        orders(&screen)
+    );
+}
+
+#[test]
+fn a_refusal_no_new_order_can_cure_is_said_and_orders_nothing() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    // Every other answer the clock can give the curator's ops (`timer/cell.rs`) is said on
+    // stderr and changes nothing: a `remove` that timed out (the order it names was
+    // replaced; if it still strikes, that is one more pass, and the order this cell gave
+    // last stands), and the refusals of a malformed or unaccepted op, which the same op
+    // would meet again.
+    let mut screen = Screen::new(params());
+    screen.write(
+        note("n1", json!({"context": "system", "relevance": "0.9"})),
+        100_000,
+    );
+    let first = added(&screen);
+    screen.pass(json!({"kind": "stroke"}), 101_000);
+    let ops = orders(&screen);
+    assert!(
+        ops.contains(&("remove".to_string(), first.clone())),
+        "the second pass takes the first order back: {ops:?}"
+    );
+    let standing = added(&screen);
+
+    screen.send(refusal("query_timeout", &first), 101_200);
+    assert!(
+        screen.last.is_empty() && screen.hops().is_empty(),
+        "a timed-out `remove` sends nothing: {:?}",
+        screen.last
+    );
+    assert!(
+        screen.stderr().contains(&first) && screen.stderr().contains("query_timeout"),
+        "but it is said: {:?}",
+        screen.stderr()
+    );
+
+    for code in [
+        "invalid_body",
+        "op_not_accepted",
+        "parse_error",
+        "invalid_cron",
+        "invalid_params",
+        "invalid_input",
+        "kind_mismatch",
+    ] {
+        screen.send(refusal(code, &standing), 101_300);
+        assert!(
+            screen.last.is_empty() && screen.hops().is_empty(),
+            "`{code}` sends nothing: {:?}",
+            screen.last
+        );
+        assert!(
+            screen.stderr().contains(code) && screen.stderr().contains(&standing),
+            "`{code}` is said, not swallowed: {:?}",
+            screen.stderr()
+        );
+    }
+}

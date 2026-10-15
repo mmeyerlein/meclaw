@@ -483,6 +483,108 @@ class TestMergeAndRevert(StrandShTestCase):
         self.assertIn("merge|revert", res.stderr)
         self.assertIn("strand.sh merge", run_strand(self.repo, "--help").stdout)
 
+    def test_merge_in_a_strand_tree_takes_the_strand_from_the_branch(self):
+        """GH #1199 (a): `gate` and `report` read the strand from the branch
+        `<wave>/<S>`, `merge` ended with `merge: name the strand` in the very
+        same tree (wave validation 2, strand v2-p1078). `--dequeue` is the
+        merge's step that touches nothing but the store."""
+        self.assertEqual(0, run_strand(self.repo, "new", "kit", "--issue", "756").returncode)
+        res = run_strand(self.repo, "merge", "--dequeue", cwd=self.worktree("kit"))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("DEQUEUED kit ", res.stdout)
+
+    def test_merge_in_the_main_tree_still_asks_for_the_strand(self):
+        # The main tree is no strand tree, even on a branch with a slash.
+        _git(self.repo, "checkout", "-q", "-b", "welle-x/kit")
+        res = run_strand(self.repo, "merge", "--dequeue")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("merge: name the strand", res.stderr)
+
+
+class TestChdirOption(StrandShTestCase):
+    """GH #1199 (b), class V2-A4: `-C <dir>` in front of the subcommand acts as
+    a `cd <dir>` first, as `git -C` does. An agent shell that resets its cwd
+    on every call could reach a worktree only through a wrapper script
+    (wave validation 2, strand v2-p1078: one line per use in its log of
+    manual steps)."""
+
+    def setUp(self):
+        super().setUp()
+        install_pipeline(self.repo)
+        self.assertEqual(0, run_strand(self.repo, "new", "kit", "--issue", "756").returncode)
+        self.tree = self.worktree("kit")
+        self.outside = pathlib.Path(self._tmp.name) / "elsewhere"
+        self.outside.mkdir()
+
+    def test_the_subcommand_runs_as_if_started_in_the_tree(self):
+        res = run_strand(self.repo, "-C", str(self.tree), "merge", "--dequeue", cwd=self.outside)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("DEQUEUED kit ", res.stdout)
+        # Without it the same call stands outside any repository.
+        res = run_strand(self.repo, "merge", "--dequeue", cwd=self.outside)
+        self.assertNotEqual(0, res.returncode, res.stdout)
+
+    def test_a_relative_path_is_taken_from_the_callers_directory(self):
+        res = run_strand(self.repo, "-C", self.tree.name, "merge", "--dequeue",
+                         cwd=self.tree.parent)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("DEQUEUED kit ", res.stdout)
+
+    def test_help_after_the_option_is_the_help(self):
+        res = run_strand(self.repo, "-C", str(self.tree), "--help", cwd=self.outside)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand.sh -C <worktree>", res.stdout)
+
+    def test_a_missing_directory_is_a_clear_exit_2(self):
+        gone = self.outside / "gone"
+        res = run_strand(self.repo, "-C", str(gone), "merge", "--dequeue", cwd=self.outside)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand: -C: no such directory: %s" % gone, res.stderr)
+        self.assertEqual("", res.stdout)
+        res = run_strand(self.repo, "-C", cwd=self.outside)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand: -C needs a value", res.stderr)
+
+
+class TestPipelineChdirOption(StrandShTestCase):
+    """GH #1199 (b): `scripts/pipeline.py -C <dir> <command>` -- the same
+    option in front of the pipeline core, which reads its tree from the cwd
+    (`pre`, `gate`, `merge`, `revert`, `lanes`)."""
+
+    def pipeline(self, *args, cwd):
+        return subprocess.run(["python3", "-I", str(self.repo / "scripts" / "pipeline.py")]
+                              + list(args), cwd=str(cwd), env=kit_env(self.repo),
+                              capture_output=True, text=True, timeout=4 * kit_time.HANG)
+
+    def setUp(self):
+        super().setUp()
+        install_pipeline(self.repo)
+        self.other = pathlib.Path(self._tmp.name) / "other"
+        self.other.mkdir()
+        (self.other / "only-here.txt").write_text("a tree of its own\n")
+        _git(self.other, "init", "-q")
+        _git(self.other, "add", "only-here.txt")
+        _git(self.other, "commit", "-q", "-m", "other")
+
+    def test_the_command_runs_as_if_started_in_the_directory(self):
+        there = self.pipeline("pre", "--tree-hash", cwd=self.other)
+        self.assertEqual(0, there.returncode, there.stderr)
+        res = self.pipeline("-C", str(self.other), "pre", "--tree-hash", cwd=self.repo)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(there.stdout, res.stdout)
+        here = self.pipeline("pre", "--tree-hash", cwd=self.repo)
+        self.assertNotEqual(here.stdout, res.stdout)
+
+    def test_a_missing_directory_is_a_clear_exit_2(self):
+        gone = pathlib.Path(self._tmp.name) / "gone"
+        res = self.pipeline("-C", str(gone), "pre", "--tree-hash", cwd=self.repo)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("pipeline: -C: no such directory: %s" % gone, res.stderr)
+        self.assertEqual("", res.stdout)
+        res = self.pipeline("-C", cwd=self.repo)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("pipeline: -C needs a directory", res.stderr)
+
 
 BUILT_README = """# Plans
 
@@ -1270,6 +1372,51 @@ class TestReportAndClose(StrandShTestCase):
         self.assertIn("report again", res.stderr)
         self.assertNotIn("gh issue close", res.stdout)
 
+    def test_close_lists_git_commits_when_master_moved_past_the_stored_basis(self):
+        """GH #1107: the commit list is `merge-base(master, branch)..branch` at
+        close time, never `<stored basis>..branch`. Master moves on (other
+        strands merge), the strand rebases, and the head block still names
+        the old basis and the pre-rebase SHA -- the comment must name the
+        rebased commit only, none of master's."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        self.assertEqual(0, run_strand(self.repo, "report",
+                                       cwd=self.tree).returncode)
+        foreign = self.foreign_master_commit()
+        other = self.foreign_master_commit(rel="other/second.txt")
+        _git(self.tree, "rebase", "-q", "master")
+        mine = _git(self.tree, "rev-parse", "--short=8", "HEAD").stdout.strip()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "close", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("Commits: %s\n" % mine, res.stdout)
+        self.assertIn("from %s" % other, res.stdout)
+        for sha in (foreign, other):
+            self.assertNotIn("Commits: %s" % sha, res.stdout)
+        self.assertNotIn("other/foreign.txt", res.stdout)
+
+    def test_close_takes_the_newest_strand_receipt_not_a_newer_release_run(self):
+        """GH #1107: a red release dry run archived after the green strand
+        gate is the newest FILE, not the newest STRAND receipt -- it must not
+        block the close, and its line must not travel into the comment."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        self.assertEqual(0, run_strand(self.repo, "report",
+                                       cwd=self.tree).returncode)
+        root = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+        rev = _git(self.tree, "rev-parse", "--short=9", "HEAD").stdout.strip()
+        run = root / ("99991231T235959Z-%s" % rev[:8])
+        run.mkdir(parents=True)
+        (run / "receipt.json").write_text(json.dumps({"mode": "release", "rev": rev}))
+        (run / "summary.txt").write_text(
+            "GATE-SUMMARY release %s 1/3 5s RED\n" % rev)
+        (root / "latest").unlink()
+        (root / "latest").symlink_to(run.name)
+        res = run_strand(self.repo, "close", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GATE-SUMMARY strand ", res.stdout)
+        self.assertNotIn("GATE-SUMMARY release", res.stdout)
+
     def test_close_does_not_run_gh_without_do(self):
         self.commit()
         self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
@@ -1659,15 +1806,20 @@ class TestTokenLanes(TokenTestCase):
 # all go through the code paths of a real host, against a directory of this
 # test. A host whose name says `unreachable` answers like a dead one.
 FAKE_SSH_TEMPLATE = """#!/usr/bin/env bash
+opts=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        -o|-p|-l|-i|-E|-F) shift 2 ;;
-        -*) shift ;;
+        -o|-p|-l|-i|-E|-F) opts+=("$1" "$2"); shift 2 ;;
+        -*) opts+=("$1"); shift ;;
         *) break ;;
     esac
 done
 host="$1"; shift
 printf '%s\\t%s\\n' "$host" "$*" >>"$FAKE_SSH_LOG"
+# The options apart (Z5 keep-alive): `<host> TAB <options> TAB <command>`.
+# One line per call: the newlines of a multi-line command become spaces.
+cmd="$*"
+[ -n "${FAKE_SSH_OPTS_LOG:-}" ] && printf '%s\\t%s\\t%s\\n' "$host" "${opts[*]}" "${cmd//$'\\n'/ }" >>"$FAKE_SSH_OPTS_LOG"
 case "$host" in
     *unreachable*) echo "ssh: connect to host $host: Connection timed out" >&2; exit 255 ;;
 esac
@@ -2570,6 +2722,53 @@ class TestLaneCoverage(HygieneTestCase):
         self.assertNotIn("refused", res.stderr)
         self.assertIn(HYGIENE_STDIN + "check", self.ssh_log.read_text())
 
+    # Z5 (dev-tempo Z list): the three holds of `lane_sync.sh` -- `hold`, the
+    # push lock and the coverage tree lock -- idle on stdin for a whole gate
+    # run. They went over `remote()` without `ServerAliveInterval`, the one
+    # keep-alive only `remote_long` carried: an idle connection a middlebox
+    # drops ends the hold, and the build path is unlocked under a running
+    # gate. Each hold carries the keep-alive; the fake ssh logs the options.
+
+    @property
+    def opts_log(self):
+        return pathlib.Path(self._tmp.name) / "ssh-opts.log"
+
+    def hold_calls(self):
+        text = self.opts_log.read_text() if self.opts_log.exists() else ""
+        rows = [l.split("\t", 2) for l in text.splitlines()]
+        return [(host, opts) for host, opts, cmd in rows if "exec cat >/dev/null" in cmd]
+
+    def lane_sync(self, *args):
+        env = dict(os.environ)
+        env.update(self.env(PATH="%s:%s" % (self.bin, os.environ["PATH"]),
+                            MECLAW_LANE_NAME="north", FAKE_SSH_OPTS_LOG=str(self.opts_log)))
+        return subprocess.run([str(self.tree / "scripts" / "lane_sync.sh")] + list(args),
+                              cwd=self.tree, env=env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=kit_time.HANG)
+
+    def test_the_hold_verb_carries_the_keep_alive(self):
+        res = self.lane_sync("hold", "builder@north.example.invalid", "dt-w6")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue(res.stdout.startswith("held "), res.stdout)
+        [(host, opts)] = self.hold_calls()
+        self.assertEqual("builder@north.example.invalid", host)
+        self.assertIn("ServerAliveInterval=", opts)
+
+    def test_the_push_lock_carries_the_keep_alive(self):
+        self.lane_sync("push", "builder@north.example.invalid", "dt-w6")
+        calls = self.hold_calls()
+        self.assertTrue(calls, "no hold reached the fake ssh")
+        for host, opts in calls:
+            self.assertIn("ServerAliveInterval=", opts, host)
+
+    def test_the_coverage_hold_carries_the_keep_alive(self):
+        res = self.coverage(FAKE_SSH_OPTS_LOG=str(self.opts_log))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        calls = self.hold_calls()
+        self.assertTrue(calls, "no hold reached the fake ssh")
+        for host, opts in calls:
+            self.assertIn("ServerAliveInterval=", opts, host)
+
 
 class TestTokenGuards(TokenTestCase):
     """Where the token is checked: `strand.sh gate` and `test-tier.sh`."""
@@ -2942,6 +3141,58 @@ class TestDelegation(TokenTestCase):
         self.assertEqual(2, res.returncode, res.stderr)
         self.assertEqual(["%s/a" % WAVE], self.store_rows())
 
+    def test_a_detached_tree_takes_the_strand_from_strand(self):
+        """GH #1199 (f): in a detached tree `token take --strand <S>` refused
+        ("needs --wave, a strand branch ..."); the wave comes from the context
+        as for `gate` (`wave_dir`), the strand from `--strand`."""
+        self.assertEqual(0, self.tok("init", "--max", "2").returncode)
+        _git(self.tree, "checkout", "-q", "--detach")
+        res = run_strand(self.repo, "-C", str(self.tree), "token", "take", "--strand", "kit",
+                         extra_env=dict(NO_LEGACY, MECLAW_STRAND_NOW=str(self.T0)))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(["%s/kit" % WAVE], self.store_rows())
+
+    def test_a_detached_tree_without_strand_names_the_way(self):
+        """... and without `--strand` every entry that binds a strand ends with
+        exit 2 and the way out ("cannot tell the strand from the branch")."""
+        self.assertEqual(0, self.tok("init", "--max", "2").returncode)
+        _git(self.tree, "checkout", "-q", "--detach")
+        for words in (("token", "take"), ("gate",), ("report",)):
+            with self.subTest(words=words):
+                res = run_strand(self.repo, "-C", str(self.tree), *words, extra_env=NO_LEGACY)
+                self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+                self.assertIn("detached HEAD: pass --strand <S>", res.stderr)
+        self.assertEqual([], self.store_rows())
+
+    def test_the_shell_chain_says_the_texts_of_the_python_chain(self):
+        """One chain in two languages (GH #1199 f): `strand_of_branch` and
+        `gitenv.strand_of` refuse with the same words."""
+        from scripts.pipeline import gitenv
+        text = STRAND_SH.read_text()
+        for words in (gitenv.DETACHED, gitenv.NO_STRAND):
+            self.assertIn('echo "strand: %s" >&2' % words, text)
+        self.assertEqual(("kit", "welle-x/kit", ""), tuple(gitenv.strand_of("HEAD", "kit", WAVE_DIR)))
+        self.assertEqual(("kit", "welle-x/kit", ""), tuple(gitenv.strand_of("welle-x/kit")))
+        self.assertEqual(("a", "welle-x/a", ""), tuple(gitenv.strand_of("welle-x/kit", "a")))
+        self.assertEqual(gitenv.DETACHED, gitenv.strand_of("HEAD").why)
+        self.assertEqual(gitenv.NO_STRAND, gitenv.strand_of("master").why)
+
+    def test_the_shell_chain_names_the_strand_as_the_python_chain(self):
+        """Re-check f+g minor: `--strand <wave>/<S>` -- the Python chain names
+        `<S>` (`gitenv.strand_of`), the shell chain passed the value on
+        unchanged, so `strand.sh gate|report` archived and read under
+        `receipts/<wave>/<S>` where `pipeline.py test` uses `receipts/<S>`."""
+        from scripts.pipeline import gitenv
+        fn = re.search(r"^strand_of_branch\(\) \{\n.*?^\}\n", STRAND_SH.read_text(),
+                       re.S | re.M).group(0)
+        for value in ("kit", "welle-x/kit"):
+            with self.subTest(value=value):
+                res = subprocess.run(["bash", "-c", fn + 'strand_of_branch "$1"', "sh", value],
+                                     capture_output=True, text=True, cwd=str(self.tree))
+                self.assertEqual(0, res.returncode, res.stderr)
+                self.assertEqual(gitenv.strand_of("HEAD", value, WAVE_DIR).name,
+                                 res.stdout.strip())
+
     def test_the_tier_asks_the_store_and_the_skip_variable_counts(self):
         # unarmed: nothing to ask, and nothing is created
         res = run_tier(self.repo, self.tree, extra_env=NO_LEGACY)
@@ -2986,8 +3237,12 @@ class TestDelegation(TokenTestCase):
         self.assertEqual(["gate", "--mode", "strand", "--strand", "kit", "--wave", WAVE,
                           "--host", "b1", "--no-pre", "--reason", "a b",
                           "--archive", str(archive)], call["argv"])
-        # what the caller sees: the red station, the summary, the lane line
-        self.assertEqual(["GATE tests [unit] 3s RED 1 test failed",
+        # what the caller sees: each station line as it comes (GH #1199,
+        # re-check v2-fix-e I1), then the verdict block -- the red station,
+        # the summary, the lane line
+        self.assertEqual(["GATE precheck [form] 1s GREEN",
+                          "GATE tests [unit] 3s RED 1 test failed",
+                          "GATE tests [unit] 3s RED 1 test failed",
                           "GATE-SUMMARY strand abc1234 1/2 4s RED",
                           "GATE-LANE b1 crit=3 lane_s=4 rounds=1"], res.stdout.splitlines())
         latest = archive / "latest"
@@ -3072,7 +3327,91 @@ class TestDelegation(TokenTestCase):
             "exit 2\n")
         res = run_strand(self.repo, "gate", cwd=self.tree, extra_env=NO_LEGACY)
         self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertEqual("GATE tests [unit] 3s ABORTED watchdog", res.stdout.splitlines()[0])
+        # the station lines as they come (GH #1199), then the verdict block:
+        # the aborted station is shown like a red one beside the summary
+        self.assertEqual(["GATE precheck [form] 1s GREEN",
+                          "GATE tests [unit] 3s ABORTED watchdog",
+                          "GATE tests [unit] 3s ABORTED watchdog",
+                          "GATE-SUMMARY strand abc1234 1/2 4s ABORTED"], res.stdout.splitlines())
+
+    def test_gate_relays_each_station_line_to_a_stdout_only_log_while_the_pass_runs(self):
+        """Re-check v2-fix-e I1(b) (GH #1199, kit find V2-A8): the runner's
+        output went into a temp log only, so `strand.sh gate > log` (a wrapper
+        keeping stdout) held no `GATE <station>` line until the pass ended.
+        The stub blocks on a fifo after its first station: the line is in the
+        stdout file while the pass still runs."""
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        fifo, out = tmp / "go", tmp / "gate-stdout.log"
+        os.mkfifo(fifo)
+        (self.tree / "scripts" / "gate.sh").write_text(
+            "#!/bin/sh\n"
+            "echo 'GATE precheck [form] 1s GREEN'\n"
+            "read go < '%s'\n"
+            "echo 'GATE-SUMMARY strand abc1234 1/1 1s GREEN'\n" % fifo)
+        with open(out, "w") as fh:
+            proc = subprocess.Popen([str(self.repo / "scripts" / "strand.sh"), "gate"], cwd=str(self.tree),
+                                    env=kit_env(self.repo, NO_LEGACY), stdout=fh,
+                                    stderr=subprocess.DEVNULL)
+
+        def opened():   # the stub's read end is open (or the pass is over)
+            try:
+                return os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:
+                return -1 if proc.poll() is not None else None
+
+        def release():
+            if proc.poll() is None:
+                fd = kit_time.until("the gate stub opens its fifo", opened)
+                if fd >= 0:
+                    os.write(fd, b"go\n")
+                    os.close(fd)
+            try:
+                proc.wait(timeout=kit_time.HANG)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        self.addCleanup(release)
+        kit_time.until("the station line in the stdout log while the gate blocks",
+                       lambda: "GATE precheck [form] 1s GREEN" in out.read_text(),
+                       state=out.read_text)
+        self.assertIsNone(proc.poll())            # the pass still runs
+        release()
+        self.assertEqual(0, proc.returncode, out.read_text())
+        self.assertEqual(["GATE precheck [form] 1s GREEN", "GATE-SUMMARY strand abc1234 1/1 1s GREEN"],
+                         out.read_text().splitlines())
+
+    def test_one_log_for_both_streams_holds_each_station_line_once(self):
+        (self.tree / "scripts" / "gate.sh").write_text(
+            "#!/bin/sh\n"
+            "echo 'GATE precheck [form] 1s GREEN'\n"
+            "echo 'GATE-SUMMARY strand abc1234 1/1 1s GREEN'\n")
+        res = subprocess.run([str(self.repo / "scripts" / "strand.sh"), "gate"], cwd=str(self.tree),
+                             env=kit_env(self.repo, NO_LEGACY), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, timeout=4 * kit_time.HANG)
+        self.assertEqual(0, res.returncode, res.stdout)
+        self.assertEqual(1, res.stdout.count("GATE precheck [form] 1s GREEN"), res.stdout)
+
+    def test_a_gate_refused_before_its_pass_says_so_on_both_streams(self):
+        """Re-check v2-fix-e I1(b): a run without GATE-SUMMARY (a refusal of
+        the runner) went to the caller as `tail ... >&2` only -- the REFUSED
+        line never reached a stdout log. Now on both streams, once in one log."""
+        refusal = "gate: REFUSED (exit 3) -- gate: queued -- no lane free"
+        (self.tree / "scripts" / "gate.sh").write_text(
+            "#!/bin/sh\n"
+            "echo 'gate: queued -- no lane free' >&2\n"
+            "echo '%s'\n"
+            "exit 3\n" % refusal)
+        res = run_strand(self.repo, "gate", cwd=self.tree, extra_env=NO_LEGACY)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        for text in (res.stdout, res.stderr):
+            self.assertIn("strand: the gate wrote no summary line", text)
+            self.assertIn(refusal, text)
+        one = subprocess.run([str(self.repo / "scripts" / "strand.sh"), "gate"], cwd=str(self.tree),
+                             env=kit_env(self.repo, NO_LEGACY), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, timeout=4 * kit_time.HANG)
+        self.assertEqual(3, one.returncode, one.stdout)
+        self.assertEqual(1, one.stdout.count(refusal), one.stdout)
 
     def test_gate_plan_only_and_ci_and_legacy(self):
         record = self.stub()
@@ -3104,6 +3443,19 @@ class TestDelegation(TokenTestCase):
         self.assertEqual(6, res.returncode, res.stderr)
         self.assertEqual(["test"] + args, self.calls(record)[-1]["argv"])
 
+
+    def test_test_in_a_detached_tree_names_the_wave_of_strand(self):
+        """GH #1199 (f): `test --strand <name>` in a detached tree reached the
+        core without a wave, and the core refused ("cannot tell the wave from
+        the branch"); the kit names it from the context, in front of every
+        word as given (nextest's own after `--` stay last)."""
+        record = self.stub()
+        _git(self.tree, "checkout", "-q", "--detach")
+        args = ["binary(~gh123)", "--strand", "kit", "--host", "b1", "--", "--nocapture"]
+        res = run_strand(self.repo, "-C", str(self.tree), "test", *args,
+                         extra_env=dict(NO_LEGACY, STUB_RECORD=str(record)))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["test", "--wave", WAVE_DIR] + args, self.calls(record)[-1]["argv"])
 
 class TestPreamble(unittest.TestCase):
     """`plans/PREAMBLE.md` is now the ONLY place the machine rules stand.

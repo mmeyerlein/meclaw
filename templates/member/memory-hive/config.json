@@ -1,6 +1,6 @@
 {
   "cell": {
     "type": "ref",
-    "template": "memory-hive@3.14.5"
+    "template": "memory-hive@3.14.6"
   }
 }
